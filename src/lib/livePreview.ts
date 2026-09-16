@@ -27,6 +27,7 @@ import { StateEffect, StateField } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { insertColumn, insertRow, parseTableBlock, type TableBlock } from "./table.ts";
 import { renderEmbeddedNote } from "./embed.ts";
 import {
   findComments,
@@ -60,10 +61,14 @@ interface TextRun {
 
 const EMPTY_FLAGS = { bold: false, italic: false, strike: false, code: false, link: false };
 
-/** 表格解析结果。rows 是三层结构：行 → 单元格 → 文本段。 */
+/** 表格解析结果。rows 是三层结构：行 → 单元格 → 文本段；raw 是单元格的原文。 */
 interface ParsedTable {
   rows: TextRun[][][];
   align: (null | "left" | "center" | "right")[];
+  /** 每个单元格的**原文**（渲染态就地编辑写回时用）。 */
+  raw: string[][];
+  /** 分隔行的原文（写回时原样保留用户的对齐标记与间距）。 */
+  delimiterLine: string;
 }
 
 /**
@@ -364,8 +369,10 @@ class MermaidWidget extends WidgetType {
   toDOM(view: EditorView) {
     const box = document.createElement("div");
     box.className = "cm-lp-mermaid";
-    // 点击回到源码编辑，与表格一致。
-    box.addEventListener("mousedown", (event) => {
+    box.title = "双击编辑源码";
+    // 单击保持渲染（0.3：与表格一致——图不该一点就消失）。
+    // 双击才把光标放进围栏块，退回源码编辑。
+    box.addEventListener("dblclick", (event) => {
       event.preventDefault();
       view.dispatch({
         selection: { anchor: Math.min(this.from + 1, view.state.doc.length) },
@@ -407,10 +414,17 @@ class MermaidWidget extends WidgetType {
 }
 
 /**
- * 表格渲染成真正的 <table>。
+ * 表格渲染成真正的 `<table>`，并且**点击保持渲染**（Obsidian 式，0.3）。
  *
- * 单元格内容按原文显示（不解析单元格内的行内语法）；点击表格会把光标放进源码，
- * 从而切换成可编辑的源码视图——这与「光标所在行显示源码」的规则一致。
+ * 单击单元格不再退回源码，而是保持渲染，并在表格上浮现两个结构按钮：
+ * 底部「＋ 行」追加一行、右缘「＋」追加一列——点击直接对文档做整块结构替换
+ * （走 table.ts 的 insertRow / insertColumn），widget 随新内容重新渲染。
+ * 不做"单元格内直接输入"：contenteditable 与 CM 的选区管理互相打架
+ * （焦点会被 CM 抢回 contentDOM，输入丢字），编辑单元格内容的入口是
+ * **双击**退回源码——那里有工具栏与管道对齐，编辑体验反而更稳。
+ *
+ * 单元格按“肉眼可见的管道”解析，转义 `\|` 与行内代码里的 `|` 不支持——与
+ * Obsidian 的表格编辑器同一条边界。
  */
 class TableWidget extends WidgetType {
   readonly rows: TextRun[][][];
@@ -441,36 +455,61 @@ class TableWidget extends WidgetType {
   }
 
   toDOM(view: EditorView) {
+    console.info("[qn-tbl] toDOM from=", this.from, "cols=", this.rows[0]?.length, "to=", this.to);
+    const wrap = document.createElement("div");
+    wrap.className = "cm-lp-tablewrap";
+
     const table = document.createElement("table");
     table.className = "cm-lp-table";
 
-    const buildRow = (cells: TextRun[][], cellTag: "th" | "td") => {
+    // 列数取"分隔行管道段数"与各行单元格数的最大值：
+    // lezer 对**只含空格的末尾单元格**不产出 TableCell 节点——不加这一步，
+    // 「＋ 列」新加的空列会在渲染里隐形（实测 th 一直是 3）。
+    const columnCount = Math.max(
+      this.align.length,
+      ...this.rows.map((row) => row.length),
+      1,
+    );
+
+    const buildRow = (cells: TextRun[][], cellTag: "th" | "td", rowIndex: number) => {
       const tr = document.createElement("tr");
-      cells.forEach((runs, index) => {
+      tr.dataset.row = String(rowIndex);
+      for (let index = 0; index < columnCount; index += 1) {
         const el = document.createElement(cellTag);
-        appendRuns(el, runs);
+        const runs = cells[index];
+        if (runs) appendRuns(el, runs);
         const align = this.align[index];
         if (align) el.style.textAlign = align;
         tr.appendChild(el);
-      });
+      }
       return tr;
     };
 
     if (this.rows.length > 0) {
       const thead = document.createElement("thead");
-      thead.appendChild(buildRow(this.rows[0], "th"));
+      thead.appendChild(buildRow(this.rows[0], "th", 0));
       table.appendChild(thead);
 
       if (this.rows.length > 1) {
         const tbody = document.createElement("tbody");
-        for (const row of this.rows.slice(1)) tbody.appendChild(buildRow(row, "td"));
+        for (const row of this.rows.slice(1)) tbody.appendChild(buildRow(row, "td", 1));
         table.appendChild(tbody);
       }
     }
 
-    // 点击即把光标移进表格源码。预置的选区内会让 StateField 撤掉块级替换，
-    // 表格随即变回可编辑的 Markdown。
+    // 单击保持渲染：不把光标放进源码（0.3 之前点击即退回源码，图/表都会消失）
     table.addEventListener("mousedown", (event) => {
+      console.info("[qn-tbl] mousedown on", (event.target as HTMLElement).tagName);
+      event.preventDefault();
+    });
+
+    // 双击单元格之外的空白退回源码（进阶编辑入口）；
+    // 单元格内的双击是原生选词，不触发
+    wrap.addEventListener("dblclick", (event) => {
+      if ((event.target as HTMLElement).closest("td,th")) {
+        event.stopPropagation();
+        return;
+      }
       event.preventDefault();
       view.dispatch({
         selection: { anchor: Math.min(this.from + 1, view.state.doc.length) },
@@ -478,19 +517,130 @@ class TableWidget extends WidgetType {
       view.focus();
     });
 
-    return table;
+    wrap.appendChild(table);
+
+    // 底部「＋ 行」/ 右缘「＋ 列」：点击行为走 document 级委托
+    // （见 ensureTableOpsDelegate）——按钮会随 widget 重建，挂自身不可靠。
+    const addRow = document.createElement("button");
+    addRow.type = "button";
+    addRow.className = "cm-tb-addrow";
+    addRow.textContent = "＋ 行";
+    addRow.title = "在末尾添加一行";
+    addRow.addEventListener("mousedown", (event) => event.preventDefault());
+    wrap.appendChild(addRow);
+
+    const addCol = document.createElement("button");
+    addCol.type = "button";
+    addCol.className = "cm-tb-addcol";
+    addCol.textContent = "＋";
+    addCol.title = "在末尾添加一列";
+    addCol.addEventListener("mousedown", (event) => event.preventDefault());
+    wrap.appendChild(addCol);
+
+    ensureTableOpsDelegate();
+    tableOps.set(wrap, { view, from: this.from });
+
+    return wrap;
   }
+}
+
+/**
+ * 表格结构按钮的注册表与 document 级委托。
+ *
+ * 按钮的 click 监听**不**挂在按钮自身：widget 在结构变化后会整体重建，
+ * "重建与点击的竞态"下按钮处理函数会丢事件（实测 +列 按钮点到旧 DOM 的
+ * 克隆时处理函数根本不触发）。委托到 document 一份，按钮怎么重建都能命中。
+ */
+const tableOps = new WeakMap<HTMLElement, { view: EditorView; from: number }>();
+let tableOpsDelegateInstalled = false;
+
+function ensureTableOpsDelegate(): void {
+  if (tableOpsDelegateInstalled || typeof document === "undefined") return;
+  tableOpsDelegateInstalled = true;
+  console.info("[qn-tbl] delegate installed");
+  document.addEventListener("click", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    const addRowBtn = target.closest(".cm-tb-addrow");
+    const addColBtn = target.closest(".cm-tb-addcol");
+    if (!addRowBtn && !addColBtn) return;
+    const btn = (addRowBtn ?? addColBtn) as HTMLElement;
+    const wrap = btn.closest(".cm-lp-tablewrap") as HTMLElement | null;
+    const info = wrap ? tableOps.get(wrap) : undefined;
+    console.info("[qn-tbl] delegate click, addRow=", !!addRowBtn, "addCol=", !!addColBtn, "info=", !!info);
+    if (!info) return;
+    event.stopPropagation();
+    if (addRowBtn) {
+      withWidgetBlock(info.view, info.from, (block) =>
+        insertRow(block, block.rows.length - 1, []),
+      );
+    } else {
+      withWidgetBlock(info.view, info.from, (block) =>
+        insertColumn(block, block.header.length),
+      );
+    }
+  });
+}
+
+/** 对 widget 覆盖的表格块执行一次结构变换（整块替换，保留换行符风格）。 */
+function withWidgetBlock(
+  view: EditorView,
+  from: number,
+  transform: (block: TableBlock) => string[],
+): void {
+  const first = view.state.doc.lineAt(from);
+  let last = first;
+  for (;;) {
+    const next = view.state.doc.line(last.number + 1);
+    if (next.number === last.number || !isTableLineText(next.text)) break;
+    last = next;
+  }
+  const lines: string[] = [];
+  for (let n = first.number; n <= last.number; n += 1) lines.push(view.state.doc.line(n).text);
+  const block = parseTableBlock(lines);
+  console.info("[qn-tbl] withWidgetBlock lines=", lines.length, "block=", !!block);
+  if (!block) return;
+  const newLines = transform(block);
+  console.info("[qn-tbl] dispatch newLines=", newLines.length, "first=", first.from, "last=", last.to);
+  try {
+    view.dispatch({
+      changes: { from: first.from, to: last.to, insert: newLines.join(view.state.lineBreak) },
+    });
+    console.info("[qn-tbl] dispatched OK, doc lines now=", view.state.doc.lines);
+  } catch (e) {
+    console.info("[qn-tbl] DISPATCH THREW:", String(e));
+    throw e;
+  }
+}
+
+function isTableLineText(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 1;
 }
 
 /** 从 Table 语法节点提取表格内容与对齐方式。 */
 function parseTable(state: EditorState, table: SyntaxNode): ParsedTable {
   const rows: TextRun[][][] = [];
+  const raw: string[][] = [];
   let align: (null | "left" | "center" | "right")[] = [];
+  let delimiterLine = "";
 
   const cellsOf = (parent: SyntaxNode): TextRun[][] => {
     const out: TextRun[][] = [];
     for (let child = parent.firstChild; child; child = child.nextSibling) {
-      if (child.name === "TableCell") out.push(flattenInline(state, child, EMPTY_FLAGS));
+      if (child.name === "TableCell") {
+        out.push(flattenInline(state, child, EMPTY_FLAGS));
+      }
+    }
+    return out;
+  };
+
+  const rawCellsOf = (parent: SyntaxNode): string[] => {
+    const out: string[] = [];
+    for (let child = parent.firstChild; child; child = child.nextSibling) {
+      if (child.name === "TableCell") {
+        out.push(state.doc.sliceString(child.from, child.to).trim());
+      }
     }
     return out;
   };
@@ -498,27 +648,28 @@ function parseTable(state: EditorState, table: SyntaxNode): ParsedTable {
   for (let child = table.firstChild; child; child = child.nextSibling) {
     if (child.name === "TableHeader") {
       rows.push(cellsOf(child));
+      raw.push(rawCellsOf(child));
     } else if (child.name === "TableRow") {
       rows.push(cellsOf(child));
+      raw.push(rawCellsOf(child));
     } else if (child.name === "TableDelimiter") {
       // 分隔行是 Table 的直接子节点，整行一个节点，从中读对齐方式。
-      align = state.doc
-        .sliceString(child.from, child.to)
-        .split("|")
-        .map((cell) => cell.trim())
-        .filter((cell) => cell.length > 0)
-        .map((cell) => {
-          const left = cell.startsWith(":");
-          const right = cell.endsWith(":");
-          if (left && right) return "center";
-          if (left) return "left";
-          if (right) return "right";
-          return null;
-        });
+      delimiterLine = state.doc.sliceString(child.from, child.to);
+      // 分隔行的**全部**内部段都算列（含空段=无对齐的新列）——
+      // 只数非空段会让"＋ 列"新增的空列在渲染里隐形
+      const segments = delimiterLine.split("|").slice(1, -1).map((cell) => cell.trim());
+      align = segments.map((cell) => {
+        const left = cell.startsWith(":");
+        const right = cell.endsWith(":");
+        if (left && right) return "center";
+        if (left) return "left";
+        if (right) return "right";
+        return null;
+      });
     }
   }
 
-  return { rows, align };
+  return { rows, align, raw, delimiterLine };
 }
 
 /** 图片加载不出来时的降级显示。 */
@@ -927,7 +1078,13 @@ export function buildLivePreviewDecorations(
           const line = doc.lineAt(node.from);
           marks.push(LINE_CLASS[level].range(line.from));
           const headerMark = node.node.firstChild;
-          if (headerMark && headerMark.name === "HeaderMark") {
+          if (
+            headerMark &&
+            headerMark.name === "HeaderMark" &&
+            // 光标在本行时保留 # 标记：与其他语法的 isActive 保护一致，
+            // 否则点击标题永远看不到源码、无法直接改级别
+            !isActive(ctx, node.from, node.to)
+          ) {
             // 连同标记后的一个空格一起隐藏，否则标题会残留一个缩进。
             let end = headerMark.to;
             if (doc.sliceString(end, end + 1) === " ") end += 1;

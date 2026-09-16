@@ -14,6 +14,7 @@ import { requestDecorationRefresh } from "./lib/livePreview";
 import type { LivePreviewContext } from "./lib/paths";
 import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { checkForUpdate } from "./lib/updater";
+import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
 import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import {
@@ -96,6 +97,17 @@ export default function App() {
   });
   /** 光标是否在表格块内（表格工具栏的显示依据）。 */
   const [inTable, setInTable] = useState(false);
+  /** 光标所在行（0 基；目录面板高亮当前标题）。 */
+  const [cursorLine, setCursorLine] = useState(0);
+  /** 左右栏收起状态（Obsidian 式；持久化）。 */
+  const [leftCollapsed, setLeftCollapsed] = useState(
+    () => localStorage.getItem("quicknote.ui.leftCollapsed") === "1",
+  );
+  const [rightCollapsed, setRightCollapsed] = useState(
+    () => localStorage.getItem("quicknote.ui.rightCollapsed") === "1",
+  );
+  /** 自定义样式内容（设置面板 textarea 的值）。 */
+  const [customCssDraft, setCustomCssDraft] = useState(() => getCustomCss());
 
   /** 激活标签的 meta。其余标签的未保存内容在各自的 EditorState 里。 */
   const current = useMemo(
@@ -121,6 +133,19 @@ export default function App() {
       .then(setAppVersion)
       .catch(() => setAppVersion("unknown"));
   }, []);
+
+  // 自定义样式：启动注入一次，之后由设置面板即时更新
+  useEffect(() => {
+    applyCustomCss(getCustomCss());
+  }, []);
+
+  useEffect(() => {
+    localStorage.setItem("quicknote.ui.leftCollapsed", leftCollapsed ? "1" : "0");
+  }, [leftCollapsed]);
+
+  useEffect(() => {
+    localStorage.setItem("quicknote.ui.rightCollapsed", rightCollapsed ? "1" : "0");
+  }, [rightCollapsed]);
 
   const checkUpdate = useCallback(async () => {
     setUpdateCheck({ state: "checking", message: "正在检查更新…" });
@@ -373,6 +398,7 @@ export default function App() {
         attachment: attachmentOptions,
         dark: resolveTheme(getSettings().theme) === "dark",
         onCursorInTable: setInTable,
+          onCursorLine: setCursorLine,
       });
       view?.setState(newState);
       view?.dispatch({ selection: { anchor: Math.min(anchor, view.state.doc.length) } });
@@ -694,6 +720,7 @@ export default function App() {
           attachment: attachmentOptions,
           dark: resolveTheme(getSettings().theme) === "dark",
           onCursorInTable: setInTable,
+          onCursorLine: setCursorLine,
         });
         stateStore.current.set(note.path, newState);
         dirtyTabs.current.delete(path);
@@ -1099,6 +1126,24 @@ export default function App() {
         />
         <button
           type="button"
+          className="btn"
+          aria-pressed={leftCollapsed}
+          onClick={() => setLeftCollapsed((value) => !value)}
+          title={leftCollapsed ? "展开文件栏" : "收起文件栏"}
+        >
+          {leftCollapsed ? "» 文件" : "« 文件"}
+        </button>
+        <button
+          type="button"
+          className="btn"
+          aria-pressed={rightCollapsed}
+          onClick={() => setRightCollapsed((value) => !value)}
+          title={rightCollapsed ? "展开日记/目录面板" : "收起日记/目录面板"}
+        >
+          {rightCollapsed ? "« 面板" : "面板 »"}
+        </button>
+        <button
+          type="button"
           className={`btn${showSettings ? " is-on" : ""}`}
           onClick={() => setShowSettings((value) => !value)}
         >
@@ -1306,6 +1351,26 @@ export default function App() {
             </button>
           </div>
 
+          <div className="settings-group">自定义样式（本机）</div>
+          <textarea
+            className="custom-css-input"
+            rows={6}
+            spellCheck={false}
+            value={customCssDraft}
+            placeholder={"/* 覆盖 Markdown 渲染样式，例如： */\n.cm-lp-heading { font-weight: 500; }\n.cm-lp-table { font-size: 12px; }"}
+            onChange={(event) => {
+              setCustomCssDraft(event.target.value);
+              saveCustomCss(event.target.value);
+              applyCustomCss(event.target.value);
+            }}
+          />
+          <Hint>
+            这段 CSS 会即时注入并保存在本机（不进仓库），用来微调 Markdown 渲染效果。
+            常用选择器：<code>.cm-content</code> 正文、<code>.cm-lp-heading</code> 标题行、
+            <code>.cm-lp-table</code> 表格、<code>.cm-lp-callout-note</code> 等 callout 容器、
+            <code>.cm-lp-mermaid</code> mermaid 图。清空即恢复默认。
+          </Hint>
+
           {/* 版本与更新。检查走 GitHub 公开接口（匿名限额足够手动检查用）；
               不做应用内自动安装——那需要签名密钥与更新清单服务器，现阶段带用户去发布页即可。 */}
           <div className="settings-group">软件更新</div>
@@ -1477,7 +1542,7 @@ export default function App() {
         </>
       )}
 
-      <div className="body">
+      <div className={`body${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}`}>
         <aside className="sidebar">
           <div className="sidebar-head">
                 <span className="sidebar-title">文件</span>
@@ -1647,6 +1712,7 @@ export default function App() {
               getView={() => viewRef.current}
               revision={revision}
               activeKey={activeTab}
+              cursorLine={cursorLine}
               onJump={jumpToLine}
             />
           )}

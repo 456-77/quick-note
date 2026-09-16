@@ -327,6 +327,81 @@ check(
   JSON.stringify(tagTexts),
 );
 
+// ---------------------------------------------------------------- 自定义样式
+// 设置面板 textarea 里的 CSS 会即时注入成 <style id="qn-custom-css">。
+await evaluate(
+  ws,
+  `(() => {
+     const btn = [...document.querySelectorAll('header button')].find(b => b.textContent.trim() === '设置');
+     btn?.click();
+     return true;
+   })()`,
+);
+await sleep(400);
+await evaluate(
+  ws,
+  `(() => {
+     const area = document.querySelector('.custom-css-input');
+     if (!area) return false;
+     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+     setter.call(area, '.cm-lp-heading { letter-spacing: 3px; }');
+     area.dispatchEvent(new Event('input', { bubbles: true }));
+     return true;
+   })()`,
+);
+await sleep(400);
+const cssStyle = await evaluate(
+  ws,
+  `(() => {
+     const style = document.getElementById('qn-custom-css');
+     const heading = [...document.querySelectorAll('.cm-line')].find(e => e.innerText.includes('语法覆盖'));
+     return {
+       injected: style?.textContent ?? '',
+       applied: heading ? getComputedStyle(heading).letterSpacing : null,
+     };
+   })()`,
+);
+check(
+  (cssStyle.injected ?? "").includes("letter-spacing: 3px"),
+  "自定义 CSS 注入页面",
+  JSON.stringify(cssStyle.injected),
+);
+// 标题行不在当前渲染视口时 heading 为 undefined——滚到文首再取（H1 在文档开头）。
+await evaluate(ws, `document.querySelector('.cm-scroller').scrollTop = 0`);
+await sleep(500);
+const cssApplied = await evaluate(
+  ws,
+  `(() => {
+     const heading = [...document.querySelectorAll('.cm-line')].find(e => e.innerText.includes('语法覆盖'));
+     if (!heading) return { found: false, applied: null };
+     return { found: true, cls: heading.className, applied: getComputedStyle(heading).letterSpacing };
+   })()`,
+);
+check(
+  cssApplied.found === true && cssApplied.applied === "3px",
+  "自定义规则真实作用于标题渲染",
+  JSON.stringify(cssApplied),
+);
+// 还原：清空自定义 CSS，关设置面板
+await evaluate(
+  ws,
+  `(() => {
+     const area = document.querySelector('.custom-css-input');
+     if (area) {
+       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+       setter.call(area, '');
+       area.dispatchEvent(new Event('input', { bubbles: true }));
+     }
+     return true;
+   })()`,
+);
+await sleep(200);
+await evaluate(
+  ws,
+  `[...document.querySelectorAll('header button')].find(b => b.textContent.trim() === '设置')?.click()`,
+);
+await sleep(250);
+
 // ---------------------------------------------------------------- 主题
 // 断言语法高亮的颜色需要代码块在渲染范围内：先滚回顶部（前面为了断言 callout 已滚到文末）。
 await evaluate(ws, `document.querySelector('.cm-scroller').scrollTop = 0`);

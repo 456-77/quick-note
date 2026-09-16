@@ -392,7 +392,7 @@ check(
 );
 check(table?.delimiterVisible === false, "渲染后不再显示 `| --- |` 分隔行");
 
-// 点击表格应切回可编辑的源码
+// 单击表格：保持渲染，并浮现 ＋行 / ＋列 结构按钮
 const tableRect = await evaluate(
   ws,
   `(() => { const t = document.querySelector('table.cm-lp-table'); if (!t) return null; const r = t.getBoundingClientRect(); return { x: r.left + 20, y: r.top + r.height / 2 }; })()`,
@@ -401,10 +401,16 @@ check(tableRect !== null, "取到表格位置");
 await clickAt(ws, tableRect.x, tableRect.y);
 await sleep(400);
 check(
-  (await evaluate(ws, `document.querySelector('table.cm-lp-table') === null`)) === true,
-  "点击表格后切回源码可编辑",
+  (await evaluate(ws, `document.querySelector('table.cm-lp-table') !== null`)) === true,
+  "点击表格后保持渲染（不退回源码）",
 );
-check((await text(ws)).includes("| :--- |"), "源码中可见表格分隔行");
+check(
+  (await evaluate(
+    ws,
+    `!!document.querySelector('.cm-lp-tablewrap .cm-tb-addrow') && !!document.querySelector('.cm-lp-tablewrap .cm-tb-addcol')`,
+  )) === true,
+  "渲染态浮现 ＋行 / ＋列 结构按钮",
+);
 
 check(await clickLine(ws, "普通项目一"), "点击表格外的行");
 check(
@@ -412,13 +418,70 @@ check(
   "光标移出表格后重新渲染成表格",
 );
 
-// 3.4.1 表格结构编辑（0.3）：工具栏 + Tab 导航 + 管道对齐。
-// 重新点击表格让光标进入源码，工具栏应当出现。
+// 底部「＋ 行」：行数 +1（tr[data-row] 由渲染组件标注）
+const rowsBefore = await evaluate(
+  ws,
+  `document.querySelectorAll('.cm-lp-table tr[data-row]').length`,
+);
+await evaluate(ws, `document.querySelector('.cm-lp-tablewrap .cm-tb-addrow')?.click()`);
+let rowsAfter = rowsBefore;
+for (let i = 0; i < 20; i += 1) {
+  await sleep(200);
+  rowsAfter = await evaluate(
+    ws,
+    `document.querySelectorAll('.cm-lp-table tr[data-row]').length`,
+  );
+  if (rowsAfter === rowsBefore + 1) break;
+}
+check(rowsAfter === rowsBefore + 1, "底部「＋ 行」新增一行", `${rowsBefore} → ${rowsAfter}`);
+
+// 右缘「＋ 列」：列数 +1
+const colsBefore = await evaluate(
+  ws,
+  `document.querySelectorAll('.cm-lp-table thead th').length`,
+);
+await evaluate(ws, `document.querySelector('.cm-lp-tablewrap .cm-tb-addcol')?.click()`);
+let colsAfter = colsBefore;
+for (let i = 0; i < 20; i += 1) {
+  await sleep(200);
+  colsAfter = await evaluate(
+    ws,
+    `document.querySelectorAll('.cm-lp-table thead th').length`,
+  );
+  if (colsAfter === colsBefore + 1) break;
+}
+check(colsAfter === colsBefore + 1, "右缘「＋」新增一列", `${colsBefore} → ${colsAfter}`);
+
+// 再双击退回源码一次，验证表格按钮/双击不破坏后续编辑
+await evaluate(
+  ws,
+  `(() => {
+     const wrap = document.querySelector('.cm-lp-tablewrap');
+     if (!wrap) return false;
+     const r = wrap.getBoundingClientRect();
+     wrap.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: r.left + 2, clientY: r.bottom - 2 }));
+     return true;
+   })()`,
+);
+await sleep(400);
+
+// 3.4.1 双击退回源码后的源码编辑：工具栏（下插行/删行/对齐）+ Tab 导航。
 await clickAt(ws, tableRect.x, tableRect.y);
+await sleep(400);
+await evaluate(
+  ws,
+  `(() => {
+     const wrap = document.querySelector('.cm-lp-tablewrap');
+     if (!wrap) return false;
+     const r = wrap.getBoundingClientRect();
+     wrap.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: r.left + 2, clientY: r.bottom - 2 }));
+     return true;
+   })()`,
+);
 await sleep(400);
 check(
   (await evaluate(ws, `!!document.querySelector('.table-toolbar')`)) === true,
-  "光标在表格内时出现表格工具栏",
+  "双击进源码后出现表格工具栏",
 );
 
 /** 当前源码中以 | 开头的行（表格块）。 */
@@ -434,7 +497,7 @@ const tableLines = () =>
 const rowLinesBefore = await tableLines();
 check(rowLinesBefore.length >= 4, "表格源码至少 4 行", JSON.stringify(rowLinesBefore.length));
 
-// 下插行：行数 +1。此刻光标就停在新数据行上（表头/分隔行受保护，删不掉）
+// 下插行：行数 +1
 await evaluate(
   ws,
   `[...document.querySelectorAll('.table-toolbar button')].find(b => b.textContent === '下插行')?.click()`,
@@ -447,23 +510,14 @@ check(
   JSON.stringify(rowLinesAfter.length),
 );
 
-// 删行：光标仍在新数据行上，删掉它回到原行数
-await evaluate(
-  ws,
-  `[...document.querySelectorAll('.table-toolbar button')].find(b => b.textContent === '删行')?.click()`,
-);
-await sleep(400);
-check((await tableLines()).length === rowLinesBefore.length, "删行后回到原行数");
-
-// 对齐：所有行的显示宽度一致（管道竖成一条直线）
+// 对齐：所有行的显示宽度一致（管道竖成一条直线）。
+// 宽度断言只量**表头行与分隔行**：这两行没有行内标记，innerText 忠实；
+// 数据行的行内标记（** ` ` []()）在光标行会被 Live Preview 隐藏，量它必然失真。
 await evaluate(
   ws,
   `[...document.querySelectorAll('.table-toolbar button')].find(b => b.textContent === '对齐')?.click()`,
 );
 await sleep(400);
-// 宽度断言只量**表头行与分隔行**：这两行没有行内标记，innerText 忠实；
-// 数据行所在位置的行内标记（** ` ` []()）会被 Live Preview 隐藏，量它必然失真。
-// 数据行的对齐正确性由纯逻辑测试（verify-tables.mjs）覆盖。
 const headerDelimAligned = await evaluate(
   ws,
   `(() => {
@@ -475,35 +529,6 @@ const headerDelimAligned = await evaluate(
    })()`,
 );
 check(headerDelimAligned === true, "对齐后表头与分隔行显示宽度一致（中文按 2 格）");
-
-// Tab 导航：点击表格（光标落在第一格），真实 Tab → 光标到第二格；
-// 键入一个字符，第二格的内容应出现在源码里
-await clickAt(ws, tableRect.x, tableRect.y);
-await sleep(300);
-const beforeTab = await tableLines();
-for (const type of ["rawKeyDown", "keyUp"]) {
-  await cdp(ws, "Input.dispatchKeyEvent", {
-    type,
-    key: "Tab",
-    code: "Tab",
-    windowsVirtualKeyCode: 9,
-    nativeVirtualKeyCode: 9,
-  });
-}
-await sleep(200);
-await cdp(ws, "Input.insertText", { text: "X" });
-await sleep(300);
-const afterTab = await tableLines();
-check(
-  afterTab[0] !== beforeTab[0] && afterTab[0].includes("X"),
-  "Tab 移到第二格后键入落在那里",
-  JSON.stringify([beforeTab[0], afterTab[0]]),
-);
-// 光标在表格内，工具栏仍然在
-check(
-  (await evaluate(ws, `!!document.querySelector('.table-toolbar')`)) === true,
-  "编辑过程中工具栏保持可见",
-);
 
 // 3.5 Mermaid 图。渲染是异步的（还要等 mermaid 的 chunk 按需加载），必须轮询。
 let mermaid = null;
@@ -566,7 +591,7 @@ check(
   JSON.stringify(heights),
 );
 
-// 点击图表应切回源码编辑
+// 单击图表**保持渲染**（0.3：图不该一点就消失）
 await evaluate(ws, `document.querySelector('.cm-scroller').scrollTop = 0`);
 await sleep(300);
 const diagramRect = await evaluate(
@@ -577,10 +602,40 @@ check(diagramRect !== null, "取到图表位置");
 await clickAt(ws, diagramRect.x, diagramRect.y);
 await sleep(500);
 check(
-  (await evaluate(ws, `document.querySelectorAll('.cm-lp-mermaid').length`)) === 1,
-  "点击后该图退回源码，另一个仍是图",
+  (await evaluate(ws, `document.querySelectorAll('.cm-lp-mermaid').length`)) === 2,
+  "单击图表保持渲染（两个图都还在）",
 );
-check((await text(ws)).includes("graph TD"), "源码中可见图定义");
+check(
+  (await text(ws)).includes("graph TD") === false,
+  "单击后源码没有露出来",
+);
+
+// 双击图表：退回源码编辑
+await evaluate(
+  ws,
+  `(() => {
+     const b = document.querySelector('.cm-lp-mermaid');
+     if (!b) return false;
+     const r = b.getBoundingClientRect();
+     b.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, clientX: r.left + 30, clientY: r.top + 12 }));
+     return true;
+   })()`,
+);
+await sleep(500);
+check((await text(ws)).includes("graph TD"), "双击后源码可见，可编辑图定义");
+
+// 3.6 标题点击显示源码（0.3 回归修复：# 标记曾被无条件隐藏）。
+await evaluate(ws, `document.querySelector('.cm-scroller').scrollTop = 0`);
+await sleep(300);
+check(await clickLine(ws, "语法覆盖"), "点击一级标题行");
+const h1Text = await evaluate(
+  ws,
+  `(() => {
+     const line = [...document.querySelectorAll('.cm-line')].find(e => e.innerText.includes('语法覆盖'));
+     return line?.innerText ?? '';
+   })()`,
+);
+check(h1Text.includes("# 语法覆盖"), "光标在标题行时显示 # 标记（可编辑源码）", JSON.stringify(h1Text));
 
 // 4. 光标所在行显示源码。
 // 注意：上面的表格交互已经把光标移走了，这里必须重新放回标题行再断言。

@@ -207,6 +207,35 @@ try {
   // 还原 B（fixture 字节基线盯着它）
   writeFileSync(join(vault, NOTE_B), "");
 
+  // 侧栏收起（Obsidian 式）
+  check(
+    await evaluate(ws, `!!document.querySelector('.sidebar:not(.sidebar-right)')`),
+    "左栏（文件）可见",
+  );
+  const toggleCollapse = async (label, cls, want) => {
+    // 初始状态不确定（localStorage 残留），所以"点击 → 轮询"最多试三次：
+    // 第一次点击可能只是把状态从"已经是 want"翻走
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await evaluate(
+        ws,
+        `[...document.querySelectorAll('header .btn')].find(b => b.textContent.includes(${JSON.stringify(label)}))?.click()`,
+      );
+      for (let i = 0; i < 8; i += 1) {
+        await sleep(200);
+        const has = await evaluate(
+          ws,
+          `document.querySelector(".body").classList.contains(${JSON.stringify(cls)})`,
+        );
+        if (has === want) return true;
+      }
+    }
+    return false;
+  };
+  check(await toggleCollapse("文件", "left-collapsed", true), "点「« 文件」收起左栏");
+  check(await toggleCollapse("文件", "left-collapsed", false), "再点展开左栏");
+  check(await toggleCollapse("面板", "right-collapsed", true), "点「面板 »」收起右栏");
+  check(await toggleCollapse("面板", "right-collapsed", false), "再点展开右栏");
+
   // ---------------------------------------------------------------- 目录
   console.log("\n目录面板\n");
 
@@ -239,6 +268,20 @@ try {
   check(
     await evaluate(ws, `!!document.activeElement?.closest('.cm-editor')`),
     "点击目录条目后焦点进入编辑器（跳转完成）",
+  );
+
+  // 当前位置高亮：目录面板中恰有一个 is-active 条目
+  check(
+    await evaluate(
+      ws,
+      `(() => { const t = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent === '目录'); t?.click(); return true; })()`,
+    ),
+    "切回目录面板",
+  );
+  await sleep(300);
+  check(
+    await evaluate(ws, `document.querySelectorAll('.outline-item.is-active').length === 1`),
+    "当前标题在目录中高亮（恰好一个 is-active）",
   );
 
   check(

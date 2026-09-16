@@ -62,6 +62,8 @@ export interface CreateEditorStateOptions {
    * 选区移动不触发 onDocChanged，所以要单独的通道。
    */
   onCursorInTable?: (inside: boolean) => void;
+  /** 光标所在行变化时回调（0 基；目录面板高亮当前标题）。 */
+  onCursorLine?: (line: number) => void;
 }
 
 /**
@@ -83,7 +85,17 @@ export function createEditorState(
   doc: string,
   options: CreateEditorStateOptions,
 ): EditorState {
-  const { lineEnding, mode, onDocChanged, onSave, resources, attachment, dark, onCursorInTable } = options;
+  const {
+    lineEnding,
+    mode,
+    onDocChanged,
+    onSave,
+    resources,
+    attachment,
+    dark,
+    onCursorInTable,
+    onCursorLine,
+  } = options;
   return EditorState.create({
     doc,
     extensions: [
@@ -113,6 +125,9 @@ export function createEditorState(
         if (update.docChanged) onDocChanged();
         if (onCursorInTable && (update.docChanged || update.selectionSet)) {
           onCursorInTable(isCursorInTable(update.state));
+        }
+        if (onCursorLine && (update.docChanged || update.selectionSet)) {
+          onCursorLine(update.state.doc.lineAt(update.state.selection.main.head).number - 1);
         }
       }),
       onSave ? modSKeymap(onSave) : [],
