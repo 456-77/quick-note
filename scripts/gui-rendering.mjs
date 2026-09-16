@@ -283,10 +283,48 @@ check(
   JSON.stringify(extras.labelTexts),
 );
 check(extras.rawMarkerVisible === false, "源码里的 `[!note]` 已被图标标签替换");
+
+// 标签那一节在 callout 之后。CM6 只渲染视口内的行——左右分栏后编辑器变窄、
+// 文档因换行变高，滚到文末时标签行已经不在视口里（曾经因此收集到空数组）。
+// 所以这里单独滚到标签行再收集。
+// 行没渲染时拿不到它的位置（循环依赖），所以从文末向上步进搜索，直到标签行进入视口。
+let tagLineVisible = false;
+// 先跳到文档最底部（标签节就在文末）
+await evaluate(
+  ws,
+  `(() => {
+     const scroller = document.querySelector('.cm-scroller');
+     if (scroller) scroller.scrollTop = scroller.scrollHeight;
+     return true;
+   })()`,
+);
+await sleep(400);
+for (let attempt = 0; attempt < 12 && !tagLineVisible; attempt += 1) {
+  tagLineVisible = await evaluate(
+    ws,
+    `[...document.querySelectorAll('.cm-line')].some(e => e.innerText.includes('#嵌套/标签'))`,
+  );
+  if (tagLineVisible) break;
+  await evaluate(
+    ws,
+    `(() => {
+       const scroller = document.querySelector('.cm-scroller');
+       const viewport = scroller.clientHeight || 600;
+       scroller.scrollTop = Math.max(scroller.scrollTop - viewport * 0.7, 0);
+       return scroller.scrollTop;
+     })()`,
+  );
+  await sleep(350);
+}
+check(tagLineVisible, "标签行进入了渲染视口");
+const tagTexts = await evaluate(
+  ws,
+  `[...document.querySelectorAll('.cm-lp-tag')].map(e => e.textContent)`,
+);
 check(
-  JSON.stringify(extras.tagTexts) === JSON.stringify(["#标签", "#嵌套/标签", "#a1"]),
+  JSON.stringify(tagTexts) === JSON.stringify(["#标签", "#嵌套/标签", "#a1"]),
   "三个标签都渲染成标签样式",
-  JSON.stringify(extras.tagTexts),
+  JSON.stringify(tagTexts),
 );
 
 // ---------------------------------------------------------------- 主题

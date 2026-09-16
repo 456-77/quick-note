@@ -201,6 +201,27 @@ try {
 
   check(await evaluate(ws, `!!document.querySelector('.cal-grid')`), "点了「日记」页签后日历渲染出来");
 
+  // 布局（Obsidian 式左右分栏）：文件树常驻左栏，日记/目录在右侧面板
+  const layout = await evaluate(
+    ws,
+    `(() => {
+       const right = document.querySelector('.sidebar-right');
+       const left = document.querySelector('.sidebar:not(.sidebar-right)');
+       return {
+         right: !!right,
+         rightTabs: right ? [...right.querySelectorAll('.sidebar-tab')].map(b => b.textContent) : [],
+         calInRight: !!right?.querySelector('.cal-grid'),
+         leftHasTree: !!left?.querySelector('.tree-file'),
+         leftHasTabbar: !!left?.querySelector('.sidebar-tabs'),
+       };
+     })()`,
+  );
+  check(layout.right === true, "右侧面板存在");
+  check(layout.rightTabs.join(",") === "日记,目录", "右侧面板只有 日记/目录 两个页签", JSON.stringify(layout.rightTabs));
+  check(layout.calInRight === true, "日历渲染在右侧面板内");
+  check(layout.leftHasTree === true, "文件树常驻左栏");
+  check(layout.leftHasTabbar === false, "左栏没有页签（文件就是左栏本体）");
+
   const shape = await evaluate(
     ws,
     `({
@@ -457,19 +478,91 @@ try {
     await evaluate(ws, `document.querySelector('.cal-pending').innerText`),
   );
 
-  // 删除：必须留墓碑
+  // 修改：行尾 ⋯ 菜单 → 「修改」→ 行内输入 → 回车（对齐插件的 updateTodoText）
   await evaluate(
     ws,
     `(() => {
        const row = [...document.querySelectorAll('.cal-todo')]
          .find(r => r.textContent.includes('验证添加的待办'));
-       row.querySelector('.cal-todo-del').click();
+       row.querySelector('.cal-todo-more').click();
        return true;
      })()`,
   );
+  await sleep(250);
+  check(
+    (await evaluate(
+      ws,
+      `[...document.querySelectorAll('.context-menu button')].map(b => b.textContent).join(',')`,
+    )) === "修改,复制,删除…",
+    "待办 ⋯ 菜单含 修改/复制/删除 三项",
+    await evaluate(ws, `[...document.querySelectorAll('.context-menu button')].map(b => b.textContent).join(',')`),
+  );
+  await evaluate(
+    ws,
+    `[...document.querySelectorAll('.context-menu button')].find(b => b.textContent === '修改')?.click()`,
+  );
+  await sleep(250);
+  check(
+    await evaluate(ws, `!!document.querySelector('.cal-todo-edit')`),
+    "「修改」让该行进入行内编辑",
+  );
+  await evaluate(
+    ws,
+    `(() => {
+       const el = document.querySelector('.cal-todo-edit');
+       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+       setter.call(el, '验证添加的待办（已改）');
+       el.dispatchEvent(new Event('input', { bubbles: true }));
+       return true;
+     })()`,
+  );
+  await pressEnter(ws, ".cal-todo-edit");
+  check(
+    await waitFor("修改后的文字落盘", async () =>
+      (readConfig().todos[TODAY] ?? []).some((item) => item.text === "验证添加的待办（已改）"),
+    ),
+    "「修改」把新文字写回库内配置",
+  );
+
+  // 复制：菜单项存在且点击不报错（剪贴板内容无法在 CDP 里可靠读取）
+  await evaluate(
+    ws,
+    `(() => {
+       const row = [...document.querySelectorAll('.cal-todo')]
+         .find(r => r.textContent.includes('验证添加的待办（已改）'));
+       row.querySelector('.cal-todo-more').click();
+       return true;
+     })()`,
+  );
+  await sleep(250);
+  await evaluate(
+    ws,
+    `[...document.querySelectorAll('.context-menu button')].find(b => b.textContent === '复制')?.click()`,
+  );
+  await sleep(200);
+  check(
+    !(await evaluate(ws, `!!document.querySelector('.banner-error')`)),
+    "「复制」执行无报错",
+  );
+
+  // 删除：走 ⋯ 菜单 → 删除…（必须留墓碑）
+  await evaluate(
+    ws,
+    `(() => {
+       const row = [...document.querySelectorAll('.cal-todo')]
+         .find(r => r.textContent.includes('验证添加的待办（已改）'));
+       row.querySelector('.cal-todo-more').click();
+       return true;
+     })()`,
+  );
+  await sleep(250);
+  await evaluate(
+    ws,
+    `[...document.querySelectorAll('.context-menu button')].find(b => b.textContent === '删除…')?.click()`,
+  );
   const tombstoned = await waitFor("删除落盘为墓碑", async () =>
     (readConfig().todos[TODAY] ?? []).some(
-      (item) => item.text === "验证添加的待办" && item.deleted === true,
+      (item) => item.text === "验证添加的待办（已改）" && item.deleted === true,
     ),
   );
   check(tombstoned, "删除打墓碑而不是从数组里移除");

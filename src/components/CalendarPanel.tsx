@@ -60,6 +60,16 @@ export default function CalendarPanel({
   /** 正在修改文字的待办 id；null 表示没有行处于编辑态。 */
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  /**
+   * 待办的「⋯」操作菜单（修改 / 复制 / 删除）。
+   *
+   * 与插件一致：按钮平时隐藏，行悬停时才显形；点开是三个操作的菜单，
+   * 而不是把三个按钮常驻在行尾——待办文字本来就容易换行，行尾再挤三个按钮
+   * 会把文字挤没。
+   */
+  const [todoMenu, setTodoMenu] = useState<{ index: number; id: string; x: number; y: number } | null>(
+    null,
+  );
 
   const rows = useMemo(() => monthGrid(viewMonth, dateFormat, today), [viewMonth, dateFormat, today]);
   const monthCount = useMemo(
@@ -376,35 +386,68 @@ export default function CalendarPanel({
                 </span>
                 <button
                   type="button"
-                  className="cal-todo-act"
-                  onClick={() => void copyTodo(item.text)}
-                  title="复制文字"
-                  aria-label="复制这条待办"
+                  className="cal-todo-more"
+                  aria-label="待办操作"
+                  title="修改 / 复制 / 删除"
+                  onClick={(event) => {
+                    // 与当天日记行的 ⋯ 同一套交互：按钮自身右下角定位
+                    event.stopPropagation();
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setTodoMenu({ index, id: item.id, x: rect.right, y: rect.bottom });
+                  }}
                 >
-                  ⧉
-                </button>
-                <button
-                  type="button"
-                  className="cal-todo-act"
-                  onClick={() => beginEditTodo(item.id, item.text)}
-                  title="修改文字"
-                  aria-label="修改这条待办"
-                >
-                  ✎
-                </button>
-                <button
-                  type="button"
-                  className="cal-todo-del"
-                  onClick={() => controller.deleteTodo(selectedDate, index)}
-                  title="删除这条待办"
-                  aria-label="删除这条待办"
-                >
-                  ✕
+                  ⋯
                 </button>
               </>
             )}
           </div>
         ))}
+
+        {todoMenu && (
+          <>
+            {/* 点空白处关闭菜单 */}
+            <div
+              className="menu-backdrop"
+              onClick={() => setTodoMenu(null)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                setTodoMenu(null);
+              }}
+            />
+            <div className="context-menu" style={{ left: todoMenu.x, top: todoMenu.y }}>
+              <button
+                type="button"
+                onClick={() => {
+                  const row = todos.find(({ item }) => item.id === todoMenu.id);
+                  if (row) beginEditTodo(row.item.id, row.item.text);
+                  setTodoMenu(null);
+                }}
+              >
+                修改
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const row = todos.find(({ item }) => item.id === todoMenu.id);
+                  if (row) void copyTodo(row.item.text);
+                  setTodoMenu(null);
+                }}
+              >
+                复制
+              </button>
+              <button
+                type="button"
+                className="danger"
+                onClick={() => {
+                  controller.deleteTodo(selectedDate, todoMenu.index);
+                  setTodoMenu(null);
+                }}
+              >
+                删除…
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
       <div className="cal-todo-add">

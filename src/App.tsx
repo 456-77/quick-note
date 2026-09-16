@@ -84,10 +84,15 @@ export default function App() {
   );
   /** 待确认的删除。删笔记不可逆，先问一次。 */
   const [pendingDelete, setPendingDelete] = useState<{ path: string; isDir: boolean } | null>(null);
-  /** 侧栏当前页签：文件树 / 日历 / 目录。 */
-  const [sidebar, setSidebar] = useState<"files" | "daily" | "outline">(() => {
+  /**
+   * 右侧面板当前页签：日记 / 目录。
+   *
+   * 布局与 Obsidian 对齐：文件树常驻左侧，日记与目录这类"围绕当前笔记"的面板
+   * 放右侧。文件树没有页签——它就是左侧本体。
+   */
+  const [rightPanel, setRightPanel] = useState<"daily" | "outline">(() => {
     const stored = localStorage.getItem(SIDEBAR_KEY);
-    return stored === "daily" || stored === "outline" ? stored : "files";
+    return stored === "outline" ? "outline" : "daily";
   });
   /** 光标是否在表格块内（表格工具栏的显示依据）。 */
   const [inTable, setInTable] = useState(false);
@@ -1004,8 +1009,8 @@ export default function App() {
     [current],
   );
 
-  const changeSidebar = useCallback((next: "files" | "daily" | "outline") => {
-    setSidebar(next);
+  const changeRightPanel = useCallback((next: "daily" | "outline") => {
+    setRightPanel(next);
     localStorage.setItem(SIDEBAR_KEY, next);
   }, []);
 
@@ -1474,39 +1479,7 @@ export default function App() {
 
       <div className="body">
         <aside className="sidebar">
-          <div className="sidebar-tabs" role="tablist" aria-label="侧栏">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={sidebar === "files"}
-              className={`sidebar-tab${sidebar === "files" ? " is-on" : ""}`}
-              onClick={() => changeSidebar("files")}
-            >
-              文件
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={sidebar === "daily"}
-              className={`sidebar-tab${sidebar === "daily" ? " is-on" : ""}`}
-              onClick={() => changeSidebar("daily")}
-            >
-              日记
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={sidebar === "outline"}
-              className={`sidebar-tab${sidebar === "outline" ? " is-on" : ""}`}
-              onClick={() => changeSidebar("outline")}
-            >
-              目录
-            </button>
-          </div>
-
-          {sidebar === "files" ? (
-            <>
-              <div className="sidebar-head">
+          <div className="sidebar-head">
                 <span className="sidebar-title">文件</span>
                 <span className="spacer" />
                 <button
@@ -1559,29 +1532,12 @@ export default function App() {
                   </div>
                 </div>
               )}
-              <FileTree
-                entries={entries}
-                activePath={current?.path ?? null}
-                onOpen={(p) => void openNote(p)}
-                onContext={openContextMenu}
-              />
-            </>
-          ) : sidebar === "daily" ? (
-            <CalendarPanel
-              controller={daily}
-              onOpen={(p) => void openNote(p)}
-              onCreateDaily={(dateStr, name) => void openDaily(dateStr, name)}
-              onOpenWeekly={(weekKey, mondayKey) => void openWeekly(weekKey, mondayKey)}
-              onContext={openContextMenu}
-            />
-          ) : (
-            <OutlinePanel
-              getView={() => viewRef.current}
-              revision={revision}
-              activeKey={activeTab}
-              onJump={jumpToLine}
-            />
-          )}
+          <FileTree
+            entries={entries}
+            activePath={current?.path ?? null}
+            onOpen={(p) => void openNote(p)}
+            onContext={openContextMenu}
+          />
         </aside>
         <main className="editor-pane">
           {openTabs.length > 0 && (
@@ -1657,6 +1613,44 @@ export default function App() {
             </div>
           )}
         </main>
+        <aside className="sidebar sidebar-right">
+          <div className="sidebar-tabs" role="tablist" aria-label="辅助面板">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanel === "daily"}
+              className={`sidebar-tab${rightPanel === "daily" ? " is-on" : ""}`}
+              onClick={() => changeRightPanel("daily")}
+            >
+              日记
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanel === "outline"}
+              className={`sidebar-tab${rightPanel === "outline" ? " is-on" : ""}`}
+              onClick={() => changeRightPanel("outline")}
+            >
+              目录
+            </button>
+          </div>
+          {rightPanel === "daily" ? (
+            <CalendarPanel
+              controller={daily}
+              onOpen={(p) => void openNote(p)}
+              onCreateDaily={(dateStr, name) => void openDaily(dateStr, name)}
+              onOpenWeekly={(weekKey, mondayKey) => void openWeekly(weekKey, mondayKey)}
+              onContext={openContextMenu}
+            />
+          ) : (
+            <OutlinePanel
+              getView={() => viewRef.current}
+              revision={revision}
+              activeKey={activeTab}
+              onJump={jumpToLine}
+            />
+          )}
+        </aside>
       </div>
 
       <footer className="statusbar">

@@ -764,10 +764,7 @@ try {
     "云端内容逐字节写到本地",
     JSON.stringify(fileText(remotePath)),
   );
-  // 文件树在「文件」页签里。上一个脚本（gui-daily）把侧栏切到了「日记」并写进了
-  // localStorage，所以这里要显式切回来——否则断言的是一个根本没渲染的面板。
-  await clickByText(ws, ".sidebar-tab", "文件");
-  await sleep(300);
+  // 文件树常驻左栏（0.3 起左右分栏），不依赖任何页签状态。
   check(
     await waitFor(
       "文件树里能看到它",

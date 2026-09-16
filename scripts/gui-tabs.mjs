@@ -138,17 +138,8 @@ try {
   // ---------------------------------------------------------------- 标签页
   console.log("多标签页\n");
 
-  // 脚本跑在 verify-gui 序列的后段：侧栏可能停在别的页签，前面步骤也可能开着标签。
-  // 断言全部写成相对的：先切回「文件」页签，记下打开前的标签数。
-  await evaluate(
-    ws,
-    `(() => {
-       const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent === '文件');
-       tab?.click();
-       return true;
-     })()`,
-  );
-  await sleep(400);
+  // 脚本跑在 verify-gui 序列的后段：前面步骤可能开着标签，标签数断言全部写成相对的。
+  // 文件树常驻左栏，无需切换任何页签。
   const tabsBefore = await tabCount(ws);
   const existed = async (path) =>
     evaluate(
@@ -251,15 +242,8 @@ try {
   );
 
   check(
-    await evaluate(
-      ws,
-      `(() => {
-         const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent === '文件');
-         tab?.click();
-         return true;
-       })()`,
-    ),
-    "切回文件页签",
+    await evaluate(ws, `!!document.querySelector('.tree-file')`),
+    "文件树仍在左栏可见（文件列表不依赖页签）",
   );
 } catch (err) {
   failures += 1;

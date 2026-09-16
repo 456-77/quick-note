@@ -354,6 +354,12 @@ body {
   overflow: auto;
 }
 
+/* 右侧面板（日记 / 目录）：镜像左侧的描边方向 */
+.sidebar-right {
+  border-right: 0;
+  border-left: 1px solid var(--border);
+}
+
 .sidebar-head {
   display: flex;
   align-items: center;
@@ -1565,28 +1571,33 @@ body {
 
 /* ---------- 待办行的复制 / 修改按钮 ---------- */
 
-/* 与删除按钮同一尺寸体系：小、弱化、悬停才显形 */
-.cal-todo-act {
+/* 待办的「⋯」操作钮：与当天日记行的 ⋯ 同一套——平时淡出，行悬停/聚焦才显形。
+   三个常驻按钮会挤占本就狭窄的行宽，菜单化之后文字有完整空间 */
+.cal-todo-more {
   flex: none;
-  width: 18px;
+  width: 20px;
   height: 18px;
   padding: 0;
   border: 0;
+  border-radius: 4px;
   background: transparent;
   color: var(--text-dim);
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1;
+  letter-spacing: 1px;
   cursor: pointer;
   opacity: 0;
 }
 
-.cal-todo:hover .cal-todo-act,
-.cal-todo-act:focus-visible {
+.cal-todo:hover .cal-todo-more,
+.cal-todo-more:focus-visible,
+.cal-todo:focus-within .cal-todo-more {
   opacity: 1;
 }
 
-.cal-todo-act:hover {
+.cal-todo-more:hover {
   color: var(--text);
+  background: rgba(128, 128, 128, 0.18);
 }
 
 .cal-todo-edit {
