@@ -50,6 +50,14 @@ quick-daily-note 插件共用同一个仓库并同步。
 - 光标所在行显示源码；Live Preview / 源码 双模式切换（用 Compartment，保留撤销历史）
 - 围栏代码块带语法高亮，语言包按需加载
 
+**多标签页与目录（0.3）**
+
+- **多标签页**：每个标签独立的光标、滚动位置与撤销历史（各存一份 EditorState），
+  未保存内容切走再切回不丢；关闭带未保存改动的标签会**先落盘**；删除/重命名已打开的
+  笔记时标签联动（改名换键、删除切到相邻标签）
+- **目录面板**：侧栏「目录」页签列出当前笔记的标题层级（ATX + setext，跳过围栏代码块），
+  点击跳转到对应行
+
 **M2 日记与日历（已完成）** — 详见 [docs/M2-实现说明.md](docs/M2-实现说明.md)
 
 - **按日期建日记**：标题规则「日期 + 名字」（`2026-09-15 项目周报`），日期格式与存放目录
@@ -153,7 +161,8 @@ npm run tauri build    # 打包
    统计口径、待办墓碑与顺延、**库内配置的补丁式写回**
 10. 云同步的纯逻辑测试（124 项：冲突决策、状态兜底、快照合并、哈希口径，以及附件的白名单、stamp 旁路缓存与每轮下载预算）：**冲突决策的每个分支**、同步状态的深拷贝与坏值兜底、
     待办快照的稳定性与条目级合并、哈希口径与 Node `createHash` 互校、范围判定与 URL 归一化
-11. 比对基线，确认整个过程没有改动任何文件
+11. 表格与大纲的纯逻辑测试：管道对齐（CJK 显示宽度）、行列增删不丢内容、单元格区间、标题提取（围栏跳过、setext 区分）
+12. 比对基线，确认整个过程没有改动任何文件
 
 `verify-gui.sh` 会先以独立 identifier 构建一个**测试变体**（WebView2 使用独立数据目录），
 再启动应用，通过远程调试端口读取**渲染后的 DOM**，并用真实鼠标与键盘完成：
@@ -227,6 +236,10 @@ src/                     前端（React + TypeScript）
   lib/sync.ts            同步的纯逻辑：状态形状、范围判定、**冲突决策**（纯函数，可单测）
   lib/syncEngine.ts      一轮同步的编排：扫描 → 拉取应用 → 推送、鉴权与续期
   lib/useSync.ts         同步在界面侧的状态、配置与生命周期
+  lib/table.ts           GFM 表格的解析与结构变换（管道对齐/行列增删，纯函数）
+  lib/tableEdit.ts       表格编辑命令：Tab 导航、工具栏操作落到编辑器
+  lib/outline.ts         大纲提取（ATX/setext，跳过围栏，纯函数）
+  components/OutlinePanel.tsx   目录面板
   components/FileTree.tsx
   components/CalendarPanel.tsx   日历、统计、待办
 src-tauri/               Rust 侧
@@ -243,9 +256,11 @@ scripts/
   verify-cm6-roundtrip.mjs / verify-livepreview.mjs / verify-inline-syntax.mjs / verify-attachments.mjs
   verify-daily.mjs       日记/日历纯逻辑（146 项断言）
   verify-sync.mjs        同步纯逻辑（124 项断言）
+  verify-tables.mjs      表格结构编辑与大纲的纯逻辑
   gui-smoke.mjs / gui-edit-save.mjs / gui-livepreview.mjs
   gui-external-change.mjs / gui-paste.mjs / gui-file-manage.mjs / gui-rendering.mjs
   gui-daily.mjs          日历面板、当天日记、日记/周记创建、待办与顺延、配置写回
+  gui-tabs.mjs           多标签页与目录面板
   gui-sync.mjs           云同步端到端（自带桩后端，跑完即关）
   make-test-vault.sh     生成覆盖各类边界的测试仓库
   measure-rss.ps1        内存测量（三个口径）

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Moment } from "moment";
 import { EditorState } from "@codemirror/state";
-import type { EditorView } from "@codemirror/view";
+import { EditorView } from "@codemirror/view";
 import CalendarPanel from "./components/CalendarPanel";
 import FileTree from "./components/FileTree";
+import OutlinePanel from "./components/OutlinePanel";
 import { allowAssetDir, createFolder, createNote, deleteEntry, listEntries, onVaultChanged, pickVault, readNote, readNoteOptional, renameEntry, startupVault, watchVault, writeNote } from "./lib/api";
 import type { EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
@@ -26,6 +27,16 @@ import {
   weeklyNotePath,
   weeklyTitle,
 } from "./lib/daily";
+import {
+  deleteColumnAtCursor,
+  deleteRowAtCursor,
+  formatTableAtCursor,
+  insertColumnLeft,
+  insertColumnRight,
+  insertRowAbove,
+  insertRowBelow,
+  isCursorInTable,
+} from "./lib/tableEdit";
 import { useDaily } from "./lib/useDaily";
 import { useSync, type SyncController } from "./lib/useSync";
 import "./styles.css";
@@ -40,7 +51,14 @@ export default function App() {
   const [vault, setVault] = useState<string | null>(null);
   /** 仓库条目（含目录与非 md 文件）。一份数据供文件树、wiki 索引、计数共用。 */
   const [entries, setEntries] = useState<EntryMeta[]>([]);
-  const [current, setCurrent] = useState<NoteContent | null>(null);
+  /**
+   * 打开的标签页（顺序即显示顺序）。
+   *
+   * 每个标签的**未保存内容与撤销历史**存在它的 EditorState 里（stateStore），
+   * meta（路径/哈希/换行符等）存在这里；`current` 是激活标签的 meta。
+   */
+  const [openTabs, setOpenTabs] = useState<NoteContent[]>([]);
+  const [activeTab, setActiveTab] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
   const [revision, setRevision] = useState(0);
   const [status, setStatus] = useState("");
@@ -66,9 +84,18 @@ export default function App() {
   );
   /** 待确认的删除。删笔记不可逆，先问一次。 */
   const [pendingDelete, setPendingDelete] = useState<{ path: string; isDir: boolean } | null>(null);
-  /** 侧栏当前页签：文件树 / 日历。 */
-  const [sidebar, setSidebar] = useState<"files" | "daily">(() =>
-    localStorage.getItem(SIDEBAR_KEY) === "daily" ? "daily" : "files",
+  /** 侧栏当前页签：文件树 / 日历 / 目录。 */
+  const [sidebar, setSidebar] = useState<"files" | "daily" | "outline">(() => {
+    const stored = localStorage.getItem(SIDEBAR_KEY);
+    return stored === "daily" || stored === "outline" ? stored : "files";
+  });
+  /** 光标是否在表格块内（表格工具栏的显示依据）。 */
+  const [inTable, setInTable] = useState(false);
+
+  /** 激活标签的 meta。其余标签的未保存内容在各自的 EditorState 里。 */
+  const current = useMemo(
+    () => openTabs.find((tab) => tab.path === activeTab) ?? null,
+    [openTabs, activeTab],
   );
 
   const applySettings = useCallback((patch: Partial<Settings>) => {
@@ -202,6 +229,21 @@ export default function App() {
   const dirtyRef = useRef(false);
   const changeHandlerRef = useRef<(paths: string[]) => void>(() => {});
   const refreshTimer = useRef<number | null>(null);
+
+  /**
+   * 每个标签一份 EditorState：未保存内容、光标、撤销历史都在里面。
+   * 切换标签 = view.setState(存量状态)，这是多标签下"离开再回来内容还在"的全部机制。
+   * 滚动位置 State 不携带，单独存。
+   */
+  const stateStore = useRef(new Map<string, EditorState>());
+  const scrollStore = useRef(new Map<string, number>());
+  /** 后台标签的文件在外部被改过：等它再次激活时与磁盘对账（见 openNote 的 stale 分支）。 */
+  const staleTabs = useRef(new Set<string>());
+  /** 有未保存内容的标签。激活中的那份记在 dirty state；后台的记在这里。 */
+  const dirtyTabs = useRef(new Set<string>());
+  const activeTabRef = useRef<string | null>(null);
+  const openTabsRef = useRef<NoteContent[]>([]);
+  const modeRef = useRef(mode);
   /**
    * 编辑器状态里携带的资源上下文。
    *
@@ -220,10 +262,24 @@ export default function App() {
   }, [current]);
 
   useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  useEffect(() => {
+    openTabsRef.current = openTabs;
+  }, [openTabs]);
+
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  useEffect(() => {
     dirtyRef.current = dirty;
   }, [dirty]);
 
   const handleDocChanged = useCallback(() => {
+    const path = currentRef.current?.path;
+    if (path) dirtyTabs.current.add(path);
     setDirty(true);
     setRevision((r) => r + 1);
   }, []);
@@ -296,30 +352,131 @@ export default function App() {
     watchVault(dir).catch((e) => setError(`启动文件监听失败：${e}`));
   }, []);
 
-  /** 用磁盘上的内容替换编辑器内容，尽量保住光标位置。 */
+  /** 用磁盘上的内容替换**激活标签**，尽量保住光标位置。 */
   const adoptFromDisk = useCallback(
     (note: NoteContent) => {
       const view = viewRef.current;
       const anchor = view ? view.state.selection.main.anchor : 0;
       // 嵌入内容里的相对路径要相对"当前笔记"解析，所以先更新上下文
       resourcesRef.current.notePath = note.path;
-      view?.setState(
-        createEditorState(note.content, {
-          lineEnding: note.lineEnding,
-          mode,
-          onDocChanged: handleDocChanged,
-          onSave: () => void saveRef.current(),
-          resources: resourcesRef.current,
-          attachment: attachmentOptions,
-          dark: resolveTheme(getSettings().theme) === "dark",
-        }),
-      );
+      const newState = createEditorState(note.content, {
+        lineEnding: note.lineEnding,
+        mode,
+        onDocChanged: handleDocChanged,
+        onSave: () => void saveRef.current(),
+        resources: resourcesRef.current,
+        attachment: attachmentOptions,
+        dark: resolveTheme(getSettings().theme) === "dark",
+        onCursorInTable: setInTable,
+      });
+      view?.setState(newState);
       view?.dispatch({ selection: { anchor: Math.min(anchor, view.state.doc.length) } });
-      setCurrent(note);
+      stateStore.current.set(note.path, newState);
+      staleTabs.current.delete(note.path);
+      dirtyTabs.current.delete(note.path);
+      setOpenTabs((prev) =>
+        prev.some((tab) => tab.path === note.path)
+          ? prev.map((tab) => (tab.path === note.path ? note : tab))
+          : [...prev, note],
+      );
+      setActiveTab(note.path);
       setDirty(false);
       setConflict(null);
     },
-    [mode, vault, handleDocChanged],
+    [mode, handleDocChanged],
+  );
+
+  /**
+   * 激活一个已打开的标签：换上它存量的 EditorState（未保存内容/光标/撤销历史都在），
+   * 恢复滚动位置，再把模式、主题、嵌入路径、装饰对齐到这个标签。
+   */
+  const activateTab = useCallback(
+    (path: string) => {
+      const view = viewRef.current;
+      const stored = stateStore.current.get(path);
+      if (!view || !stored) return;
+      const prev = currentRef.current?.path;
+      if (prev && prev !== path) {
+        stateStore.current.set(prev, view.state);
+        scrollStore.current.set(prev, view.scrollDOM.scrollTop);
+        if (dirtyRef.current) dirtyTabs.current.add(prev);
+      }
+      view.setState(stored);
+      view.scrollDOM.scrollTop = scrollStore.current.get(path) ?? 0;
+      resourcesRef.current.notePath = path;
+      // 存量状态的 Compartment 是它创建那一刻的模式/主题，切回来要对齐当前选择
+      applyMode(view, modeRef.current);
+      applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
+      requestDecorationRefresh(view);
+      setInTable(isCursorInTable(view.state));
+      setActiveTab(path);
+      setDirty(dirtyTabs.current.has(path));
+      setConflict(null);
+    },
+    [],
+  );
+
+  /** 表格工具栏按钮统一入口。命令内部找不到表格会返回 false，静默即可。 */
+  const runTableCmd = useCallback((run: (view: EditorView) => boolean) => {
+    const view = viewRef.current;
+    if (view) run(view);
+  }, []);
+
+  /** 目录跳转：定位到标题行行首并滚动到视口顶部。 */
+  const jumpToLine = useCallback((line: number) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const target = view.state.doc.line(Math.min(Math.max(line + 1, 1), view.state.doc.lines));
+    view.dispatch({
+      selection: { anchor: target.from },
+      effects: EditorView.scrollIntoView(target.from, { y: "start" }),
+    });
+    view.focus();
+  }, []);
+
+  /** 关闭标签。有未保存内容先落盘（后台标签直接用它存量的状态写，不用先激活）。 */
+  const closeTab = useCallback(
+    async (path: string) => {
+      if (dirtyTabs.current.has(path)) {
+        const state = stateStore.current.get(path);
+        const meta =
+          path === activeTabRef.current
+            ? currentRef.current
+            : openTabsRef.current.find((tab) => tab.path === path);
+        if (state && meta && vault) {
+          try {
+            await writeNote(vault, path, state.sliceDoc(), meta.hasBom);
+          } catch (e) {
+            setError(`关闭前保存失败：${e}`);
+            return; // 保存失败就不关，免得丢内容
+          }
+        }
+      }
+      dirtyTabs.current.delete(path);
+      staleTabs.current.delete(path);
+      stateStore.current.delete(path);
+      scrollStore.current.delete(path);
+      const previous = openTabsRef.current;
+      const index = previous.findIndex((tab) => tab.path === path);
+      const next = previous.filter((tab) => tab.path !== path);
+      setOpenTabs(next);
+      if (activeTabRef.current === path) {
+        const neighbor = next[Math.min(Math.max(index, 0), next.length - 1)]?.path ?? null;
+        if (neighbor) {
+          activateTab(neighbor);
+        } else {
+          setActiveTab(null);
+          setDirty(false);
+          setInTable(false);
+          resourcesRef.current.notePath = null;
+          viewRef.current?.setState(EditorState.create({}));
+        }
+      } else {
+        // 关的是后台标签，激活者不变；但 dirty 标记可能在脏集合里，同步一次显示
+        setDirty(dirtyTabs.current.has(activeTabRef.current ?? ""));
+      }
+    },
+    [vault, activateTab],
   );
 
   const saveNow = useCallback(async () => {
@@ -327,7 +484,12 @@ export default function App() {
     if (!view || !vault || !current) return;
     try {
       const result = await writeNote(vault, current.path, view.state.sliceDoc(), current.hasBom);
-      setCurrent((prev) => (prev ? { ...prev, sha256: result.sha256, size: result.bytes } : prev));
+      setOpenTabs((prev) =>
+        prev.map((tab) =>
+          tab.path === current.path ? { ...tab, sha256: result.sha256, size: result.bytes } : tab,
+        ),
+      );
+      dirtyTabs.current.delete(current.path);
       setDirty(false);
       if (conflict) {
         // 保存即意味着用我的版本覆盖磁盘上的外部改动。
@@ -359,6 +521,13 @@ export default function App() {
 
       // 同步引擎按同一批路径排队推送（自己写入产生的回声靠内容哈希跳过）。
       syncRef.current?.handleVaultChange(paths);
+
+      // 后台标签：只标记"文件被外部改过"，等它再次激活时与磁盘对账（openNote 的 stale 分支）
+      for (const tab of openTabsRef.current) {
+        if (tab.path !== activeTabRef.current && paths.includes(tab.path)) {
+          staleTabs.current.add(tab.path);
+        }
+      }
 
       const open = currentRef.current;
       if (!open || !paths.includes(open.path)) return;
@@ -447,13 +616,19 @@ export default function App() {
     if (!picked) return;
     localStorage.setItem(VAULT_KEY, picked);
     setVault(picked);
-    // 换仓库必须把编辑器一起清掉：只 setCurrent(null) 的话，CodeMirror 的状态还挂着
-    // 上一篇笔记——旧内容继续显示，下一次输入还会试图写回旧仓库的路径
-    setCurrent(null);
+    // 换仓库必须把所有标签与编辑器一起清掉：CodeMirror 的状态还挂着上一篇的话，
+    // 旧内容继续显示，下一次输入还会试图写回旧仓库的路径
+    setOpenTabs([]);
+    setActiveTab(null);
+    stateStore.current.clear();
+    scrollStore.current.clear();
+    staleTabs.current.clear();
+    dirtyTabs.current.clear();
     setDirty(false);
     setRoundTrip(null);
     setConflict(null);
     setStatus("");
+    setInTable(false);
     resourcesRef.current.notePath = null;
     viewRef.current?.setState(EditorState.create({}));
     activateVault(picked);
@@ -467,34 +642,76 @@ export default function App() {
   const openNote = useCallback(
     async (path: string) => {
       if (!vault) return;
-      if (dirty) await saveNow();
+      // 已是这个标签且没有外部改动：什么都不做（重置会丢光标位置）
+      if (path === activeTabRef.current && !staleTabs.current.has(path)) return;
+      if (dirtyRef.current) await saveNow();
+      // 存量状态且文件没被外部改过：直接换上去，未保存内容与撤销历史都在
+      if (stateStore.current.has(path) && !staleTabs.current.has(path)) {
+        activateTab(path);
+        setRoundTrip(null);
+        return;
+      }
       try {
         const note = await readNote(vault, path);
         // 嵌入内容里的相对路径要相对"当前笔记"解析，所以先更新上下文
         resourcesRef.current.notePath = note.path;
-        setCurrent(note);
+        const stored = stateStore.current.get(path);
+        if (stored) {
+          // 标签已存在但后台文件被外部改过：与标签里的内容对账。
+          // 一致 → 只更新 meta（保住光标）；不一致且没改过 → 采纳磁盘；改过 → 交冲突面板
+          const local = stored.sliceDoc();
+          const dirtyTab = dirtyTabs.current.has(path);
+          if (local !== note.content && dirtyTab) {
+            staleTabs.current.delete(path);
+            setOpenTabs((prev) =>
+              prev.map((tab) => (tab.path === path ? note : tab)),
+            );
+            activateTab(path);
+            setConflict(note);
+            return;
+          }
+          if (local === note.content) {
+            staleTabs.current.delete(path);
+            setOpenTabs((prev) =>
+              prev.map((tab) => (tab.path === path ? note : tab)),
+            );
+            activateTab(path);
+            return;
+          }
+          staleTabs.current.delete(path);
+        }
+        const newState = createEditorState(note.content, {
+          lineEnding: note.lineEnding,
+          mode,
+          onDocChanged: handleDocChanged,
+          onSave: () => void saveRef.current(),
+          resources: resourcesRef.current,
+          attachment: attachmentOptions,
+          dark: resolveTheme(getSettings().theme) === "dark",
+          onCursorInTable: setInTable,
+        });
+        stateStore.current.set(note.path, newState);
+        dirtyTabs.current.delete(path);
+        setOpenTabs((prev) =>
+          prev.some((tab) => tab.path === note.path)
+            ? prev.map((tab) => (tab.path === note.path ? note : tab))
+            : [...prev, note],
+        );
+        setActiveTab(note.path);
+        viewRef.current?.setState(newState);
+        viewRef.current?.scrollDOM.scrollTop !== undefined &&
+          (viewRef.current.scrollDOM.scrollTop = 0);
         setDirty(false);
         setRoundTrip(null);
         setStatus("");
         setError(null);
         setConflict(null);
-        viewRef.current?.setState(
-          createEditorState(note.content, {
-            lineEnding: note.lineEnding,
-            mode,
-            onDocChanged: handleDocChanged,
-            onSave: () => void saveRef.current(),
-            resources: resourcesRef.current,
-            attachment: attachmentOptions,
-            dark: resolveTheme(getSettings().theme) === "dark",
-          }),
-        );
         viewRef.current?.focus();
       } catch (e) {
         setError(String(e));
       }
     },
-    [vault, dirty, saveNow, handleDocChanged, mode],
+    [vault, saveNow, handleDocChanged, mode, activateTab],
   );
 
   /**
@@ -686,9 +903,36 @@ export default function App() {
       setRenaming(null);
       setDraft("");
       await refresh(vault);
+      // 所有受影响的标签（含后台）都要换键：路径是标签与状态存储的主键
+      const remap = (p: string) =>
+        p === renaming ? result.path : `${result.path}${p.slice(renaming.length)}`;
+      const affected = (p: string) => p === renaming || p.startsWith(`${renaming}/`);
+      for (const tab of openTabsRef.current) {
+        if (!affected(tab.path)) continue;
+        const nextPath = remap(tab.path);
+        const state = stateStore.current.get(tab.path);
+        if (state) {
+          stateStore.current.delete(tab.path);
+          stateStore.current.set(nextPath, state);
+        }
+        if (scrollStore.current.has(tab.path)) {
+          const value = scrollStore.current.get(tab.path);
+          scrollStore.current.delete(tab.path);
+          if (value !== undefined) scrollStore.current.set(nextPath, value);
+        }
+        if (dirtyTabs.current.has(tab.path)) {
+          dirtyTabs.current.delete(tab.path);
+          dirtyTabs.current.add(nextPath);
+        }
+        staleTabs.current.delete(tab.path);
+      }
+      setOpenTabs((prev) =>
+        prev.map((tab) => (affected(tab.path) ? { ...tab, path: remap(tab.path) } : tab)),
+      );
       if (affectedOpen && openPath) {
-        const nextPath =
-          openPath === renaming ? result.path : `${result.path}${openPath.slice(renaming.length)}`;
+        const nextPath = remap(openPath);
+        resourcesRef.current.notePath = nextPath;
+        setActiveTab(nextPath);
         await openNote(nextPath);
       }
       setStatus(
@@ -710,14 +954,37 @@ export default function App() {
     setPendingDelete(null);
     try {
       const trashed = await deleteEntry(vault, target.path);
-      // 删掉的正是当前笔记（或它所在的目录）时要关掉编辑器：
-      // 否则接下来的一次自动保存会把文件重新写回来
-      const openPath = currentRef.current?.path;
-      if (openPath && (openPath === target.path || openPath.startsWith(`${target.path}/`))) {
-        setCurrent(null);
-        setDirty(false);
-        setConflict(null);
-        viewRef.current?.setState(EditorState.create({}));
+      // 删掉的笔记（或目录下的笔记）开着标签就关掉：留着的话，
+      // 接下来的一次自动保存会把文件重新写回来
+      const affected = openTabsRef.current.filter(
+        (tab) => tab.path === target.path || tab.path.startsWith(`${target.path}/`),
+      );
+      for (const tab of affected) {
+        dirtyTabs.current.delete(tab.path);
+        staleTabs.current.delete(tab.path);
+        stateStore.current.delete(tab.path);
+        scrollStore.current.delete(tab.path);
+      }
+      if (affected.length > 0) {
+        const remaining = openTabsRef.current.filter(
+          (tab) => !affected.some((hit) => hit.path === tab.path),
+        );
+        setOpenTabs(remaining);
+        if (affected.some((tab) => tab.path === activeTabRef.current)) {
+          const index = openTabsRef.current.findIndex((tab) => tab.path === activeTabRef.current);
+          const neighbor =
+            remaining[Math.min(Math.max(index, 0), remaining.length - 1)]?.path ?? null;
+          setConflict(null);
+          if (neighbor) {
+            activateTab(neighbor);
+          } else {
+            setActiveTab(null);
+            setDirty(false);
+            setInTable(false);
+            resourcesRef.current.notePath = null;
+            viewRef.current?.setState(EditorState.create({}));
+          }
+        }
       }
       await refresh(vault);
       setStatus(`已移入回收目录：${trashed}（可以找回）`);
@@ -725,7 +992,7 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
-  }, [pendingDelete, vault, refresh]);
+  }, [pendingDelete, vault, refresh, activateTab]);
 
   /** 切换视图模式。用 Compartment 重配置，撤销历史与光标位置都保留。 */
   const changeMode = useCallback(    (next: ViewMode) => {
@@ -737,7 +1004,7 @@ export default function App() {
     [current],
   );
 
-  const changeSidebar = useCallback((next: "files" | "daily") => {
+  const changeSidebar = useCallback((next: "files" | "daily" | "outline") => {
     setSidebar(next);
     localStorage.setItem(SIDEBAR_KEY, next);
   }, []);
@@ -755,7 +1022,12 @@ export default function App() {
       const reread = await readNote(vault, current.path);
       const same = reread.sha256 === written.sha256 && reread.content === content;
       setRoundTrip(same ? `一致 ✓ ${written.sha256.slice(0, 12)}` : "不一致 ✗");
-      setCurrent((prev) => (prev ? { ...prev, sha256: reread.sha256, size: reread.size } : prev));
+      setOpenTabs((prev) =>
+        prev.map((tab) =>
+          tab.path === current.path ? { ...tab, sha256: reread.sha256, size: reread.size } : tab,
+        ),
+      );
+      dirtyTabs.current.delete(current.path);
       setDirty(false);
       setError(null);
     } catch (e) {
@@ -1221,6 +1493,15 @@ export default function App() {
             >
               日记
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={sidebar === "outline"}
+              className={`sidebar-tab${sidebar === "outline" ? " is-on" : ""}`}
+              onClick={() => changeSidebar("outline")}
+            >
+              目录
+            </button>
           </div>
 
           {sidebar === "files" ? (
@@ -1285,7 +1566,7 @@ export default function App() {
                 onContext={openContextMenu}
               />
             </>
-          ) : (
+          ) : sidebar === "daily" ? (
             <CalendarPanel
               controller={daily}
               onOpen={(p) => void openNote(p)}
@@ -1293,9 +1574,81 @@ export default function App() {
               onOpenWeekly={(weekKey, mondayKey) => void openWeekly(weekKey, mondayKey)}
               onContext={openContextMenu}
             />
+          ) : (
+            <OutlinePanel
+              getView={() => viewRef.current}
+              revision={revision}
+              activeKey={activeTab}
+              onJump={jumpToLine}
+            />
           )}
         </aside>
         <main className="editor-pane">
+          {openTabs.length > 0 && (
+            <div className="tabbar" role="tablist" aria-label="打开的笔记">
+              {openTabs.map((tab) => (
+                <div
+                  key={tab.path}
+                  role="tab"
+                  aria-selected={tab.path === activeTab}
+                  tabIndex={0}
+                  className={`tab${tab.path === activeTab ? " is-active" : ""}${
+                    dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
+                  }`}
+                  title={tab.path}
+                  onClick={() => void openNote(tab.path)}
+                  onAuxClick={(event) => {
+                    // 中键关闭
+                    if (event.button === 1) {
+                      event.preventDefault();
+                      void closeTab(tab.path);
+                    }
+                  }}
+                >
+                  <span className="tab-title">{baseName(tab.path)}</span>
+                  <button
+                    type="button"
+                    className="tab-close"
+                    aria-label={`关闭 ${baseName(tab.path)}`}
+                    title="关闭（有改动会先保存）"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      void closeTab(tab.path);
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {inTable && current && (
+            <div className="table-toolbar" aria-label="表格工具栏">
+              <span className="table-toolbar-label">表格</span>
+              <button type="button" className="mini-btn" onClick={() => runTableCmd(insertRowAbove)} title="在上方插入一行">
+                上插行
+              </button>
+              <button type="button" className="mini-btn" onClick={() => runTableCmd(insertRowBelow)} title="在下方插入一行">
+                下插行
+              </button>
+              <button type="button" className="mini-btn" onClick={() => runTableCmd(deleteRowAtCursor)} title="删除光标所在行">
+                删行
+              </button>
+              <button type="button" className="mini-btn" onClick={() => runTableCmd(insertColumnLeft)} title="在左侧插入一列">
+                左插列
+              </button>
+              <button type="button" className="mini-btn" onClick={() => runTableCmd(insertColumnRight)} title="在右侧插入一列">
+                右插列
+              </button>
+              <button type="button" className="mini-btn" onClick={() => runTableCmd(deleteColumnAtCursor)} title="删除光标所在列">
+                删列
+              </button>
+              <button type="button" className="mini-btn" onClick={() => runTableCmd(formatTableAtCursor)} title="对齐所有管道（按显示宽度，中文算两格）">
+                对齐
+              </button>
+              <span className="table-toolbar-hint">Tab 下一格 · Shift+Tab 上一格</span>
+            </div>
+          )}
           <div className="editor-host" ref={hostRef} />
           {!current && (
             <div className="editor-empty">
@@ -1338,6 +1691,11 @@ export default function App() {
       </footer>
     </div>
   );
+}
+
+/** 取路径的文件名（标签页标题）。 */
+function baseName(path: string): string {
+  return path.slice(path.lastIndexOf("/") + 1);
 }
 
 /** 状态栏上的同步指示文案。 */

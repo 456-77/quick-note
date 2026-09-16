@@ -412,6 +412,99 @@ check(
   "光标移出表格后重新渲染成表格",
 );
 
+// 3.4.1 表格结构编辑（0.3）：工具栏 + Tab 导航 + 管道对齐。
+// 重新点击表格让光标进入源码，工具栏应当出现。
+await clickAt(ws, tableRect.x, tableRect.y);
+await sleep(400);
+check(
+  (await evaluate(ws, `!!document.querySelector('.table-toolbar')`)) === true,
+  "光标在表格内时出现表格工具栏",
+);
+
+/** 当前源码中以 | 开头的行（表格块）。 */
+const tableLines = () =>
+  evaluate(
+    ws,
+    `(() => {
+       const text = document.querySelector('.cm-content')?.innerText ?? '';
+       return text.split(String.fromCharCode(10)).filter(l => l.trim().startsWith('|'));
+     })()`,
+  );
+
+const rowLinesBefore = await tableLines();
+check(rowLinesBefore.length >= 4, "表格源码至少 4 行", JSON.stringify(rowLinesBefore.length));
+
+// 下插行：行数 +1。此刻光标就停在新数据行上（表头/分隔行受保护，删不掉）
+await evaluate(
+  ws,
+  `[...document.querySelectorAll('.table-toolbar button')].find(b => b.textContent === '下插行')?.click()`,
+);
+await sleep(400);
+const rowLinesAfter = await tableLines();
+check(
+  rowLinesAfter.length === rowLinesBefore.length + 1,
+  "下插行后表格多一行",
+  JSON.stringify(rowLinesAfter.length),
+);
+
+// 删行：光标仍在新数据行上，删掉它回到原行数
+await evaluate(
+  ws,
+  `[...document.querySelectorAll('.table-toolbar button')].find(b => b.textContent === '删行')?.click()`,
+);
+await sleep(400);
+check((await tableLines()).length === rowLinesBefore.length, "删行后回到原行数");
+
+// 对齐：所有行的显示宽度一致（管道竖成一条直线）
+await evaluate(
+  ws,
+  `[...document.querySelectorAll('.table-toolbar button')].find(b => b.textContent === '对齐')?.click()`,
+);
+await sleep(400);
+// 宽度断言只量**表头行与分隔行**：这两行没有行内标记，innerText 忠实；
+// 数据行所在位置的行内标记（** ` ` []()）会被 Live Preview 隐藏，量它必然失真。
+// 数据行的对齐正确性由纯逻辑测试（verify-tables.mjs）覆盖。
+const headerDelimAligned = await evaluate(
+  ws,
+  `(() => {
+     const width = (s) => [...s].reduce((w, ch) => w + (ch.codePointAt(0) > 0x2e7f ? 2 : 1), 0);
+     const text = document.querySelector('.cm-content')?.innerText ?? '';
+     const lines = text.split(String.fromCharCode(10)).filter(l => l.trim().startsWith('|'));
+     if (lines.length < 2) return false;
+     return width(lines[0]) === width(lines[1]);
+   })()`,
+);
+check(headerDelimAligned === true, "对齐后表头与分隔行显示宽度一致（中文按 2 格）");
+
+// Tab 导航：点击表格（光标落在第一格），真实 Tab → 光标到第二格；
+// 键入一个字符，第二格的内容应出现在源码里
+await clickAt(ws, tableRect.x, tableRect.y);
+await sleep(300);
+const beforeTab = await tableLines();
+for (const type of ["rawKeyDown", "keyUp"]) {
+  await cdp(ws, "Input.dispatchKeyEvent", {
+    type,
+    key: "Tab",
+    code: "Tab",
+    windowsVirtualKeyCode: 9,
+    nativeVirtualKeyCode: 9,
+  });
+}
+await sleep(200);
+await cdp(ws, "Input.insertText", { text: "X" });
+await sleep(300);
+const afterTab = await tableLines();
+check(
+  afterTab[0] !== beforeTab[0] && afterTab[0].includes("X"),
+  "Tab 移到第二格后键入落在那里",
+  JSON.stringify([beforeTab[0], afterTab[0]]),
+);
+// 光标在表格内，工具栏仍然在
+check(
+  (await evaluate(ws, `!!document.querySelector('.table-toolbar')`)) === true,
+  "编辑过程中工具栏保持可见",
+);
+
 // 3.5 Mermaid 图。渲染是异步的（还要等 mermaid 的 chunk 按需加载），必须轮询。
 let mermaid = null;
 for (let i = 0; i < 50; i += 1) {

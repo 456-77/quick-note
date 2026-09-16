@@ -332,7 +332,13 @@ check(existsSync(join(vault, ".trash", "改名后.md")), "文件在仓库内的 
 titles = await treeTitles(ws);
 check(!titles.includes(RENAMED), "文件树里不再显示被删除的文件");
 check((await statusText(ws)).includes("回收"), "状态栏说明移入了回收目录", await statusText(ws));
-check((await statusText(ws)).includes("未打开文件"), "删除当前笔记后编辑器已关闭");
+// 多标签语义：删除激活笔记后切到相邻标签；没有其他标签时才显示「未打开文件」。
+// 两种状态都说明编辑器不再持有被删文件。
+check(
+  !(await statusText(ws)).includes(RENAMED),
+  "删除当前笔记后编辑器不再显示它（切到相邻标签或关闭）",
+  await statusText(ws),
+);
 
 // 关键：编辑器若不关闭，接下来的一次自动保存会把刚删掉的文件写回来
 await sleep(2000);

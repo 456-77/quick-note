@@ -1,5 +1,5 @@
 import { basicSetup, EditorView } from "codemirror";
-import { Compartment, EditorState, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
@@ -9,6 +9,7 @@ import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { linkClickHandler } from "./markdownExtras";
 import { attachmentPaste, type AttachmentOptions } from "./paste";
 import { syntaxTheme } from "./syntaxTheme";
+import { isCursorInTable, tableShiftTab, tableTab } from "./tableEdit";
 
 /** 视图模式：Live Preview（渲染语法）或源码。 */
 export type ViewMode = "live" | "source";
@@ -56,6 +57,11 @@ export interface CreateEditorStateOptions {
   attachment?: AttachmentOptions;
   /** 初始是否用深色标记（光标/选区等内置配色）。 */
   dark?: boolean;
+  /**
+   * 光标进入/离开表格块时回调（表格工具栏的显示依据）。
+   * 选区移动不触发 onDocChanged，所以要单独的通道。
+   */
+  onCursorInTable?: (inside: boolean) => void;
 }
 
 /**
@@ -77,7 +83,7 @@ export function createEditorState(
   doc: string,
   options: CreateEditorStateOptions,
 ): EditorState {
-  const { lineEnding, mode, onDocChanged, onSave, resources, attachment, dark } = options;
+  const { lineEnding, mode, onDocChanged, onSave, resources, attachment, dark, onCursorInTable } = options;
   return EditorState.create({
     doc,
     extensions: [
@@ -95,8 +101,19 @@ export function createEditorState(
       livePreviewCompartment.of(modeExtensions(mode)),
       attachment ? attachmentPaste(attachment) : [],
       linkClickHandler(),
+      // 表格里的 Tab 是"下一格"，必须压过 basicSetup 的缩进键位。
+      // 光标不在表格里时处理函数返回 false，缩进照常。
+      Prec.high(
+        keymap.of([
+          { key: "Tab", run: tableTab },
+          { key: "S-Tab", run: tableShiftTab },
+        ]),
+      ),
       EditorView.updateListener.of((update) => {
         if (update.docChanged) onDocChanged();
+        if (onCursorInTable && (update.docChanged || update.selectionSet)) {
+          onCursorInTable(isCursorInTable(update.state));
+        }
       }),
       onSave ? modSKeymap(onSave) : [],
     ],
