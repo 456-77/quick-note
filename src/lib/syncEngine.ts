@@ -71,6 +71,7 @@ import {
   decideRecord,
   headerValue,
   inScope,
+  isAttachmentPath,
   type SyncDeviceState,
   type SyncStatusKind,
 } from "./sync.ts";
@@ -240,15 +241,23 @@ export class SyncEngine {
    * 会把应用远端时的每一次写入再排进推送队列）；我们的事件经过 notify 与 250ms
    * 去抖，早已错过那个窗口，靠哈希判定反而更可靠——M1 处理"自己写入的回声"
    * 用的就是同一招。
+   *
+   * 附件（粘贴图片等）同样从这条路径入队：只排 `.md` 的话，粘贴图片要等到下一次
+   * 手动同步或周期扫描才会上云——网页端在那几分钟里看到的是裂图。
    */
   touchPaths(paths: string[]): void {
     if (!this.state.enabled || !this.configured) return;
+    let touched = false;
     for (const path of paths) {
       if (path.endsWith(".md") && inScope(path, this.state.scope, this.host.getFolder())) {
         this.dirty.set(path, "mod");
+        touched = true;
+      } else if (isAttachmentPath(path)) {
+        this.dirtyAttachments.set(path, "mod");
+        touched = true;
       }
     }
-    if (this.dirty.size > 0) this.armFlushTimer();
+    if (touched) this.armFlushTimer();
   }
 
   /** 虚拟文件内容变化后调用（待办增删改）。它们不落盘，没有文件事件。 */

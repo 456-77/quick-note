@@ -113,6 +113,17 @@ async function openContextMenu(ws, path) {
   return opened;
 }
 
+
+/**
+ * 通过右键菜单新建笔记（M3 后「＋笔记」按钮改为「＋日记」，普通笔记的入口在树节点的
+ * 右键菜单里）。anchor = 右键的树节点路径：目录用本身，文件用其所在目录。
+ */
+async function createNoteViaMenu(ws, anchor) {
+  const opened = await openContextMenu(ws, anchor);
+  if (!opened) return false;
+  return clickMenuItem(ws, "新建笔记");
+}
+
 /** 点击上下文菜单里的某一项。 */
 async function clickMenuItem(ws, text) {
   const clicked = await evaluate(
@@ -199,7 +210,7 @@ check(
 );
 
 // ---------------------------------------------------------------- 新建笔记
-check(await clickButton(ws, "＋笔记"), "点击「＋笔记」展开输入行");
+check(await createNoteViaMenu(ws, NOTE), "右键日记文件 → 新建笔记，展开输入行");
 check(await inputOpen(ws), "输入行已展开");
 check(
   ((await evaluate(ws, `document.querySelector('.create-hint')?.textContent ?? ''`)) ?? "").includes(TARGET_DIR),
@@ -216,12 +227,12 @@ check((await statusText(ws)).includes(NOTE_A), "新笔记被直接打开（状�
 check((await errorText(ws)) === null, "创建过程无报错");
 
 // 同名再建一次：应当加序号，而不是覆盖或报错
-check(await clickButton(ws, "＋笔记"), "再次点击「＋笔记」");
+check(await createNoteViaMenu(ws, NOTE), "再次右键新建（同名测序号）");
 await typeName(ws, "创建测试笔记");
 check(existsSync(join(vault, NOTE_B)), "同名笔记自动加序号，不覆盖已有文件", NOTE_B);
 
 // 名称里带子目录：中间目录自动创建
-check(await clickButton(ws, "＋笔记"), "第三次点击「＋笔记」");
+check(await createNoteViaMenu(ws, NOTE), "第三次右键新建（子目录名）");
 await typeName(ws, "创建子目录/嵌套笔记");
 check(existsSync(join(vault, NESTED)), "名称含子目录时会自动创建中间目录", NESTED);
 
@@ -234,7 +245,7 @@ await sleep(600);
 
 // ---------------------------------------------------------------- 非法名称
 await clearError(ws);
-check(await clickButton(ws, "＋笔记"), "再次点击「＋笔记」（准备测非法名称）");
+check(await createNoteViaMenu(ws, NOTE), "再次右键新建（准备测非法名称）");
 await typeName(ws, ".隐藏笔记");
 const error = await errorText(ws);
 check((error ?? "").includes("隐藏"), "隐藏名称被拒绝并给出提示", JSON.stringify(error));

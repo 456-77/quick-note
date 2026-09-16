@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Moment } from "moment";
 import { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
@@ -12,6 +12,8 @@ import { clearEmbedCache } from "./lib/embed";
 import { requestDecorationRefresh } from "./lib/livePreview";
 import type { LivePreviewContext } from "./lib/paths";
 import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
+import { checkForUpdate } from "./lib/updater";
+import { getVersion } from "@tauri-apps/api/app";
 import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import {
   DAILY_CONFIG_FILE,
@@ -20,6 +22,7 @@ import {
   defaultNoteContent,
   expandTemplate,
   parseDateStrict,
+  validateDailyName,
   weeklyNotePath,
   weeklyTitle,
 } from "./lib/daily";
@@ -50,8 +53,10 @@ export default function App() {
   );
   const [settings, setSettings] = useState<Settings>(getSettings);
   const [showSettings, setShowSettings] = useState(false);
-  /** 正在新建的类型；null 表示输入行未展开。 */
-  const [creating, setCreating] = useState<"note" | "folder" | null>(null);
+  /** 正在新建的类型；null 表示输入行未展开。diary = 按日期命名的新日记。 */
+  const [creating, setCreating] = useState<"note" | "folder" | "diary" | null>(null);
+  /** 右键「新建笔记」指定的目标目录；空串 = 按当前笔记所在目录（或仓库根）。 */
+  const [createFolderOverride, setCreateFolderOverride] = useState("");
   /** 正在重命名的条目路径；与 creating 共用同一行输入。 */
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
@@ -68,6 +73,44 @@ export default function App() {
 
   const applySettings = useCallback((patch: Partial<Settings>) => {
     setSettings(updateSettings(patch));
+  }, []);
+
+  // ---------------------------------------------------------------- 软件更新
+
+  const [appVersion, setAppVersion] = useState("");
+  const [updateCheck, setUpdateCheck] = useState<{
+    state: "idle" | "checking" | "done" | "error";
+    message: string;
+    url?: string;
+  }>({ state: "idle", message: "" });
+
+  useEffect(() => {
+    getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion("unknown"));
+  }, []);
+
+  const checkUpdate = useCallback(async () => {
+    setUpdateCheck({ state: "checking", message: "正在检查更新…" });
+    try {
+      const info = await checkForUpdate(appVersion || "0.0.0");
+      setUpdateCheck(
+        info.newer
+          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可到发布页下载`, url: info.url }
+          : { state: "done", message: `已是最新版本（最新发布 v${info.latest}）` },
+      );
+    } catch (e) {
+      setUpdateCheck({ state: "error", message: `检查更新失败：${e}` });
+    }
+  }, [appVersion]);
+
+  const openReleasePage = useCallback(async (url?: string) => {
+    try {
+      const { openUrl } = await import("@tauri-apps/plugin-opener");
+      await openUrl(url ?? "https://github.com/456-77/quick-note/releases/latest");
+    } catch (e) {
+      setError(`打开发布页失败：${e}`);
+    }
   }, []);
 
   /**
@@ -404,10 +447,15 @@ export default function App() {
     if (!picked) return;
     localStorage.setItem(VAULT_KEY, picked);
     setVault(picked);
+    // 换仓库必须把编辑器一起清掉：只 setCurrent(null) 的话，CodeMirror 的状态还挂着
+    // 上一篇笔记——旧内容继续显示，下一次输入还会试图写回旧仓库的路径
     setCurrent(null);
     setDirty(false);
     setRoundTrip(null);
     setConflict(null);
+    setStatus("");
+    resourcesRef.current.notePath = null;
+    viewRef.current?.setState(EditorState.create({}));
     activateVault(picked);
     try {
       await refresh(picked);
@@ -551,14 +599,22 @@ export default function App() {
     return path.slice(0, path.lastIndexOf("/"));
   }, []);
 
-  const beginCreate = useCallback((kind: "note" | "folder") => {
+  /** 右键「新建笔记」的落点：目录用本身，文件用所在目录。 */
+  const parentFolderOf = useCallback((path: string) => {
+    if (!path.includes("/")) return "";
+    return path.slice(0, path.lastIndexOf("/"));
+  }, []);
+
+  const beginCreate = useCallback((kind: "note" | "folder" | "diary", folder = "") => {
     setCreating(kind);
+    setCreateFolderOverride(folder);
     setDraft("");
     setError(null);
   }, []);
 
   const cancelCreate = useCallback(() => {
     setCreating(null);
+    setCreateFolderOverride("");
     setDraft("");
   }, []);
 
@@ -571,15 +627,26 @@ export default function App() {
     if (!creating || !vault) return;
     const name = draft.trim();
     if (!name) return;
+    // 日记与插件同一个规则：名字必填，非法名挡在输入行里直接改
+    if (creating === "diary") {
+      const problem = validateDailyName(name);
+      if (problem) {
+        setError(problem);
+        return;
+      }
+      cancelCreate();
+      await openDaily(daily.today, name);
+      return;
+    }
     try {
       if (creating === "note") {
-        const path = await createNote(vault, createTargetFolder(), name);
+        const path = await createNote(vault, createFolderOverride || createTargetFolder(), name);
         cancelCreate();
         await refresh(vault);
         // 新建后直接打开，省掉再去树里找一次
         await openNote(path);
       } else {
-        const path = await createFolder(vault, createTargetFolder(), name);
+        const path = await createFolder(vault, createFolderOverride || createTargetFolder(), name);
         cancelCreate();
         await refresh(vault);
         setStatus(`已新建文件夹「${path}」`);
@@ -589,7 +656,7 @@ export default function App() {
       // 输入行保持展开，用户可以直接改名重试
       setError(String(e));
     }
-  }, [creating, vault, draft, createTargetFolder, refresh, openNote]);
+  }, [creating, vault, draft, createFolderOverride, createTargetFolder, refresh, openNote, daily.today, openDaily, cancelCreate]);
 
   /** 打开右键菜单。 */
   const openContextMenu = useCallback((path: string, isDir: boolean, x: number, y: number) => {
@@ -799,13 +866,14 @@ export default function App() {
               }
             />
           </label>
-          <p className="settings-hint">
+          <Hint>
             粘贴图片或文件会保存到附件目录（重名自动加序号，不覆盖已有文件），并在光标处插入链接。
-          </p>
+            附件目录在下方「日记与附件」分组里设置，与 Obsidian 插件共用；同步开启后贴的图会自动上传。
+          </Hint>
 
           {/* 日记设置存在库内文件里，与 Obsidian 插件共用；上面几项存在本机。
               两处混在一个面板里会让人以为"都是应用设置"，所以用标题把落点写清楚。 */}
-          <div className="settings-group">日记（写入库内 {DAILY_CONFIG_FILE}，与 Obsidian 插件共用）</div>
+          <div className="settings-group">日记与附件（写入库内 {DAILY_CONFIG_FILE}，与 Obsidian 插件共用）</div>
           <label className="settings-row">
             <span>附件保存目录</span>
             <input
@@ -815,10 +883,10 @@ export default function App() {
               onChange={(event) => daily.updateSettings({ pastedImageFolder: event.target.value })}
             />
           </label>
-          <p className="settings-hint">
-            附件目录也在库内配置里（键名与插件相同：pastedImageFolder），两边换用不用设两次；
+          <Hint>
+            附件目录在库内配置里（键名与插件相同：pastedImageFolder），两边换用不用设两次；
             同步开启后多台设备自动一致。改这里会写入库内文件。
-          </p>
+          </Hint>
           <label className="settings-row">
             <span>日记目录</span>
             <input
@@ -875,12 +943,12 @@ export default function App() {
               onChange={(event) => daily.updateSettings({ weeklyTemplatePath: event.target.value })}
             />
           </label>
-          <p className="settings-hint">
+          <Hint>
             日期格式是 moment 语法（插件同一套），它同时决定日记文件名与待办分桶。模板支持
             {" "}<code>{"{{title}}"}</code>、<code>{"{{date}}"}</code>、<code>{"{{date:格式}}"}</code>、
             <code>{"{{week}}"}</code>、<code>{"{{time}}"}</code>；未知占位符原样保留。
             这几项与插件共用一份配置，改动会写到库内文件。
-          </p>
+          </Hint>
 
           {/* 同步配置存在**本机**（应用配置目录），不进仓库：里面有服务端密码与令牌，
               同步出去等于把凭据送到服务端、再经接口回到浏览器。 */}
@@ -941,12 +1009,12 @@ export default function App() {
               onChange={(event) => sync.updateConfig({ vaultName: event.target.value })}
             />
           </label>
-          <p className="settings-hint">
+          <Hint>
             与 Obsidian 插件共用同一个云端仓库。仓库名要与插件所在库的名字一致，否则会同步到
-            另一个云端仓库（表现为「同步成功但数据没过来」）。待办与日记配置按插件同一套格式
-            同步；<b>附件暂不同步</b>，图片仍由 Obsidian 侧同步。服务端地址、账号与密码只存在
-            本机，不会写进仓库。
-          </p>
+            另一个云端仓库（表现为「同步成功但数据没过来」）。正文、待办与<b>附件</b>（按笔记
+            引用上传、本地缺的从云端补下）都会同步；服务端地址、账号与密码只存在本机，
+            不会写进仓库。
+          </Hint>
           <div className="settings-actions">
             <button type="button" className="btn" onClick={() => sync.syncNow()}>
               立即同步
@@ -960,6 +1028,37 @@ export default function App() {
               重置游标并重拉
             </button>
           </div>
+
+          {/* 版本与更新。检查走 GitHub 公开接口（匿名限额足够手动检查用）；
+              不做应用内自动安装——那需要签名密钥与更新清单服务器，现阶段带用户去发布页即可。 */}
+          <div className="settings-group">软件更新</div>
+          <div className="settings-row">
+            <span>当前版本</span>
+            <span className="settings-value">v{appVersion || "…"}</span>
+          </div>
+          <div className="settings-actions">
+            <button
+              type="button"
+              className="btn"
+              disabled={updateCheck.state === "checking"}
+              onClick={() => void checkUpdate()}
+            >
+              {updateCheck.state === "checking" ? "检查中…" : "检查更新"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => void openReleasePage(updateCheck.url)}
+              title="在系统浏览器中打开 GitHub 发布页"
+            >
+              打开发布页
+            </button>
+          </div>
+          {updateCheck.state !== "idle" && (
+            <p className={`settings-hint${updateCheck.state === "error" ? " hint-error" : ""}`}>
+              {updateCheck.message}
+            </p>
+          )}
         </div>
       )}
 
@@ -1074,6 +1173,16 @@ export default function App() {
             setMenu(null);
           }} />
           <div className="context-menu" style={{ left: menu.x, top: menu.y }}>
+            <button
+              type="button"
+              onClick={() => {
+                // 新建落点：选中的目录；选中文件时是其所在目录
+                beginCreate("note", menu.isDir ? menu.path : parentFolderOf(menu.path));
+                setMenu(null);
+              }}
+            >
+              新建笔记
+            </button>
             <button type="button" onClick={() => beginRename(menu.path)}>
               重命名
             </button>
@@ -1123,10 +1232,10 @@ export default function App() {
                   type="button"
                   className="mini-btn"
                   disabled={!vault}
-                  onClick={() => beginCreate("note")}
-                  title="新建笔记"
+                  onClick={() => beginCreate("diary")}
+                  title="新建今天的日记（按日期命名，想建普通笔记请在树里右键 → 新建笔记）"
                 >
-                  ＋笔记
+                  ＋日记
                 </button>
                 <button
                   type="button"
@@ -1147,9 +1256,11 @@ export default function App() {
                     placeholder={
                       renaming
                         ? "新名称"
-                        : creating === "note"
-                          ? "笔记名称，可写 子目录/名称"
-                          : "文件夹名称"
+                        : creating === "diary"
+                          ? "日记名字（今天：" + daily.today + "）"
+                          : creating === "note"
+                            ? "笔记名称，可写 子目录/名称"
+                            : "文件夹名称"
                     }
                     onChange={(event) => setDraft(event.target.value)}
                     onFocus={(event) => event.currentTarget.select()}
@@ -1161,7 +1272,9 @@ export default function App() {
                   <div className="create-hint">
                     {renaming
                       ? `重命名 ${renaming} · Enter 确认 / Esc 取消`
-                      : `新建到 ${createTargetFolder() || "仓库根目录"} · Enter 确认 / Esc 取消`}
+                      : creating === "diary"
+                        ? `新建到 ${daily.settings.folder || "仓库根目录"} · 文件名 = 日期 + 空格 + 名字 · Enter 确认 / Esc 取消`
+                        : `新建到 ${(creating === "note" ? createFolderOverride : "") || createTargetFolder() || "仓库根目录"} · Enter 确认 / Esc 取消`}
                   </div>
                 </div>
               )}
@@ -1236,4 +1349,28 @@ function syncLabel(status: string, lastSyncAt: number, error: string | null): st
   const when = new Date(lastSyncAt);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `已同步 ${pad(when.getHours())}:${pad(when.getMinutes())}`;
+}
+
+/**
+ * 设置面板里的说明文字：默认只显示一个「?」，点击才展开。
+ *
+ * 提示是给第一次用的人看的；天天用的人只需要控件本身。四段说明常驻的话，
+ * 面板会高得离谱（曾经为此出过"面板挡住状态栏"的问题），折叠是共同解。
+ */
+function Hint({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <p className="settings-hint">
+      <button
+        type="button"
+        className="hint-toggle"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+        title={open ? "收起说明" : "查看说明"}
+      >
+        ?
+      </button>
+      {open && <span className="hint-body">{children}</span>}
+    </p>
+  );
 }

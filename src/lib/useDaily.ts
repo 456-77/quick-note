@@ -78,6 +78,8 @@ export interface DailyController {
   addTodo: (dateStr: string, text: string) => void;
   toggleTodo: (dateStr: string, index: number) => void;
   deleteTodo: (dateStr: string, index: number) => void;
+  /** 修改某条待办的文字（对齐插件的 updateTodoText；打上新的修改时间）。 */
+  updateTodoText: (dateStr: string, index: number, text: string) => void;
   /** 把源日期未完成的待办顺延到目标日期；返回顺延了几项。 */
   moveTodo: (fromDate: string, toDate: string) => number;
   /** App 收到 `vault-changed` 时调用；内部按哈希区分自己刚写的那一次。 */
@@ -336,6 +338,20 @@ export function useDaily(options: {
     [mutateTodos],
   );
 
+  /** 修改待办文字：与勾选同一种变更（updatedAt 前进），合并时后改的赢。 */
+  const updateTodoText = useCallback(
+    (dateStr: string, index: number, text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      mutateTodos(dateStr, (items) =>
+        items.map((item, position) =>
+          position === index ? { ...item, text: trimmed, updatedAt: Date.now() } : item,
+        ),
+      );
+    },
+    [mutateTodos],
+  );
+
   const moveTodo = useCallback(
     (fromDate: string, toDate: string) => {
       const current = stateRef.current;
@@ -469,6 +485,7 @@ export function useDaily(options: {
     addTodo,
     toggleTodo,
     deleteTodo,
+    updateTodoText,
     moveTodo,
     handleVaultChange,
     todoSnapshot,

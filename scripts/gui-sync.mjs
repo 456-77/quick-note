@@ -922,6 +922,27 @@ try {
   // ---------------------------------------------------------------- 附件
   console.log("\n附件：按引用上传、按名补下、墓碑删除\n");
 
+  // 粘贴路径：文件监听把附件路径送进引擎后，防抖 3 秒内就应上传——
+  // 不需要点同步按钮。曾经只排 .md 文件，贴图要等下一轮全量扫描才上云，
+  // 网页端在那几分钟里看到的是裂图。
+  const pasteNote = track("日记/贴图日记.md");
+  const pasteImg = track("attachments/贴图.png");
+  const pasteImgBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x0a]);
+  writeVaultFile(pasteNote, "# 贴图\n\n![[贴图.png]]\n");
+  writeFileSync(join(vault, pasteImg), pasteImgBytes);
+  check(
+    await waitFor(
+      "粘贴触发自动上传（不点同步）",
+      async () =>
+        Buffer.compare(
+          backend.uploadedAttachment(VAULT_NAME, pasteImg) ?? Buffer.alloc(0),
+          pasteImgBytes,
+        ) === 0,
+      15000,
+    ),
+    "粘贴图片后 3 秒防抖内自动上传（无需手动同步）",
+  );
+
   // 一篇日记引用两张图：一张本地有（该被上传），一张本地没有（该从云端补下）
   const attNote = track("日记/带图日记.md");
   writeVaultFile(attNote, "# 带图\n\n![[本地的图.png]]\n\n![[云端的图.png]]\n");
@@ -932,7 +953,8 @@ try {
 
   // 云端放好"云端的图"（模拟另一台设备传的）
   const cloudImgBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x02]);
-  const cloudVersion = Math.max(readStateFile().cursor, 1) + 1;
+  const beforeCursor0 = readStateFile().cursor;
+  const cloudVersion = beforeCursor0 + 1;
   backend.injectAttachment(VAULT_NAME, "attachments/云端的图.png", cloudImgBytes, cloudVersion);
 
   await clickSyncStatus(ws);
@@ -957,13 +979,6 @@ try {
     Buffer.compare(readFileSync(join(vault, "attachments/云端的图.png")), cloudImgBytes) === 0,
     "补下来的图逐字节一致",
   );
-  // 按名取回必须落到服务端说的路径上——这里服务端解析出的就是 attachments/云端的图.png
-  check(
-    backend
-      .requests
-      .some((r) => r.path === "/api/v1/sync/attachments" && r.rawUrl.includes("name=")),
-    "取图走的是按名寻址（name=…）",
-  );
   // 孤儿附件（没被任何笔记引用）不上传
   const orphan = track("attachments/孤儿.png");
   writeFileSync(join(vault, orphan), Buffer.from("orphan"));
@@ -980,6 +995,34 @@ try {
   check(
     countUploadsOf(localImg) === uploadsBefore,
     "没有变化的附件不重复上传（第二轮零请求）",
+  );
+
+  // 按名补下的**真正场景**：云端有图，但它的版本号已被游标越过（老设备拉过一轮），
+  // 拉取流的增量里永远不会再出现它——只能靠"本地日记的引用"按名去要。
+  // 之前在这里断言"发生过 name= 请求"是竞态：云端的图既可能由拉取元数据下发、
+  // 也可能由按名补下取得，谁先到都合法；只有"游标外"这个场景才能确定性地测到它。
+  const skipImg = track("attachments/游标外.png");
+  const skipBytes = Buffer.from("below-cursor-image");
+  backend.injectAttachment(
+    VAULT_NAME,
+    "attachments/游标外.png",
+    skipBytes,
+    Math.max(beforeCursor0 - 1, 1), // 故意压到当前游标之下
+  );
+  const skipNote = track("日记/引用游标外.md");
+  writeVaultFile(skipNote, "# 引用\n\n![[游标外.png]]\n");
+  await clickSyncStatus(ws);
+  check(
+    await waitFor(
+      "游标外的图按名补下",
+      async () =>
+        Buffer.compare(
+          existsSync(join(vault, skipImg)) ? readFileSync(join(vault, skipImg)) : Buffer.alloc(0),
+          skipBytes,
+        ) === 0,
+      15000,
+    ),
+    "版本号已被游标越过的附件仍能按名从云端取回",
   );
 
   // ---------------------------------------------------------------- 游标

@@ -57,6 +57,9 @@ export default function CalendarPanel({
   /** 名字不合法的原因；输入行保持展开，方便直接改。 */
   const [nameProblem, setNameProblem] = useState<string | null>(null);
   const [todoDraft, setTodoDraft] = useState("");
+  /** 正在修改文字的待办 id；null 表示没有行处于编辑态。 */
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
 
   const rows = useMemo(() => monthGrid(viewMonth, dateFormat, today), [viewMonth, dateFormat, today]);
   const monthCount = useMemo(
@@ -123,6 +126,31 @@ export default function CalendarPanel({
     setTodoDraft("");
   };
 
+  const beginEditTodo = (id: string, text: string) => {
+    setEditingId(id);
+    setEditDraft(text);
+  };
+
+  const submitEditTodo = () => {
+    if (!editingId) return;
+    const row = todos.find(({ item }) => item.id === editingId);
+    const text = editDraft.trim();
+    // 空文字不当作"清空"，保持原样退出编辑——要删用删除按钮
+    if (row && text && text !== row.item.text) {
+      controller.updateTodoText(selectedDate, row.index, text);
+    }
+    setEditingId(null);
+    setEditDraft("");
+  };
+
+  const copyTodo = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // 剪贴板不可用（权限等）就静默失败：复制是便利功能，不该为此弹错误横幅
+    }
+  };
+
   return (
     <div className="calendar">
       <div className="cal-head">
@@ -148,8 +176,13 @@ export default function CalendarPanel({
         <button
           type="button"
           className="mini-btn cal-today-btn"
-          onClick={() => setViewMonth(moment().startOf("month"))}
-          title="回到本月"
+          onClick={() => {
+            // 既要跳回本月，也要把选中日切到今天：只跳月的话，当天日记、待办、
+            // 统计还停在别的日期上，看起来像"按钮没起作用"
+            setViewMonth(moment().startOf("month"));
+            setSelectedDate(today);
+          }}
+          title="回到今天并选中"
         >
           今天
         </button>
@@ -315,16 +348,61 @@ export default function CalendarPanel({
               onChange={() => controller.toggleTodo(selectedDate, index)}
               title={item.done ? "标记为未完成" : "标记为已完成"}
             />
-            <span className={`cal-todo-text${item.done ? " is-done" : ""}`}>{item.text}</span>
-            <button
-              type="button"
-              className="cal-todo-del"
-              onClick={() => controller.deleteTodo(selectedDate, index)}
-              title="删除这条待办"
-              aria-label="删除这条待办"
-            >
-              ✕
-            </button>
+            {editingId === item.id ? (
+              <input
+                autoFocus
+                type="text"
+                className="cal-todo-edit"
+                value={editDraft}
+                onChange={(event) => setEditDraft(event.target.value)}
+                onBlur={submitEditTodo}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") submitEditTodo();
+                  if (event.key === "Escape") {
+                    setEditingId(null);
+                    setEditDraft("");
+                  }
+                }}
+                title="回车保存，Esc 取消"
+              />
+            ) : (
+              <>
+                <span
+                  className={`cal-todo-text${item.done ? " is-done" : ""}`}
+                  onDoubleClick={() => beginEditTodo(item.id, item.text)}
+                  title="双击修改文字"
+                >
+                  {item.text}
+                </span>
+                <button
+                  type="button"
+                  className="cal-todo-act"
+                  onClick={() => void copyTodo(item.text)}
+                  title="复制文字"
+                  aria-label="复制这条待办"
+                >
+                  ⧉
+                </button>
+                <button
+                  type="button"
+                  className="cal-todo-act"
+                  onClick={() => beginEditTodo(item.id, item.text)}
+                  title="修改文字"
+                  aria-label="修改这条待办"
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  className="cal-todo-del"
+                  onClick={() => controller.deleteTodo(selectedDate, index)}
+                  title="删除这条待办"
+                  aria-label="删除这条待办"
+                >
+                  ✕
+                </button>
+              </>
+            )}
           </div>
         ))}
       </div>

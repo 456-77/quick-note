@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.1.0"
+version = "0.2.0"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
