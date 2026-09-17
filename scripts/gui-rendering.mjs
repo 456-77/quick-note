@@ -79,7 +79,7 @@ async function setTheme(ws, value) {
   await evaluate(
     ws,
     `(() => {
-       const button = [...document.querySelectorAll('.toolbar button')].find(b => b.textContent.trim() === '设置');
+       const button = document.querySelector('.topbar .icon-btn[title="设置"]');
        if (!button) return false;
        if (!document.querySelector('.settings-panel')) button.click();
        return true;
@@ -89,7 +89,10 @@ async function setTheme(ws, value) {
   await evaluate(
     ws,
     `(() => {
-       const select = document.querySelector('.settings-panel select');
+       // 设置面板分类化后主题下拉不再是第一个 select，按行标签定位更稳
+       const row = [...document.querySelectorAll('.settings-panel .settings-row')]
+         .find((r) => r.querySelector('span')?.textContent === '主题');
+       const select = row?.querySelector('select');
        if (!select) return false;
        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
        setter.call(select, ${JSON.stringify(value)});
@@ -100,7 +103,7 @@ async function setTheme(ws, value) {
   await sleep(350);
   await evaluate(
     ws,
-    `[...document.querySelectorAll('.toolbar button')].find(b => b.textContent.trim() === '设置')?.click()`,
+    `document.querySelector('.topbar .icon-btn[title="设置"]')?.click()`,
   );
   await sleep(250);
 }
@@ -165,6 +168,12 @@ const money = await evaluate(
 check(money === true, "货币写法 $100 没有被当成公式（仍显示原文）");
 
 // ---------------------------------------------------------------- 高亮与注释
+// 公式行与注释/行内 HTML 行相隔数行：大字排版下公式滚动一停，后面的行可能还在
+// 渲染范围外。先滚到 font 标签的文字出现，再统一断言。
+await scrollUntil(
+  ws,
+  `(document.querySelector('.cm-content')?.textContent ?? '').includes('红色文字')`,
+);
 const styled = await evaluate(
   ws,
   `(() => {
@@ -332,7 +341,7 @@ check(
 await evaluate(
   ws,
   `(() => {
-     const btn = [...document.querySelectorAll('header button')].find(b => b.textContent.trim() === '设置');
+     const btn = document.querySelector('.topbar .icon-btn[title="设置"]');
      btn?.click();
      return true;
    })()`,
@@ -398,7 +407,7 @@ await evaluate(
 await sleep(200);
 await evaluate(
   ws,
-  `[...document.querySelectorAll('header button')].find(b => b.textContent.trim() === '设置')?.click()`,
+  `document.querySelector('.topbar .icon-btn[title="设置"]')?.click()`,
 );
 await sleep(250);
 
@@ -420,7 +429,7 @@ for (let i = 0; i < 20; i += 1) {
 await setTheme(ws, "light");
 const light = await themeInfo(ws);
 check(light.theme === "light", "指定浅色后根节点标记为 light", JSON.stringify(light.theme));
-check(light.bg === "#f7f7f8", "浅色背景取自色板", JSON.stringify(light.bg));
+check(light.bg === "#f2f3f6", "浅色背景取自色板", JSON.stringify(light.bg));
 check(
   light.keywordColor === "rgb(130, 80, 223)",
   "浅色下代码关键字用的是色板里的值（说明内置的默认高亮被覆盖了）",
@@ -430,7 +439,7 @@ check(
 await setTheme(ws, "dark");
 const dark = await themeInfo(ws);
 check(dark.theme === "dark", "切到深色后根节点标记变为 dark", JSON.stringify(dark.theme));
-check(dark.bg === "#1b1b1f", "深色背景取自深色色板", JSON.stringify(dark.bg));
+check(dark.bg === "#101014", "深色背景取自深色色板", JSON.stringify(dark.bg));
 check(dark.bodyBg !== light.bodyBg, "深色下页面背景真的变了", `${light.bodyBg} → ${dark.bodyBg}`);
 check(
   dark.keywordColor === "rgb(199, 146, 234)",

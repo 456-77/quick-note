@@ -82,7 +82,7 @@ async function setSettingsOpen(ws, open) {
   await evaluate(
     ws,
     `(() => {
-       const button = [...document.querySelectorAll('.toolbar button')].find(b => b.textContent.trim() === '设置');
+       const button = document.querySelector('.topbar .icon-btn[title="设置"]');
        if (!button) return false;
        const isOpen = document.querySelector('.settings-panel') !== null;
        if (isOpen !== ${open ? "true" : "false"}) button.click();

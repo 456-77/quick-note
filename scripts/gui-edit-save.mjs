@@ -102,7 +102,7 @@ check(focused === true, "编辑器已获得焦点");
 await cdp(ws, "Input.insertText", { text: MARKER });
 await sleep(300);
 
-const dirty = await evaluate(ws, `document.querySelector('.dirty-dot')?.classList.contains('is-dirty')`);
+const dirty = await evaluate(ws, `document.querySelector('.save-chip')?.classList.contains('is-dirty')`);
 check(dirty === true, "输入后标记为未保存");
 
 const docHasMarker = await evaluate(ws, `document.querySelector('.cm-content')?.innerText.includes(${JSON.stringify(MARKER)}) ?? false`);
@@ -133,7 +133,7 @@ check(
 check(after !== before, "文件内容确实发生变化（不是空写）");
 
 // 标记为已保存
-const dirtyAfter = await evaluate(ws, `document.querySelector('.dirty-dot')?.classList.contains('is-dirty')`);
+const dirtyAfter = await evaluate(ws, `document.querySelector('.save-chip')?.classList.contains('is-dirty')`);
 check(dirtyAfter === false, "保存后清除未保存标记");
 
 const bytes = Buffer.byteLength(after, "utf8");

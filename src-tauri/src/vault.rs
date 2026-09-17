@@ -682,6 +682,82 @@ pub fn read_note_optional(vault: String, path: String) -> Result<Option<NoteCont
     read_note_at(&root, &path).map(Some)
 }
 
+/// 全文搜索的一个命中。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub path: String,
+    /// 命中行（0 基），供前端打开后直接跳转。
+    pub line: usize,
+    /// 命中行文本（超长行截断，避免撑爆结果列表）。
+    pub text: String,
+}
+
+/// 大小写不敏感的全文搜索（多关键词 AND，空格分隔）。
+///
+/// 遍历仓库内全部 `.md`（跳过点开头的隐藏路径），逐行找首个命中行，每文件最多
+/// 记一次命中。个人库的量级（数百篇）在 Rust 侧全量扫描是毫秒级的，刻意不做
+/// 倒排索引——索引要处理增量失效，复杂度换不来这个量级下的收益。
+#[tauri::command]
+pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<SearchHit>, String> {
+    let root = vault_root(&vault)?;
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(|term| term.to_lowercase())
+        .collect();
+    // 空查询与「全是空白」都不产生结果，前端把它当作"清空搜索"。
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
+    let limit = limit.clamp(1, 200);
+
+    let mut entries = Vec::new();
+    walk_entries(&root, &root, &mut entries, 0);
+
+    let mut hits = Vec::new();
+    for entry in entries {
+        if hits.len() >= limit {
+            break;
+        }
+        if entry.is_dir || !entry.name.to_lowercase().ends_with(".md") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(root.join(&entry.path)) else {
+            continue;
+        };
+        let body = if bytes.starts_with(UTF8_BOM) {
+            &bytes[UTF8_BOM.len()..]
+        } else {
+            &bytes[..]
+        };
+        let Ok(content) = std::str::from_utf8(body) else {
+            continue;
+        };
+        let lowered = content.to_lowercase();
+        if !terms.iter().all(|term| lowered.contains(term)) {
+            continue;
+        }
+        for (line_index, line) in content.lines().enumerate() {
+            let line_lower = line.to_lowercase();
+            if terms.iter().all(|term| line_lower.contains(term)) {
+                let text: String = if line.chars().count() > 160 {
+                    let truncated: String = line.chars().take(160).collect();
+                    format!("{truncated}…")
+                } else {
+                    line.to_string()
+                };
+                hits.push(SearchHit {
+                    path: entry.path.clone(),
+                    line: line_index,
+                    text,
+                });
+                break;
+            }
+        }
+    }
+    Ok(hits)
+}
+
 #[tauri::command]
 pub fn write_note(
     vault: String,

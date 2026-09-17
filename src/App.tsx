@@ -1,10 +1,38 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Moment } from "moment";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CalendarPanel from "./components/CalendarPanel";
+import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
 import FileTree from "./components/FileTree";
 import OutlinePanel from "./components/OutlinePanel";
+import SettingsDialog from "./components/SettingsDialog";
+import StatsPanel from "./components/StatsPanel";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import {
+  IconCalendar,
+  IconCalendarPlus,
+  IconChart,
+  IconClock,
+  IconCode,
+  IconCopy,
+  IconEye,
+  IconFocus,
+  IconFolderPlus,
+  IconLibrary,
+  IconListTree,
+  IconMinus,
+  IconPanelLeft,
+  IconPanelRight,
+  IconPlus,
+  IconSave,
+  IconSearch,
+  IconSettings,
+  IconSparkles,
+  IconSquare,
+  IconStar,
+  IconX,
+} from "./components/icons";
 import { allowAssetDir, createFolder, createNote, deleteEntry, listEntries, onVaultChanged, pickVault, readNote, readNoteOptional, renameEntry, startupVault, watchVault, writeNote } from "./lib/api";
 import type { EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
@@ -86,15 +114,41 @@ export default function App() {
   /** 待确认的删除。删笔记不可逆，先问一次。 */
   const [pendingDelete, setPendingDelete] = useState<{ path: string; isDir: boolean } | null>(null);
   /**
-   * 右侧面板当前页签：日记 / 目录。
+   * 右侧面板当前页签：日历 / 目录 / 统计。
    *
-   * 布局与 Obsidian 对齐：文件树常驻左侧，日记与目录这类"围绕当前笔记"的面板
-   * 放右侧。文件树没有页签——它就是左侧本体。
+   * 布局与 Obsidian 对齐：文件树常驻左侧；围绕当前笔记的面板（日记、目录）
+   * 与知识库统计放右侧。
    */
-  const [rightPanel, setRightPanel] = useState<"daily" | "outline">(() => {
+  const [rightPanel, setRightPanel] = useState<"daily" | "outline" | "stats">(() => {
     const stored = localStorage.getItem(SIDEBAR_KEY);
-    return stored === "outline" ? "outline" : "daily";
+    return stored === "outline" || stored === "stats" ? stored : "daily";
   });
+  /** 左侧文件树的名称过滤（空串 = 显示完整目录树）。 */
+  const [treeFilter, setTreeFilter] = useState("");
+  /** 全局命令面板（Ctrl+K）开关。 */
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  /** 左栏视图：知识库 / 收藏 / 最近。 */
+  const [leftView, setLeftView] = useState<"files" | "favorites" | "recents">("files");
+  /** 收藏的笔记（本机 localStorage）。 */
+  const [favorites, setFavorites] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("quicknote.favorites");
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  /** 最近打开的笔记（本机 localStorage，新的在前）。 */
+  const [recents, setRecents] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("quicknote.recents");
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  /** 专注模式：隐藏两侧栏与状态栏（Ctrl+Shift+F）。 */
+  const [zen, setZen] = useState(false);
   /** 光标是否在表格块内（表格工具栏的显示依据）。 */
   const [inTable, setInTable] = useState(false);
   /** 光标所在行（0 基；目录面板高亮当前标题）。 */
@@ -117,6 +171,71 @@ export default function App() {
 
   const applySettings = useCallback((patch: Partial<Settings>) => {
     setSettings(updateSettings(patch));
+  }, []);
+
+  // ---------------------------------------------------------------- 窗口控制
+
+  /** 无边框窗口：自绘最小化 / 最大化（还原）/ 关闭，顶栏即标题栏。 */
+  const appWindow = useMemo(() => getCurrentWindow(), []);
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let cancelled = false;
+    void appWindow
+      .isMaximized()
+      .then((value) => {
+        if (!cancelled) setMaximized(value);
+      })
+      .catch(() => {});
+    appWindow
+      .onResized(() => {
+        void appWindow
+          .isMaximized()
+          .then(setMaximized)
+          .catch(() => {});
+      })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [appWindow]);
+
+  // ---------------------------------------------------------------- 收藏与最近
+
+  const persistFavorites = useCallback((next: string[]) => {
+    try {
+      localStorage.setItem("quicknote.favorites", JSON.stringify(next));
+    } catch {
+      // 存不进去只影响下次启动的列表，不打断操作
+    }
+  }, []);
+
+  const toggleFavorite = useCallback(
+    (path: string) => {
+      const wasFavorite = favorites.includes(path);
+      const next = wasFavorite ? favorites.filter((p) => p !== path) : [...favorites, path];
+      setFavorites(next);
+      persistFavorites(next);
+      setStatus(wasFavorite ? "已取消收藏" : "已收藏");
+    },
+    [favorites, persistFavorites],
+  );
+
+  const recordRecent = useCallback((path: string) => {
+    setRecents((prev) => {
+      const next = [path, ...prev.filter((p) => p !== path)].slice(0, 15);
+      try {
+        localStorage.setItem("quicknote.recents", JSON.stringify(next));
+      } catch {
+        // 同上：列表丢一次不如打断打开笔记
+      }
+      return next;
+    });
   }, []);
 
   // ---------------------------------------------------------------- 软件更新
@@ -362,6 +481,12 @@ export default function App() {
   const noteCount = useMemo(
     () => entries.filter((entry) => !entry.isDir && entry.name.toLowerCase().endsWith(".md")).length,
     [entries],
+  );
+
+  /** 仓库目录名（顶栏胶囊按钮上只显示名字，不显示全路径）。 */
+  const vaultName = useMemo(
+    () => (vault ? vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || vault : null),
+    [vault],
   );
 
   /** 外部改动可能成批到达，合并成一次列表刷新。 */
@@ -675,6 +800,7 @@ export default function App() {
       if (!vault) return;
       // 已是这个标签且没有外部改动：什么都不做（重置会丢光标位置）
       if (path === activeTabRef.current && !staleTabs.current.has(path)) return;
+      recordRecent(path);
       if (dirtyRef.current) await saveNow();
       // 存量状态且文件没被外部改过：直接换上去，未保存内容与撤销历史都在
       if (stateStore.current.has(path) && !staleTabs.current.has(path)) {
@@ -961,6 +1087,21 @@ export default function App() {
       setOpenTabs((prev) =>
         prev.map((tab) => (affected(tab.path) ? { ...tab, path: remap(tab.path) } : tab)),
       );
+      // 收藏与最近列表跟着换键，否则指向不存在的旧路径
+      setFavorites((prev) => {
+        const next = prev.map((p) => (affected(p) ? remap(p) : p));
+        persistFavorites(next);
+        return next;
+      });
+      setRecents((prev) => {
+        const next = prev.map((p) => (affected(p) ? remap(p) : p));
+        try {
+          localStorage.setItem("quicknote.recents", JSON.stringify(next));
+        } catch {
+          // 忽略：与 recordRecent 同一容错
+        }
+        return next;
+      });
       if (affectedOpen && openPath) {
         const nextPath = remap(openPath);
         resourcesRef.current.notePath = nextPath;
@@ -1019,6 +1160,25 @@ export default function App() {
         }
       }
       await refresh(vault);
+      // 删掉的笔记从收藏与最近列表里移除，免得点开 404
+      setFavorites((prev) => {
+        const next = prev.filter(
+          (p) => p !== target.path && !p.startsWith(`${target.path}/`),
+        );
+        persistFavorites(next);
+        return next;
+      });
+      setRecents((prev) => {
+        const next = prev.filter(
+          (p) => p !== target.path && !p.startsWith(`${target.path}/`),
+        );
+        try {
+          localStorage.setItem("quicknote.recents", JSON.stringify(next));
+        } catch {
+          // 忽略
+        }
+        return next;
+      });
       setStatus(`已移入回收目录：${trashed}（可以找回）`);
       setError(null);
     } catch (e) {
@@ -1036,10 +1196,77 @@ export default function App() {
     [current],
   );
 
-  const changeRightPanel = useCallback((next: "daily" | "outline") => {
+  const changeRightPanel = useCallback((next: "daily" | "outline" | "stats") => {
     setRightPanel(next);
     localStorage.setItem(SIDEBAR_KEY, next);
   }, []);
+
+  /** 打开笔记并跳到指定行（全局搜索的「内容」结果用）；行号省略时只打开。 */
+  const openNoteAt = useCallback(
+    async (path: string, line?: number) => {
+      await openNote(path);
+      if (line !== undefined) jumpToLine(line);
+    },
+    [openNote, jumpToLine],
+  );
+
+  // ------------------------------------------------------------------ 快捷键
+
+  /** 快捷键动作表。命令面板按同一份文案生成动作项，这里集中定义避免两处漂移。 */
+  const shortcuts = useMemo(
+    () => ({
+      palette: () => setPaletteOpen((value) => !value),
+      newNote: () => beginCreate("note"),
+      newDiary: () => beginCreate("diary"),
+      newFolder: () => beginCreate("folder"),
+      save: () => void saveRef.current(),
+      toggleMode: () => changeMode(modeRef.current === "live" ? "source" : "live"),
+      toggleLeft: () => setLeftCollapsed((value) => !value),
+      toggleRight: () => setRightCollapsed((value) => !value),
+      openSettings: () => setShowSettings((value) => !value),
+      openVaultPicker: () => void openVault(),
+      syncNow: () => syncRef.current?.syncNow(),
+      zen: () => setZen((value) => !value),
+    }),
+    // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
+    [beginCreate, changeMode, openVault],
+  );
+
+  // 全局快捷键。CM 的键位只管编辑器内部；这里的键在任何焦点下都要生效。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const mod = event.ctrlKey || event.metaKey;
+      if (!mod) return;
+      const key = event.key.toLowerCase();
+      // Ctrl+K / Ctrl+P：命令面板（P 是 Obsidian 用户习惯的快速打开）
+      if (key === "k" || key === "p") {
+        event.preventDefault();
+        shortcuts.palette();
+      } else if (key === "n" && !event.shiftKey && !event.altKey) {
+        event.preventDefault();
+        shortcuts.newNote();
+      } else if (key === "s") {
+        event.preventDefault();
+        shortcuts.save();
+      } else if (key === "e") {
+        event.preventDefault();
+        shortcuts.toggleMode();
+      } else if (key === "b" && event.shiftKey) {
+        event.preventDefault();
+        shortcuts.toggleRight();
+      } else if (key === "f" && event.shiftKey) {
+        event.preventDefault();
+        shortcuts.zen();
+      } else if (key === "b") {
+        event.preventDefault();
+        shortcuts.toggleLeft();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [shortcuts]);
+
+  /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
   /**
    * M0 验收用：写盘后立刻回读，比较哈希与内容是否与原样一致。
@@ -1067,342 +1294,174 @@ export default function App() {
     }
   }, [vault, current]);
 
+  /** 命令面板的动作清单（快捷操作组）。 */
+  const paletteActions = useMemo<PaletteAction[]>(
+    () => [
+      { id: "new-note", title: "新建笔记", hint: "Ctrl+N", icon: "📝", run: shortcuts.newNote },
+      { id: "new-diary", title: "新建今日日记", icon: "📅", run: shortcuts.newDiary },
+      { id: "new-folder", title: "新建文件夹", icon: "📁", run: shortcuts.newFolder },
+      { id: "save", title: "保存当前笔记", hint: "Ctrl+S", icon: "💾", run: shortcuts.save },
+      { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: "Ctrl+E", icon: "🔀", run: shortcuts.toggleMode },
+      { id: "left", title: leftCollapsed ? "展开文件栏" : "收起文件栏", hint: "Ctrl+B", icon: "◧", run: shortcuts.toggleLeft },
+      { id: "right", title: rightCollapsed ? "展开右侧面板" : "收起右侧面板", hint: "Ctrl+Shift+B", icon: "◨", run: shortcuts.toggleRight },
+      { id: "zen", title: zen ? "退出专注模式" : "专注模式（隐藏侧栏）", hint: "Ctrl+Shift+F", icon: "🎯", run: shortcuts.zen },
+      { id: "sync", title: "立即同步", icon: "☁️", run: shortcuts.syncNow },
+      { id: "vault", title: "打开其他仓库…", icon: "📂", run: shortcuts.openVaultPicker },
+      { id: "settings", title: "打开设置", icon: "⚙️", run: shortcuts.openSettings },
+      { id: "roundtrip", title: "校验字节往返（写后读比对）", icon: "🧪", run: () => void verifyRoundTrip() },
+    ],
+    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip],
+  );
+
   return (
-    <div className="app">
-      <header className="toolbar">
-        <div className="brand">Quick Note</div>
-        <button type="button" className="btn" onClick={() => void openVault()}>
-          打开仓库
-        </button>
-        <button
-          type="button"
-          className="btn"
-          disabled={!vault}
-          onClick={() => vault && void refresh(vault).catch((e) => setError(String(e)))}
-        >
-          刷新列表
-        </button>
-        <span className="vault-path" title={vault ?? ""}>
-          {vault ?? "尚未选择仓库"}
-        </span>
-        <span className="spacer" />
-        <div className="mode-switch" role="group" aria-label="视图模式">
+    <div className={`app${zen ? " zen" : ""}`}>
+      <header className="topbar" data-tauri-drag-region>
+        <div className="topbar-side">
           <button
             type="button"
-            className={`seg${mode === "live" ? " is-on" : ""}`}
-            onClick={() => changeMode("live")}
-            title="渲染语法标记，光标所在行显示源码"
+            className={`icon-btn${leftCollapsed ? "" : " is-on"}`}
+            onClick={shortcuts.toggleLeft}
+            title="文件栏（Ctrl+B）"
+            aria-pressed={leftCollapsed}
           >
-            Live Preview
+            <IconPanelLeft size={16} />
           </button>
+          <div className="brand" data-tauri-drag-region>
+            <IconSparkles size={15} className="brand-mark" />
+            <span>Quick Note</span>
+          </div>
           <button
             type="button"
-            className={`seg${mode === "source" ? " is-on" : ""}`}
-            onClick={() => changeMode("source")}
-            title="显示 Markdown 原文"
+            className="vault-pill"
+            onClick={shortcuts.openVaultPicker}
+            title={vault ?? "点击选择仓库目录"}
           >
-            源码
+            {vaultName ?? "未选择仓库"}
           </button>
         </div>
-        {current && (
-          <>
+
+        <button
+          type="button"
+          className="searchbox"
+          onClick={shortcuts.palette}
+          title="全局搜索笔记与内容，或执行命令（Ctrl+K）"
+        >
+          <IconSearch size={14} />
+          <span className="searchbox-placeholder">搜索笔记、全文内容，或输入命令…</span>
+          <kbd className="searchbox-kbd">Ctrl K</kbd>
+        </button>
+
+        <div className="topbar-side topbar-end">
+          <div className="mode-switch" role="group" aria-label="视图模式">
             <button
               type="button"
-              className="btn"
-              disabled={!dirty}
-              onClick={() => void saveNow()}
-              title="Ctrl/Cmd + S"
+              className={`seg${mode === "live" ? " is-on" : ""}`}
+              onClick={() => changeMode("live")}
+              title="渲染语法标记，光标所在行显示源码（Ctrl+E 切换）"
             >
-              保存
+              <IconEye size={13} />
+              实时
             </button>
-            <button type="button" className="btn" onClick={() => void verifyRoundTrip()}>
-              校验往返
+            <button
+              type="button"
+              className={`seg${mode === "source" ? " is-on" : ""}`}
+              onClick={() => changeMode("source")}
+              title="显示 Markdown 原文（Ctrl+E 切换）"
+            >
+              <IconCode size={13} />
+              源码
             </button>
-          </>
-        )}
-        <span
-          className={`dirty-dot${dirty ? " is-dirty" : ""}`}
-          title={dirty ? "有未保存改动" : "已保存"}
-        />
-        <button
-          type="button"
-          className="btn"
-          aria-pressed={leftCollapsed}
-          onClick={() => setLeftCollapsed((value) => !value)}
-          title={leftCollapsed ? "展开文件栏" : "收起文件栏"}
-        >
-          {leftCollapsed ? "» 文件" : "« 文件"}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          aria-pressed={rightCollapsed}
-          onClick={() => setRightCollapsed((value) => !value)}
-          title={rightCollapsed ? "展开日记/目录面板" : "收起日记/目录面板"}
-        >
-          {rightCollapsed ? "« 面板" : "面板 »"}
-        </button>
-        <button
-          type="button"
-          className={`btn${showSettings ? " is-on" : ""}`}
-          onClick={() => setShowSettings((value) => !value)}
-        >
-          设置
-        </button>
+          </div>
+          <span
+            className={`save-chip${dirty ? " is-dirty" : ""}`}
+            title={dirty ? "有未保存改动，1 秒左右自动保存（Ctrl+S 立即保存）" : "所有改动已保存"}
+          >
+            <span className="save-chip-dot" />
+            {dirty ? "未保存" : "已保存"}
+          </span>
+          {current && dirty && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={shortcuts.save}
+              title="立即保存（Ctrl+S）"
+            >
+              <IconSave size={16} />
+            </button>
+          )}
+          <button
+            type="button"
+            className={`icon-btn${showSettings ? " is-on" : ""}`}
+            onClick={shortcuts.openSettings}
+            title="设置"
+          >
+            <IconSettings size={16} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn${zen ? " is-on" : ""}`}
+            onClick={shortcuts.zen}
+            title="专注模式（Ctrl+Shift+F）"
+            aria-pressed={zen}
+          >
+            <IconFocus size={16} />
+          </button>
+          <button
+            type="button"
+            className={`icon-btn${rightCollapsed ? "" : " is-on"}`}
+            onClick={shortcuts.toggleRight}
+            title="侧栏（Ctrl+Shift+B）"
+            aria-pressed={rightCollapsed}
+          >
+            <IconPanelRight size={16} />
+          </button>
+          <div className="window-controls" data-tauri-drag-region>
+            <button
+              type="button"
+              className="win-btn"
+              title="最小化"
+              onClick={() => void appWindow.minimize()}
+            >
+              <IconMinus size={14} />
+            </button>
+            <button
+              type="button"
+              className="win-btn"
+              title={maximized ? "向下还原" : "最大化"}
+              onClick={() => void appWindow.toggleMaximize()}
+            >
+              {maximized ? <IconCopy size={13} /> : <IconSquare size={13} />}
+            </button>
+            <button
+              type="button"
+              className="win-btn win-close"
+              title="关闭"
+              onClick={() => void appWindow.close()}
+            >
+              <IconX size={14} />
+            </button>
+          </div>
+        </div>
       </header>
 
-      {showSettings && (
-        <div className="settings-panel">
-          <label className="settings-row">
-            <span>主题</span>
-            <select
-              value={settings.theme}
-              onChange={(event) =>
-                applySettings({ theme: event.target.value as Settings["theme"] })
-              }
-            >
-              <option value="system">跟随系统</option>
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
-          </label>
-          <label className="settings-row">
-            <span>插入链接写法</span>
-            <select
-              value={settings.linkFormat}
-              onChange={(event) =>
-                applySettings({ linkFormat: event.target.value as Settings["linkFormat"] })
-              }
-            >
-              <option value="wiki">Wiki：![[图.png]]</option>
-              <option value="markdown">Markdown：![](/attachments/图.png)</option>
-            </select>
-          </label>
-          <label className="settings-row">
-            <span>粘贴时保存附件</span>
-            <input
-              type="checkbox"
-              checked={settings.savePastedAttachments}
-              onChange={(event) =>
-                applySettings({ savePastedAttachments: event.target.checked })
-              }
-            />
-          </label>
-          <Hint>
-            粘贴图片或文件会保存到附件目录（重名自动加序号，不覆盖已有文件），并在光标处插入链接。
-            附件目录在下方「日记与附件」分组里设置，与 Obsidian 插件共用；同步开启后贴的图会自动上传。
-          </Hint>
-
-          {/* 日记设置存在库内文件里，与 Obsidian 插件共用；上面几项存在本机。
-              两处混在一个面板里会让人以为"都是应用设置"，所以用标题把落点写清楚。 */}
-          <div className="settings-group">日记与附件（写入库内 {DAILY_CONFIG_FILE}，与 Obsidian 插件共用）</div>
-          <label className="settings-row">
-            <span>附件保存目录</span>
-            <input
-              type="text"
-              value={daily.settings.pastedImageFolder}
-              placeholder="attachments（留空即仓库根目录）"
-              onChange={(event) => daily.updateSettings({ pastedImageFolder: event.target.value })}
-            />
-          </label>
-          <Hint>
-            附件目录在库内配置里（键名与插件相同：pastedImageFolder），两边换用不用设两次；
-            同步开启后多台设备自动一致。改这里会写入库内文件。
-          </Hint>
-          <label className="settings-row">
-            <span>日记目录</span>
-            <input
-              type="text"
-              value={daily.settings.folder}
-              placeholder="日记（留空即仓库根目录）"
-              onChange={(event) => daily.updateSettings({ folder: event.target.value })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>日期格式</span>
-            <input
-              type="text"
-              value={daily.settings.dateFormat}
-              placeholder="YYYY-MM-DD"
-              onChange={(event) => daily.updateSettings({ dateFormat: event.target.value })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>启用日记模板</span>
-            <input
-              type="checkbox"
-              checked={daily.settings.dailyTemplateEnabled}
-              onChange={(event) =>
-                daily.updateSettings({ dailyTemplateEnabled: event.target.checked })
-              }
-            />
-          </label>
-          <label className="settings-row">
-            <span>日记模板文件</span>
-            <input
-              type="text"
-              value={daily.settings.dailyTemplatePath}
-              placeholder="模板/日记模板.md"
-              onChange={(event) => daily.updateSettings({ dailyTemplatePath: event.target.value })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>启用周记模板</span>
-            <input
-              type="checkbox"
-              checked={daily.settings.weeklyTemplateEnabled}
-              onChange={(event) =>
-                daily.updateSettings({ weeklyTemplateEnabled: event.target.checked })
-              }
-            />
-          </label>
-          <label className="settings-row">
-            <span>周记模板文件</span>
-            <input
-              type="text"
-              value={daily.settings.weeklyTemplatePath}
-              placeholder="模板/周记模板.md"
-              onChange={(event) => daily.updateSettings({ weeklyTemplatePath: event.target.value })}
-            />
-          </label>
-          <Hint>
-            日期格式是 moment 语法（插件同一套），它同时决定日记文件名与待办分桶。模板支持
-            {" "}<code>{"{{title}}"}</code>、<code>{"{{date}}"}</code>、<code>{"{{date:格式}}"}</code>、
-            <code>{"{{week}}"}</code>、<code>{"{{time}}"}</code>；未知占位符原样保留。
-            这几项与插件共用一份配置，改动会写到库内文件。
-          </Hint>
-
-          {/* 同步配置存在**本机**（应用配置目录），不进仓库：里面有服务端密码与令牌，
-              同步出去等于把凭据送到服务端、再经接口回到浏览器。 */}
-          <div className="settings-group">云同步（本机设置，不会写进仓库）</div>
-          <label className="settings-row">
-            <span>启用自动同步</span>
-            <input
-              type="checkbox"
-              checked={sync.config.enabled}
-              onChange={(event) => sync.updateConfig({ enabled: event.target.checked })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>服务端地址</span>
-            <input
-              type="text"
-              value={sync.config.serverUrl}
-              placeholder="http://your-server:8080"
-              onChange={(event) => sync.updateConfig({ serverUrl: event.target.value })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>账号</span>
-            <input
-              type="text"
-              value={sync.config.username}
-              autoComplete="off"
-              onChange={(event) => sync.updateConfig({ username: event.target.value })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>密码</span>
-            <input
-              type="password"
-              value={sync.config.password}
-              autoComplete="off"
-              onChange={(event) => sync.updateConfig({ password: event.target.value })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>推送范围</span>
-            <select
-              value={sync.config.scope}
-              onChange={(event) =>
-                sync.updateConfig({ scope: event.target.value as "folder" | "vault" })
-              }
-            >
-              <option value="folder">仅日记目录</option>
-              <option value="vault">整个仓库</option>
-            </select>
-          </label>
-          <label className="settings-row">
-            <span>云端仓库名</span>
-            <input
-              type="text"
-              value={sync.config.vaultName}
-              placeholder={`留空即用仓库文件夹名：${sync.vaultName}`}
-              onChange={(event) => sync.updateConfig({ vaultName: event.target.value })}
-            />
-          </label>
-          <Hint>
-            与 Obsidian 插件共用同一个云端仓库。仓库名要与插件所在库的名字一致，否则会同步到
-            另一个云端仓库（表现为「同步成功但数据没过来」）。正文、待办与<b>附件</b>（按笔记
-            引用上传、本地缺的从云端补下）都会同步；服务端地址、账号与密码只存在本机，
-            不会写进仓库。
-          </Hint>
-          <div className="settings-actions">
-            <button type="button" className="btn" onClick={() => sync.syncNow()}>
-              立即同步
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => sync.resetCursorAndSync()}
-              title="游标归零后重新全量拉取一次；本地状态异常时用它"
-            >
-              重置游标并重拉
-            </button>
-          </div>
-
-          <div className="settings-group">自定义样式（本机）</div>
-          <textarea
-            className="custom-css-input"
-            rows={6}
-            spellCheck={false}
-            value={customCssDraft}
-            placeholder={"/* 覆盖 Markdown 渲染样式，例如： */\n.cm-lp-heading { font-weight: 500; }\n.cm-lp-table { font-size: 12px; }"}
-            onChange={(event) => {
-              setCustomCssDraft(event.target.value);
-              saveCustomCss(event.target.value);
-              applyCustomCss(event.target.value);
-            }}
-          />
-          <Hint>
-            这段 CSS 会即时注入并保存在本机（不进仓库），用来微调 Markdown 渲染效果。
-            常用选择器：<code>.cm-content</code> 正文、<code>.cm-lp-heading</code> 标题行、
-            <code>.cm-lp-table</code> 表格、<code>.cm-lp-callout-note</code> 等 callout 容器、
-            <code>.cm-lp-mermaid</code> mermaid 图。清空即恢复默认。
-          </Hint>
-
-          {/* 版本与更新。检查走 GitHub 公开接口（匿名限额足够手动检查用）；
-              不做应用内自动安装——那需要签名密钥与更新清单服务器，现阶段带用户去发布页即可。 */}
-          <div className="settings-group">软件更新</div>
-          <div className="settings-row">
-            <span>当前版本</span>
-            <span className="settings-value">v{appVersion || "…"}</span>
-          </div>
-          <div className="settings-actions">
-            <button
-              type="button"
-              className="btn"
-              disabled={updateCheck.state === "checking"}
-              onClick={() => void checkUpdate()}
-            >
-              {updateCheck.state === "checking" ? "检查中…" : "检查更新"}
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void openReleasePage(updateCheck.url)}
-              title="在系统浏览器中打开 GitHub 发布页"
-            >
-              打开发布页
-            </button>
-          </div>
-          {updateCheck.state !== "idle" && (
-            <p className={`settings-hint${updateCheck.state === "error" ? " hint-error" : ""}`}>
-              {updateCheck.message}
-            </p>
-          )}
-        </div>
-      )}
+      <SettingsDialog
+        open={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={settings}
+        applySettings={applySettings}
+        daily={daily}
+        sync={sync}
+        customCssDraft={customCssDraft}
+        onCustomCssChange={(value) => {
+          setCustomCssDraft(value);
+          saveCustomCss(value);
+          applyCustomCss(value);
+        }}
+        appVersion={appVersion}
+        updateCheck={updateCheck}
+        checkUpdate={checkUpdate}
+        openReleasePage={(url) => void openReleasePage(url)}
+      />
 
       {error && (
         <div className="banner banner-error">
@@ -1515,6 +1574,17 @@ export default function App() {
             setMenu(null);
           }} />
           <div className="context-menu" style={{ left: menu.x, top: menu.y }}>
+            {!menu.isDir && menu.path.toLowerCase().endsWith(".md") && (
+              <button
+                type="button"
+                onClick={() => {
+                  toggleFavorite(menu.path);
+                  setMenu(null);
+                }}
+              >
+                {favorites.includes(menu.path) ? "取消收藏" : "收藏"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -1543,72 +1613,133 @@ export default function App() {
       )}
 
       <div className={`body${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}`}>
-        <aside className="sidebar">
-          <div className="sidebar-head">
-            <button
-              type="button"
-              className="mini-btn collapse-btn"
-              onClick={() => setLeftCollapsed(true)}
-              title="收起文件栏"
-              aria-label="收起文件栏"
-            >
-              «
-            </button>
-            <span className="sidebar-title">文件</span>
+        <aside className="sidebar sidebar-left">
+          <div className="panel-head">
+            <span className="panel-title">知识库</span>
+            <span className="panel-count" title="仓库内笔记数">{noteCount}</span>
             <span className="spacer" />
             <button
               type="button"
-              className="mini-btn"
+              className="icon-btn"
               disabled={!vault}
               onClick={() => beginCreate("diary")}
-                  title="新建今天的日记（按日期命名，想建普通笔记请在树里右键 → 新建笔记）"
-                >
-                  ＋日记
-                </button>
+              title="新建今天的日记（按日期命名）"
+            >
+              <IconCalendarPlus size={15} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              disabled={!vault}
+              onClick={() => beginCreate("folder")}
+              title="新建文件夹"
+            >
+              <IconFolderPlus size={15} />
+            </button>
+            <button
+              type="button"
+              className="icon-btn"
+              disabled={!vault}
+              onClick={() => beginCreate("note")}
+              title="新建笔记（Ctrl+N）"
+            >
+              <IconPlus size={15} />
+            </button>
+          </div>
+          <div className="left-view" role="tablist" aria-label="导航视图">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={leftView === "files"}
+              className={`left-view-tab${leftView === "files" ? " is-on" : ""}`}
+              onClick={() => setLeftView("files")}
+            >
+              <IconLibrary size={13} />
+              知识库
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={leftView === "favorites"}
+              className={`left-view-tab${leftView === "favorites" ? " is-on" : ""}`}
+              onClick={() => setLeftView("favorites")}
+            >
+              <IconStar size={13} />
+              收藏{favorites.length > 0 ? ` ${favorites.length}` : ""}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={leftView === "recents"}
+              className={`left-view-tab${leftView === "recents" ? " is-on" : ""}`}
+              onClick={() => setLeftView("recents")}
+            >
+              <IconClock size={13} />
+              最近
+            </button>
+          </div>
+          {leftView === "files" && (
+            <div className="sidebar-filter">
+              <IconSearch size={13} />
+              <input
+                type="text"
+                value={treeFilter}
+                placeholder="筛选笔记名…"
+                onChange={(event) => setTreeFilter(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") setTreeFilter("");
+                }}
+              />
+              {treeFilter && (
                 <button
                   type="button"
-                  className="mini-btn"
-                  disabled={!vault}
-                  onClick={() => beginCreate("folder")}
-                  title="新建文件夹"
+                  className="icon-btn filter-clear"
+                  onClick={() => setTreeFilter("")}
+                  title="清除筛选"
                 >
-                  ＋文件夹
+                  <IconX size={11} />
                 </button>
-              </div>
-              {(creating || renaming) && (
-                <div className="create-row">
-                  <input
-                    autoFocus
-                    type="text"
-                    value={draft}
-                    placeholder={
-                      renaming
-                        ? "新名称"
-                        : creating === "diary"
-                          ? "日记名字（今天：" + daily.today + "）"
-                          : creating === "note"
-                            ? "笔记名称，可写 子目录/名称"
-                            : "文件夹名称"
-                    }
-                    onChange={(event) => setDraft(event.target.value)}
-                    onFocus={(event) => event.currentTarget.select()}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") void (renaming ? submitRename() : submitCreate());
-                      if (event.key === "Escape") (renaming ? cancelRename : cancelCreate)();
-                    }}
-                  />
-                  <div className="create-hint">
-                    {renaming
-                      ? `重命名 ${renaming} · Enter 确认 / Esc 取消`
-                      : creating === "diary"
-                        ? `新建到 ${daily.settings.folder || "仓库根目录"} · 文件名 = 日期 + 空格 + 名字 · Enter 确认 / Esc 取消`
-                        : `新建到 ${(creating === "note" ? createFolderOverride : "") || createTargetFolder() || "仓库根目录"} · Enter 确认 / Esc 取消`}
-                  </div>
-                </div>
               )}
+            </div>
+          )}
+          {(creating || renaming) && (
+            <div className="create-row">
+              <input
+                autoFocus
+                type="text"
+                value={draft}
+                placeholder={
+                  renaming
+                    ? "新名称"
+                    : creating === "diary"
+                      ? "日记名字（今天：" + daily.today + "）"
+                      : creating === "note"
+                        ? "笔记名称，可写 子目录/名称"
+                        : "文件夹名称"
+                }
+                onChange={(event) => setDraft(event.target.value)}
+                onFocus={(event) => event.currentTarget.select()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") void (renaming ? submitRename() : submitCreate());
+                  if (event.key === "Escape") (renaming ? cancelRename : cancelCreate)();
+                }}
+              />
+              <div className="create-hint">
+                {renaming
+                  ? `重命名 ${renaming} · Enter 确认 / Esc 取消`
+                  : creating === "diary"
+                    ? `新建到 ${daily.settings.folder || "仓库根目录"} · 文件名 = 日期 + 空格 + 名字 · Enter 确认 / Esc 取消`
+                    : `新建到 ${(creating === "note" ? createFolderOverride : "") || createTargetFolder() || "仓库根目录"} · Enter 确认 / Esc 取消`}
+              </div>
+            </div>
+          )}
           <FileTree
             entries={entries}
             activePath={current?.path ?? null}
+            filter={treeFilter}
+            view={leftView}
+            favorites={favorites}
+            recents={recents}
             onOpen={(p) => void openNote(p)}
             onContext={openContextMenu}
           />
@@ -1646,7 +1777,7 @@ export default function App() {
                       void closeTab(tab.path);
                     }}
                   >
-                    ×
+                    <IconX size={11} />
                   </button>
                 </div>
               ))}
@@ -1676,14 +1807,33 @@ export default function App() {
               <button type="button" className="mini-btn" onClick={() => runTableCmd(formatTableAtCursor)} title="对齐所有管道（按显示宽度，中文算两格）">
                 对齐
               </button>
-              <span className="table-toolbar-hint">Tab 下一格 · Shift+Tab 上一格</span>
+              <span className="table-toolbar-hint">Tab 下一格 · Shift+Tab 上一格 · 单元格可直接点击编辑</span>
             </div>
           )}
-          <div className="editor-host" ref={hostRef} />
+          <div className={`editor-host${mode === "live" ? " is-live" : " is-source"}`} ref={hostRef} />
           {!current && (
             <div className="editor-empty">
+              <div className="editor-empty-logo">
+                <IconSparkles size={26} />
+              </div>
               <h2>Quick Note</h2>
-              <p>选择仓库目录后，点击左侧笔记开始编辑。</p>
+              <p>在左侧选择一篇笔记开始编辑，或从下面的快捷操作开始。</p>
+              <div className="editor-empty-actions">
+                <button type="button" className="btn" onClick={shortcuts.newNote}>
+                  <IconPlus size={14} /> 新建笔记
+                </button>
+                <button type="button" className="btn" onClick={shortcuts.newDiary}>
+                  <IconCalendarPlus size={14} /> 今日日记
+                </button>
+                <button type="button" className="btn btn-ghost" onClick={shortcuts.palette}>
+                  <IconSearch size={14} /> 全局搜索
+                </button>
+              </div>
+              <div className="editor-empty-keys">
+                <span><kbd>Ctrl K</kbd> 命令面板</span>
+                <span><kbd>Ctrl N</kbd> 新建笔记</span>
+                <span><kbd>Ctrl E</kbd> 切换实时 / 源码</span>
+              </div>
             </div>
           )}
           {leftCollapsed && (
@@ -1691,7 +1841,7 @@ export default function App() {
               type="button"
               className="sidebar-restore"
               onClick={() => setLeftCollapsed(false)}
-              title="展开文件栏"
+              title="展开文件栏（Ctrl+B）"
             >
               »
             </button>
@@ -1701,26 +1851,14 @@ export default function App() {
               type="button"
               className="sidebar-restore sidebar-restore-right"
               onClick={() => setRightCollapsed(false)}
-              title="展开面板"
+              title="展开面板（Ctrl+Shift+B）"
             >
               «
             </button>
           )}
         </main>
         <aside className="sidebar sidebar-right">
-          <div className="sidebar-head sidebar-head-right">
-            <button
-              type="button"
-              className="mini-btn collapse-btn"
-              onClick={() => setRightCollapsed(true)}
-              title="收起面板"
-              aria-label="收起面板"
-            >
-              »
-            </button>
-            <span className="sidebar-title">面板</span>
-          </div>
-          <div className="sidebar-tabs" role="tablist" aria-label="辅助面板">
+          <div className="sidebar-tabs" role="tablist" aria-label="右侧面板">
             <button
               type="button"
               role="tab"
@@ -1728,7 +1866,8 @@ export default function App() {
               className={`sidebar-tab${rightPanel === "daily" ? " is-on" : ""}`}
               onClick={() => changeRightPanel("daily")}
             >
-              日记
+              <IconCalendar size={13} />
+              日历
             </button>
             <button
               type="button"
@@ -1737,10 +1876,21 @@ export default function App() {
               className={`sidebar-tab${rightPanel === "outline" ? " is-on" : ""}`}
               onClick={() => changeRightPanel("outline")}
             >
+              <IconListTree size={13} />
               目录
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanel === "stats"}
+              className={`sidebar-tab${rightPanel === "stats" ? " is-on" : ""}`}
+              onClick={() => changeRightPanel("stats")}
+            >
+              <IconChart size={13} />
+              统计
+            </button>
           </div>
-          {rightPanel === "daily" ? (
+          {rightPanel === "daily" && (
             <CalendarPanel
               controller={daily}
               onOpen={(p) => void openNote(p)}
@@ -1748,7 +1898,8 @@ export default function App() {
               onOpenWeekly={(weekKey, mondayKey) => void openWeekly(weekKey, mondayKey)}
               onContext={openContextMenu}
             />
-          ) : (
+          )}
+          {rightPanel === "outline" && (
             <OutlinePanel
               getView={() => viewRef.current}
               revision={revision}
@@ -1756,6 +1907,9 @@ export default function App() {
               cursorLine={cursorLine}
               onJump={jumpToLine}
             />
+          )}
+          {rightPanel === "stats" && (
+            <StatsPanel entries={entries} daily={daily} onOpen={(p) => void openNote(p)} />
           )}
         </aside>
       </div>
@@ -1790,6 +1944,15 @@ export default function App() {
         </button>
         <span className="status-cell muted">{noteCount} 篇</span>
       </footer>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        entries={entries}
+        vault={vault}
+        onOpenNote={(path, line) => void openNoteAt(path, line)}
+        actions={paletteActions}
+      />
     </div>
   );
 }
@@ -1808,28 +1971,4 @@ function syncLabel(status: string, lastSyncAt: number, error: string | null): st
   const when = new Date(lastSyncAt);
   const pad = (value: number) => String(value).padStart(2, "0");
   return `已同步 ${pad(when.getHours())}:${pad(when.getMinutes())}`;
-}
-
-/**
- * 设置面板里的说明文字：默认只显示一个「?」，点击才展开。
- *
- * 提示是给第一次用的人看的；天天用的人只需要控件本身。四段说明常驻的话，
- * 面板会高得离谱（曾经为此出过"面板挡住状态栏"的问题），折叠是共同解。
- */
-function Hint({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <p className="settings-hint">
-      <button
-        type="button"
-        className="hint-toggle"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        title={open ? "收起说明" : "查看说明"}
-      >
-        ?
-      </button>
-      {open && <span className="hint-body">{children}</span>}
-    </p>
-  );
 }

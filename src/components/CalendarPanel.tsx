@@ -163,40 +163,41 @@ export default function CalendarPanel({
 
   return (
     <div className="calendar">
-      <div className="cal-head">
-        <button
-          type="button"
-          className="mini-btn cal-nav"
-          onClick={() => setViewMonth((value) => value.clone().subtract(1, "month"))}
-          title="上个月"
-          aria-label="上个月"
-        >
-          ‹
-        </button>
-        <span className="cal-title">{monthTitle(viewMonth)}</span>
-        <button
-          type="button"
-          className="mini-btn cal-nav"
-          onClick={() => setViewMonth((value) => value.clone().add(1, "month"))}
-          title="下个月"
-          aria-label="下个月"
-        >
-          ›
-        </button>
-        <button
-          type="button"
-          className="mini-btn cal-today-btn"
-          onClick={() => {
-            // 既要跳回本月，也要把选中日切到今天：只跳月的话，当天日记、待办、
-            // 统计还停在别的日期上，看起来像"按钮没起作用"
-            setViewMonth(moment().startOf("month"));
-            setSelectedDate(today);
-          }}
-          title="回到今天并选中"
-        >
-          今天
-        </button>
-      </div>
+      <div className="cal-card">
+        <div className="cal-head">
+          <button
+            type="button"
+            className="mini-btn cal-nav"
+            onClick={() => setViewMonth((value) => value.clone().subtract(1, "month"))}
+            title="上个月"
+            aria-label="上个月"
+          >
+            ‹
+          </button>
+          <span className="cal-title">{monthTitle(viewMonth)}</span>
+          <button
+            type="button"
+            className="mini-btn cal-nav"
+            onClick={() => setViewMonth((value) => value.clone().add(1, "month"))}
+            title="下个月"
+            aria-label="下个月"
+          >
+            ›
+          </button>
+          <button
+            type="button"
+            className="mini-btn cal-today-btn"
+            onClick={() => {
+              // 既要跳回本月，也要把选中日切到今天：只跳月的话，当天日记、待办、
+              // 统计还停在别的日期上，看起来像"按钮没起作用"
+              setViewMonth(moment().startOf("month"));
+              setSelectedDate(today);
+            }}
+            title="回到今天并选中"
+          >
+            今天
+          </button>
+        </div>
 
       <div className="cal-grid">
         <div className="cal-cell cal-weekday cal-week-col">W</div>
@@ -253,50 +254,53 @@ export default function CalendarPanel({
           {controller.todayWords === null ? "今日未写" : `今日 ${controller.todayWords} 字`}
         </span>
       </div>
+      </div>
 
       {/* 当天日记：选中日期已创建的日记，点名字打开，行尾 ⋯ 与右键是同一份菜单。
           同一天可以有多篇（插件就是靠这块列出来的），所以「＋ 新建」始终可用。 */}
-      <div className="cal-daynotes">
-        <div className="cal-daynotes-head">
-          <span className="cal-daynotes-title">当天日记（{dayNotes.length}）</span>
-          <button
-            type="button"
-            className="mini-btn cal-daynotes-add"
-            onClick={() => beginNaming(selectedDate)}
-            title={`在 ${selectedDate} 再建一篇日记`}
-          >
-            ＋ 新建
-          </button>
-        </div>
-        {dayNotes.length === 0 && <div className="cal-daynotes-empty">当天还没有日记</div>}
-        {dayNotes.map((path) => (
-          <div
-            className="cal-daynote"
-            key={path}
-            title={path}
-            onClick={() => onOpen(path)}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              onContext(path, false, event.clientX, event.clientY);
-            }}
-          >
-            <span className="cal-daynote-name">{baseNameOf(path)}</span>
+      <div className="cal-card">
+        <div className="cal-daynotes">
+          <div className="cal-daynotes-head">
+            <span className="cal-daynotes-title">当天日记（{dayNotes.length}）</span>
             <button
               type="button"
-              className="cal-more"
-              aria-label="更多操作"
-              title="重命名 / 删除"
-              onClick={(event) => {
-                // 与右键同一份菜单；用按钮自身的右下角定位，菜单才会贴着它出现
-                event.stopPropagation();
-                const rect = event.currentTarget.getBoundingClientRect();
-                onContext(path, false, rect.right, rect.bottom);
-              }}
+              className="mini-btn cal-daynotes-add"
+              onClick={() => beginNaming(selectedDate)}
+              title={`在 ${selectedDate} 再建一篇日记`}
             >
-              ⋯
+              ＋ 新建
             </button>
           </div>
-        ))}
+          {dayNotes.length === 0 && <div className="cal-daynotes-empty">当天还没有日记</div>}
+          {dayNotes.map((path) => (
+            <div
+              className="cal-daynote"
+              key={path}
+              title={path}
+              onClick={() => onOpen(path)}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onContext(path, false, event.clientX, event.clientY);
+              }}
+            >
+              <span className="cal-daynote-name">{baseNameOf(path)}</span>
+              <button
+                type="button"
+                className="cal-more"
+                aria-label="更多操作"
+                title="重命名 / 删除"
+                onClick={(event) => {
+                  // 与右键同一份菜单；用按钮自身的右下角定位，菜单才会贴着它出现
+                  event.stopPropagation();
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  onContext(path, false, rect.right, rect.bottom);
+                }}
+              >
+                ⋯
+              </button>
+            </div>
+          ))}
+        </div>
       </div>
 
       {namingDate && (
@@ -328,141 +332,143 @@ export default function CalendarPanel({
         </div>
       )}
 
-      <div className="cal-section-head">
-        <span className="cal-section-title">待办 · {selectedDate || "—"}</span>
-        <span className="cal-pending">{pending} 项未完成</span>
-      </div>
-
-      {showCarryOver && (
-        <div className="cal-carryover">
-          <span>昨天有 {yesterdayPending} 项待办未完成</span>
-          <span className="spacer" />
-          <button
-            type="button"
-            className="mini-btn cal-carryover-btn"
-            onClick={() => controller.moveTodo(yesterday, today)}
-            title={`把 ${yesterday} 未完成的待办顺延到 ${today}（带「遗留」前缀）`}
-          >
-            顺延到今天
-          </button>
+      <div className="cal-card">
+        <div className="cal-section-head">
+          <span className="cal-section-title">待办 · {selectedDate || "—"}</span>
+          <span className="cal-pending">{pending} 项未完成</span>
         </div>
-      )}
 
-      <div className="cal-todos">
-        {todos.length === 0 && <div className="cal-empty">暂无待办，添加一条吧</div>}
-        {todos.map(({ item, index }) => (
-          <div className="cal-todo" key={item.id} data-todo-index={index}>
-            <input
-              type="checkbox"
-              checked={item.done}
-              onChange={() => controller.toggleTodo(selectedDate, index)}
-              title={item.done ? "标记为未完成" : "标记为已完成"}
-            />
-            {editingId === item.id ? (
+        {showCarryOver && (
+          <div className="cal-carryover">
+            <span>昨天有 {yesterdayPending} 项待办未完成</span>
+            <span className="spacer" />
+            <button
+              type="button"
+              className="mini-btn cal-carryover-btn"
+              onClick={() => controller.moveTodo(yesterday, today)}
+              title={`把 ${yesterday} 未完成的待办顺延到 ${today}（带「遗留」前缀）`}
+            >
+              顺延到今天
+            </button>
+          </div>
+        )}
+
+        <div className="cal-todos">
+          {todos.length === 0 && <div className="cal-empty">暂无待办，添加一条吧</div>}
+          {todos.map(({ item, index }) => (
+            <div className="cal-todo" key={item.id} data-todo-index={index}>
               <input
-                autoFocus
-                type="text"
-                className="cal-todo-edit"
-                value={editDraft}
-                onChange={(event) => setEditDraft(event.target.value)}
-                onBlur={submitEditTodo}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") submitEditTodo();
-                  if (event.key === "Escape") {
-                    setEditingId(null);
-                    setEditDraft("");
-                  }
-                }}
-                title="回车保存，Esc 取消"
+                type="checkbox"
+                checked={item.done}
+                onChange={() => controller.toggleTodo(selectedDate, index)}
+                title={item.done ? "标记为未完成" : "标记为已完成"}
               />
-            ) : (
-              <>
-                <span
-                  className={`cal-todo-text${item.done ? " is-done" : ""}`}
-                  onDoubleClick={() => beginEditTodo(item.id, item.text)}
-                  title="双击修改文字"
-                >
-                  {item.text}
-                </span>
+              {editingId === item.id ? (
+                <input
+                  autoFocus
+                  type="text"
+                  className="cal-todo-edit"
+                  value={editDraft}
+                  onChange={(event) => setEditDraft(event.target.value)}
+                  onBlur={submitEditTodo}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") submitEditTodo();
+                    if (event.key === "Escape") {
+                      setEditingId(null);
+                      setEditDraft("");
+                    }
+                  }}
+                  title="回车保存，Esc 取消"
+                />
+              ) : (
+                <>
+                  <span
+                    className={`cal-todo-text${item.done ? " is-done" : ""}`}
+                    onDoubleClick={() => beginEditTodo(item.id, item.text)}
+                    title="双击修改文字"
+                  >
+                    {item.text}
+                  </span>
+                  <button
+                    type="button"
+                    className="cal-todo-more"
+                    aria-label="待办操作"
+                    title="修改 / 复制 / 删除"
+                    onClick={(event) => {
+                      // 与当天日记行的 ⋯ 同一套交互：按钮自身右下角定位
+                      event.stopPropagation();
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setTodoMenu({ index, id: item.id, x: rect.right, y: rect.bottom });
+                    }}
+                  >
+                    ⋯
+                  </button>
+                </>
+              )}
+            </div>
+          ))}
+
+          {todoMenu && (
+            <>
+              {/* 点空白处关闭菜单 */}
+              <div
+                className="menu-backdrop"
+                onClick={() => setTodoMenu(null)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setTodoMenu(null);
+                }}
+              />
+              <div className="context-menu" style={{ left: todoMenu.x, top: todoMenu.y }}>
                 <button
                   type="button"
-                  className="cal-todo-more"
-                  aria-label="待办操作"
-                  title="修改 / 复制 / 删除"
-                  onClick={(event) => {
-                    // 与当天日记行的 ⋯ 同一套交互：按钮自身右下角定位
-                    event.stopPropagation();
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    setTodoMenu({ index, id: item.id, x: rect.right, y: rect.bottom });
+                  onClick={() => {
+                    const row = todos.find(({ item }) => item.id === todoMenu.id);
+                    if (row) beginEditTodo(row.item.id, row.item.text);
+                    setTodoMenu(null);
                   }}
                 >
-                  ⋯
+                  修改
                 </button>
-              </>
-            )}
-          </div>
-        ))}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const row = todos.find(({ item }) => item.id === todoMenu.id);
+                    if (row) void copyTodo(row.item.text);
+                    setTodoMenu(null);
+                  }}
+                >
+                  复制
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  onClick={() => {
+                    controller.deleteTodo(selectedDate, todoMenu.index);
+                    setTodoMenu(null);
+                  }}
+                >
+                  删除…
+                </button>
+              </div>
+            </>
+          )}
+        </div>
 
-        {todoMenu && (
-          <>
-            {/* 点空白处关闭菜单 */}
-            <div
-              className="menu-backdrop"
-              onClick={() => setTodoMenu(null)}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                setTodoMenu(null);
-              }}
-            />
-            <div className="context-menu" style={{ left: todoMenu.x, top: todoMenu.y }}>
-              <button
-                type="button"
-                onClick={() => {
-                  const row = todos.find(({ item }) => item.id === todoMenu.id);
-                  if (row) beginEditTodo(row.item.id, row.item.text);
-                  setTodoMenu(null);
-                }}
-              >
-                修改
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  const row = todos.find(({ item }) => item.id === todoMenu.id);
-                  if (row) void copyTodo(row.item.text);
-                  setTodoMenu(null);
-                }}
-              >
-                复制
-              </button>
-              <button
-                type="button"
-                className="danger"
-                onClick={() => {
-                  controller.deleteTodo(selectedDate, todoMenu.index);
-                  setTodoMenu(null);
-                }}
-              >
-                删除…
-              </button>
-            </div>
-          </>
-        )}
-      </div>
-
-      <div className="cal-todo-add">
-        <input
-          type="text"
-          value={todoDraft}
-          placeholder="添加待办，回车确认"
-          onChange={(event) => setTodoDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") submitTodo();
-          }}
-        />
-        <button type="button" className="mini-btn" onClick={submitTodo} disabled={!todoDraft.trim()}>
-          添加
-        </button>
+        <div className="cal-todo-add">
+          <input
+            type="text"
+            value={todoDraft}
+            placeholder="添加待办，回车确认"
+            onChange={(event) => setTodoDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") submitTodo();
+            }}
+          />
+          <button type="button" className="mini-btn" onClick={submitTodo} disabled={!todoDraft.trim()}>
+            添加
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -53,7 +53,7 @@ async function clickButton(ws, text) {
   return evaluate(
     ws,
     `(() => {
-       const button = [...document.querySelectorAll('.sidebar button')].find(b => b.textContent.includes(${JSON.stringify(text)}));
+       const button = [...document.querySelectorAll('.sidebar button')].find(b => b.title === ${JSON.stringify(text)} || b.textContent.includes(${JSON.stringify(text)}));
        if (!button) return false;
        button.click();
        return true;
@@ -179,7 +179,7 @@ await sleep(800);
 // ---------------------------------------------------------------- 新建文件夹
 // 先建文件夹：此时打开的笔记在 日记/ 下，目标目录确定是 日记/。
 // （新建的笔记会被立刻打开，目标目录会随之下沉到该笔记所在目录——后面的断言按此调整。）
-check(await clickButton(ws, "＋文件夹"), "点击「＋文件夹」");
+check(await clickButton(ws, "新建文件夹"), "点击「＋文件夹」");
 await typeName(ws, "创建测试目录");
 check(
   existsSync(join(vault, FOLDER)) && statSync(join(vault, FOLDER)).isDirectory(),

@@ -51,6 +51,7 @@ pub fn run() {
             vault::list_entries,
             vault::read_note,
             vault::read_note_optional,
+            vault::search_vault,
             vault::write_note,
             vault::write_attachment,
             vault::create_note,

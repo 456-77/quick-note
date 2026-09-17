@@ -100,6 +100,23 @@ export const readNote = (vault: string, path: string) =>
 export const readNoteOptional = (vault: string, path: string) =>
   invoke<NoteContent | null>("read_note_optional", { vault, path });
 
+/** 全文搜索的一个命中。 */
+export interface SearchHit {
+  path: string;
+  /** 命中行（0 基）。 */
+  line: number;
+  /** 命中行文本（Rust 侧已截断超长行）。 */
+  text: string;
+}
+
+/**
+ * 仓库内全文搜索（大小写不敏感，空格分隔多个关键词，全部命中才算）。
+ *
+ * Rust 侧逐文件扫描，个人库量级下是毫秒级的；调用方自行防抖即可。
+ */
+export const searchVault = (vault: string, query: string, limit = 60) =>
+  invoke<SearchHit[]>("search_vault", { vault, query, limit });
+
 export const writeNote = (vault: string, path: string, content: string, hasBom: boolean) =>
   invoke<WriteResult>("write_note", { vault, path, content, hasBom });
 

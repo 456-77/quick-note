@@ -19,6 +19,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use ureq::http::{Request, Response};
+use ureq::tls::{TlsConfig, TlsProvider};
 use ureq::{Agent, Body};
 
 /// 默认超时。首轮同步可能一次推很多篇，比普通请求给得宽一些。
@@ -48,6 +49,14 @@ fn build_agent(timeout_ms: Option<u64>) -> Agent {
         // 4xx/5xx 不当异常：调用方要看的正是状态码本身
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
+        // ureq 的 TlsConfig 默认 provider 是 rustls，而我们只编译了 native-tls
+        // （Windows 上走 SChannel，不引入 C 依赖）——不显式指认的话，第一个 https
+        // 请求就会 panic（"provider is Rustls but feature is not enabled: rustls"）。
+        .tls_config(
+            TlsConfig::builder()
+                .provider(TlsProvider::NativeTls)
+                .build(),
+        )
         .build()
         .new_agent()
 }
@@ -150,5 +159,22 @@ mod tests {
         );
         let message = result.err().expect("应当报错");
         assert!(message.starts_with("无法连接同步服务器"), "{message}");
+    }
+
+    /// 手动验证：`cargo test --lib net::tests::https_request_reaches_github -- --ignored`
+    /// 依赖外网，不进常规测试；它守住的是"native-tls provider 必须显式指认"这个坑。
+    #[test]
+    #[ignore = "需要外网"]
+    fn https_request_reaches_github() {
+        let result = send_once(
+            "GET",
+            "https://api.github.com/repos/456-77/quick-note/releases/latest",
+            vec![HttpHeader { name: "User-Agent".into(), value: "quick-note".into() }],
+            None,
+            None,
+            Some(15_000),
+        );
+        let response = result.expect("https 请求应当成功（TLS provider 配置正确）");
+        assert_eq!(response.status, 200, "GitHub API 应返回 200");
     }
 }

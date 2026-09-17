@@ -61,7 +61,7 @@ async function clickAt(ws, x, y) {
 const editorText = (ws) => evaluate(ws, `document.querySelector('.cm-content').textContent`);
 const bannerText = (ws) => evaluate(ws, `document.querySelector('.banner-warn')?.textContent ?? null`);
 const isDirty = (ws) =>
-  evaluate(ws, `document.querySelector('.dirty-dot')?.classList.contains('is-dirty') ?? false`);
+  evaluate(ws, `document.querySelector('.save-chip')?.classList.contains('is-dirty') ?? false`);
 
 const original = readFileSync(filePath, "utf8");
 

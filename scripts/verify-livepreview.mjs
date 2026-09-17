@@ -153,13 +153,18 @@ check(
 // 5. 围栏代码块。
 // 注意：mermaid 块由 StateField 整块替换成图，插件会跳过它们，
 // 所以这里只剩下普通代码块的装饰。
-const infos = widgetOf(A.items, "CodeInfoWidget");
+const infos = widgetOf(A.items, "CodeHeaderWidget");
 check(
   infos.length === 1,
-  "只有普通代码块的语言标签换成小部件（mermaid 已整块替换成图）",
+  "只有普通代码块的头部条换成小部件（语言名+复制；mermaid 已整块替换成图）",
   `实际=${infos.length}`,
 );
 check(infos[0]?.widget?.info === "ts", "该代码块语言为 ts", `实际=${infos[0]?.widget?.info}`);
+check(
+  typeof infos[0]?.widget?.code === "string" && infos[0].widget.code.includes("answer"),
+  "头部条携带代码文本（复制按钮的数据源）",
+  `实际=${infos[0]?.widget?.code?.slice(0, 40)}`,
+);
 check(
   withClass(A.items, "cm-lp-codeblock").length >= 3,
   "普通代码块各行都有底色装饰",

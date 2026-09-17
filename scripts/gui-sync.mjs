@@ -566,7 +566,7 @@ async function openSettings(ws) {
   if (!exists) {
     await evaluate(
       ws,
-      `[...document.querySelectorAll('header button')].find(b => b.textContent.trim() === '设置')?.click(), true`,
+      `document.querySelector('.topbar .icon-btn[title="设置"]')?.click(), true`,
     );
     await sleep(250);
   }
@@ -842,7 +842,7 @@ try {
   await evaluate(
     ws,
     `(() => {
-       const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent === '日记');
+       const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent.trim() === '日历');
        tab.click();
        return true;
      })()`,

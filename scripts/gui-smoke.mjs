@@ -99,7 +99,7 @@ const brand = await evaluate(ws, `document.querySelector('.brand')?.textContent 
 check(brand === "Quick Note", `标题正确（${brand}）`);
 
 // 3) 仓库路径（来自命令行参数，经 Rust 命令返回）
-const vaultPath = await evaluate(ws, `document.querySelector('.vault-path')?.textContent ?? ''`);
+const vaultPath = await evaluate(ws, `document.querySelector('.vault-pill')?.textContent ?? ''`);
 check(vaultPath.includes("test-vault"), `仓库路径已载入（${vaultPath}）`);
 
 // 4) 文件树内容（证明 list_notes 经 IPC 返回并渲染）
@@ -141,7 +141,7 @@ check(/CRLF/.test(statusText), `状态栏报告换行符为 CRLF`);
 check(/BOM\s*无/.test(statusText), "状态栏报告无 BOM");
 
 // 7) 未做任何编辑，不应标记为脏
-const dirty = await evaluate(ws, `document.querySelector('.dirty-dot')?.classList.contains('is-dirty')`);
+const dirty = await evaluate(ws, `document.querySelector('.save-chip')?.classList.contains('is-dirty')`);
 check(dirty === false, "仅打开文件不产生未保存状态");
 
 ws.close();

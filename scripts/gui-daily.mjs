@@ -206,7 +206,7 @@ try {
   await evaluate(
     ws,
     `(() => {
-       const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent === '日记');
+       const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent.trim() === '日历');
        tab.click();
        return true;
      })()`,
@@ -223,7 +223,7 @@ try {
        const left = document.querySelector('.sidebar:not(.sidebar-right)');
        return {
          right: !!right,
-         rightTabs: right ? [...right.querySelectorAll('.sidebar-tab')].map(b => b.textContent) : [],
+         rightTabs: right ? [...right.querySelectorAll('.sidebar-tab')].map(b => b.textContent.trim()) : [],
          calInRight: !!right?.querySelector('.cal-grid'),
          leftHasTree: !!left?.querySelector('.tree-file'),
          leftHasTabbar: !!left?.querySelector('.sidebar-tabs'),
@@ -231,7 +231,7 @@ try {
      })()`,
   );
   check(layout.right === true, "右侧面板存在");
-  check(layout.rightTabs.join(",") === "日记,目录", "右侧面板只有 日记/目录 两个页签", JSON.stringify(layout.rightTabs));
+  check(layout.rightTabs.join(",") === "日历,目录,统计", "右侧面板只有 日记/目录 两个页签", JSON.stringify(layout.rightTabs));
   check(layout.calInRight === true, "日历渲染在右侧面板内");
   check(layout.leftHasTree === true, "文件树常驻左栏");
   check(layout.leftHasTabbar === false, "左栏没有页签（文件就是左栏本体）");
@@ -803,7 +803,7 @@ try {
   // 设置面板里显示的应当是库内配置的值（证明配置真的读出来了）
   await evaluate(
     ws,
-    `[...document.querySelectorAll('header button')].find(b => b.textContent === '设置').click()`,
+    `document.querySelector('.topbar .icon-btn[title="设置"]').click()`,
   );
   await sleep(300);
   const settingsValues = await evaluate(

@@ -31,7 +31,8 @@ const DEFAULTS: Settings = {
   // 默认 wiki：Obsidian 开启 wikilink 时（默认）粘贴图片写的就是 ![[图.png]]
   linkFormat: "wiki",
   savePastedAttachments: true,
-  theme: "system",
+  // 默认深色：这套界面按"深色高级"设计（浅色仍可在设置里切换/跟随系统）
+  theme: "dark",
 };
 
 function load(): Settings {

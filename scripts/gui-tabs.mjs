@@ -212,19 +212,13 @@ try {
     await evaluate(ws, `!!document.querySelector('.sidebar:not(.sidebar-right)')`),
     "左栏（文件）可见",
   );
-  const toggleCollapse = async (headSel, cls, want) => {
-    // 面板头部的折叠钮（Obsidian 同位置）；初始状态不确定（localStorage 残留），
+  const toggleByTopbar = async (titlePrefix, cls, want) => {
+    // 顶栏的面板开关（图标钮，按 title 前缀定位）；初始状态不确定（localStorage 残留），
     // "点击 → 轮询"最多试三次：第一次点击可能只是把状态从"已经是 want"翻走
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await evaluate(
         ws,
-        `(() => {
-           const head = document.querySelector(${JSON.stringify(headSel)});
-           const btn = head?.querySelector(".collapse-btn");
-           if (!btn) return false;
-           btn.click();
-           return true;
-         })()`,
+        `document.querySelector('.topbar .icon-btn[title^="${titlePrefix}"]')?.click()`,
       );
       for (let i = 0; i < 8; i += 1) {
         await sleep(200);
@@ -237,32 +231,13 @@ try {
     }
     return false;
   };
-  const toggleByToolbar = async (label, cls, want) => {
-    // 兜底：工具栏按钮（收起后编辑器旁还有悬浮恢复钮，工具栏按钮始终可用）
-    await evaluate(
-      ws,
-      `[...document.querySelectorAll('header .btn')].find(b => b.textContent.includes(${JSON.stringify(label)}))?.click()`,
-    );
-    for (let i = 0; i < 8; i += 1) {
-      await sleep(200);
-      const has = await evaluate(
-        ws,
-        `document.querySelector(".body").classList.contains(${JSON.stringify(cls)})`,
-      );
-      if (has === want) return true;
-    }
-    return false;
-  };
-  check(
-    await toggleCollapse(".sidebar:not(.sidebar-right)", "left-collapsed", true),
-    "点面板头部收起钮收起左栏",
-  );
-  check(await toggleByToolbar("文件", "left-collapsed", false), "工具栏开关展开左栏");
-  check(await toggleCollapse(".sidebar-right", "right-collapsed", true), "点面板头部收起钮收起右栏");
-  check(await toggleByToolbar("面板", "right-collapsed", false), "工具栏开关展开右栏");
+  check(await toggleByTopbar("文件栏", "left-collapsed", true), "顶栏开关收起左栏");
+  check(await toggleByTopbar("文件栏", "left-collapsed", false), "顶栏开关展开左栏");
+  check(await toggleByTopbar("侧栏", "right-collapsed", true), "顶栏开关收起右栏");
+  check(await toggleByTopbar("侧栏", "right-collapsed", false), "顶栏开关展开右栏");
   // 收起状态下编辑器旁的悬浮恢复钮可用
   check(
-    await toggleCollapse(".sidebar:not(.sidebar-right)", "left-collapsed", true),
+    await toggleByTopbar("文件栏", "left-collapsed", true),
     "再次收起左栏（为恢复钮测试做准备）",
   );
   check(
@@ -289,7 +264,7 @@ try {
   await evaluate(
     ws,
     `(() => {
-       const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent === '目录');
+       const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent.trim() === '目录');
        tab?.click();
        return true;
      })()`,
@@ -320,7 +295,7 @@ try {
   check(
     await evaluate(
       ws,
-      `(() => { const t = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent === '目录'); t?.click(); return true; })()`,
+      `(() => { const t = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent.trim() === '目录'); t?.click(); return true; })()`,
     ),
     "切回目录面板",
   );

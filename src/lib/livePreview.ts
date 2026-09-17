@@ -27,7 +27,14 @@ import { StateEffect, StateField } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { insertColumn, insertRow, parseTableBlock, type TableBlock } from "./table.ts";
+import {
+  formatTable,
+  insertColumn,
+  insertRow,
+  normalizeColumns,
+  parseTableBlock,
+  type TableBlock,
+} from "./table.ts";
 import { renderEmbeddedNote } from "./embed.ts";
 import {
   findComments,
@@ -268,24 +275,63 @@ class RuleWidget extends WidgetType {
   }
 }
 
-/** 围栏代码块的语言标签。 */
-class CodeInfoWidget extends WidgetType {
+/**
+ * 围栏代码块的头部条：语言名 + 一键复制。
+ *
+ * 挂在起始围栏行（```ts 那一行）上，与语言标签同一位置。复制按钮在 mousedown
+ * 就 preventDefault + stopPropagation——CM 若收到这个按下事件会把光标放进围栏块，
+ * 该行随即退回源码、按钮在 click 触发前就没了（正是要防的竞态）。
+ */
+class CodeHeaderWidget extends WidgetType {
   readonly info: string;
+  readonly code: string;
 
-  constructor(info: string) {
+  constructor(info: string, code: string) {
     super();
     this.info = info;
+    this.code = code;
   }
 
-  eq(other: CodeInfoWidget) {
-    return other.info === this.info;
+  eq(other: CodeHeaderWidget) {
+    return other.info === this.info && other.code === this.code;
   }
 
   toDOM() {
-    const span = document.createElement("span");
-    span.className = "cm-lp-codeinfo";
-    span.textContent = this.info;
-    return span;
+    const box = document.createElement("span");
+    box.className = "cm-lp-codehead";
+
+    const chip = document.createElement("span");
+    chip.className = "cm-lp-codeinfo";
+    chip.textContent = this.info || "代码";
+
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "cm-lp-codecopy";
+    copy.textContent = "复制";
+    copy.title = "复制代码";
+    copy.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    copy.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void navigator.clipboard.writeText(this.code).then(
+        () => {
+          copy.textContent = "已复制";
+          copy.classList.add("is-done");
+          window.setTimeout(() => {
+            copy.textContent = "复制";
+            copy.classList.remove("is-done");
+          }, 1200);
+        },
+        () => {
+          // 剪贴板不可用（权限等）静默失败，不打断阅读
+        },
+      );
+    });
+
+    box.append(chip, copy);
+    return box;
   }
 }
 
@@ -414,17 +460,18 @@ class MermaidWidget extends WidgetType {
 }
 
 /**
- * 表格渲染成真正的 `<table>`，并且**点击保持渲染**（Obsidian 式，0.3）。
+ * 表格渲染成真正的 `<table>`，单元格可选中、可就地编辑（Obsidian 式，0.4）。
  *
- * 单击单元格不再退回源码，而是保持渲染，并在表格上浮现两个结构按钮：
- * 底部「＋ 行」追加一行、右缘「＋」追加一列——点击直接对文档做整块结构替换
- * （走 table.ts 的 insertRow / insertColumn），widget 随新内容重新渲染。
- * 不做"单元格内直接输入"：contenteditable 与 CM 的选区管理互相打架
- * （焦点会被 CM 抢回 contentDOM，输入丢字），编辑单元格内容的入口是
- * **双击**退回源码——那里有工具栏与管道对齐，编辑体验反而更稳。
+ * 每个单元格是 `contenteditable="plaintext-only"`：点击即进入编辑、可拖选复制，
+ * 编辑结束时（blur / Enter / Tab / Esc）把单元格文本写回源码——走 table.ts 的
+ * 结构化变换整块替换，管道顺带重新对齐。提交时机刻意放在「编辑结束」而不是
+ * 每次键入：逐键写回会让 StateField 判定内容变化、重建 widget，输入焦点随之丢失。
  *
- * 单元格按“肉眼可见的管道”解析，转义 `\|` 与行内代码里的 `|` 不支持——与
- * Obsidian 的表格编辑器同一条边界。
+ * 结构操作（＋行 / ＋列）走 document 级委托；点击前先把正在编辑的单元格冲刷掉，
+ * 否则结构变换读的是旧源码，刚敲的字就丢了。双击单元格之外的区域退回源码。
+ *
+ * 单元格按"肉眼可见的管道"解析，转义 `\|` 与行内代码里的 `|` 不支持——与
+ * Obsidian 的表格编辑器同一条边界。所以单元格输入里的竖线被直接拦下。
  */
 class TableWidget extends WidgetType {
   readonly rows: TextRun[][][];
@@ -455,9 +502,10 @@ class TableWidget extends WidgetType {
   }
 
   toDOM(view: EditorView) {
-    console.info("[qn-tbl] toDOM from=", this.from, "cols=", this.rows[0]?.length, "to=", this.to);
     const wrap = document.createElement("div");
     wrap.className = "cm-lp-tablewrap";
+    // 块起点随单元格写回不变，重建后凭它找回同一张表（导航聚焦、提交前冲刷都用它）
+    wrap.dataset.tblFrom = String(this.from);
 
     const table = document.createElement("table");
     table.className = "cm-lp-table";
@@ -480,6 +528,12 @@ class TableWidget extends WidgetType {
         if (runs) appendRuns(el, runs);
         const align = this.align[index];
         if (align) el.style.textAlign = align;
+        // 就地编辑：WebView2 基于 Chromium，支持 plaintext-only（粘贴自动去格式）
+        el.contentEditable = "plaintext-only";
+        el.spellcheck = false;
+        el.dataset.row = String(rowIndex);
+        el.dataset.col = String(index);
+        attachCellEvents(view, wrap, el);
         tr.appendChild(el);
       }
       return tr;
@@ -497,10 +551,15 @@ class TableWidget extends WidgetType {
       }
     }
 
-    // 单击保持渲染：不把光标放进源码（0.3 之前点击即退回源码，图/表都会消失）
+    // 点击表格空白处保持渲染：不把光标放进源码。单元格内的按下事件已在
+    // attachCellEvents 里 stopPropagation，不会走到这里。
     table.addEventListener("mousedown", (event) => {
-      console.info("[qn-tbl] mousedown on", (event.target as HTMLElement).tagName);
       event.preventDefault();
+      event.stopPropagation();
+    });
+    wrap.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
     });
 
     // 双击单元格之外的空白退回源码（进阶编辑入口）；
@@ -538,7 +597,7 @@ class TableWidget extends WidgetType {
     wrap.appendChild(addCol);
 
     ensureTableOpsDelegate();
-    tableOps.set(wrap, { view, from: this.from });
+    tableOps.set(wrap, { view });
 
     return wrap;
   }
@@ -551,13 +610,12 @@ class TableWidget extends WidgetType {
  * "重建与点击的竞态"下按钮处理函数会丢事件（实测 +列 按钮点到旧 DOM 的
  * 克隆时处理函数根本不触发）。委托到 document 一份，按钮怎么重建都能命中。
  */
-const tableOps = new WeakMap<HTMLElement, { view: EditorView; from: number }>();
+const tableOps = new WeakMap<HTMLElement, { view: EditorView }>();
 let tableOpsDelegateInstalled = false;
 
 function ensureTableOpsDelegate(): void {
   if (tableOpsDelegateInstalled || typeof document === "undefined") return;
   tableOpsDelegateInstalled = true;
-  console.info("[qn-tbl] delegate installed");
   document.addEventListener("click", (event) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
@@ -567,55 +625,199 @@ function ensureTableOpsDelegate(): void {
     const btn = (addRowBtn ?? addColBtn) as HTMLElement;
     const wrap = btn.closest(".cm-lp-tablewrap") as HTMLElement | null;
     const info = wrap ? tableOps.get(wrap) : undefined;
-    console.info("[qn-tbl] delegate click, addRow=", !!addRowBtn, "addCol=", !!addColBtn, "info=", !!info);
     if (!info) return;
     event.stopPropagation();
-    if (addRowBtn) {
-      withWidgetBlock(info.view, info.from, (block) =>
-        insertRow(block, block.rows.length - 1, []),
-      );
-    } else {
-      withWidgetBlock(info.view, info.from, (block) =>
-        insertColumn(block, block.header.length),
-      );
-    }
+    withFlushedCellEdit(info.view, wrap as HTMLElement, (block) =>
+      addRowBtn
+        ? insertRow(block, block.rows.length - 1, [])
+        : insertColumn(block, block.header.length),
+    );
   });
 }
 
-/** 对 widget 覆盖的表格块执行一次结构变换（整块替换，保留换行符风格）。 */
-function withWidgetBlock(
+// ---------------------------------------------------------------- 单元格就地编辑
+
+/** 本轮编辑已提交过的单元格：blur 与程序性导航会让提交触发两次。 */
+const committedCells = new WeakSet<HTMLElement>();
+
+/**
+ * 单元格的事件：聚焦记原文，keydown 处理导航与非法字符，失焦提交。
+ *
+ * mousedown 只 stopPropagation 不 preventDefault——前者拦住 CodeMirror 的
+ * 选区处理（否则选区落进被替换区间，整张表退回源码），后者保留浏览器
+ * 自己放光标、拖选的能力。
+ */
+function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement): void {
+  cell.addEventListener("mousedown", (event) => event.stopPropagation());
+
+  cell.addEventListener("focus", () => {
+    cell.dataset.orig = cell.innerText;
+  });
+
+  cell.addEventListener("keydown", (event) => {
+    // 输入法组词期间按键的 key 是 "Process"、Enter 是"确认候选"——都不是编辑指令，
+    // 必须放行给 IME，否则中文输入打到一半回车会变成"提交并跳格"。
+    if (event.isComposing || event.keyCode === 229) return;
+    // 竖线会破坏源码里的表格结构（本表格模型不支持转义），直接拦下；
+    // 换行同理——管道表格的单元格是单行的。
+    if (event.key === "|") {
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitCellEdit(view, wrap, cell);
+      const row = Number(cell.dataset.row ?? "0");
+      const col = cell.dataset.col ?? "0";
+      // 下方有格就跳过去；没有就在原位（重建后凭坐标找回）
+      const below = findCell(wrap, row + 1, col) ? row + 1 : row;
+      refocusAfterCommit(view, wrap, String(below), col);
+      return;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      const step = event.shiftKey ? -1 : 1;
+      const next = stepCell(wrap, cell, step);
+      commitCellEdit(view, wrap, cell);
+      if (next) {
+        refocusAfterCommit(view, wrap, next.dataset.row ?? "0", next.dataset.col ?? "0");
+      } else {
+        // 最后一个单元格再 Tab：停在原位（Obsidian 会加行，这里保守一点）
+        refocusAfterCommit(view, wrap, cell.dataset.row ?? "0", cell.dataset.col ?? "0");
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      if (cell.dataset.orig !== undefined) cell.innerText = cell.dataset.orig;
+      cell.blur();
+    }
+  });
+
+  cell.addEventListener("blur", () => commitCellEdit(view, wrap, cell));
+}
+
+/** 把编辑后的单元格写回源码（整块替换、管道重新对齐）。没改或已提交过就跳过。 */
+function commitCellEdit(view: EditorView, wrap: HTMLElement, cell: HTMLElement): void {
+  if (committedCells.has(cell)) return;
+  committedCells.add(cell);
+
+  const orig = (cell.dataset.orig ?? "").trim();
+  const raw = cell.innerText.replace(/\r?\n/g, " ").replace(/\|/g, "").trim();
+  if (raw === orig) return; // 没改：不动文档，widget 也就不用重建
+
+  const row = Number(cell.dataset.row ?? "0");
+  const col = Number(cell.dataset.col ?? "0");
+  replaceTableCell(view, wrap, (block) => {
+    const normalized = normalizeColumns(block);
+    if (row === 0) normalized.header[col] = raw;
+    else if (normalized.rows[row - 1]) normalized.rows[row - 1][col] = raw;
+    return formatTable(normalized);
+  });
+}
+
+/**
+ * 冲刷正在编辑的单元格后，对同一张表执行一次整块结构替换。
+ *
+ * 顺序很重要：先提交单元格（一次 dispatch，widget 同步重建），再对**新**的
+ * wrap 定位做结构变换（第二次 dispatch）——结构变换若读旧源码，刚敲的字就丢了。
+ */
+function withFlushedCellEdit(
   view: EditorView,
-  from: number,
+  wrap: HTMLElement,
   transform: (block: TableBlock) => string[],
 ): void {
-  const first = view.state.doc.lineAt(from);
+  const active = document.activeElement;
+  const editing =
+    active instanceof HTMLElement && wrap.contains(active) && active.isContentEditable
+      ? active
+      : null;
+  if (editing) commitCellEdit(view, wrap, editing);
+  // 提交已触发重建：换上重建后的 wrap（凭块起点找回），拿不到就退回旧的
+  const fromKey = wrap.dataset.tblFrom;
+  const fresh = fromKey
+    ? (view.dom.querySelector(`.cm-lp-tablewrap[data-tbl-from="${fromKey}"]`) as HTMLElement | null)
+    : null;
+  replaceTableCell(view, fresh ?? wrap, transform);
+}
+
+/** 对 widget 覆盖的表格块执行一次整块替换。起点从当前 DOM 位置取，避免陈旧的 from。 */
+function replaceTableCell(
+  view: EditorView,
+  wrap: HTMLElement,
+  transform: (block: TableBlock) => string[],
+): void {
+  let pos: number;
+  try {
+    pos = view.posAtDOM(wrap);
+  } catch {
+    return; // widget 已被替换/移除，无从写回
+  }
+
+  const first = view.state.doc.lineAt(pos);
   let last = first;
   for (;;) {
+    if (last.number >= view.state.doc.lines) break;
     const next = view.state.doc.line(last.number + 1);
-    if (next.number === last.number || !isTableLineText(next.text)) break;
+    if (!isTableLineText(next.text)) break;
     last = next;
   }
   const lines: string[] = [];
   for (let n = first.number; n <= last.number; n += 1) lines.push(view.state.doc.line(n).text);
   const block = parseTableBlock(lines);
-  console.info("[qn-tbl] withWidgetBlock lines=", lines.length, "block=", !!block);
   if (!block) return;
   const newLines = transform(block);
-  console.info("[qn-tbl] dispatch newLines=", newLines.length, "first=", first.from, "last=", last.to);
-  try {
-    view.dispatch({
-      changes: { from: first.from, to: last.to, insert: newLines.join(view.state.lineBreak) },
-    });
-    console.info("[qn-tbl] dispatched OK, doc lines now=", view.state.doc.lines);
-  } catch (e) {
-    console.info("[qn-tbl] DISPATCH THREW:", String(e));
-    throw e;
-  }
+  view.dispatch({
+    changes: { from: first.from, to: last.to, insert: newLines.join(view.state.lineBreak) },
+  });
 }
 
 function isTableLineText(text: string): boolean {
   const trimmed = text.trim();
   return trimmed.startsWith("|") && trimmed.endsWith("|") && trimmed.length > 1;
+}
+
+/** 按坐标找单元格（th/td 都算）。 */
+function findCell(wrap: HTMLElement, row: number, col: string | number): HTMLElement | null {
+  return wrap.querySelector(`[data-row="${row}"][data-col="${col}"]`);
+}
+
+/** 行主序的下一个/上一个单元格（DOM 顺序即行主序）。 */
+function stepCell(wrap: HTMLElement, cell: HTMLElement, delta: 1 | -1): HTMLElement | null {
+  const cells = Array.from(wrap.querySelectorAll("td,th")) as HTMLElement[];
+  const index = cells.indexOf(cell);
+  return cells[index + delta] ?? null;
+}
+
+/** 聚焦单元格并全选内容：Tab 跳格后直接输入即可覆盖，与 Obsidian 一致。 */
+function focusCell(cell: HTMLElement | null): void {
+  if (!cell) return;
+  cell.focus();
+  const range = document.createRange();
+  range.selectNodeContents(cell);
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+}
+
+/**
+ * 提交会触发 widget 重建、旧 DOM（连同其中的焦点）被丢弃；这里在重建完成后
+ * 凭「块起点 + 单元格坐标」找回新 DOM 里的目标单元格并聚焦。
+ */
+function refocusAfterCommit(
+  view: EditorView,
+  wrap: HTMLElement,
+  row: string,
+  col: string,
+): void {
+  const fromKey = wrap.dataset.tblFrom;
+  requestAnimationFrame(() => {
+    if (!fromKey) return;
+    const fresh = view.dom.querySelector(
+      `.cm-lp-tablewrap[data-tbl-from="${fromKey}"] [data-row="${row}"][data-col="${col}"]`,
+    );
+    focusCell(fresh as HTMLElement | null);
+  });
 }
 
 /** 从 Table 语法节点提取表格内容与对齐方式。 */
@@ -1263,16 +1465,22 @@ export function buildLivePreviewDecorations(
           }
           if (!active) {
             let closing: { from: number; to: number } | null = null;
+            let codeInfo: { from: number; to: number; text: string } | null = null;
+            let codeText = "";
             let child = node.node.firstChild;
             while (child) {
               if (child.name === "CodeMark") {
                 hide(child.from, child.to);
                 closing = { from: child.from, to: child.to };
               } else if (child.name === "CodeInfo") {
-                const info = doc.sliceString(child.from, child.to);
-                replaceWith(child.from, child.to, new CodeInfoWidget(info));
+                codeInfo = { from: child.from, to: child.to, text: doc.sliceString(child.from, child.to) };
+              } else if (child.name === "CodeText") {
+                codeText = doc.sliceString(child.from, child.to);
               }
               child = child.nextSibling;
+            }
+            if (codeInfo) {
+              replaceWith(codeInfo.from, codeInfo.to, new CodeHeaderWidget(codeInfo.text, codeText));
             }
             // 收尾围栏被藏掉后，那一行就空了。若它只剩围栏本身，就把行高压掉，
             // 否则每个代码块底部都会多出一条空行。

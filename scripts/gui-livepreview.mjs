@@ -104,12 +104,12 @@ async function ensureVisible(ws, needle, maxSteps = 14) {
  * 而 CodeMirror 的视口余量会让"还没真正渲染"的文字也满足条件，
  * 于是滚动提前结束，后面的断言全部落空。
  */
-async function scrollUntil(ws, expression, maxSteps = 16) {
+async function scrollUntil(ws, expression, maxSteps = 16, step = 0.6) {
   for (let i = 0; i <= maxSteps; i += 1) {
     if (await evaluate(ws, expression)) return true;
     await evaluate(
       ws,
-      `(() => { const s = document.querySelector('.cm-scroller'); s.scrollTop += s.clientHeight * 0.6; })()`,
+      `(() => { const s = document.querySelector('.cm-scroller'); s.scrollTop += s.clientHeight * ${step}; })()`,
     );
     await sleep(300);
   }
@@ -245,8 +245,20 @@ check(
 
 // ---- Obsidian wiki 语法。这段在文档后半部分，必须先滚动到可见——
 // CodeMirror 只渲染视口附近的行，没渲染的内容根本不在 DOM 里。
-const wikiVisible = await scrollUntil(ws, `document.querySelectorAll('.cm-lp-embed').length >= 4`);
-check(wikiVisible, "滚动到内容嵌入可见（4 个容器已渲染）");
+// 阅读排版（16px/1.8）比旧版高：4 个嵌入可见时，wiki 链接行可能还在视口外
+// （CM 只渲染视口附近的行）。条件里带上 wiki 链接文字，确保后面要断言的行都进了 DOM。
+// 布局事实（实测）：三张 wiki 图片与 wiki 链接行在最前，其后是四个笔记嵌入容器，
+// 而「整篇嵌入」渲染得很高——链接行与第 4 个容器相距超过一屏，不存在同时可见的
+// 滚动位置。所以断言分两段：先停在「链接行可见」处断言图片与链接，再继续下滚
+// 到「4 个容器全部渲染」处断言 transclusion。
+const wikiVisible = await scrollUntil(
+  ws,
+  `document.querySelectorAll('.cm-lp-embed').length >= 1 &&
+   (document.querySelector('.cm-content')?.textContent ?? '').includes('别名')`,
+  30,
+  0.3,
+);
+check(wikiVisible, "滚动到 wiki 图片与链接行可见");
 if (wikiVisible) {
   let wikiImages = null;
   for (let i = 0; i < 30; i += 1) {
@@ -279,6 +291,9 @@ if (wikiVisible) {
   const visibleText = await text(ws);
   check(!visibleText.includes("[[某笔记]]"), "wiki 链接的方括号已被隐藏");
   check(visibleText.includes("某笔记") && visibleText.includes("别名"), "wiki 链接文字保留，含别名写法");
+
+  // 继续下滚：4 个笔记嵌入容器（整篇/小节/块/错误）全部进入渲染范围
+  await scrollUntil(ws, `document.querySelectorAll('.cm-lp-embed').length >= 4`, 30, 0.3);
 
   // 内容嵌入（transclusion）：目标笔记的内容要真的渲染进来
   let embed = null;
@@ -335,6 +350,13 @@ if (wikiVisible) {
   );
   check(visibleText.includes("![[嵌入目标]]") === false, "嵌入处的原始语法不再直接显示");
 
+  // 该行在很高的嵌入容器之后，先滚进渲染范围再断言
+  await scrollUntil(
+    ws,
+    `[...document.querySelectorAll('.cm-line')].some(e => (e.innerText ?? '').includes('行内代码里不算语法'))`,
+    20,
+    0.4,
+  );
   const codeLine = await evaluate(
     ws,
     `[...document.querySelectorAll('.cm-line')].find(e => (e.innerText ?? '').includes('行内代码里不算语法'))?.innerText ?? null`,
@@ -489,8 +511,10 @@ const tableLines = () =>
   evaluate(
     ws,
     `(() => {
-       const text = document.querySelector('.cm-content')?.innerText ?? '';
-       return text.split(String.fromCharCode(10)).filter(l => l.trim().startsWith('|'));
+       // .cm-line 才是逻辑行：innerText 在 pre-wrap 下把软换行也算成换行符，不能按它切分
+       return [...document.querySelectorAll('.cm-line')]
+         .map((l) => (l.innerText ?? '').trim())
+         .filter((l) => l.startsWith('|'));
      })()`,
   );
 
@@ -522,8 +546,9 @@ const headerDelimAligned = await evaluate(
   ws,
   `(() => {
      const width = (s) => [...s].reduce((w, ch) => w + (ch.codePointAt(0) > 0x2e7f ? 2 : 1), 0);
-     const text = document.querySelector('.cm-content')?.innerText ?? '';
-     const lines = text.split(String.fromCharCode(10)).filter(l => l.trim().startsWith('|'));
+     const lines = [...document.querySelectorAll('.cm-line')]
+       .map((l) => (l.innerText ?? '').trim())
+       .filter((l) => l.startsWith('|'));
      if (lines.length < 2) return false;
      return width(lines[0]) === width(lines[1]);
    })()`,
@@ -531,6 +556,18 @@ const headerDelimAligned = await evaluate(
 check(headerDelimAligned === true, "对齐后表头与分隔行显示宽度一致（中文按 2 格）");
 
 // 3.5 Mermaid 图。渲染是异步的（还要等 mermaid 的 chunk 按需加载），必须轮询。
+// 阅读态排版（15px/1.7 行高）比旧版更高，第二个图在首屏外，先把图表区滚进视口。
+await scrollUntil(
+  ws,
+  `[...document.querySelectorAll('.cm-line')].some(e => (e.innerText ?? '').includes('无效图表'))`,
+  20,
+  0.4,
+);
+await evaluate(
+  ws,
+  `(() => { const line = [...document.querySelectorAll('.cm-line')].find(e => e.innerText.includes('无效图表')); line?.scrollIntoView({ block: 'center' }); return !!line; })()`,
+);
+await sleep(300);
 let mermaid = null;
 for (let i = 0; i < 50; i += 1) {
   mermaid = await evaluate(
@@ -592,7 +629,16 @@ check(
 );
 
 // 单击图表**保持渲染**（0.3：图不该一点就消失）
-await evaluate(ws, `document.querySelector('.cm-scroller').scrollTop = 0`);
+await scrollUntil(
+  ws,
+  `[...document.querySelectorAll('.cm-line')].some(e => (e.innerText ?? '').includes('无效图表'))`,
+  20,
+  0.4,
+);
+await evaluate(
+  ws,
+  `(() => { const line = [...document.querySelectorAll('.cm-line')].find(e => e.innerText.includes('无效图表')); line?.scrollIntoView({ block: 'center' }); return true; })()`,
+);
 await sleep(300);
 const diagramRect = await evaluate(
   ws,
@@ -674,7 +720,7 @@ check(
   "源码模式下装饰全部撤除",
 );
 
-await evaluate(ws, `[...document.querySelectorAll('.seg')].find(b => b.textContent.includes('Live Preview')).click()`);
+await evaluate(ws, `[...document.querySelectorAll('.seg')].find(b => b.textContent.includes('实时')).click()`);
 await sleep(400);
 check(!(await text(ws)).includes("**粗体**"), "切回 Live Preview 后 `**` 再次隐藏");
 check((await evaluate(ws, `document.querySelectorAll('.cm-lp-strong').length`)) > 0, "切回后样式装饰恢复");
