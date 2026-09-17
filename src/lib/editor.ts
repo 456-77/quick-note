@@ -6,8 +6,9 @@ import { languages } from "@codemirror/language-data";
 import { separatorFor } from "./lineEndings";
 import { blockWidgetsField, livePreviewExtension } from "./livePreview";
 import { livePreviewContext, type LivePreviewContext } from "./paths";
-import { linkClickHandler } from "./markdownExtras";
-import { attachmentPaste, type AttachmentOptions } from "./paste";
+import { altClickHandler, linkClickHandler } from "./markdownExtras";
+import { customSearchPanel } from "./searchPanel";
+import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
 import { syntaxTheme } from "./syntaxTheme";
 import { isCursorInTable, tableShiftTab, tableTab } from "./tableEdit";
 
@@ -55,6 +56,8 @@ export interface CreateEditorStateOptions {
   resources?: LivePreviewContext;
   /** 粘贴附件的行为配置；不传则不接管粘贴。 */
   attachment?: AttachmentOptions;
+  /** 智能文本粘贴（换行符规范化/表格转换/代码围栏）的配置；不传则不接管。 */
+  codePaste?: CodePasteOptions;
   /** 初始是否用深色标记（光标/选区等内置配色）。 */
   dark?: boolean;
   /**
@@ -92,6 +95,7 @@ export function createEditorState(
     onSave,
     resources,
     attachment,
+    codePaste: codePasteOptions,
     dark,
     onCursorInTable,
     onCursorLine,
@@ -112,7 +116,11 @@ export function createEditorState(
       ),
       livePreviewCompartment.of(modeExtensions(mode)),
       attachment ? attachmentPaste(attachment) : [],
+      codePasteOptions ? smartPaste(codePasteOptions) : [],
       linkClickHandler(),
+      altClickHandler(),
+      // 重设计的搜索面板（Ctrl+F）：替代 CM 默认 Find Bar
+      customSearchPanel(),
       // 表格里的 Tab 是"下一格"，必须压过 basicSetup 的缩进键位。
       // 光标不在表格里时处理函数返回 false，缩进照常。
       Prec.high(

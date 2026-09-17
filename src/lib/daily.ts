@@ -41,10 +41,29 @@ export interface DailySettings {
    * 粘贴附件的保存目录（仓库内相对路径）。
    *
    * 与 Obsidian 插件共用同一个键（`pastedImageFolder`）、同一份文件：两边换用时这一项
-   * 不用再手工设两次，同步一开两边自动一致。M1 时它放在本机 localStorage，M3 统一到这里
+   * 不用再手工设两次，同步一开多台设备自动一致。M1 时它放在本机 localStorage，M3 统一到这里
    * （本机那份仅在读取时作一次性迁移的来源，见 `settings.ts`）。
    */
   pastedImageFolder: string;
+  /**
+   * 粘贴代码时自动识别语言并生成代码块。
+   *
+   * 插件把它放在共享配置（非设备本机），这里保持同键同文件——两边对同一条粘贴
+   * 的行为才会一致。
+   */
+  autoDetectCodeLang: boolean;
+  /** 每天到点提醒「添加待办」。 */
+  todoReminderEnabled: boolean;
+  /** 提醒时间（HH:mm）。 */
+  todoReminderTime: string;
+  /** 每天到点检查当日未完成待办并提醒。 */
+  checkReminderEnabled: boolean;
+  /** 检查提醒时间（HH:mm）。 */
+  checkReminderTime: string;
+  /** 新建日记时抓取天气并写进正文。 */
+  weatherEnabled: boolean;
+  /** 天气查询的城市名（Open-Meteo 地理编码）。 */
+  weatherCity: string;
 }
 
 export function defaultDailySettings(): DailySettings {
@@ -56,6 +75,13 @@ export function defaultDailySettings(): DailySettings {
     weeklyTemplateEnabled: false,
     weeklyTemplatePath: "",
     pastedImageFolder: "attachments",
+    autoDetectCodeLang: true,
+    todoReminderEnabled: false,
+    todoReminderTime: "08:00",
+    checkReminderEnabled: false,
+    checkReminderTime: "21:00",
+    weatherEnabled: false,
+    weatherCity: "",
   };
 }
 

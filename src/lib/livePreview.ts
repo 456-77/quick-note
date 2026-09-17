@@ -28,6 +28,8 @@ import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import type { SyntaxNode } from "@lezer/common";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
+  deleteColumn,
+  deleteRow,
   formatTable,
   insertColumn,
   insertRow,
@@ -50,6 +52,8 @@ import {
   IMAGE_EXT,
   livePreviewContext,
   resolveResource,
+  resolveResourceRelative,
+  resolveWikiRelative,
   resolveWikiTarget,
   type LivePreviewContext,
 } from "./paths.ts";
@@ -367,9 +371,16 @@ function loadMermaid(): Promise<MermaidApi> {
   return mermaidLoader;
 }
 
-/** 已渲染 SVG 的缓存，避免同一张图反复解析渲染。简单的先进先出淘汰。 */
+/** 已渲染 SVG 的缓存，避免同一张图反复解析渲染。简单的先进先出淘汰。
+ *  上限刻意保守：复杂图表的 SVG 标记串每张可达数百 KB，缓存是纯内存开销；
+ *  12 张足够覆盖来回翻页的可见范围。 */
 const svgCache = new Map<string, string>();
-const SVG_CACHE_LIMIT = 30;
+const SVG_CACHE_LIMIT = 12;
+
+/** 取会话内已渲染的 mermaid SVG（PDF 导出打印视图复用；没有则 null）。 */
+export function cachedMermaidSvg(code: string): string | null {
+  return svgCache.get(code) ?? null;
+}
 let mermaidSeq = 0;
 
 /**
@@ -395,6 +406,10 @@ function mermaidCode(state: EditorState, fenced: SyntaxNode): string | null {
  *
  * mermaid 的渲染是异步的，而 widget 的 toDOM 是同步的，所以先占位、后填充。
  * 渲染失败不能让编辑器崩掉——错误信息显示在占位框里，源码仍在（点一下即可编辑）。
+ *
+ * 0.5 渲染增强（自 quick-daily-note 插件移植）：SVG 插入后包装上工具栏——
+ * 缩放（−/百分比/＋/还原）、导出 SVG/PNG（保存进仓库，见 `downloadDiagram`）、
+ * 单击放大浮层；双击仍是退回源码编辑（单击有 260ms 延迟，双击会取消它）。
  */
 class MermaidWidget extends WidgetType {
   readonly code: string;
@@ -415,7 +430,7 @@ class MermaidWidget extends WidgetType {
   toDOM(view: EditorView) {
     const box = document.createElement("div");
     box.className = "cm-lp-mermaid";
-    box.title = "双击编辑源码";
+    box.title = "单击放大 · 双击编辑源码";
     // 单击保持渲染（0.3：与表格一致——图不该一点就消失）。
     // 双击才把光标放进围栏块，退回源码编辑。
     box.addEventListener("dblclick", (event) => {
@@ -426,9 +441,15 @@ class MermaidWidget extends WidgetType {
       view.focus();
     });
 
+    const context = view.state.facet(livePreviewContext);
+    const insertSvg = (svg: string) => {
+      box.innerHTML = svg;
+      const element = box.querySelector("svg");
+      if (element) enhanceMermaid(box, element as SVGSVGElement, context.vaultPath, context.notePath);
+    };
     const cached = svgCache.get(this.code);
     if (cached) {
-      box.innerHTML = cached;
+      insertSvg(cached);
       return box;
     }
 
@@ -446,7 +467,7 @@ class MermaidWidget extends WidgetType {
         }
         // widget 可能已被替换/移除，此时写入不影响任何可见内容。
         box.classList.remove("is-loading");
-        box.innerHTML = svg;
+        insertSvg(svg);
       } catch (error) {
         box.classList.remove("is-loading");
         box.classList.add("is-error");
@@ -457,6 +478,324 @@ class MermaidWidget extends WidgetType {
 
     return box;
   }
+}
+
+// ------------------------------------------------------------- mermaid 增强
+
+interface MermaidZoomState {
+  naturalW: number;
+  naturalH: number;
+  /** 当前缩放（fitted 时无意义）。 */
+  scale: number;
+  /** true = 自适应宽度（高图限高），false = 按像素宽度缩放。 */
+  fitted: boolean;
+}
+
+/** mermaid 通知通道：默认只写控制台，App 启动时接到界面提示上。 */
+let mermaidNotice: (message: string, kind?: "info" | "error") => void = () => {};
+
+export function setMermaidNotice(
+  handler: (message: string, kind?: "info" | "error") => void,
+): void {
+  mermaidNotice = handler;
+}
+
+/** 给渲染好的 mermaid SVG 挂上工具栏、缩放与放大浮层。 */
+function enhanceMermaid(
+  box: HTMLElement,
+  svg: SVGSVGElement,
+  vaultPath: string | null,
+  notePath: string | null,
+): void {
+  // 自然尺寸：viewBox 最可靠（mermaid 开启 useMaxWidth 时 width 属性是 "100%"，
+  // 解析成数字会得到 100——按它缩放就全错了）。
+  const vb = svg.viewBox.baseVal;
+  const rect = svg.getBoundingClientRect();
+  const naturalW = vb.width > 0 ? vb.width : rect.width || 300;
+  const naturalH = vb.height > 0 ? vb.height : rect.height || 200;
+  if (naturalW <= 0 || naturalH <= 0) return;
+
+  const state: MermaidZoomState = { naturalW, naturalH, scale: 1, fitted: true };
+
+  const applyZoom = () => {
+    if (state.fitted) {
+      // 宽图适应容器宽度（mermaid 内联的 max-width 保留即可）；高图限高，宽度按比例
+      if (state.naturalH > state.naturalW) {
+        svg.classList.add("me-fit-tall");
+        svg.classList.remove("me-zoom-px");
+        svg.style.removeProperty("width");
+        svg.style.height = "60vh";
+      } else {
+        svg.classList.remove("me-fit-tall", "me-zoom-px");
+        svg.style.removeProperty("width");
+        svg.style.removeProperty("height");
+      }
+    } else {
+      svg.classList.remove("me-fit-tall");
+      svg.classList.add("me-zoom-px");
+      svg.style.removeProperty("height");
+      svg.style.width = `${Math.max(1, Math.round(state.naturalW * state.scale))}px`;
+    }
+    percent.textContent = state.fitted ? "适应" : `${Math.round(state.scale * 100)}%`;
+  };
+
+  const zoomBy = (factor: number) => {
+    if (state.fitted) {
+      // 从「适应」切到像素缩放：以当前显示比例作起点，切换不平跳
+      state.fitted = false;
+      const availW = box.clientWidth || state.naturalW;
+      state.scale = Math.max(0.05, Math.min(1, availW / state.naturalW));
+    }
+    state.scale = Math.min(8, Math.max(0.05, state.scale * factor));
+    applyZoom();
+  };
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "qn-mermaid-toolbar";
+  const button = (text: string, title: string, onClick: () => void) => {
+    const el = document.createElement("button");
+    el.type = "button";
+    el.className = "qn-mermaid-btn";
+    el.title = title;
+    el.textContent = text;
+    el.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick();
+    });
+    toolbar.appendChild(el);
+    return el;
+  };
+  button("−", "缩小", () => zoomBy(1 / 1.25));
+  const percent = document.createElement("span");
+  percent.className = "qn-mermaid-percent";
+  toolbar.appendChild(percent);
+  button("＋", "放大", () => zoomBy(1.25));
+  button("↺", "还原", () => {
+    state.fitted = true;
+    state.scale = 1;
+    applyZoom();
+  });
+  button("⬇", "导出 SVG / PNG", () => menu.classList.toggle("me-open"));
+  const menu = document.createElement("div");
+  menu.className = "qn-mermaid-menu";
+  for (const format of ["svg", "png"] as const) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "qn-mermaid-menu-item";
+    item.textContent = format.toUpperCase();
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      menu.classList.remove("me-open");
+      void downloadDiagram(svg, state, format, vaultPath, notePath);
+    });
+    menu.appendChild(item);
+  }
+  toolbar.appendChild(menu);
+  box.appendChild(toolbar);
+
+  // 单击放大浮层（延迟触发，给双击留出取消窗口）
+  let clickTimer: number | null = null;
+  svg.addEventListener("click", (event) => {
+    event.stopPropagation();
+    if (clickTimer !== null) window.clearTimeout(clickTimer);
+    clickTimer = window.setTimeout(() => {
+      clickTimer = null;
+      openMermaidOverlay(svg);
+    }, 260);
+  });
+  box.addEventListener("dblclick", () => {
+    if (clickTimer !== null) {
+      window.clearTimeout(clickTimer);
+      clickTimer = null;
+    }
+  });
+
+  applyZoom();
+}
+
+/** 全屏放大浮层：克隆 SVG 铺到视口，点任意处 / Esc 关闭。 */
+function openMermaidOverlay(svg: SVGSVGElement): void {
+  const overlay = document.createElement("div");
+  overlay.className = "qn-mermaid-overlay";
+  overlay.title = "点击任意处或按 Esc 关闭";
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.classList.remove("me-fit-tall", "me-zoom-px");
+  clone.removeAttribute("style");
+  clone.style.maxWidth = "92vw";
+  clone.style.maxHeight = "86vh";
+  clone.style.width = "auto";
+  clone.style.height = "auto";
+  overlay.appendChild(clone);
+  const close = () => {
+    document.removeEventListener("keydown", onKey, true);
+    overlay.remove();
+  };
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    }
+  };
+  overlay.addEventListener("click", close);
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(overlay);
+}
+
+/**
+ * 导出图表（自插件的 downloadAsSVG/downloadAsPNG 移植）。
+ *
+ * 与插件的一处刻意差异：插件走浏览器下载（落到系统下载目录），Quick Note
+ * 用 writeBinary 把导出**保存进仓库**（当前笔记同目录，没开笔记就仓库根），
+ * 命名 `笔记名-mermaid-N.svg/png`——知识系统的导出物应该跟着库走，而不是散在
+ * 下载文件夹里；同时也绕开了 WebView 对 blob 下载支持不确定的问题。
+ */
+async function downloadDiagram(
+  svg: SVGSVGElement,
+  state: MermaidZoomState,
+  format: "svg" | "png",
+  vaultPath: string | null,
+  notePath: string | null,
+): Promise<void> {
+  if (!vaultPath) {
+    mermaidNotice("尚未打开仓库，无法导出图表", "error");
+    return;
+  }
+  try {
+    const base = (notePath ?? "diagram").replace(/\.md$/i, "").split("/").pop() || "diagram";
+    const seq = (diagramExportSeq += 1);
+    const name = `${base}-mermaid-${seq}.${format}`;
+    // 落点：当前笔记同目录；没有目录信息的（仓库根的笔记）就是仓库根
+    const dir = notePath && notePath.includes("/") ? notePath.slice(0, notePath.lastIndexOf("/")) : "";
+    const target = dir ? `${dir}/${name}` : name;
+
+    if (format === "svg") {
+      const clone = cloneForExport(svg, state);
+      const xml = new XMLSerializer().serializeToString(clone);
+      await writeVaultBinary(vaultPath, target, new TextEncoder().encode(xml));
+    } else {
+      const scale = 2;
+      const url = svgToBlobUrl(svg, state);
+      try {
+        const image = new Image();
+        await new Promise<void>((resolve, reject) => {
+          image.onload = () => resolve();
+          image.onerror = () => reject(new Error("SVG 加载失败"));
+          image.src = url;
+        });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(state.naturalW * scale);
+        canvas.height = Math.round(state.naturalH * scale);
+        const ctx = canvas.getContext("2d");
+        if (!ctx) throw new Error("Canvas 不可用");
+        ctx.fillStyle = themeBackgroundColor();
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
+        if (!blob) throw new Error("PNG 生成失败");
+        await writeVaultBinary(vaultPath, target, new Uint8Array(await blob.arrayBuffer()));
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    }
+    mermaidNotice(`已导出图表：${target}`);
+  } catch (error) {
+    mermaidNotice(`导出图表失败：${error instanceof Error ? error.message : String(error)}`, "error");
+  }
+}
+
+let diagramExportSeq = 0;
+
+/** 写入库内二进制（导出用）；动态 import，让纯逻辑测试不必碰 Tauri API。 */
+async function writeVaultBinary(vault: string, path: string, bytes: Uint8Array): Promise<void> {
+  const { writeBinary } = await import("./api.ts");
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  await writeBinary(vault, path, btoa(binary));
+}
+
+/** 导出用克隆：定死自然尺寸、清掉运行时样式。 */
+function cloneForExport(svg: SVGSVGElement, state: MermaidZoomState): SVGSVGElement {
+  const clone = svg.cloneNode(true) as SVGSVGElement;
+  clone.setAttribute("width", String(state.naturalW));
+  clone.setAttribute("height", String(state.naturalH));
+  clone.removeAttribute("style");
+  clone.classList.remove("me-fit-tall", "me-zoom-px");
+  return clone;
+}
+
+/**
+ * 序列化 SVG 为 Blob URL（PNG 导出用）。
+ *
+ * mermaid 的文字默认用 foreignObject 承载 HTML，而 SVG 作为 <img> 加载时浏览器
+ * 不渲染其中的 HTML——PNG 会丢掉所有文字。克隆时把 foreignObject 逐个换成
+ * 普通 <text>（位置/字号/颜色取自原始 DOM 的实时布局），文字就保住了。
+ */
+function svgToBlobUrl(svg: SVGSVGElement, state: MermaidZoomState): string {
+  const clone = cloneForExport(svg, state);
+  const sourceFos = Array.from(svg.querySelectorAll("foreignObject"));
+  const cloneFos = Array.from(clone.querySelectorAll("foreignObject"));
+  if (sourceFos.length > 0) {
+    const sourceRect = svg.getBoundingClientRect();
+    const displayScale = sourceRect.width > 0 ? sourceRect.width / state.naturalW : 1;
+    const ns = "http://www.w3.org/2000/svg";
+    cloneFos.forEach((cloneFo, index) => {
+      const sourceFo = sourceFos[index];
+      const holder = sourceFo?.querySelector("div, span");
+      const text = holder ? flattenLabelText(holder as HTMLElement).trim() : "";
+      if (!sourceFo || !holder || !text) {
+        cloneFo.remove();
+        return;
+      }
+      const rect = (holder as HTMLElement).getBoundingClientRect();
+      const style = getComputedStyle(holder as HTMLElement);
+      const fontSize = parseFloat(style.fontSize) || 16;
+      const lineHeight = fontSize * 1.2;
+      const centerX = (rect.left + rect.width / 2 - sourceRect.left) / displayScale;
+      const topY = (rect.top - sourceRect.top) / displayScale;
+      const anchor = style.textAlign === "left" ? "start" : "middle";
+      text.split("\n").forEach((lineText, lineIndex) => {
+        if (!lineText.trim()) return;
+        const el = document.createElementNS(ns, "text");
+        el.setAttribute(
+          "x",
+          String(anchor === "middle" ? centerX : (rect.left - sourceRect.left) / displayScale),
+        );
+        el.setAttribute("y", String(topY + fontSize + lineIndex * lineHeight));
+        el.setAttribute("font-size", `${fontSize}px`);
+        el.setAttribute("font-family", style.fontFamily || "inherit");
+        el.setAttribute("font-weight", style.fontWeight || "normal");
+        el.setAttribute("text-anchor", anchor);
+        el.setAttribute("fill", style.color || "#000");
+        el.textContent = lineText;
+        cloneFo.parentElement?.insertBefore(el, cloneFo);
+      });
+      cloneFo.remove();
+    });
+  }
+  const xml = new XMLSerializer().serializeToString(clone);
+  return URL.createObjectURL(new Blob([xml], { type: "image/svg+xml;charset=utf-8" }));
+}
+
+/** 提取 label 文本并保留 <br/> 换行（遍历子节点，不做 innerHTML 拼接）。 */
+function flattenLabelText(el: HTMLElement): string {
+  let out = "";
+  for (const node of Array.from(el.childNodes)) {
+    if (node.nodeName === "BR") out += "\n";
+    else if (node.nodeType === Node.TEXT_NODE) out += node.textContent ?? "";
+    else if (node.nodeType === Node.ELEMENT_NODE) out += flattenLabelText(node as HTMLElement);
+  }
+  return out;
+}
+
+/** 当前主题的底色，作为 PNG 画布底色（透明底在浅色查看器里会看不见白线）。 */
+function themeBackgroundColor(): string {
+  const bg = getComputedStyle(document.body).backgroundColor;
+  if (bg && bg !== "rgba(0, 0, 0, 0)" && bg !== "transparent") return bg;
+  return document.documentElement.dataset.theme === "dark" ? "#1e1e28" : "#ffffff";
 }
 
 /**
@@ -476,18 +815,22 @@ class MermaidWidget extends WidgetType {
 class TableWidget extends WidgetType {
   readonly rows: TextRun[][][];
   readonly align: (null | "left" | "center" | "right")[];
+  /** 每个单元格的源码原文（含 `code`、**粗体** 等标记）。点击单元格切换到原文编辑用。 */
+  readonly rawRows: string[][];
   readonly from: number;
   readonly to: number;
 
   constructor(
     rows: TextRun[][][],
     align: (null | "left" | "center" | "right")[],
+    rawRows: string[][],
     from: number,
     to: number,
   ) {
     super();
     this.rows = rows;
     this.align = align;
+    this.rawRows = rawRows;
     this.from = from;
     this.to = to;
   }
@@ -497,7 +840,8 @@ class TableWidget extends WidgetType {
       other.from === this.from &&
       other.to === this.to &&
       JSON.stringify(other.rows) === JSON.stringify(this.rows) &&
-      JSON.stringify(other.align) === JSON.stringify(this.align)
+      JSON.stringify(other.align) === JSON.stringify(this.align) &&
+      JSON.stringify(other.rawRows) === JSON.stringify(this.rawRows)
     );
   }
 
@@ -531,8 +875,15 @@ class TableWidget extends WidgetType {
         // 就地编辑：WebView2 基于 Chromium，支持 plaintext-only（粘贴自动去格式）
         el.contentEditable = "plaintext-only";
         el.spellcheck = false;
+        // 右键结构菜单的委托靠这个类识别单元格
+        el.classList.add(TABLE_CELL_CLASS);
+        // 坐标随行走：写回时按它定位 (row, col)。曾把所有数据行都写成 1——
+        // 编辑任何一行都会覆盖第一行，加行/加列后的编辑全军覆没
         el.dataset.row = String(rowIndex);
         el.dataset.col = String(index);
+        // 单元格源码原文：聚焦含行内样式的单元格时切换到原文编辑（见 attachCellEvents）
+        el.dataset.raw = this.rawRows[rowIndex]?.[index] ?? "";
+        if (runs) cellRuns.set(el, runs);
         attachCellEvents(view, wrap, el);
         tr.appendChild(el);
       }
@@ -546,10 +897,52 @@ class TableWidget extends WidgetType {
 
       if (this.rows.length > 1) {
         const tbody = document.createElement("tbody");
-        for (const row of this.rows.slice(1)) tbody.appendChild(buildRow(row, "td", 1));
+        this.rows
+          .slice(1)
+          .forEach((row, index) => tbody.appendChild(buildRow(row, "td", index + 1)));
         table.appendChild(tbody);
       }
     }
+
+    // Ctrl+A 两段式全选：第一次全选本格，第二次升级为**选中整张表**。
+    // 跨格拖选在「单元格各自独立编辑宿主」的模型下会被浏览器钳在单格里
+    // （Obsidian 用自研表格模型才做得到跨格选区），用两段式全选代替；
+    // 单元格保持独立编辑宿主——表格宿主一旦 contenteditable，Chromium 会把
+    // 焦点给表格而不是单元格，整套就地编辑就失效了（实测）。
+    // 两段都手动 Range 并 preventDefault：原生的 Ctrl+A 选区会被 CM 的
+    // DOM 观察者按文档选区重置掉（实测），靠不住。
+    table.addEventListener("keydown", (event) => {
+      if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const cell = selection.anchorNode?.parentElement?.closest<HTMLElement>("td,th");
+      if (!cell || !table.contains(cell)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const current = selection.getRangeAt(0);
+      const cellRange = document.createRange();
+      cellRange.selectNodeContents(cell);
+      // 已全选本格（且本格非空）→ 升级为整表；否则全选本格
+      const coversCell =
+        current.toString() === cellRange.toString() && current.toString().trim() !== "";
+      const range = document.createRange();
+      range.selectNodeContents(coversCell ? table : cell);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    // 整表选择被复制时以选中文本为准——CM 的 copy 处理会按**文档选区**序列化源码，
+    // widget 内部的 DOM 选区对它是没有意义的位置
+    table.addEventListener("copy", (event) => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      if (!table.contains(range.commonAncestorContainer)) return;
+      // 单格内的复制交给原生（plaintext-only 已经是纯文本）
+      if (range.commonAncestorContainer.parentElement?.closest("td,th")) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.clipboardData?.setData("text/plain", selection.toString());
+    });
 
     // 点击表格空白处保持渲染：不把光标放进源码。单元格内的按下事件已在
     // attachCellEvents 里 stopPropagation，不会走到这里。
@@ -576,7 +969,12 @@ class TableWidget extends WidgetType {
       view.focus();
     });
 
-    wrap.appendChild(table);
+    // 宽表的横向滚动在内层 .cm-tb-scroll 上——右缘悬挑的「＋ 列」钮绝不能落进
+    // 滚动容器，否则它负偏移造成的溢出会让 wrap 常驻一条横向滚动条（实测踩过）。
+    const scroll = document.createElement("div");
+    scroll.className = "cm-tb-scroll";
+    scroll.appendChild(table);
+    wrap.appendChild(scroll);
 
     // 底部「＋ 行」/ 右缘「＋ 列」：点击行为走 document 级委托
     // （见 ensureTableOpsDelegate）——按钮会随 widget 重建，挂自身不可靠。
@@ -596,7 +994,10 @@ class TableWidget extends WidgetType {
     addCol.addEventListener("mousedown", (event) => event.preventDefault());
     wrap.appendChild(addCol);
 
+    // 「＋ 行 / ＋ 列」点击与右键结构菜单都走 document 级委托
+    // （同一套委托理由：widget 会随结构变化整体重建，挂自身不可靠）。
     ensureTableOpsDelegate();
+    ensureTableContextMenuDelegate();
     tableOps.set(wrap, { view });
 
     return wrap;
@@ -635,10 +1036,148 @@ function ensureTableOpsDelegate(): void {
   });
 }
 
+/**
+ * 表格单元格右键菜单（Obsidian 式）：插入/删除行列。
+ *
+ * 菜单 DOM 复用文件树右键菜单的 `.context-menu` / `.menu-backdrop`（fixed 定位，
+ * z-index 覆盖全界面）。widget 的右键监听同样走 document 委托——重建竞态下依然命中。
+ *
+ * 行号口径：widget 的 dataset.row 里 0 = 表头，1..N = 数据行；而 table.ts 的
+ * insertRow/deleteRow 用「数据行下标」（0 基），换算是 `widgetRow - 1`。
+ */
+function ensureTableContextMenuDelegate(): void {
+  if (tableMenuDelegateInstalled || typeof document === "undefined") return;
+  tableMenuDelegateInstalled = true;
+  document.addEventListener("contextmenu", (event) => {
+    const target = event.target as HTMLElement | null;
+    if (!target) return;
+    const cell = target.closest("td,th");
+    if (!cell || !cell.classList.contains("cm-lp-cell")) return;
+    const wrap = cell.closest(".cm-lp-tablewrap") as HTMLElement | null;
+    const info = wrap ? tableOps.get(wrap) : undefined;
+    if (!info) return;
+    event.preventDefault();
+    event.stopPropagation();
+    openTableMenu(
+      event.clientX,
+      event.clientY,
+      info.view,
+      wrap as HTMLElement,
+      Number((cell as HTMLElement).dataset.row ?? "0"),
+      Number((cell as HTMLElement).dataset.col ?? "0"),
+    );
+  });
+}
+
+let tableMenuDelegateInstalled = false;
+
+/** 单元格挂上统一的类名，供右键委托识别（td/th 本身没有专属类）。 */
+const TABLE_CELL_CLASS = "cm-lp-cell";
+
+function openTableMenu(
+  x: number,
+  y: number,
+  view: EditorView,
+  wrap: HTMLElement,
+  widgetRow: number,
+  column: number,
+): void {
+  closeTableMenu();
+  const dataRow = Math.max(widgetRow - 1, -1); // 数据行下标；表头行 → -1（插到最前）
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "menu-backdrop";
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+
+  const item = (label: string, danger: boolean, run: (block: TableBlock) => string[]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = label;
+    if (danger) btn.className = "danger";
+    btn.addEventListener("mousedown", (e) => e.preventDefault());
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTableMenu();
+      withFlushedCellEdit(view, wrap, run);
+    });
+    menu.appendChild(btn);
+  };
+
+  item("在上方插入行", false, (block) => insertRow(block, dataRow - 1, []));
+  item("在下方插入行", false, (block) => insertRow(block, dataRow, []));
+  const delRow = menu.appendChild(document.createElement("button"));
+  delRow.type = "button";
+  delRow.textContent = "删除行";
+  delRow.className = "danger";
+  if (widgetRow < 1) delRow.disabled = true; // 表头行没有可删的数据行
+  delRow.addEventListener("mousedown", (e) => e.preventDefault());
+  delRow.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeTableMenu();
+    withFlushedCellEdit(view, wrap, (block) => deleteRow(block, dataRow));
+  });
+  item("在左侧插入列", false, (block) => insertColumn(block, column));
+  item("在右侧插入列", false, (block) => insertColumn(block, column + 1));
+  const delCol = menu.appendChild(document.createElement("button"));
+  delCol.type = "button";
+  delCol.textContent = "删除列";
+  delCol.className = "danger";
+  // 只剩一列时删无可删（deleteColumn 对此也是空操作，这里把入口置灰更清楚）
+  const columnCount = wrap.querySelector("tr")?.children.length ?? 1;
+  if (columnCount <= 1) delCol.disabled = true;
+  delCol.addEventListener("mousedown", (e) => e.preventDefault());
+  delCol.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeTableMenu();
+    withFlushedCellEdit(view, wrap, (block) => deleteColumn(block, column));
+  });
+
+  backdrop.addEventListener("mousedown", closeTableMenu);
+  backdrop.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    closeTableMenu();
+  });
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeTableMenu();
+    }
+  };
+  document.addEventListener("keydown", onKey, true);
+  tableMenuCleanup = () => {
+    document.removeEventListener("keydown", onKey, true);
+  };
+
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  tableMenuElements = [backdrop, menu];
+  document.body.append(backdrop, menu);
+  // 贴近视口右缘/下缘时往回收，避免菜单被裁掉
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth - 8) menu.style.left = `${Math.max(8, x - rect.width)}px`;
+  if (rect.bottom > window.innerHeight - 8) menu.style.top = `${Math.max(8, y - rect.height)}px`;
+}
+
+let tableMenuCleanup: (() => void) | null = null;
+let tableMenuElements: HTMLElement[] | null = null;
+
+function closeTableMenu(): void {
+  if (tableMenuElements) {
+    for (const el of tableMenuElements) el.remove();
+    tableMenuElements = null;
+  }
+  tableMenuCleanup?.();
+  tableMenuCleanup = null;
+}
+
 // ---------------------------------------------------------------- 单元格就地编辑
 
 /** 本轮编辑已提交过的单元格：blur 与程序性导航会让提交触发两次。 */
 const committedCells = new WeakSet<HTMLElement>();
+
+/** 每个单元格的渲染 runs：Esc 取消编辑时恢复渲染态（切原文后 innerText 已是原文）。 */
+const cellRuns = new WeakMap<HTMLElement, TextRun[]>();
 
 /**
  * 单元格的事件：聚焦记原文，keydown 处理导航与非法字符，失焦提交。
@@ -651,6 +1190,37 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
   cell.addEventListener("mousedown", (event) => event.stopPropagation());
 
   cell.addEventListener("focus", () => {
+    // 含行内样式的单元格（`code`、**粗体** 等被渲染成了元素）先切到**原文**编辑：
+    // 直接以渲染态的 innerText 写回会把 `` ` `` / `**` 丢掉（等于静默破坏语法）。
+    // 纯文本单元格 raw 与显示一致，交换是无感的。
+    if (cell.children.length > 0 && cell.dataset.raw) {
+      // 记录光标在显示文本中的偏移，切原文后按偏移落位（近似映射）
+      let offset = 0;
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && cell.contains(sel.anchorNode)) {
+        const probe = document.createRange();
+        probe.selectNodeContents(cell);
+        probe.setEnd(sel.getRangeAt(0).endContainer, sel.getRangeAt(0).endOffset);
+        offset = probe.toString().length;
+      }
+      cell.textContent = cell.dataset.raw;
+      const placed = document.createRange();
+      placed.selectNodeContents(cell);
+      placed.collapse(true);
+      // 只有一个文本节点，直接按偏移折叠光标（钳到原文长度内）
+      const node = cell.firstChild;
+      if (node) {
+        try {
+          placed.setStart(node, Math.min(offset, (node.textContent ?? "").length));
+          placed.collapse(true);
+        } catch {
+          // 偏移越界等异常：保持光标在行首
+        }
+      }
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(placed);
+    }
     cell.dataset.orig = cell.innerText;
   });
 
@@ -689,7 +1259,16 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
     }
     if (event.key === "Escape") {
       event.preventDefault();
-      if (cell.dataset.orig !== undefined) cell.innerText = cell.dataset.orig;
+      if (cell.dataset.orig !== undefined) {
+        // 恢复**渲染态**：切原文后 orig 存的是原文，直接写回会让格子停在原文显示
+        const runs = cellRuns.get(cell);
+        if (runs) {
+          cell.textContent = "";
+          appendRuns(cell, runs);
+        } else {
+          cell.innerText = cell.dataset.orig;
+        }
+      }
       cell.blur();
     }
   });
@@ -728,8 +1307,12 @@ function withFlushedCellEdit(
   transform: (block: TableBlock) => string[],
 ): void {
   const active = document.activeElement;
+  // 只冲刷**单元格**。表格宿主本身也是 contentEditable（跨格选区用），
+  // 焦点落在宿主上时没有"正在编辑的单元格"可言
   const editing =
-    active instanceof HTMLElement && wrap.contains(active) && active.isContentEditable
+    active instanceof HTMLElement &&
+    (active.tagName === "TD" || active.tagName === "TH") &&
+    wrap.contains(active)
       ? active
       : null;
   if (editing) commitCellEdit(view, wrap, editing);
@@ -965,7 +1548,17 @@ function wikiDisplayText(target: string): string {
  * `local` 是本地绝对路径（仓库内），渲染时才转成 asset URL——`convertFileSrc`
  * 依赖 `window`，不能在装饰计算阶段调用（那样单元测试就没法在 Node 里跑）。
  * 文件缺失或目录未授权时 `error` 事件会把它降级成标签，避免留一个破图。
+ *
+ * 0.5 渲染增强：本地图悬停出工具栏（复制/裁剪/重命名/删除，动作由 App 经上下文
+ * 注入）；`epoch` 参与相等性判断，裁剪覆写文件后靠它强制重建 <img> 绕过缓存。
  */
+let imageEpoch = 0;
+
+/** 二进制文件被覆写（裁剪）后调用：所有已渲染图片按新文件重载。 */
+export function bumpImageEpoch(): void {
+  imageEpoch += 1;
+}
+
 class ImageWidget extends WidgetType {
   readonly remote: string | null;
   readonly local: string | null;
@@ -973,6 +1566,8 @@ class ImageWidget extends WidgetType {
   readonly target: string;
   /** `![[图.png|200]]` 里的宽度（像素）；没有就是 null。 */
   readonly width: number | null;
+  /** 仓库相对路径；远程资源或解析不出时为 null（此时不挂工具栏）。 */
+  readonly relativePath: string | null;
 
   constructor(
     remote: string | null,
@@ -980,6 +1575,7 @@ class ImageWidget extends WidgetType {
     alt: string,
     target: string,
     width: number | null = null,
+    relativePath: string | null = null,
   ) {
     super();
     this.remote = remote;
@@ -987,6 +1583,7 @@ class ImageWidget extends WidgetType {
     this.alt = alt;
     this.target = target;
     this.width = width;
+    this.relativePath = relativePath;
   }
 
   eq(other: ImageWidget) {
@@ -995,11 +1592,17 @@ class ImageWidget extends WidgetType {
       other.local === this.local &&
       other.alt === this.alt &&
       other.target === this.target &&
-      other.width === this.width
+      other.width === this.width &&
+      other.relativePath === this.relativePath &&
+      other.epoch === this.epoch
     );
   }
 
-  toDOM() {
+  get epoch() {
+    return imageEpoch;
+  }
+
+  toDOM(view: EditorView) {
     // 根节点用容器固定下来，只替换它的子节点。
     // 不能在 error 里替换 widget 的根节点——CM6 持有该节点的引用，
     // 换掉它会让 CM6 的 DOM 记账失效（表现为降级标签根本不出现）。
@@ -1019,8 +1622,35 @@ class ImageWidget extends WidgetType {
     img.addEventListener("error", () => {
       box.replaceChildren(imageChip(this.alt, this.target));
     });
-    img.src = source;
+    // asset 协议按完整 URL 缓存：带上代际，裁剪覆写后立刻看到新图
+    img.src = this.local ? `${source}?v=${imageEpoch}` : source;
     box.appendChild(img);
+
+    const actions = view.state.facet(livePreviewContext).imageActions;
+    if (actions && this.relativePath && this.local) {
+      box.classList.add("cm-lp-imgbox");
+      const bar = document.createElement("div");
+      bar.className = "qn-img-toolbar";
+      const mk = (text: string, title: string, run: () => void) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "qn-img-btn";
+        btn.title = title;
+        btn.textContent = text;
+        // 工具栏点击不能落进编辑器（否则光标跳动、本行退回源码）
+        btn.addEventListener("mousedown", (event) => event.preventDefault());
+        btn.addEventListener("click", (event) => {
+          event.stopPropagation();
+          run();
+        });
+        bar.appendChild(btn);
+      };
+      mk("⧉", "复制图片到剪贴板", () => actions.copy(this.relativePath!));
+      mk("✂", "裁剪图片", () => actions.crop(this.relativePath!));
+      mk("✎", "重命名（同步更新引用）", () => actions.rename(this.relativePath!));
+      mk("🗑", "删除（并清理笔记里的引用）", () => actions.remove(this.relativePath!));
+      box.appendChild(bar);
+    }
     return box;
   }
 }
@@ -1081,6 +1711,14 @@ interface BuildContext {
   state: EditorState;
   /** 选区覆盖到的行号，这些行显示源码不做隐藏。 */
   activeLines: Set<number>;
+  /** 选区是否触及 [from, to]（按位置而非行——标题标记只在光标真落在标记区时显形）。 */
+  touched: (from: number, to: number) => boolean;
+  /**
+   * 光标（折叠选区）是否落在 [from, to] 内。行内元素（粗体、行内代码、链接…）
+   * 的源码显隐用它：曾经按「光标在本行」判断，点行内代码会把**整行**的
+   * `**`、`` ` `` 全部恢复成源码——Obsidian 只展开光标所在的那个元素。
+   */
+  cursorIn: (from: number, to: number) => boolean;
 }
 
 /** 节点是否与当前选区同处一行（同行则显示源码）。 */
@@ -1111,7 +1749,14 @@ export function buildLivePreviewDecorations(
     const b = state.doc.lineAt(range.to).number;
     for (let n = a; n <= b; n += 1) activeLines.add(n);
   }
-  const ctx: BuildContext = { state, activeLines };
+  const ctx: BuildContext = {
+    state,
+    activeLines,
+    touched: (from, to) =>
+      state.selection.ranges.some((range) => range.from <= to && range.to >= from),
+    cursorIn: (from, to) =>
+      state.selection.ranges.some((range) => range.empty && range.from >= from && range.to <= to),
+  };
 
   const marks: Range<Decoration>[] = [];
   const replaces: Range<Decoration>[] = [];
@@ -1152,7 +1797,7 @@ export function buildLivePreviewDecorations(
   // （例如 `<font color=red>[[某笔记]]</font>` 整段归 HTML）。
   const htmlSpans = findInlineHtml(slice, from, excluded);
   for (const item of htmlSpans) {
-    if (isActive(ctx, item.from, item.to)) continue; // 光标所在行显示源码
+    if (ctx.cursorIn(item.from, item.to)) continue; // 光标在该元素内才显示源码
     replaceWith(item.from, item.to, new HtmlWidget(item.inner));
   }
 
@@ -1162,17 +1807,30 @@ export function buildLivePreviewDecorations(
 
   // wiki 语法先注册：去重时它要优先于解析器为它生成的那些节点。
   for (const item of wiki) {
-    if (isActive(ctx, item.from, item.to)) continue; // 光标所在行显示源码
+    // 只有点进括号区（`[[` / `![[` / `]]`）才显出源码；点链接文字保持渲染——
+    // 整个 item 一个区间的话，点文字也会让括号弹出来、文字横移
+    const bracketHit =
+      ctx.cursorIn(item.from, item.from + (item.embed ? 3 : 2)) ||
+      ctx.cursorIn(item.to - 2, item.to);
+    if (bracketHit) continue; // 光标在该元素内才显示源码
 
     if (item.embed) {
       if (IMAGE_EXT.test(item.target)) {
         const { remote, local } = resolveWikiTarget(resources, item.target);
+        const relative = resolveWikiRelative(resources, item.target);
         // `![[图.png|200]]` 里的数字是宽度，不是说明文字
         const numeric = /^\d+$/.test(item.label);
         replaceWith(
           item.from,
           item.to,
-          new ImageWidget(remote, local, numeric ? "" : item.label, item.target, numeric ? Number(item.label) : null),
+          new ImageWidget(
+            remote,
+            local,
+            numeric ? "" : item.label,
+            item.target,
+            numeric ? Number(item.label) : null,
+            relative,
+          ),
         );
       } else {
         // 笔记嵌入：把目标笔记的内容渲染进来
@@ -1193,7 +1851,13 @@ export function buildLivePreviewDecorations(
     if (textTo > textFrom) {
       hide(item.from, textFrom);
       hide(textTo, item.to);
-      marks.push(MARK.link.range(textFrom, textTo));
+      // 带 data-wiki-target：Alt+点击在资源管理器中定位目标文件
+      marks.push(
+        Decoration.mark({
+          class: "cm-lp-link",
+          attributes: { "data-wiki-target": item.target, title: "Alt+点击在资源管理器中定位文件" },
+        }).range(textFrom, textTo),
+      );
     }
   }
 
@@ -1207,13 +1871,13 @@ export function buildLivePreviewDecorations(
   ];
 
   for (const item of findInlineMath(slice, from, taken)) {
-    if (isActive(ctx, item.from, item.to)) continue;
+    if (ctx.cursorIn(item.from, item.to)) continue;
     replaceWith(item.from, item.to, mathWidgetFor(item));
   }
 
   // 高亮 `==文字==`：藏掉两侧的 `==`，给文字加底色
   for (const item of findHighlights(slice, from, taken)) {
-    if (isActive(ctx, item.from, item.to)) continue;
+    if (ctx.cursorIn(item.from, item.to)) continue;
     hide(item.from, item.from + 2);
     hide(item.to - 2, item.to);
     if (item.to - 2 > item.from + 2) {
@@ -1224,13 +1888,13 @@ export function buildLivePreviewDecorations(
   // 注释 `%%...%%`：整段隐藏（只处理单行——跨行替换换行符是插件不允许的）。
   // 光标移到本行时会显示源码，所以不会"找不回"。
   for (const item of findComments(slice, from, taken)) {
-    if (isActive(ctx, item.from, item.to)) continue;
+    if (ctx.cursorIn(item.from, item.to)) continue;
     hide(item.from, item.to);
   }
 
   // 标签 `#标签`：加个弱化的底色，与正文区分（点击跳转尚未实现）
   for (const item of findTags(slice, from, taken)) {
-    if (isActive(ctx, item.from, item.to)) continue;
+    if (ctx.cursorIn(item.from, item.to)) continue;
     marks.push(
       Decoration.mark({
         class: "cm-lp-tag",
@@ -1249,24 +1913,27 @@ export function buildLivePreviewDecorations(
       };
 
       // 行内「标记+内容」：把两侧标记藏起来，给内容加样式。
-      // 光标在本行时整体退回源码——既不隐藏标记，也不加样式，否则会出现
-      // 「`**粗体**` 看着是源码、却已经变成粗体」这种自相矛盾的显示。
+      // 定界符取「第一个与最后一个 Mark 子节点」而不是第1、2个子节点：
+      // **加粗 `代码`** 的第二个子节点是 InlineCode，旧判断会整体失灵，
+      // `**` 直接露出（实测踩过）。处理完定界符后继续下沉子节点，
+      // 嵌套的行内代码仍会走自己的分支。光标落在哪个元素，就只展开哪个元素。
       const inlineMark = INLINE_MARKS[name];
       if (inlineMark) {
-        const first = node.node.firstChild;
-        const second = first?.nextSibling;
-        if (
-          first &&
-          second &&
-          first.name.endsWith("Mark") &&
-          second.name.endsWith("Mark") &&
-          !isActive(ctx, node.from, node.to)
-        ) {
-          hide(first.from, first.to);
-          hide(second.from, second.to);
-          if (second.from > first.to) marks.push(inlineMark.range(first.to, second.from));
+        const firstMark =
+          node.node.firstChild?.name.endsWith("Mark") ? node.node.firstChild : null;
+        let lastMark: SyntaxNode | null = null;
+        for (let c = node.node.lastChild; c; c = c.prevSibling) {
+          if (c.name.endsWith("Mark")) {
+            lastMark = c;
+            break;
+          }
         }
-        return false;
+        if (firstMark && lastMark && lastMark.from > firstMark.to && !ctx.cursorIn(node.from, node.to)) {
+          hide(firstMark.from, firstMark.to);
+          hide(lastMark.from, lastMark.to);
+          if (lastMark.from > firstMark.to) marks.push(inlineMark.range(firstMark.to, lastMark.from));
+        }
+        return undefined;
       }
 
       switch (name) {
@@ -1280,19 +1947,18 @@ export function buildLivePreviewDecorations(
           const line = doc.lineAt(node.from);
           marks.push(LINE_CLASS[level].range(line.from));
           const headerMark = node.node.firstChild;
-          if (
-            headerMark &&
-            headerMark.name === "HeaderMark" &&
-            // 光标在本行时保留 # 标记：与其他语法的 isActive 保护一致，
-            // 否则点击标题永远看不到源码、无法直接改级别
-            !isActive(ctx, node.from, node.to)
-          ) {
+          if (headerMark?.name === "HeaderMark") {
             // 连同标记后的一个空格一起隐藏，否则标题会残留一个缩进。
             let end = headerMark.to;
             if (doc.sliceString(end, end + 1) === " ") end += 1;
-            hidden(headerMark.from, end);
+            // 标记只在光标真的落在标记区时显形（按位置判断；行级判断会让
+            // 光标一进标题行 `#### ` 就冒出来、整行文字右移，拖选/双击锚点
+            // 全部错位——表现成「标题选不中」。Obsidian 的标题在光标行保持渲染。）
+            if (!ctx.touched(headerMark.from, end)) hide(headerMark.from, end);
           }
-          return false;
+          // 继续下沉：标题里的行内代码/粗体/链接也要走各自的渲染分支
+          // （曾经 return false 挡住子节点，标题内的 `code` 一直以原文示人）。
+          return undefined;
         }
 
         case "Link": {
@@ -1303,7 +1969,7 @@ export function buildLivePreviewDecorations(
           if (
             open?.name === "LinkMark" &&
             close?.name === "LinkMark" &&
-            !isActive(ctx, node.from, node.to)
+            !ctx.cursorIn(node.from, node.to)
           ) {
             hide(open.from, open.to);
             // 从 `]` 一路藏到节点末尾，覆盖 `](url)`。
@@ -1325,7 +1991,7 @@ export function buildLivePreviewDecorations(
           // 裸链接（GFM 自动链接）：`https://…` 直接出现在正文里。
           // Link 内部的 URL 由上面那个分支一起处理，这里跳过。
           if (node.node.parent?.name === "Link") return false;
-          if (isActive(ctx, node.from, node.to)) return false;
+          if (ctx.cursorIn(node.from, node.to)) return false;
           const bare = doc.sliceString(node.from, node.to);
           if (!isExternalUrl(bare)) return false;
           marks.push(externalLinkMark(bare).range(node.from, node.to));
@@ -1339,9 +2005,10 @@ export function buildLivePreviewDecorations(
           const textLine = doc.lineAt(node.from);
           marks.push(LINE_CLASS[level].range(textLine.from));
           const headerMark = node.node.firstChild;
+          // 下划线行只在光标真的落在那一行（按位置判断）时显形，与 ATX 同理
           if (
             headerMark?.name === "HeaderMark" &&
-            !isActive(ctx, node.from, node.to)
+            !ctx.touched(headerMark.from, headerMark.to)
           ) {
             hide(headerMark.from, headerMark.to);
             // 下划线独占一行，藏掉文字后还要把行高压掉，否则留一条空行
@@ -1349,7 +2016,7 @@ export function buildLivePreviewDecorations(
               Decoration.line({ class: "cm-lp-collapsed" }).range(doc.lineAt(headerMark.from).from),
             );
           }
-          return false;
+          return undefined;
         }
 
         case "Blockquote": {
@@ -1362,11 +2029,19 @@ export function buildLivePreviewDecorations(
 
           const active = isActive(ctx, node.from, node.to);
 
-          // 整块加容器样式（按类型区分颜色）
+          // 整块加容器样式（按类型区分颜色）。这是逐行装饰：行级 margin/圆角会把
+          // 多行 callout 拆成一摞小方块（行间缝 + 每行圆角缺口），所以外边距与
+          // 圆角只挂在首尾行（cm-lp-callout-first/last，CSS 见 styles.css）。
           const lastLineNumber = doc.lineAt(node.to).number;
           for (let n = firstLine.number; n <= lastLineNumber; n += 1) {
+            const edge =
+              n === firstLine.number
+                ? " cm-lp-callout-first"
+                : n === lastLineNumber
+                  ? " cm-lp-callout-last"
+                  : "";
             marks.push(
-              Decoration.line({ class: `cm-lp-callout cm-lp-callout-${info.type}` }).range(
+              Decoration.line({ class: `cm-lp-callout cm-lp-callout-${info.type}${edge}` }).range(
                 doc.line(n).from,
               ),
             );
@@ -1400,13 +2075,18 @@ export function buildLivePreviewDecorations(
         case "Image": {
           // `![[图.png]]` 是 wiki 嵌入，由上面的 wiki 分支处理（解析器给它的目标是空的）。
           if (inWiki(node.from, node.to)) return false;
-          if (isActive(ctx, node.from, node.to)) return false;
+          if (ctx.cursorIn(node.from, node.to)) return false;
           const alt = doc.sliceString(node.from, node.to);
           const urlNode = node.node.getChild("URL");
           const target = urlNode ? doc.sliceString(urlNode.from, urlNode.to) : "";
           const altText = alt.replace(/^!\[/, "").split("]")[0] ?? "";
           const { remote, local } = resolveResource(resources, target);
-          replaceWith(node.from, node.to, new ImageWidget(remote, local, altText, target));
+          const relative = resolveResourceRelative(resources, target);
+          replaceWith(
+            node.from,
+            node.to,
+            new ImageWidget(remote, local, altText, target, null, relative),
+          );
           return false;
         }
 
@@ -1640,7 +2320,7 @@ export function computeBlockDecorations(state: EditorState): DecorationSet {
       const [from, to] = wholeLines(node.from, node.to);
       ranges.push(
         Decoration.replace({
-          widget: new TableWidget(parsed.rows, parsed.align, node.from, node.to),
+          widget: new TableWidget(parsed.rows, parsed.align, parsed.raw, node.from, node.to),
           block: true,
         }).range(from, to),
       );

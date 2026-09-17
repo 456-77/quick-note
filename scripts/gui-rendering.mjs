@@ -79,7 +79,7 @@ async function setTheme(ws, value) {
   await evaluate(
     ws,
     `(() => {
-       const button = document.querySelector('.topbar .icon-btn[title="设置"]');
+       const button = document.querySelector('.topbar .icon-btn[title^="设置"]');
        if (!button) return false;
        if (!document.querySelector('.settings-panel')) button.click();
        return true;
@@ -103,7 +103,7 @@ async function setTheme(ws, value) {
   await sleep(350);
   await evaluate(
     ws,
-    `document.querySelector('.topbar .icon-btn[title="设置"]')?.click()`,
+    `document.querySelector('.topbar .icon-btn[title^="设置"]')?.click()`,
   );
   await sleep(250);
 }
@@ -341,7 +341,7 @@ check(
 await evaluate(
   ws,
   `(() => {
-     const btn = document.querySelector('.topbar .icon-btn[title="设置"]');
+     const btn = document.querySelector('.topbar .icon-btn[title^="设置"]');
      btn?.click();
      return true;
    })()`,
@@ -407,7 +407,7 @@ await evaluate(
 await sleep(200);
 await evaluate(
   ws,
-  `document.querySelector('.topbar .icon-btn[title="设置"]')?.click()`,
+  `document.querySelector('.topbar .icon-btn[title^="设置"]')?.click()`,
 );
 await sleep(250);
 

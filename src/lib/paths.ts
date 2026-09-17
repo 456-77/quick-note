@@ -25,6 +25,36 @@ export interface LivePreviewContext {
    * 从而重建 DOM 并重新渲染（否则内容变了但 widget 相等，CM6 会沿用旧节点）。
    */
   generation: number;
+  /**
+   * 图片工具栏的动作（0.5）。App 启动后就地填上；widget 的 toDOM 时读——
+   * 与整个上下文对象同一套「可变引用」约定，App 换仓库也只改字段不换对象。
+   */
+  imageActions?: ImageActions;
+  /**
+   * Alt+点击增强（0.5）。App 启动后就地填上；markdownExtras 的 altClickHandler 读——
+   * 同一套「可变引用」约定。
+   */
+  altActions?: AltActions;
+}
+
+/** Alt+点击触发的动作，由 App 实现（剪贴板、资源管理器、提示）。 */
+export interface AltActions {
+  /** 复制文本（行内代码快捷复制）。 */
+  copyText: (text: string) => void;
+  /** 在资源管理器中定位仓库内文件。 */
+  revealFile: (relativePath: string) => void;
+}
+
+/** 图片工具栏触发的动作，由 App 实现（要落盘、要弹窗，widget 只负责发起）。 */
+export interface ImageActions {
+  /** 复制图片到系统剪贴板。 */
+  copy: (relativePath: string) => void;
+  /** 裁剪（打开裁剪弹窗）。 */
+  crop: (relativePath: string) => void;
+  /** 重命名（走侧栏的改名输入行）。 */
+  rename: (relativePath: string) => void;
+  /** 删除（确认后移入 .trash 并清理笔记里的引用）。 */
+  remove: (relativePath: string) => void;
 }
 
 export const EMPTY_CONTEXT: LivePreviewContext = {
@@ -108,6 +138,13 @@ export function resolveResource(
   return relative
     ? { remote: null, local: absoluteInVault(ctx.vaultPath, relative) }
     : { remote: null, local: null };
+}
+
+/** Markdown 写法资源的仓库相对路径（图片工具栏要用；远程资源返回 null）。 */
+export function resolveResourceRelative(ctx: LivePreviewContext, url: string): string | null {
+  if (REMOTE_SCHEME.test(url)) return null;
+  if (!ctx.vaultPath) return null;
+  return relativeFromNote(ctx, safeDecode(url)) || null;
 }
 
 /**

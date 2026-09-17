@@ -187,6 +187,52 @@ fn renames_note_and_updates_wiki_references() {
 }
 
 #[test]
+fn renames_attachment_keeps_extension_and_updates_embeds() {
+    let vault = temp_vault("rename-image");
+    fs::create_dir_all(vault.join("attachments")).unwrap();
+    fs::write(vault.join("attachments").join("Pasted image 1.png"), b"png-bytes").unwrap();
+    fs::write(
+        vault.join("笔记.md"),
+        "看图 ![[Pasted image 1.png]] 和带宽度的 ![[Pasted image 1.png|200]]。\n",
+    )
+    .unwrap();
+
+    // 输入不带扩展名 → 自动补**原扩展名**（png），而不是旧 bug 里的 .md
+    let result = rename_entry(
+        vault_str(&vault),
+        "attachments/Pasted image 1.png".into(),
+        "架构图".into(),
+    )
+    .unwrap();
+    assert_eq!(result.path, "attachments/架构图.png");
+    assert!(vault.join("attachments").join("架构图.png").is_file());
+    assert!(!vault.join("attachments").join("架构图.png.md").exists(), "绝不能追加 .md");
+    assert!(!vault.join("attachments").join("架构图.md").exists());
+    assert_eq!(
+        fs::read(vault.join("attachments").join("架构图.png")).unwrap(),
+        b"png-bytes",
+        "内容原样保留"
+    );
+
+    // wiki 嵌入带扩展名，同样按文件名匹配更新
+    assert_eq!(result.updated, vec!["笔记.md"]);
+    let updated = fs::read_to_string(vault.join("笔记.md")).unwrap();
+    assert!(updated.contains("![[架构图.png]]"), "裸嵌入被更新: {updated}");
+    assert!(updated.contains("![[架构图.png|200]]"), "带宽度的嵌入被更新");
+
+    // 输入已带扩展名时不重复追加
+    let again = rename_entry(
+        vault_str(&vault),
+        "attachments/架构图.png".into(),
+        "架构图-新.png".into(),
+    )
+    .unwrap();
+    assert_eq!(again.path, "attachments/架构图-新.png");
+
+    let _ = fs::remove_dir_all(&vault);
+}
+
+#[test]
 fn rename_refuses_existing_name_and_path_changes() {
     let vault = temp_vault("rename-conflict");
     fs::write(vault.join("甲.md"), "甲").unwrap();

@@ -681,7 +681,11 @@ const h1Text = await evaluate(
      return line?.innerText ?? '';
    })()`,
 );
-check(h1Text.includes("# 语法覆盖"), "光标在标题行时显示 # 标记（可编辑源码）", JSON.stringify(h1Text));
+check(
+  !h1Text.includes("#") && h1Text.includes("语法覆盖"),
+  "点标题正文：标题保持渲染，`#` 不再横移（0.5 元素级激活）",
+  JSON.stringify(h1Text),
+);
 
 // 4. 光标所在行显示源码。
 // 注意：上面的表格交互已经把光标移走了，这里必须重新放回标题行再断言。
@@ -691,8 +695,8 @@ const activeLine = await evaluate(
   `document.querySelector('.cm-activeLine')?.innerText ?? null`,
 );
 check(
-  (activeLine ?? "").includes("## 列表与分割线"),
-  "光标所在行显示源码（二级标题可见 `##`）",
+  !(activeLine ?? "").includes("##") && (activeLine ?? "").includes("列表与分割线"),
+  "点二级标题正文：保持渲染、`##` 不横移（0.5 元素级激活）",
   `实际=${activeLine}`,
 );
 check(
@@ -701,11 +705,32 @@ check(
 );
 
 // 5. 动态行为：光标移到别的行，该行应立刻退回源码
-check(await clickLine(ws, "粗体"), "点击「粗体」所在行");
-check((await text(ws)).includes("**粗体**"), "该行立刻退回源码（`**粗体**` 可见）");
+// 元素级激活：必须点进**粗体元素内部**（点行内其他位置不会让它显源码）
+const strongPos = await evaluate(
+  ws,
+  `(() => { const s = document.querySelector('.cm-lp-strong'); if (!s) return null; const r = s.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`,
+);
+if (!strongPos) throw new Error("找不到渲染态的粗体元素");
+for (const type of ["mousePressed", "mouseReleased"]) {
+  await cdp(ws, "Input.dispatchMouseEvent", { type, x: strongPos.x, y: strongPos.y, button: "left", clickCount: 1 });
+}
+await sleep(400);
+check((await text(ws)).includes("**粗体**"), "点进粗体元素：该元素退回源码（`**粗体**` 可见）");
 check(
   (await evaluate(ws, `document.querySelectorAll('.cm-lp-strong').length`)) === 0,
-  "该行不再有粗体样式（不能出现「看着像源码却已加粗」）",
+  "该元素不再有粗体样式（不能出现「看着像源码却已加粗」）",
+);
+// 同行的斜体/行内代码保持渲染（0.5 元素级激活：只有点进的元素显源码）
+check(
+  (await evaluate(ws, `document.querySelectorAll('.cm-lp-em').length`)) === 1,
+  "同行的斜体照常渲染（不再整行退回源码）",
+);
+check(
+  (await evaluate(ws, `(() => {
+     const line = [...document.querySelectorAll('.cm-line')].find(e => (e.innerText ?? '').includes('粗体'));
+     return line ? line.querySelectorAll('.cm-lp-code').length : -1;
+   })()`)) === 1,
+  "同行的行内代码照常渲染",
 );
 
 check(await clickLine(ws, "普通项目一"), "点击中性位置（表格已渲染，不能再按源码行定位）");
@@ -728,17 +753,49 @@ check((await evaluate(ws, `document.querySelectorAll('.cm-lp-strong').length`)) 
 // 6.5 滚动到文末：视口变化应触发装饰重建。
 // 这里只断言装饰类名，不点击——文末行在 720px 窗口里位于视口边缘，
 // 点击坐标不可靠（实测 y≈793 会落到窗口外）。
-await evaluate(ws, `document.querySelector('.cm-scroller').scrollTop = 1e6`);
-await sleep(500);
+//
+// 必须**渐进滚动**而不是一次性 scrollTop=1e6：CM6 对未渲染区域的高度是估算值，
+// 且 mermaid/嵌入 widget 离开视口再进入时会重建（高度先塌成占位再长回来），
+// 浏览器的滚动锚定会随之拉回 scrollTop——大幅跳跃与它互相拉扯，实测偶发
+// 到不了底。渐进滚动（scrollUntil）每步等渲染稳定，widget 高度逐步落定。
+const quoteFound = await scrollUntil(
+  ws,
+  `!!document.querySelector('.cm-line.cm-lp-quote')`,
+  30,
+  0.7,
+);
+if (!quoteFound) {
+  const diag = await evaluate(
+    ws,
+    `(() => {
+       const s = document.querySelector('.cm-scroller');
+       const lines = [...document.querySelectorAll('.cm-line')];
+       return {
+         scrollTop: Math.round(s.scrollTop),
+         max: Math.round(s.scrollHeight - s.clientHeight),
+         rendered: lines.length,
+         last3: lines.slice(-3).map((l) => (l.innerText || '').slice(0, 16)),
+       };
+     })()`,
+  );
+  console.log("  滚动诊断：", JSON.stringify(diag));
+}
 // 按类名找，不能按"引用块"这三个字找——嵌入内容里也有"被嵌入的引用块"，
 // 文字匹配会命中嵌入容器而不是真正的引用行。
-const quote = await evaluate(
-  ws,
-  `(() => {
-     const line = document.querySelector('.cm-line.cm-lp-quote');
-     return line ? { cls: line.className, text: line.innerText } : null;
-   })()`,
-);
+const readQuote = () =>
+  evaluate(
+    ws,
+    `(() => {
+       const line = document.querySelector('.cm-line.cm-lp-quote');
+       return line ? { cls: line.className, text: line.innerText } : null;
+     })()`,
+  );
+// scrollUntil 判定成功后装饰仍可能处于重建窗口，读几轮取稳定值
+let quote = null;
+for (let i = 0; i < 5 && !quote; i += 1) {
+  quote = await readQuote();
+  if (!quote) await sleep(350);
+}
 check(quote !== null, "滚动后文末的引用行进入渲染范围");
 check(
   (quote?.cls ?? "").includes("cm-lp-quote"),
@@ -783,6 +840,179 @@ check(after !== before, "文件内容确实发生了变化");
 check(after.includes(expectedMarker), `点击结果已写入文件（期望 ${expectedMarker}）`);
 check(after.includes("- [x] 已完成任务"), "其他任务项未被破坏");
 check(after.includes("```ts"), "代码块围栏在源码中原样保留（渲染只是视图层）");
+
+// 8. 表格：数据行的就地编辑写回**该行**，不覆盖其他行
+//（data-row 写死为 1 的回归断言：曾让编辑任何数据行都写到第一行）。
+{
+  const beforeTable = readFileSync(filePath, "utf8");
+  // 按渲染后的 <td> 定位（正文里"~~删除线~~"那段也含"删除"，按行文字找会点错行）。
+  // 滚动后必须等 CM 视口重渲染稳定，再**重新读取**坐标——scrollIntoView 触发的
+  // 重渲染会替换 DOM 节点，滚动前后坐标可能对不上（点错宿主会把整表替换掉）。
+  // 点击后验证焦点真的落在单元格上，没落上就重取坐标重试。
+  const clickCell = async (needle) => {
+    await evaluate(
+      ws,
+      `(() => {
+         const td = [...document.querySelectorAll('.cm-lp-tablewrap td, .cm-lp-tablewrap th')]
+           .find((c) => (c.textContent ?? '').includes(${JSON.stringify(needle)}));
+         td?.scrollIntoView({ block: 'center' });
+         return !!td;
+       })()`,
+    );
+    await sleep(500);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const cellRect = await evaluate(
+        ws,
+        `(() => {
+           const td = [...document.querySelectorAll('.cm-lp-tablewrap td, .cm-lp-tablewrap th')]
+             .find((c) => (c.textContent ?? '').includes(${JSON.stringify(needle)}));
+           if (!td) return null;
+           const r = td.getBoundingClientRect();
+           return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+         })()`,
+      );
+      if (!cellRect) return false;
+      await clickAt(ws, cellRect.x, cellRect.y);
+      await sleep(300);
+      const ok = await evaluate(
+        ws,
+        `(() => {
+           const el = document.activeElement;
+           return el?.tagName === 'TD' || el?.tagName === 'TH';
+         })()`,
+      );
+      if (ok) return true;
+    }
+    return false;
+  };
+
+  check(await clickCell("删除"), "点击后焦点落在单元格上（而不是表格宿主）");
+  // 只圈选**本格**内容再输入才是"覆盖"（与 Tab 跳格后的行为一致）。
+  // 不用 execCommand("selectAll")：焦点若在表格宿主上，它会选中整张表。
+  await evaluate(
+    ws,
+    `(() => {
+       const el = document.activeElement;
+       const range = document.createRange();
+       range.selectNodeContents(el);
+       const selection = window.getSelection();
+       selection.removeAllRanges();
+       selection.addRange(range);
+       return true;
+     })()`,
+  );
+  await cdp(ws, "Input.insertText", { text: "新值" });
+  await sleep(300);
+  // Enter 提交（下方有格则跳格）
+  await cdp(ws, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  await cdp(ws, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+  console.log("  等待自动保存…");
+  let afterTable = beforeTable;
+  for (let i = 0; i < 25; i += 1) {
+    await sleep(400);
+    afterTable = readFileSync(filePath, "utf8");
+    if (afterTable.includes("| 新值 |")) break;
+  }
+  check(afterTable !== beforeTable, "表格单元格编辑写回了文件");
+  // 提交走 formatTable 重新对齐（对齐补空格、右对齐尾冒号），不按字面匹配。
+  // 回归信号：编辑落在所点的行（该行有 普通 和 1），而不是别的行/覆盖了别的行。
+  const editedRow = afterTable.split("\n").find((l) => l.includes("新值"));
+  check(
+    editedRow !== undefined && editedRow.includes("普通") && /\|\s*1\s*\|/.test(editedRow),
+    "编辑落在所点的数据行（不覆盖其他行）",
+    editedRow ?? "",
+  );
+  check(afterTable.includes("| **粗体** | `code` |"), "其他数据行内容原样");
+
+  // 8.5 Ctrl+A 两段式全选：第一次选本格，第二次升级为整张表
+  {
+    check(await clickCell("普通"), "点击后焦点落在单元格上（而不是表格宿主）");
+    // 第一次 Ctrl+A：全选本格
+    // CDP 的修饰键用 modifiers 位掩码（Ctrl=2）；`control: true` 不是有效参数
+    await cdp(ws, "Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+    await cdp(ws, "Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+    await sleep(200);
+    const first = await evaluate(
+      ws,
+      `(() => { const s = window.getSelection(); return s ? s.toString() : ""; })()`,
+    );
+    check(first.trim() === "普通", "第一次 Ctrl+A 只选本格内容", JSON.stringify(first));
+    // 第二次 Ctrl+A：整张表
+    // CDP 的修饰键用 modifiers 位掩码（Ctrl=2）；`control: true` 不是有效参数
+    await cdp(ws, "Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+    await cdp(ws, "Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
+    await sleep(200);
+    const second = await evaluate(
+      ws,
+      `(() => { const s = window.getSelection(); return s ? s.toString() : ""; })()`,
+    );
+    check(
+      second.includes("左对齐") && second.includes("普通"),
+      "第二次 Ctrl+A 选中整张表",
+      JSON.stringify(second.slice(0, 60)),
+    );
+  }
+
+  // 9. TSV 粘贴自动转 Markdown 表格
+  const pre = afterTable;
+  await clickLine(ws, "语法覆盖");
+  await cdp(ws, "Input.insertText", { text: "\n" });
+  await sleep(200);
+  await evaluate(
+    ws,
+    `(() => {
+       const data = new DataTransfer();
+       data.setData("text/plain", "名称\\t数量\\n苹果\\t3");
+       document.querySelector(".cm-content").dispatchEvent(
+         new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+       );
+       return true;
+     })()`,
+  );
+  await sleep(600);
+  console.log("  等待自动保存…");
+  let afterPaste = pre;
+  for (let i = 0; i < 25; i += 1) {
+    await sleep(400);
+    afterPaste = readFileSync(filePath, "utf8");
+    if (afterPaste.includes("| 名称 | 数量 |")) break;
+  }
+  check(
+    afterPaste.includes("| 名称 | 数量 |") && afterPaste.includes("| 苹果 | 3 |"),
+    "TSV 粘贴自动转成 Markdown 表格",
+  );
+
+  // 10. CRLF 剪贴板文本粘贴规范化为文档换行符，不留裸 \r
+  //（basicSetup 会给裸 \r 画红色角标；fixtures 里有现成的"第二行。"文案，
+  //  所以标记词用不冲突的"CR甲行/CR乙行"）
+  await evaluate(
+    ws,
+    `(() => {
+       const data = new DataTransfer();
+       data.setData("text/plain", "CR甲行\\r\\nCR乙行");
+       document.querySelector(".cm-content").dispatchEvent(
+         new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+       );
+       return true;
+     })()`,
+  );
+  await sleep(600);
+  console.log("  等待自动保存…");
+  let afterCr = afterPaste;
+  for (let i = 0; i < 25; i += 1) {
+    await sleep(400);
+    afterCr = readFileSync(filePath, "utf8");
+    if (afterCr.includes("CR甲行") && afterCr.includes("CR乙行")) break;
+  }
+  const markerLines = afterCr
+    .split("\n")
+    .filter((l) => l.includes("CR甲行") || l.includes("CR乙行"));
+  check(
+    markerLines.length === 2 && markerLines.every((l) => !l.includes("\r")),
+    "CRLF 剪贴板粘贴规范化为文档换行符（无裸 CR）",
+    JSON.stringify(markerLines),
+  );
+}
 
 ws.close();
 console.log(failures === 0 ? "\nLive Preview GUI 验证通过 ✓" : `\n失败 ${failures} 项 ✗`);

@@ -14,6 +14,7 @@
  */
 
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
+import { cachedMermaidSvg } from "./livePreview.ts";
 import {
   IMAGE_EXT,
   resolveResource,
@@ -91,7 +92,8 @@ export function prepareEmbedMarkdown(markdown: string): string {
   });
 }
 
-function escapeHtml(value: string): string {
+/** HTML 转义（打印视图等渲染方共用）。 */
+export function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -173,6 +175,25 @@ export async function renderEmbeddedNote(
     content = sliced;
   }
 
+  const wrapped = `<div class="cm-lp-embed-body">${await renderMarkdownToHtml(content, ctx)}</div>`;
+  cache.set(key, wrapped);
+  if (cache.size > CACHE_LIMIT) {
+    const oldest = cache.keys().next();
+    if (!oldest.done) cache.delete(oldest.value);
+  }
+  return wrapped;
+}
+
+/**
+ * 把 Markdown 渲染成 HTML（图片按仓库解析为可访问地址，链接不可导航）。
+ *
+ * 渲染规则与嵌入共用同一套（html: false 的安全前提见文件头）；
+ * PDF 导出复用它把整篇笔记转成打印视图。
+ */
+export async function renderMarkdownToHtml(
+  markdown: string,
+  ctx: LivePreviewContext,
+): Promise<string> {
   const md = await loadRenderer();
   const renderer = md.renderer as unknown as {
     rules: Record<
@@ -188,6 +209,18 @@ export async function renderEmbeddedNote(
     return `<span class="cm-lp-link" title="${escapeHtml(title)}">`;
   };
   renderer.rules.link_close = () => "</span>";
+
+  // 围栏代码块：mermaid 复用会话内已渲染的 SVG（打印视图里图不再是代码文本），
+  // 其余按普通代码块输出
+  renderer.rules.fence = (tokens, idx) => {
+    const token = tokens[idx] as { info?: string; content: string };
+    const info = (token.info ?? "").trim().toLowerCase();
+    if (info === "mermaid") {
+      const svg = cachedMermaidSvg(token.content);
+      if (svg) return `<div class="qn-print-mermaid">${svg}</div>`;
+    }
+    return `<pre class="qn-print-code"><code>${escapeHtml(token.content)}</code></pre>`;
+  };
 
   // 图片：wiki: 目标走仓库解析，其余按 Markdown 的相对路径规则
   renderer.rules.image = (tokens, idx) => {
@@ -206,14 +239,7 @@ export async function renderEmbeddedNote(
     return `<img class="cm-lp-image" src="${escapeHtml(url)}" alt="${escapeHtml(label)}"${style}>`;
   };
 
-  const html = md.render(prepareEmbedMarkdown(content));
-  const wrapped = `<div class="cm-lp-embed-body">${html}</div>`;
-  cache.set(key, wrapped);
-  if (cache.size > CACHE_LIMIT) {
-    const oldest = cache.keys().next();
-    if (!oldest.done) cache.delete(oldest.value);
-  }
-  return wrapped;
+  return md.render(prepareEmbedMarkdown(markdown));
 }
 
 function errorBlock(message: string): string {

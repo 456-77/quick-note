@@ -138,6 +138,21 @@ try {
   // ---------------------------------------------------------------- 标签页
   console.log("多标签页\n");
 
+  // 本节验证的是「新开标签」模式（设置里可切换）。应用默认是 Obsidian 式的
+  // 「替换当前标签」，先注入设置并重载，累积标签的断言才有意义。
+  await evaluate(
+    ws,
+    `(() => {
+       const raw = localStorage.getItem("quicknote.settings");
+       const settings = raw ? JSON.parse(raw) : {};
+       settings.openNoteMode = "newTab";
+       localStorage.setItem("quicknote.settings", JSON.stringify(settings));
+       location.reload();
+       return true;
+     })()`,
+  );
+  await sleep(1500);
+
   // 脚本跑在 verify-gui 序列的后段：前面步骤可能开着标签，标签数断言全部写成相对的。
   // 文件树常驻左栏，无需切换任何页签。
   const tabsBefore = await tabCount(ws);
@@ -308,6 +323,41 @@ try {
   check(
     await evaluate(ws, `!!document.querySelector('.tree-file')`),
     "文件树仍在左栏可见（文件列表不依赖页签）",
+  );
+
+  // ---------------------------------------------------------------- 替换模式
+  console.log("\n替换当前标签（默认，Obsidian 式）\n");
+
+  // 切回默认的 replace 模式（也是给后续 GUI 脚本一个干净的默认状态）
+  await evaluate(
+    ws,
+    `(() => {
+       const raw = localStorage.getItem("quicknote.settings");
+       const settings = raw ? JSON.parse(raw) : {};
+       settings.openNoteMode = "replace";
+       localStorage.setItem("quicknote.settings", JSON.stringify(settings));
+       location.reload();
+       return true;
+     })()`,
+  );
+  await sleep(1500);
+
+  check(await openNote(ws, NOTE_A), `替换模式：打开 ${NOTE_A}`);
+  const tabsAfterFirst = await tabCount(ws);
+  check(tabsAfterFirst >= 1, "替换模式：至少有一个标签");
+
+  const cPath = "deep/nested/folder/note.md";
+  check(await openNote(ws, cPath), `替换模式：再打开 ${cPath}`);
+  check(
+    (await activeTabTitle(ws)) === cPath.split("/").pop(),
+    "替换模式：激活标签切到新笔记",
+  );
+  // 无论 cPath 此前是否已开（已开 → 切回原标签；没开 → 顶掉当前标签），
+  // 标签数都不应该增长——这正是它与 newTab 模式的分界
+  check(
+    (await tabCount(ws)) === tabsAfterFirst,
+    "替换模式：打开新笔记不增长标签数",
+    `${tabsAfterFirst} → ${await tabCount(ws)}`,
   );
 } catch (err) {
   failures += 1;

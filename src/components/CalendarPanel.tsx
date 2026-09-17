@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import moment from "moment";
 import {
   hasCarriedOver,
@@ -16,6 +16,13 @@ import {
 import type { DailyController } from "../lib/useDaily";
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
+
+/** 让 textarea 随内容自动长高（上限见 CSS），长待办不用左右滚动着编辑。 */
+function autoResize(el: HTMLTextAreaElement | null): void {
+  if (!el) return;
+  el.style.height = "auto";
+  el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+}
 
 interface Props {
   controller: DailyController;
@@ -60,6 +67,14 @@ export default function CalendarPanel({
   /** 正在修改文字的待办 id；null 表示没有行处于编辑态。 */
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+
+  // 多行输入框随内容长高；提交/取消后内容清空，高度也要弹回去
+  const addInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const editInputRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => autoResize(addInputRef.current), [todoDraft]);
+  useEffect(() => {
+    if (editingId) autoResize(editInputRef.current);
+  }, [editingId, editDraft]);
   /**
    * 待办的「⋯」操作菜单（修改 / 复制 / 删除）。
    *
@@ -364,21 +379,26 @@ export default function CalendarPanel({
                 title={item.done ? "标记为未完成" : "标记为已完成"}
               />
               {editingId === item.id ? (
-                <input
+                <textarea
+                  ref={editInputRef}
                   autoFocus
-                  type="text"
+                  rows={1}
                   className="cal-todo-edit"
                   value={editDraft}
                   onChange={(event) => setEditDraft(event.target.value)}
                   onBlur={submitEditTodo}
                   onKeyDown={(event) => {
-                    if (event.key === "Enter") submitEditTodo();
+                    // Enter 提交、Shift+Enter 才是换行——多行待办靠它录入
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      submitEditTodo();
+                    }
                     if (event.key === "Escape") {
                       setEditingId(null);
                       setEditDraft("");
                     }
                   }}
-                  title="回车保存，Esc 取消"
+                  title="Enter 保存 · Shift+Enter 换行 · Esc 取消"
                 />
               ) : (
                 <>
@@ -456,13 +476,17 @@ export default function CalendarPanel({
         </div>
 
         <div className="cal-todo-add">
-          <input
-            type="text"
+          <textarea
+            ref={addInputRef}
+            rows={1}
             value={todoDraft}
-            placeholder="添加待办，回车确认"
+            placeholder="添加待办：Enter 确认 · Shift+Enter 换行"
             onChange={(event) => setTodoDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") submitTodo();
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                submitTodo();
+              }
             }}
           />
           <button type="button" className="mini-btn" onClick={submitTodo} disabled={!todoDraft.trim()}>

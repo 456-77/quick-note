@@ -23,6 +23,43 @@ export interface Settings {
   savePastedAttachments: boolean;
   /** 界面主题。默认跟随系统。 */
   theme: ThemeMode;
+  /**
+   * 从文件树/搜索打开一篇**未打开过**的笔记时的行为：
+   * - `replace`（默认，Obsidian 同款）：替换当前标签的内容，标签数不增长；
+   * - `newTab`：每次都新开一个标签（多标签并存）。
+   * 已打开过的笔记永远切回已有标签，两种模式一致。
+   */
+  openNoteMode: "replace" | "newTab";
+  /** 编辑器是否显示行号数字（默认关：笔记不是代码）。 */
+  showLineNumbers: boolean;
+  /**
+   * Markdown 渲染风格：
+   * - `default`：内置的深色高级观感；
+   * - `blueTopaz`：Blue Topaz 同源的渲染观感（彩色标题、tint 表头、重 callout）。
+   */
+  renderStyle: "default" | "blueTopaz";
+  // ---- 全局背景（每设备独立，与插件同一种归属：不进仓库、不随同步走）----
+
+  /** 启用全局背景图片。 */
+  bgEnabled: boolean;
+  /** 背景图片路径（仓库内相对路径）。 */
+  bgImagePath: string;
+  /** 不透明度 0–1。 */
+  bgOpacity: number;
+  /** 模糊半径（px）。 */
+  bgBlur: number;
+  /** 亮度（%）。 */
+  bgBrightness: number;
+  /** 对比度（%）。 */
+  bgContrast: number;
+  /** 水平位置（%）。 */
+  bgPosX: number;
+  /** 垂直位置（%）。 */
+  bgPosY: number;
+  /** 缩放（%，100 = 原始大小，配合 cover/contain 使用）。 */
+  bgScale: number;
+  /** 适配方式：cover = 铺满裁剪，contain = 完整显示。 */
+  bgFit: "cover" | "contain";
 }
 
 const STORAGE_KEY = "quicknote.settings";
@@ -33,6 +70,20 @@ const DEFAULTS: Settings = {
   savePastedAttachments: true,
   // 默认深色：这套界面按"深色高级"设计（浅色仍可在设置里切换/跟随系统）
   theme: "dark",
+  // 默认 Obsidian 式：打开笔记替换当前标签；要并存才切 newTab
+  openNoteMode: "replace",
+  showLineNumbers: false,
+  renderStyle: "default",
+  bgEnabled: false,
+  bgImagePath: "",
+  bgOpacity: 0.35,
+  bgBlur: 0,
+  bgBrightness: 100,
+  bgContrast: 100,
+  bgPosX: 50,
+  bgPosY: 50,
+  bgScale: 100,
+  bgFit: "cover",
 };
 
 function load(): Settings {

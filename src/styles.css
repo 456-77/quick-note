@@ -574,6 +574,53 @@ kbd {
   box-shadow: var(--shadow-1);
 }
 
+/* ---- 窄窗口响应式（顶栏）：元素按宽度梯度退场，文本一律不许折行 ----
+   曾经在 ~1280px 下「源码」被挤成竖排、搜索框压住模式切换——
+   根因是两端都不肯收缩：这里的原则是搜索框优先让位（图标化），
+   状态胶囊/品牌文字随后退场，窗口控制与三个功能钮永远保留。 */
+.seg,
+.mode-switch,
+.save-chip,
+.window-controls {
+  white-space: nowrap;
+  flex: none;
+}
+
+.searchbox {
+  min-width: 0;
+}
+
+@media (max-width: 1440px) {
+  .searchbox-kbd {
+    display: none;
+  }
+}
+
+@media (max-width: 1280px) {
+  .searchbox {
+    flex: 0 0 auto;
+    padding: 5px 11px;
+  }
+
+  .searchbox-placeholder {
+    display: none;
+  }
+
+  .save-chip {
+    display: none;
+  }
+}
+
+@media (max-width: 1080px) {
+  .brand span {
+    display: none;
+  }
+
+  .vault-pill {
+    max-width: 140px;
+  }
+}
+
 /* ---------------------------------------------------------------- 提示横幅 */
 
 /* 横幅不再通栏贴边：浮在主体之上的一张卡片，带进入动画 */
@@ -994,9 +1041,9 @@ div.tree-item:focus-visible {
 /* ---------------------------------------------------------------- 编辑区 */
 
 /*
- * 编辑栏是三栏中的主角。垂直方向是 flex 列：tabbar / 表格工具栏 / 编辑器卡片
- * 依次排列，编辑器卡片吃掉剩余高度——之前 .editor-host 写死 height:100%，
- * 上面有 tabbar 时会把底部顶出状态栏（"笔记末尾被遮挡"就是这个原因）。
+ * Obsidian 式编辑区：**没有卡片**。标签栏与编辑器是同一个表面（tab 栏并入
+ * 编辑区，中间无分割线），整个中间栏铺满剩余空间，文档内容另设 900px 阅读宽度
+ * 水平居中。层级关系：Header ↓ 标签栏 ↓ Markdown 工作区。
  */
 .editor-pane {
   position: relative;
@@ -1004,20 +1051,17 @@ div.tree-item:focus-visible {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  padding: 8px 10px 10px;
-  gap: 8px;
-  background: var(--bg);
+  padding: 0;
+  gap: 0;
+  background: var(--surface);
   overflow: hidden;
 }
 
 .editor-host {
   flex: 1;
   min-height: 0;
-  /* 编辑器是一张浮起的卡片：圆角 + 阴影 + 与底色区分的表面色 */
-  background: var(--surface);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
+  /* 不再是浮起的卡片：无圆角、无边框、无阴影、无外边距，铺满中间栏 */
+  background: transparent;
   overflow: hidden;
 }
 
@@ -1103,31 +1147,99 @@ div.tree-item:focus-visible {
 }
 
 .cm-editor .cm-selectionBackground,
-.cm-editor.cm-focused .cm-selectionBackground,
-.cm-editor .cm-content ::selection {
+.cm-editor.cm-focused .cm-selectionBackground {
   background: var(--selection) !important;
+}
+
+/* 选区只由 CM 的 selectionBackground 整行绘制（高度天然一致）。
+   切勿把 `.cm-content ::selection` 也染成选区色：原生选区按内联盒逐个绘制，
+   行内代码 chip 带 padding 会比正文凸出几像素——两层叠加就是
+   「选中有代码的行，底部多出一块高度」（实测踩过）。
+   表格单元格在 widget DOM 里不受 CM 选区层管理，单独保留主题色。 */
+.cm-lp-table ::selection {
+  background: var(--selection);
 }
 
 .cm-editor.cm-focused {
   outline: none;
 }
 
-/* 笔记不是代码：行号收起来，把整行宽度还给正文 */
+/* 笔记不是代码：行号默认收起来，把整行宽度还给正文。
+   设置里的「显示行号数字」打开时（html 挂 qn-line-numbers）恢复显示。 */
 .cm-editor .cm-gutters {
   display: none;
+}
+
+/* 行号（Obsidian 式）：透明底、右对齐、弱化色，当前行的行号提亮；
+   折叠箭头默认隐形，悬停 gutter 才出现（Obsidian 同款） */
+html.qn-line-numbers .editor-host .cm-editor .cm-gutters {
+  display: flex;
+  background: transparent;
+  border-right: 0;
+  color: var(--text-faint);
+}
+
+html.qn-line-numbers .editor-host .cm-lineNumbers .cm-gutterElement {
+  min-width: 30px;
+  padding: 0 6px 0 4px;
+  text-align: right;
+  color: var(--text-faint);
+}
+
+/* 行号贴着正文列（Obsidian 式）：gutter 叠进居中偏移区——负 right-margin 使它
+   对正文布局「不可见」，正文按无 gutter 的公式定位，行号紧贴正文左缘。
+   900 = 阅读宽度；窄窗格（偏移为 0）时正文由下面的 50px 下限让出 gutter 空间。 */
+html.qn-line-numbers .editor-host .cm-gutters {
+  flex: none;
+  margin-left: max(0px, calc((100cqw - 900px) / 2 - 22px));
+  margin-right: -44px;
+}
+
+/* 行号开启时正文再让出 gutter 的最小宽度，避免窄窗格上行号压住文字 */
+html.qn-line-numbers .editor-host .cm-scroller > .cm-content {
+  margin-left: max(50px, (100cqw - 900px) / 2 + 24px);
+}
+
+html.qn-line-numbers .editor-host .cm-gutters .cm-activeLineGutter {
+  background: transparent;
+  color: var(--text-dim);
+}
+
+html.qn-line-numbers .editor-host .cm-foldGutter .cm-gutterElement {
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterElement {
+  opacity: 0.7;
 }
 
 .cm-scroller {
   font-family: inherit;
   line-height: 1.8;
-  /* 顶部留白 + **大**底部留白：最后一行永远不会贴到（或被裁在）状态栏边上 */
-  padding: 8px 0 34vh;
+  /* 顶部留白 + **大**底部留白：最后一行永远不会贴到（或被裁在）状态栏边上。
+     水平内边距放这里而不是 .cm-content：900px 放不下时窗口仍有稳定留白。
+     container-type 让代码块的「突破宽度」按滚动容器的实际宽度计算（cqw），
+     永不产生页面级横向滚动条（它的出现/消失会让滚动锚定反复拉扯滚动位置）。 */
+  padding: 8px 24px 34vh;
+  container-type: inline-size;
 }
 
-.cm-content {
-  padding: 28px 48px 0;
-  max-width: 860px;
-  margin: 0 auto;
+.editor-host .cm-scroller > .cm-content {
+  /* 阅读宽度 900px 水平居中（Obsidian 的 readable line length 思路）：
+     文档窄、编辑区全宽。
+     CM6 的默认主题在运行时注入 `.cm-content { margin: 0; flex-grow: 2; padding: 4px 0 }`，
+     与这里的规则同特异性但**更晚**进文档，常规写法会被它覆盖——曾经因此
+     整个编辑区靠左、代码块「全出血」背景也不对称（连 accent 光标色都丢了）。
+     用 `.editor-host .cm-scroller >` 提特异性稳赢（CM 的明暗变体是两级类名）。
+     居中用显式 margin 而不是 auto：行号 gutter 要按同一公式贴到正文左缘，
+     auto 边距会被 gutter 的占位挤动。 */
+  flex: 1 1 auto;
+  padding: 28px 0 0;
+  max-width: 900px;
+  margin-left: max(24px, (100cqw - 900px) / 2 + 24px);
+  margin-right: 24px;
   caret-color: var(--accent);
 }
 
@@ -1143,33 +1255,36 @@ div.tree-item:focus-visible {
   letter-spacing: -0.015em;
 }
 
-.cm-lp-h1 {
+.editor-host .cm-lp-h1 {
   font-size: 2.35em;
   line-height: 1.3;
-  padding-top: 0.35em;
+  /* 上下间距对称（Obsidian 式）；这些 padding 曾被 CM 的 .cm-line 短语吃掉 */
+  padding: 0.35em 0;
 }
 
-.cm-lp-h2 {
+.editor-host .cm-lp-h2 {
   font-size: 1.7em;
   line-height: 1.35;
-  padding-top: 0.45em;
+  padding: 0.45em 0;
 }
 
-.cm-lp-h3 {
+.editor-host .cm-lp-h3 {
   font-size: 1.32em;
   line-height: 1.45;
-  padding-top: 0.35em;
+  padding: 0.35em 0;
 }
 
-.cm-lp-h4 {
+.editor-host .cm-lp-h4 {
   font-size: 1.1em;
   line-height: 1.55;
+  padding: 0.2em 0;
 }
 
-.cm-lp-h5,
-.cm-lp-h6 {
+.editor-host .cm-lp-h5,
+.editor-host .cm-lp-h6 {
   font-size: 1em;
   line-height: 1.6;
+  padding: 0.15em 0;
   color: var(--text-dim);
 }
 
@@ -1207,15 +1322,23 @@ div.tree-item:focus-visible {
   text-decoration-color: var(--accent);
 }
 
-.cm-lp-quote {
+.editor-host .cm-lp-quote {
   border-left: 3px solid var(--accent);
-  border-radius: 2px;
+  /* 逐行装饰：不挂行级圆角/垂直内边距，多行引用才能拼成连续的整块 */
   padding-left: 12px;
   color: var(--text-dim);
 }
 
-.cm-lp-codeblock {
+/* 选择器带 .editor-host 提特异性：这是逐行装饰（落在 .cm-line 上），而 CM6 基础主题
+   在运行时注入 `.cm-line { padding: 0 2px 0 6px }`，同特异性但更晚进文档——
+   不提级这里的 padding 会被它整体吃掉。 */
+.editor-host .cm-lp-codeblock {
   background: var(--surface-2);
+  /* 代码框与正文同宽（Obsidian 式，0.5 起撤销 0.4.2 的「全出血」设计：
+     宽窗格里背景带铺满编辑区、代码却缩在左边的观感很怪）。
+     左右 14px 内边距让代码与圆角正文留一点呼吸空间。 */
+  padding-left: 14px;
+  padding-right: 14px;
 }
 
 .cm-lp-fence {
@@ -1233,12 +1356,13 @@ div.tree-item:focus-visible {
   user-select: none;
 }
 
-/* 代码块头部条：语言名 + 复制按钮，挂在起始围栏行的位置 */
+/* 代码块头部条（语言名 + 复制）：浮到代码块右上角（Obsidian 式）。
+   它独占起始围栏行（该行没有其他内容），float 右浮即可，无需绝对定位。 */
 .cm-lp-codehead {
   display: inline-flex;
+  float: right;
   align-items: center;
   gap: 6px;
-  vertical-align: middle;
 }
 
 .cm-lp-codecopy {
@@ -1485,14 +1609,31 @@ div.tree-item:focus-visible {
 
 /* ------------------------------------------------- callout */
 
-.cm-lp-callout {
+/* callout 是逐行装饰（多行引用的每一行各挂一次类）：行级 margin/圆角会把整块
+   拆成一摞小方块（行间 4px 缝 + 每行圆角缺口）。外边距与圆角只挂首尾行
+   （cm-lp-callout-first/last 由 livePreview.ts 标注）；行级的左边框、底色、
+   左内边距是刻意逐行保留的——拼起来才是连续的竖条与底色。 */
+.editor-host .cm-lp-callout {
   --callout-color: var(--callout-blue);
   --callout-bg: var(--callout-blue-bg);
   border-left: 3px solid var(--callout-color);
   background: var(--callout-bg);
-  border-radius: 3px 10px 10px 3px;
-  margin: 4px 0;
   padding-left: 12px;
+}
+
+.editor-host .cm-lp-callout-first {
+  margin-top: 4px;
+  border-radius: 3px 10px 0 0;
+}
+
+.editor-host .cm-lp-callout-last {
+  margin-bottom: 4px;
+  border-radius: 0 0 10px 3px;
+}
+
+/* 单行 callout 同时是首行与尾行 */
+.editor-host .cm-lp-callout-first.cm-lp-callout-last {
+  border-radius: 3px 10px 10px 3px;
 }
 
 .cm-lp-callout-note,
@@ -1549,6 +1690,15 @@ div.tree-item:focus-visible {
 .cm-lp-tablewrap {
   position: relative;
   margin: 6px 0 10px;
+  /* 「宽表横向滚动」放在内层的 .cm-tb-scroll 上：外层若自己 overflow-x:auto，
+     右缘悬挑的「＋ 列」钮（right:-26px）会算进可滚动溢出，wrap 永远挂着一条
+     横向滚动条（实测踩过）。 */
+  padding-bottom: 2px;
+}
+
+/* 宽表在阅读宽度内横向滚动，不撑破文档版面 */
+.cm-tb-scroll {
+  overflow-x: auto;
 }
 
 .cm-lp-table {
@@ -1603,6 +1753,8 @@ div.tree-item:focus-visible {
 }
 
 /* 底部「＋ 行」：整宽细条，默认淡出，悬停表格时显形 */
+/* 隐藏时 pointer-events:none：透明但可点击的按钮会拦截落点恰好在它上面的
+   点击/双击（自动化测试与键盘导航都可能踩中），悬停后才恢复可点。 */
 .cm-tb-addrow {
   display: block;
   width: 100%;
@@ -1615,12 +1767,14 @@ div.tree-item:focus-visible {
   font-size: 11px;
   cursor: pointer;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.15s ease, color 0.12s ease;
 }
 
 .cm-lp-tablewrap:hover .cm-tb-addrow,
 .cm-tb-addrow:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .cm-tb-addrow:hover {
@@ -1644,11 +1798,13 @@ div.tree-item:focus-visible {
   line-height: 1;
   cursor: pointer;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.15s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .cm-lp-tablewrap:hover .cm-tb-addcol,
 .cm-tb-addcol:focus-visible {
+  pointer-events: auto;
   opacity: 1;
 }
 
@@ -1691,10 +1847,12 @@ div.tree-item:focus-visible {
 
 /* ---------------------------------------------------------------- 标签页 */
 
+/* 标签栏是编辑区的一部分：同一个表面，无分割线。
+   活动标签高亮（浅色胶囊 + 顶部强调线），其余弱化只留文字。 */
 .tabbar {
   display: flex;
-  gap: 4px;
-  padding: 0 4px;
+  gap: 2px;
+  padding: 6px 8px 4px;
   overflow-x: auto;
   flex: none;
   scrollbar-width: none;
@@ -1712,9 +1870,9 @@ div.tree-item:focus-visible {
   padding: 5px 8px 5px 12px;
   font-size: 12px;
   font-weight: 500;
-  color: var(--text-dim);
+  color: var(--text-faint);
   border: 0;
-  border-radius: 9px;
+  border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
@@ -1722,14 +1880,14 @@ div.tree-item:focus-visible {
 }
 
 .tab:hover {
-  color: var(--text);
+  color: var(--text-dim);
   background: var(--hover);
 }
 
 .tab.is-active {
   color: var(--text);
-  background: var(--surface);
-  box-shadow: var(--shadow-1), inset 0 -2px 0 var(--accent);
+  background: var(--surface-3);
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .tab-title {
@@ -1930,18 +2088,20 @@ div.tree-item:focus-visible {
   min-height: 0;
 }
 
-/* 右栏的功能区块都是卡片 */
+/* 右栏的功能区块都是卡片。
+   刻意不做 hover 位移：transform 会把卡片变成 position:fixed 后代的**包含块**，
+   面板里的 ⋯ 菜单（fixed，按视口坐标定位）会被换算进卡片坐标系，直接飞出屏幕
+   ——「待办行的 ⋯ 点了没反应」就是它造成的。层级感交给阴影就够了。 */
 .cal-card {
   background: var(--surface);
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-lg);
   padding: 10px;
   box-shadow: var(--shadow-1);
-  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  transition: box-shadow 0.15s ease;
 }
 
 .cal-card:hover {
-  transform: translateY(-1px);
   box-shadow: var(--shadow-2);
 }
 
@@ -2203,6 +2363,7 @@ div.tree-item:focus-visible {
 }
 
 .cal-todo {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -2236,54 +2397,87 @@ div.tree-item:focus-visible {
   text-decoration: line-through;
 }
 
-.cal-todo-del {
-  flex: none;
-  padding: 0 3px;
+/* 待办的 ⋯：默认隐藏、悬停/聚焦才出现，且**悬浮在文字上方**不占版面——
+   待办文字容易换行，行尾常驻按钮会把文字挤没。 */
+.cal-todo-more {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  padding: 1px 6px;
   font: inherit;
   font-size: 12px;
+  line-height: 1.4;
   color: var(--text-dim);
-  background: transparent;
-  border: 0;
-  opacity: 0;
+  background: var(--surface-3);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  box-shadow: var(--shadow-1);
   cursor: pointer;
+  opacity: 0;
+  /* 隐藏时不拦截文字的 双击编辑 / 拖选 */
+  pointer-events: none;
+  transition: opacity 0.12s ease;
 }
 
-.cal-todo:hover .cal-todo-del,
-.cal-todo-del:focus-visible {
+.cal-todo:hover .cal-todo-more,
+.cal-todo-more:focus-visible {
   opacity: 1;
+  pointer-events: auto;
 }
 
-.cal-todo-del:hover {
-  color: var(--danger);
+.cal-todo-more:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+/* 待办的行内编辑：多行 textarea 随内容长高 */
+.cal-todo-edit {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  outline: none;
+  resize: none;
+  overflow: hidden;
 }
 
 .cal-todo-add {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 6px;
   margin-top: 8px;
 }
 
-.cal-todo-add input {
+.cal-todo-add textarea {
   flex: 1;
   min-width: 0;
   padding: 5px 10px;
   font: inherit;
   font-size: 12.5px;
+  line-height: 1.5;
   color: var(--text);
   background: var(--surface-2);
   border: 1px solid transparent;
   border-radius: 8px;
   outline: none;
+  resize: none;
+  overflow: hidden;
   transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 
-.cal-todo-add input:focus {
+.cal-todo-add textarea:focus {
   background: var(--surface);
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-.cal-todo-add input::placeholder {
+.cal-todo-add textarea::placeholder {
   color: var(--text-faint);
 }
 
@@ -2600,15 +2794,16 @@ div.tree-item:focus-visible {
 
 /* ---------------------------------------------------------------- 设置面板 */
 
-/* 左侧分类导航 + 右侧配置区，从右缘滑入（200ms）；非激活分区渲染但隐藏 */
+/* 左侧分类导航 + 右侧配置区，从右缘滑入（200ms）；非激活分区渲染但隐藏。
+   尺寸固定（Obsidian 式）：不随内容长短伸缩，只在小窗口里收缩适配。 */
 .settings-panel {
   position: absolute;
   top: 56px;
   right: 12px;
   z-index: 20;
   display: flex;
-  width: min(600px, calc(100vw - 24px));
-  max-height: calc(100% - 92px);
+  width: min(660px, calc(100vw - 24px));
+  height: min(580px, calc(100% - 92px));
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -2765,6 +2960,52 @@ div.tree-item:focus-visible {
 
 .settings-row kbd {
   margin-right: 4px;
+}
+
+/* 快捷键重绑定：kbd 里是可以点的「按键」，未绑定的命令给一个虚线添加钮 */
+.shortcut-keys {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.shortcut-edit {
+  font: inherit;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+
+.shortcut-edit:hover {
+  color: var(--accent);
+}
+
+.shortcut-capture {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.shortcut-add,
+.shortcut-reset {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.12s ease, border-color 0.12s ease;
+}
+
+.shortcut-add:hover,
+.shortcut-reset:hover {
+  color: var(--accent);
+  border-color: var(--accent);
 }
 
 .settings-group {
@@ -3021,4 +3262,730 @@ div.tree-item:focus-visible {
 .palette-foot kbd {
   font-size: 9.5px;
   padding: 1px 5px;
+}
+
+/* ============================================================================
+   M4 增强功能样式
+   ========================================================================== */
+
+/* ------------------------------------------------- 全局背景 */
+
+/* 背景层：fixed、不接收事件，垫在全部界面内容之下。
+   不遮住顶栏（拖拽区在内容层之上），所以窗口拖动不受影响。 */
+#qn-bg-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+.app {
+  position: relative;
+  z-index: 1;
+}
+
+/* 启用背景时，各大表面降不透明度让图透出来。
+   卡片仍保留边界与阴影，信息层级不乱。 */
+html.qn-bg-on body {
+  background: transparent;
+}
+
+html.qn-bg-on .app {
+  background: transparent;
+}
+
+/* 毛玻璃（backdrop-filter）会让合成器常驻多层大纹理，实测是背景图开启时
+   内存飙升的主力。这里用半透明底替代模糊：观感相近，GPU 内存占用小得多。 */
+html.qn-bg-on .topbar,
+html.qn-bg-on .statusbar {
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+}
+
+html.qn-bg-on .sidebar {
+  background: color-mix(in srgb, var(--panel) 66%, transparent);
+}
+
+html.qn-bg-on .editor-pane,
+html.qn-bg-on .tabbar {
+  background: transparent;
+}
+
+html.qn-bg-on .editor-pane {
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
+}
+
+html.qn-bg-on .editor-host .cm-editor {
+  background: transparent;
+}
+
+html.qn-bg-on .sidebar .cm-editor,
+html.qn-bg-on .panel-card,
+html.qn-bg-on .calendar-card {
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
+}
+
+/* ------------------------------------------------- mermaid 增强 */
+
+.cm-lp-mermaid {
+  position: relative;
+}
+
+.cm-lp-mermaid svg.me-zoom-px {
+  max-width: none;
+}
+
+.cm-lp-mermaid svg.me-fit-tall {
+  max-width: 100%;
+  width: auto;
+}
+
+.qn-mermaid-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  z-index: 3;
+}
+
+.cm-lp-mermaid:hover .qn-mermaid-toolbar,
+.qn-mermaid-toolbar:focus-within {
+  opacity: 1;
+}
+
+.qn-mermaid-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.qn-mermaid-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.qn-mermaid-percent {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 34px;
+  text-align: center;
+  user-select: none;
+}
+
+.qn-mermaid-menu {
+  position: absolute;
+  top: 30px;
+  right: 0;
+  display: none;
+  flex-direction: column;
+  min-width: 72px;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+}
+
+.qn-mermaid-menu.me-open {
+  display: flex;
+}
+
+.qn-mermaid-menu-item {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.qn-mermaid-menu-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* 全屏放大浮层 */
+.qn-mermaid-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 14, 0.82);
+  cursor: zoom-out;
+}
+
+.qn-mermaid-overlay svg {
+  background: var(--surface);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+/* ------------------------------------------------- 图片工具栏 */
+
+.cm-lp-imgbox {
+  position: relative;
+  display: inline-block;
+}
+
+.qn-img-toolbar {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: flex;
+  gap: 4px;
+  padding: 3px 5px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-1);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  z-index: 3;
+}
+
+.cm-lp-imgbox:hover .qn-img-toolbar,
+.qn-img-toolbar:focus-within {
+  opacity: 1;
+}
+
+.qn-img-btn {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1;
+  width: 24px;
+  height: 22px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.qn-img-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+/* ------------------------------------------------- 通用弹窗（M4） */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: rgba(8, 8, 14, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  padding: 16px;
+  max-width: min(520px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* 周回顾选周弹窗 */
+
+.week-review-card {
+  width: 380px;
+}
+
+.week-review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.week-review-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border: none;
+  background: transparent;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.week-review-item:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.week-review-badge {
+  font-size: 11px;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+/* 裁剪弹窗 */
+
+.crop-card {
+  max-width: min(860px, 94vw);
+}
+
+.crop-area {
+  position: relative;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background:
+    repeating-conic-gradient(var(--surface-2) 0% 25%, var(--surface) 0% 50%)
+    0 0 / 16px 16px;
+  user-select: none;
+  cursor: crosshair;
+}
+
+.crop-area img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.crop-select {
+  position: absolute;
+  border: 1px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  pointer-events: none;
+}
+
+.crop-size {
+  position: absolute;
+  font-size: 11px;
+  color: var(--accent-contrast);
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 1px 6px;
+  pointer-events: none;
+}
+
+.crop-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.crop-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ============================================================================
+   Blue Topaz 风格渲染（设置 → 外观 → Markdown 渲染风格）
+   ========================================================================== */
+/* 仿 Obsidian 社区主题 Blue Topaz 的正文观感：彩色标题层级（蓝→蓝→青→琥珀）、
+   标题底部细线、蓝色粗体与行内码、着色表头、加重的 callout。
+   只覆盖渲染层的类名（.cm-lp-*），文档内容与编辑行为不受影响；
+   颜色用 color-mix 调和主题色板，深浅色主题下都成立。 */
+html.qn-style-bluetopaz {
+  --bt-blue: #3a8fd9;
+  --bt-blue-strong: #2f78c2;
+  --bt-teal: #2aa198;
+  --bt-amber: #d9862f;
+  --bt-rose: #c85a7a;
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-h1 {
+  font-size: 2.1em;
+  color: var(--bt-blue-strong);
+  border-bottom: 2px solid color-mix(in srgb, var(--bt-blue) 45%, transparent);
+  padding: 0.35em 0 0.22em;
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-h2 {
+  font-size: 1.62em;
+  color: var(--bt-blue);
+  border-bottom: 1px solid color-mix(in srgb, var(--bt-blue) 30%, transparent);
+  padding: 0.45em 0 0.28em;
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-h3 {
+  font-size: 1.3em;
+  color: var(--bt-teal);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-h4 {
+  font-size: 1.08em;
+  color: var(--bt-amber);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-h5,
+html.qn-style-bluetopaz .editor-host .cm-lp-h6 {
+  color: var(--bt-rose);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-strong {
+  color: color-mix(in srgb, var(--bt-blue) 70%, var(--text));
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-code {
+  background: color-mix(in srgb, var(--bt-blue) 16%, transparent);
+  color: color-mix(in srgb, var(--bt-blue) 75%, var(--text));
+  border-radius: 4px;
+}
+
+/* 引用同样是逐行装饰：左边框 + 底色 + 左内边距逐行保留（拼成连续竖条），
+   圆角与上下内边距不能挂行级——多行引用会因此出现行间缝与圆角缺口。 */
+html.qn-style-bluetopaz .editor-host .cm-lp-quote {
+  border-left: 3px solid var(--bt-blue);
+  background: color-mix(in srgb, var(--bt-blue) 9%, transparent);
+  padding-left: 12px;
+  color: var(--text-dim);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-rule {
+  border: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(
+    to right,
+    transparent,
+    color-mix(in srgb, var(--bt-blue) 55%, transparent),
+    transparent
+  );
+}
+
+/* 代码块是逐行装饰：这里只能给**每行相同**的属性（底色），任何圆角/描边/行级
+   外边距都会把多行代码拆成一摞独立小格子（行间缝 + 每行圆角缺口，实测踩过）。
+   统一一块底色，行与行自然拼接。 */
+html.qn-style-bluetopaz .editor-host .cm-lp-codeblock {
+  background: color-mix(in srgb, var(--bt-blue) 8%, var(--surface-2));
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-codeinfo,
+html.qn-style-bluetopaz .editor-host .cm-lp-codecopy {
+  background: color-mix(in srgb, var(--bt-blue) 18%, var(--surface-3));
+  color: color-mix(in srgb, var(--bt-blue) 70%, var(--text));
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-table {
+  font-size: 0.95em;
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-table thead th {
+  background: color-mix(in srgb, var(--bt-blue) 22%, var(--surface-2));
+  color: color-mix(in srgb, var(--bt-blue) 65%, var(--text));
+  border-bottom: 2px solid color-mix(in srgb, var(--bt-blue) 45%, transparent);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-table tbody tr:hover {
+  background: color-mix(in srgb, var(--bt-blue) 10%, transparent);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-tag {
+  background: color-mix(in srgb, var(--bt-blue) 15%, transparent);
+  color: var(--bt-blue);
+  border: 1px solid color-mix(in srgb, var(--bt-blue) 35%, transparent);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-callout {
+  border-left-width: 4px;
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
+  font-weight: 700;
+}
+
+/* ============================================================================
+   PDF 导出（打印视图）：导出时把整篇笔记渲染进 #qn-print-root，
+   @media print 隐藏应用界面、只显示它（浅色、A4 友好排版）
+   ========================================================================== */
+#qn-print-root {
+  display: none;
+}
+
+@media print {
+  @page {
+    margin: 16mm 14mm;
+  }
+
+  /* height:100% 的 body 会把第一页占成整页空白，打印时必须放开 */
+  html,
+  body,
+  #root {
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  .app,
+  #root,
+  #qn-bg-layer,
+  .banner {
+    display: none !important;
+  }
+
+  /* callout（PDF 导出） */
+  #qn-print-root .qn-print-callout {
+    border-left: 3px solid #7c93b8;
+    background: #f1f4f8;
+    border-radius: 3px 8px 8px 3px;
+    margin: 0.6em 0;
+    padding: 0.35em 0.9em;
+    page-break-inside: avoid;
+  }
+
+  #qn-print-root .qn-print-callout-title {
+    font-weight: 650;
+    color: #35507c;
+    margin-bottom: 0.2em;
+  }
+
+  #qn-print-root .qn-print-mermaid {
+    text-align: center;
+    margin: 0.8em 0;
+    page-break-inside: avoid;
+  }
+
+  #qn-print-root .qn-print-mermaid svg {
+    max-width: 100%;
+    height: auto;
+  }
+
+  #qn-print-root {
+    display: block !important;
+    color: #1f2328;
+    font-family: var(--font-text);
+    font-size: 13.5px;
+    line-height: 1.75;
+  }
+
+  #qn-print-root h1 { font-size: 1.85em; margin: 0.7em 0 0.35em; line-height: 1.3; }
+  #qn-print-root h2 { font-size: 1.5em; margin: 0.7em 0 0.35em; line-height: 1.35; }
+  #qn-print-root h3 { font-size: 1.25em; margin: 0.6em 0 0.3em; }
+  #qn-print-root h4, #qn-print-root h5, #qn-print-root h6 { margin: 0.6em 0 0.25em; }
+
+  #qn-print-root p { margin: 0.45em 0; }
+
+  #qn-print-root code {
+    font-family: var(--mono);
+    font-size: 0.88em;
+    background: #f1f2f4;
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+  }
+
+  #qn-print-root pre {
+    background: #f6f7f9;
+    border: 1px solid #e2e4e8;
+    border-radius: 8px;
+    padding: 10px 14px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    page-break-inside: avoid;
+  }
+
+  #qn-print-root pre code {
+    background: none;
+    padding: 0;
+    font-size: 0.92em;
+  }
+
+  #qn-print-root table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 0.6em 0;
+    page-break-inside: avoid;
+  }
+
+  #qn-print-root th,
+  #qn-print-root td {
+    border: 1px solid #d6d9de;
+    padding: 5px 10px;
+    text-align: left;
+  }
+
+  #qn-print-root thead th {
+    background: #eef1f4;
+  }
+
+  #qn-print-root blockquote {
+    border-left: 3px solid #b8c4d4;
+    margin: 0.6em 0;
+    padding: 0.1em 0.9em;
+    color: #4a5160;
+  }
+
+  #qn-print-root img {
+    max-width: 100%;
+    page-break-inside: avoid;
+  }
+
+  #qn-print-root .cm-lp-link {
+    color: #2f78c2;
+  }
+
+  #qn-print-root hr {
+    border: none;
+    border-top: 1px solid #d9dce1;
+    margin: 1em 0;
+  }
+
+  #qn-print-root ul,
+  #qn-print-root ol {
+    padding-left: 1.6em;
+  }
+}
+
+/* ============================================================================
+   搜索面板（0.5 重设计）：浮动卡片 + 毛玻璃 + 图标化 + 动画
+   ========================================================================== */
+/* 定位：悬在编辑器右上角。 CM 会把面板挂在 .cm-editor 里 */
+.qn-search {
+  position: absolute;
+  top: 8px;
+  right: 16px;
+  z-index: 120;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 380px;
+  max-width: min(520px, calc(100% - 32px));
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow-2);
+  color: var(--text);
+  animation: qn-search-in 0.16s ease;
+}
+
+@keyframes qn-search-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.qn-search.is-closing {
+  opacity: 0;
+  transform: translateY(-4px) scale(0.97);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.qn-search-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: nowrap;
+}
+
+.qn-search-icon {
+  display: inline-flex;
+  color: var(--text-faint);
+  flex: none;
+}
+
+.qn-search-input,
+.qn-search-replace-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-size: 13px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.qn-search-input { width: 150px; }
+.qn-search-input:focus,
+.qn-search-replace-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.qn-search-count {
+  flex: none;
+  min-width: 52px;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.qn-search-count.is-invalid {
+  color: var(--warn);
+}
+
+.qn-search button {
+  flex: none;
+  min-width: 26px;
+  height: 26px;
+  padding: 0 7px;
+  font: inherit;
+  font-size: 12px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.qn-search button:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.qn-search button.is-on {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.qn-search-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+  margin: 0 2px;
+  flex: none;
+}
+
+.qn-search-replace[hidden] {
+  display: none;
 }

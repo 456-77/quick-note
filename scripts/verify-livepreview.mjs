@@ -256,32 +256,43 @@ check(
   JSON.stringify(insideHtmlBlock.map((d) => d.text)),
 );
 
-// ============================================================ 光标所在行
-console.log("\n场景 B：光标停在「粗体」那一行（该行应整体退回源码）\n");
-const B = decorate(doc.indexOf("行内 `code`"));
+// ============================================================ 光标所在的行内元素
+console.log("\n场景 B：光标停在某个行内元素内（只展开该元素，同行的其他元素照常渲染）\n");
+// 0.5 起行内标记按「元素级激活」：光标在哪个元素里，就只展开哪个元素——
+// 曾经光标一进行就整行退回源码，点行内代码会把同行的 `**` 全部弹出来。
+const B = decorate(doc.indexOf("**粗体**") + 4); // 光标落在「粗体」两字中间
 
-check(hidesWithin(B.items, "**粗体**").length === 0, "本行的 `**` 不再隐藏（显示源码）");
+check(hidesWithin(B.items, "**粗体**").length === 0, "光标在粗体元素内：该元素的 `**` 显形");
 check(
   !B.items.some((d) => d.cls === "cm-lp-strong"),
-  "本行不再有粗体样式（显示源码，不能出现「看着像源码却已加粗」）",
+  "光标在粗体元素内：该元素不再有粗体样式（不能「看着像源码却已加粗」）",
 );
-check(!B.items.some((d) => d.cls === "cm-lp-em"), "本行不再有斜体样式");
-check(!B.items.some((d) => d.cls === "cm-lp-strike"), "本行不再有删除线样式");
-check(
-  !overlapOf(B.items, lineRange("行内 `code`")).some((d) => d.cls === "cm-lp-code"),
-  "本行不再有行内代码样式",
-);
-check(hidesWithin(B.items, "`code`").length === 0, "本行的反引号不再隐藏");
+// 同行的其他元素保持渲染（元素级激活的核心）
+check(hidesWithin(B.items, "`code`").length === 2, "同行的行内代码反引号照常隐藏");
+check(B.items.some((d) => d.cls === "cm-lp-code"), "同行的行内代码照常有样式");
+check(hidesWithin(B.items, "*斜体*").length === 2, "同行的斜体星号照常隐藏");
+check(B.items.some((d) => d.cls === "cm-lp-em"), "同行的斜体照常有样式");
+check(B.items.some((d) => d.cls === "cm-lp-strike"), "同行的删除线照常有样式");
 check(widgetOf(B.items, "TaskCheckboxWidget").length === 2, "其他行照常渲染（复选框不受影响）");
 check(hidesWithin(B.items, "# 语法覆盖").length === 1, "标题行不在光标处，`#` 仍被隐藏");
 check(withClass(B.items, "cm-lp-h1").length === 2, "标题行样式不受影响（ATX + setext）");
 
-// 光标落在链接那一行时，链接也应退回源码
-const C = decorate(doc.indexOf("链接：[示例]"));
-check(hidesWithin(C.items, "[示例](https://example.com)").length === 0, "链接行在光标处时不隐藏");
+// 光标落在行内代码里：只展开代码元素，同行的粗体照常渲染
+const B2 = decorate(doc.indexOf("`code`") + 2);
+check(hidesWithin(B2.items, "`code`").length === 0, "光标在行内代码内：反引号显形");
+check(
+  !overlapOf(B2.items, lineRange("`code`")).some((d) => d.cls === "cm-lp-code"),
+  "光标在行内代码内：该元素不再有代码样式",
+);
+check(hidesWithin(B2.items, "**粗体**").length === 2, "同行的粗体 `**` 照常隐藏");
+check(B2.items.some((d) => d.cls === "cm-lp-strong"), "同行的粗体照常有样式");
+
+// 光标落在链接元素内时，链接退回源码
+const C = decorate(doc.indexOf("[示例](https://example.com)") + 3);
+check(hidesWithin(C.items, "[示例](https://example.com)").length === 0, "光标在链接元素内时不隐藏");
 check(
   !overlapOf(C.items, lineRange("链接：[示例]")).some((d) => d.cls?.includes("cm-lp-link")),
-  "链接行在光标处时不加链接样式",
+  "光标在链接元素内时不加链接样式",
 );
 check(hidesWithin(C.items, "**粗体**").length === 2, "链接行的改动不影响其他行");
 

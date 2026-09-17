@@ -10,6 +10,13 @@ import type { Extension } from "@codemirror/state";
 import { attachmentNameFor, linkTextFor } from "./attachments.ts";
 import { writeAttachment } from "./api.ts";
 import { livePreviewContext } from "./paths.ts";
+import { detectLanguage } from "./languageDetect.ts";
+import {
+  htmlTableToMarkdown,
+  looksLikeMarkdownTable,
+  normalizePastedText,
+  tsvToMarkdownTable,
+} from "./pasteTransforms.ts";
 
 export interface AttachmentOptions {
   /** 是否启用。用函数读实时设置，避免把旧值固化进扩展。 */
@@ -66,6 +73,141 @@ export function attachmentPaste(options: AttachmentOptions): Extension {
       return true;
     },
   });
+}
+
+// ---------------------------------------------------------------- 粘贴代码识别
+
+/** 粘贴处理的行为配置（与 AttachmentOptions 同一套「读实时设置」约定）。 */
+export interface CodePasteOptions {
+  /** 是否启用「代码自动包围栏」。规范化与表格转换不受它控制，始终开启。 */
+  enabled: () => boolean;
+  /** 识别/转换成功后的提示。 */
+  notice?: (message: string) => void;
+}
+
+/** 光标是否在未闭合的围栏代码块内（与插件同一套逐行计数规则）。 */
+export function isInsideFence(docLines: string[], cursorLine: number): boolean {
+  let inBlock = false;
+  for (let i = 0; i <= cursorLine && i < docLines.length; i += 1) {
+    if (/^\s*(```|~~~)/.test(docLines[i])) inBlock = !inBlock;
+  }
+  return inBlock;
+}
+
+/**
+ * 计算插入块级内容前后的补位换行：代码块必须独立成段，贴在文字中间会破坏
+ * 前后段落。规则自插件移植（行中间/行尾/行首/空行四种情形各不同）。
+ */
+export function blockInsertPadding(
+  lines: string[],
+  lineIndex: number,
+  posInLine: number,
+): { prefix: string; suffix: string } {
+  const line = lines[lineIndex] ?? "";
+  const beforeText = line.slice(0, posInLine);
+  const afterText = line.slice(posInLine);
+  const prevLine = lineIndex > 0 ? lines[lineIndex - 1] : "";
+  const nextLine = lines[lineIndex + 1] ?? "";
+  if (beforeText.trim() && afterText.trim()) {
+    // 行中间：断开本行前后并各空一行（插入点两侧没有现成换行符）
+    return { prefix: "\n\n", suffix: "\n\n" };
+  }
+  if (beforeText.trim()) {
+    // 行尾：本行换行符在插入点之后，suffix 只补一个换行
+    return { prefix: "\n\n", suffix: nextLine.trim() ? "\n" : "" };
+  }
+  if (afterText.trim()) {
+    // 行首：本行换行符在插入点之前（上一行的换行），prefix 只补一个换行
+    return { prefix: prevLine.trim() ? "\n" : "", suffix: "\n\n" };
+  }
+  // 空行：块占用本行，前后各由相邻换行符 + 一个补位换行构成空行
+  return { prefix: prevLine.trim() ? "\n" : "", suffix: nextLine.trim() ? "\n" : "" };
+}
+
+/** 把纯文本代码包成带语言围栏的块（换行符规范化为 \n，代码块内部如此是安全的）。 */
+export function fencedBlock(code: string, lang: string): string {
+  const clean = code.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+  return `\`\`\`${lang}\n${clean}\n\`\`\``;
+}
+
+/**
+ * 智能文本粘贴（替代早期的 codePaste）：
+ *
+ * 1. **换行符规范化（始终开启）**：剪贴板文本几乎总是 CRLF，而文档的分隔符是按文件
+ *    锁定的——直接插入会留下裸 `\r`，界面上渲染成红色 CR 角标，还污染文件内容。
+ * 2. **表格转换（始终开启）**：剪贴板带 HTML `<table>`（Excel/网页/IDE 复制时都会带）
+ *    或 TSV 文本时，转成 Markdown 管道表格插入（对齐 Obsidian）。本身就是 Markdown
+ *    表格的文本保持原样。
+ * 3. **代码围栏（受开关控制）**：纯文本代码识别语言后包成围栏块。
+ *
+ * 接线顺序在 `attachmentPaste` 之后：剪贴板里有文件时轮不到它。
+ */
+export function smartPaste(options: CodePasteOptions): Extension {
+  return EditorView.domEventHandlers({
+    paste: (event, view) => {
+      const data = event.clipboardData;
+      if (!data || data.files.length > 0) return false; // 文件粘贴归附件处理
+      const raw = data.getData("text/plain") ?? "";
+      const html = data.getData("text/html") ?? "";
+      if (!raw.trim() && !html.trim()) return false;
+
+      const separator = view.state.lineBreak;
+
+      // 1) HTML 表格（优先，信息最全；Excel/WPS/网页复制都带）
+      const tableLines = htmlTableToMarkdown(html) ?? tsvToMarkdownTable(raw);
+      if (tableLines) {
+        event.preventDefault();
+        insertBlock(view, tableLines.join(separator));
+        options.notice?.("已把剪贴板中的表格转成 Markdown 表格");
+        return true;
+      }
+
+      // 代码围栏：整块复制了已带围栏的代码、或光标已在代码块内时都不干预
+      const fenceCandidate = raw;
+      if (
+        options.enabled() &&
+        raw.trim() &&
+        !/^\s*(```|~~~)/.test(raw) &&
+        !looksLikeMarkdownTable(raw)
+      ) {
+        const pos = view.state.selection.main.head;
+        const line = view.state.doc.lineAt(pos);
+        const lines = view.state.doc.toString().split("\n");
+        if (!isInsideFence(lines, line.number - 1)) {
+          const lang = detectLanguage(fenceCandidate, fenceCandidate.includes("\n"));
+          if (lang) {
+            event.preventDefault();
+            const { prefix, suffix } = blockInsertPadding(lines, line.number - 1, pos - line.from);
+            view.dispatch(
+              view.state.replaceSelection(`${prefix}${fencedBlock(fenceCandidate, lang)}${suffix}`),
+            );
+            view.focus();
+            options.notice?.(`已识别为 ${lang} 代码块`);
+            return true;
+          }
+        }
+      }
+
+      // 3) 普通文本：换行符规范化后交给编辑器默认行为
+      const normalized = normalizePastedText(raw, separator);
+      if (normalized !== raw) {
+        event.preventDefault();
+        view.dispatch(view.state.replaceSelection(normalized));
+        return true;
+      }
+      return false;
+    },
+  });
+}
+
+/** 插入块级内容（表格）：前后补空行让它独立成段，与代码块同一套补位规则。 */
+function insertBlock(view: EditorView, text: string): void {
+  const pos = view.state.selection.main.head;
+  const line = view.state.doc.lineAt(pos);
+  const lines = view.state.doc.toString().split("\n");
+  const { prefix, suffix } = blockInsertPadding(lines, line.number - 1, pos - line.from);
+  view.dispatch(view.state.replaceSelection(`${prefix}${text}${suffix}`));
+  view.focus();
 }
 
 async function saveAndLink(

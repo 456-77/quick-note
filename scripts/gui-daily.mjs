@@ -132,13 +132,15 @@ async function doubleClickSelector(ws, selector) {
   await doubleClickAt(ws, point);
 }
 
-/** 输入框里的值要用原生 setter 写，直接改 .value 不会触发 React 的 onChange。 */
+/** 输入框里的值要用原生 setter 写，直接改 .value 不会触发 React 的 onChange。
+ *  待办的添加/编辑框是 textarea（多行待办），按标签取对应的原型。 */
 async function typeInto(ws, selector, text) {
   await evaluate(
     ws,
     `(() => {
        const el = document.querySelector(${JSON.stringify(selector)});
-       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+       const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement : HTMLInputElement;
+       const setter = Object.getOwnPropertyDescriptor(proto.prototype, "value").set;
        setter.call(el, ${JSON.stringify(text)});
        el.dispatchEvent(new Event("input", { bubbles: true }));
        return true;
@@ -441,8 +443,8 @@ try {
 
   // ---------------------------------------------------------------- 待办增删勾选
   console.log("\n待办的添加 / 勾选 / 删除\n");
-  await typeInto(ws, ".cal-todo-add input", "验证添加的待办");
-  await pressEnter(ws, ".cal-todo-add input");
+  await typeInto(ws, ".cal-todo-add textarea", "验证添加的待办");
+  await pressEnter(ws, ".cal-todo-add textarea");
   await waitFor("待办出现在列表里", async () =>
     (await evaluate(ws, `[...document.querySelectorAll('.cal-todo-text')].map(e => e.textContent)`)).includes(
       "验证添加的待办",
@@ -455,7 +457,7 @@ try {
     "回车添加待办并落盘",
   );
   check(
-    await evaluate(ws, `document.querySelector('.cal-todo-add input').value === ''`),
+    await evaluate(ws, `document.querySelector('.cal-todo-add textarea').value === ''`),
     "添加后输入框清空",
   );
 
@@ -524,7 +526,10 @@ try {
     ws,
     `(() => {
        const el = document.querySelector('.cal-todo-edit');
-       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+       const setter = Object.getOwnPropertyDescriptor(
+         (el.tagName === 'TEXTAREA' ? HTMLTextAreaElement : HTMLInputElement).prototype,
+         'value',
+       ).set;
        setter.call(el, '验证添加的待办（已改）');
        el.dispatchEvent(new Event('input', { bubbles: true }));
        return true;
@@ -776,11 +781,20 @@ try {
       "原有键的相对顺序保持 fixture 原样（重排会让整份文件在同步里全变）",
       actualKeys.join(","),
     );
+    // M3 只有 pastedImageFolder 一个新增键；M4 起自有键扩到 15 个，fixture 里没有的
+    // 还有语言识别开关与提醒时间。不变量不变：**fixture 之外的键全部按序追加在末尾**、
+    // 且恰好是"我们管但 fixture 没写"的那几个（多写、少写、插进中间都算坏）。
+    const appended = actualKeys.slice(kept.length);
+    const expectedAppended = [
+      "pastedImageFolder",
+      "autoDetectCodeLang",
+      "checkReminderEnabled",
+      "checkReminderTime",
+    ];
     check(
-      actualKeys[actualKeys.length - 1] === "pastedImageFolder" &&
-        actualKeys.length === kept.length + 1,
-      "新增的自有键（pastedImageFolder）追加在末尾，不插进原有键之间",
-      actualKeys.join(","),
+      appended.join(",") === expectedAppended.join(","),
+      "fixture 之外的自有键全部按序追加在末尾，不插进原有键之间",
+      `appended=${appended.join(",")}`,
     );
     check(
       config.pastedImageFolder === "attachments",
@@ -803,7 +817,7 @@ try {
   // 设置面板里显示的应当是库内配置的值（证明配置真的读出来了）
   await evaluate(
     ws,
-    `document.querySelector('.topbar .icon-btn[title="设置"]').click()`,
+    `document.querySelector('.topbar .icon-btn[title^="设置"]').click()`,
   );
   await sleep(300);
   const settingsValues = await evaluate(

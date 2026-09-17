@@ -483,14 +483,16 @@ async function waitFor(label, predicate, timeout = 15000) {
   }
 }
 
-/** 输入框的值要用原生 setter 写，直接改 .value 不会触发 React 的 onChange。 */
+/** 输入框的值要用原生 setter 写，直接改 .value 不会触发 React 的 onChange。
+ *  待办添加框是 textarea（多行待办），按标签取对应的原型。 */
 async function typeInto(ws, selector, text) {
   const ok = await evaluate(
     ws,
     `(() => {
        const el = document.querySelector(${JSON.stringify(selector)});
        if (!el) return false;
-       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
+       const proto = el.tagName === "TEXTAREA" ? HTMLTextAreaElement : HTMLInputElement;
+       const setter = Object.getOwnPropertyDescriptor(proto.prototype, "value").set;
        setter.call(el, ${JSON.stringify(text)});
        el.dispatchEvent(new Event("input", { bubbles: true }));
        return true;
@@ -566,7 +568,7 @@ async function openSettings(ws) {
   if (!exists) {
     await evaluate(
       ws,
-      `document.querySelector('.topbar .icon-btn[title="设置"]')?.click(), true`,
+      `document.querySelector('.topbar .icon-btn[title^="设置"]')?.click(), true`,
     );
     await sleep(250);
   }
@@ -849,7 +851,7 @@ try {
   );
   await sleep(400);
 
-  const todoInputSelector = ".cal-todo-add input";
+  const todoInputSelector = ".cal-todo-add textarea";
   const hasTodoInput = await evaluate(ws, `!!document.querySelector(${JSON.stringify(todoInputSelector)})`);
   check(hasTodoInput, "日历面板里有待办输入框");
 

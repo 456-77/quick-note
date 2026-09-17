@@ -56,11 +56,26 @@ const OWNED_KEYS = [
   // 粘贴附件目录：插件与 Quick Note 各写各的，两边换用就要设两次。
   // M3 统一到库内配置（与插件同一个键名），同步一开，两边自动一致。
   "pastedImageFolder",
+  // M4：粘贴语言识别、定时提醒、天气。插件把这些键也放在这份共享文件里
+  // （只有背景设置是每设备独立的），所以这里保持同键同文件。
+  "autoDetectCodeLang",
+  "todoReminderEnabled",
+  "todoReminderTime",
+  "checkReminderEnabled",
+  "checkReminderTime",
+  "weatherEnabled",
+  "weatherCity",
 ] as const;
 
 function readText(raw: Record<string, unknown>, key: string): string | undefined {
   const value = raw[key];
   return typeof value === "string" ? value : undefined;
+}
+
+/** 时间键兜底：非法/缺失时回默认值，"HH:mm" 的字典序比较才不会错格。 */
+function readTime(raw: Record<string, unknown>, key: string, fallback: string): string {
+  const value = readText(raw, key);
+  return value && /^\d{2}:\d{2}$/.test(value) ? value : fallback;
 }
 
 function settingsFrom(raw: Record<string, unknown>): DailySettings {
@@ -76,6 +91,13 @@ function settingsFrom(raw: Record<string, unknown>): DailySettings {
     weeklyTemplateEnabled: raw.weeklyTemplateEnabled === true,
     weeklyTemplatePath: text("weeklyTemplatePath") ?? defaults.weeklyTemplatePath,
     pastedImageFolder: text("pastedImageFolder") ?? defaults.pastedImageFolder,
+    autoDetectCodeLang: raw.autoDetectCodeLang !== false,
+    todoReminderEnabled: raw.todoReminderEnabled === true,
+    todoReminderTime: readTime(raw, "todoReminderTime", defaults.todoReminderTime),
+    checkReminderEnabled: raw.checkReminderEnabled === true,
+    checkReminderTime: readTime(raw, "checkReminderTime", defaults.checkReminderTime),
+    weatherEnabled: raw.weatherEnabled === true,
+    weatherCity: text("weatherCity") ?? defaults.weatherCity,
   };
 }
 
@@ -159,6 +181,13 @@ export function serializeDailyConfig(state: DailyConfigState, update: DailyConfi
     values.weeklyTemplateEnabled = settings.weeklyTemplateEnabled;
     values.weeklyTemplatePath = settings.weeklyTemplatePath;
     values.pastedImageFolder = settings.pastedImageFolder;
+    values.autoDetectCodeLang = settings.autoDetectCodeLang;
+    values.todoReminderEnabled = settings.todoReminderEnabled;
+    values.todoReminderTime = settings.todoReminderTime;
+    values.checkReminderEnabled = settings.checkReminderEnabled;
+    values.checkReminderTime = settings.checkReminderTime;
+    values.weatherEnabled = settings.weatherEnabled;
+    values.weatherCity = settings.weatherCity;
   }
   if (update.todos) values.todos = update.todos;
   if (typeof update.todosUpdatedAt === "number") values.todosUpdatedAt = update.todosUpdatedAt;

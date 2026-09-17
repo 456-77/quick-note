@@ -169,7 +169,9 @@ export function formatTable(block: TableBlock): string[] {
       const inner = Math.max(width - 2, 1);
       return ":" + "-".repeat(inner) + ":";
     }
-    if (align === "right") return ":" + "-".repeat(Math.max(width - 1, 3));
+    // 右对齐的标记是**尾随**冒号（`---:`）。曾写成前导冒号（`:---`），而 alignOf
+    // 把前导冒号读成 left——右对齐的列在任何一次对齐/编辑后都会被静默降级成左对齐
+    if (align === "right") return "-".repeat(Math.max(width - 1, 3)) + ":";
     return "-".repeat(width);
   });
 

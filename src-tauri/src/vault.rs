@@ -509,10 +509,24 @@ pub fn rename_entry(vault: String, path: String, new_name: String) -> Result<Ren
         .ok_or_else(|| "原名称含非法字符".to_string())?
         .to_string();
 
-    let filename = if is_dir || clean.to_lowercase().ends_with(".md") {
+    // 笔记缺 .md 自动补；其余文件（图片等附件）缺扩展名时补**原扩展名**——
+    // 附件改名丢扩展名等于把文件用废，之前统一补 .md 的行为是个 bug
+    let filename = if is_dir {
+        clean
+    } else if clean.to_lowercase().ends_with(".md") {
         clean
     } else {
-        format!("{clean}.md")
+        match source.extension().and_then(|value| value.to_str()) {
+            Some(ext) if !ext.eq_ignore_ascii_case("md") => {
+                let with_ext = format!("{clean}.{ext}");
+                if clean.to_lowercase().ends_with(&ext.to_lowercase()) {
+                    clean
+                } else {
+                    with_ext
+                }
+            }
+            _ => format!("{clean}.md"),
+        }
     };
     if filename == old_name {
         return Ok(RenameResult {
@@ -529,8 +543,9 @@ pub fn rename_entry(vault: String, path: String, new_name: String) -> Result<Ren
 
     fs::rename(&source, &target).map_err(|e| format!("重命名失败: {e}"))?;
 
-    // 笔记改名要同步引用；目录改名后里面的文件路径变了，但 wiki 引用按文件名解析，不受影响
-    let updated = if !is_dir && old_name.to_lowercase().ends_with(".md") {
+    // 笔记改名要同步引用；目录改名后里面的文件路径变了，但 wiki 引用按文件名解析，不受影响。
+    // 附件（图片）的 wiki 嵌入 `![[图.png]]` 带扩展名，同样按文件名匹配更新。
+    let updated = if !is_dir {
         update_wiki_references(&root, &old_name, &filename).unwrap_or_default()
     } else {
         Vec::new()

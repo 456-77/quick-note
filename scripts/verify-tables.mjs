@@ -95,6 +95,23 @@ console.log("\n管道对齐（CJK 显示宽度）\n");
 
   // 居中补白：奇数差额时左少右多
   check(alignOf("---") === "left" && alignOf(":-:") === "center" && alignOf("-:") === "right", "三种对齐标记");
+
+  // 右对齐的标记是**尾随**冒号（`---:`）。曾误写成前导冒号（`:---`），而 alignOf
+  // 把前导冒号读成 left——右对齐列在任何一次对齐/编辑后都会被静默降级成左对齐
+  {
+    const right = formatTable({
+      header: ["名称", "数量"],
+      delimiter: ["---", "---:"],
+      rows: [["苹果", "3"], ["梨", "12"]],
+    });
+    check(right[1].split("|")[1].trim() === "----", "左列标记无冒号", right[1]);
+    check(right[1].split("|")[2].trim().endsWith(":"), "右对齐分隔行是尾随冒号", right[1]);
+    // 空白在内容左侧 = 右对齐
+    check(right[2].split("|")[2].startsWith("    "), "右对齐数据行空白在左侧", right[2]);
+    // 再解析一遍：对齐不因格式化而丢失（幂等）
+    const reparsed = parseTableBlock(right);
+    check(alignOf(reparsed.delimiter[1]) === "right", "格式化后再解析仍是右对齐");
+  }
 }
 
 // ---------------------------------------------------------------- 行列变换

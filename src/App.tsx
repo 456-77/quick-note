@@ -1,13 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import moment from "moment";
 import type { Moment } from "moment";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CalendarPanel from "./components/CalendarPanel";
 import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
 import FileTree from "./components/FileTree";
+import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
 import SettingsDialog from "./components/SettingsDialog";
 import StatsPanel from "./components/StatsPanel";
+import WeekReviewDialog from "./components/WeekReviewDialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   IconCalendar,
@@ -33,18 +36,28 @@ import {
   IconStar,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, createFolder, createNote, deleteEntry, listEntries, onVaultChanged, pickVault, readNote, readNoteOptional, renameEntry, startupVault, watchVault, writeNote } from "./lib/api";
+import { allowAssetDir, createFolder, createNote, deleteEntry, listEntries, onVaultChanged, pickVault, readBinary, readNote, readNoteOptional, renameEntry, searchVault, startupVault, watchVault, writeNote } from "./lib/api";
 import type { EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache } from "./lib/embed";
-import { requestDecorationRefresh } from "./lib/livePreview";
-import type { LivePreviewContext } from "./lib/paths";
+import { requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
+import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
+import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
+import { allBindings, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
 import { checkForUpdate } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
 import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
+import { applyBackground } from "./lib/background";
+import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
+import { fetchWeather, insertWeatherLine } from "./lib/weather";
+import { blobTypeOf, removeImageReferences } from "./lib/imageOps";
+import { buildWeeklyReview, weekdayZh, type ReviewDiary } from "./lib/weeklyReview";
+import { exportNoteToPdf } from "./lib/printExport";
+import { baseNameOf, wordCount } from "./lib/daily";
+import { liveItems } from "./lib/todos";
 import {
   DAILY_CONFIG_FILE,
   dailyNotePath,
@@ -162,6 +175,10 @@ export default function App() {
   );
   /** 自定义样式内容（设置面板 textarea 的值）。 */
   const [customCssDraft, setCustomCssDraft] = useState(() => getCustomCss());
+  /** 周回顾的选周弹窗（M4）。 */
+  const [weekDialogOpen, setWeekDialogOpen] = useState(false);
+  /** 正在裁剪的图片（仓库相对路径；null = 弹窗关闭）。 */
+  const [cropPath, setCropPath] = useState<string | null>(null);
 
   /** 激活标签的 meta。其余标签的未保存内容在各自的 EditorState 里。 */
   const current = useMemo(
@@ -307,6 +324,16 @@ export default function App() {
     [entries],
   );
 
+  /** 仓库内的图片（背景图下拉框的候选）。 */
+  const vaultImages = useMemo(
+    () =>
+      entries
+        .filter((entry) => !entry.isDir && /\.(png|jpe?g|gif|webp|bmp|avif)$/i.test(entry.name))
+        .map((entry) => entry.path)
+        .sort((a, b) => a.localeCompare(b, "zh-Hans-CN")),
+    [entries],
+  );
+
   // 待办的改动回调要在 useSync 之前挂上，所以先用一个占位 ref 接住它（回调是
   // 惰性读取的，等真正触发时 ref 早已填好）。
   const syncRef = useRef<SyncController | null>(null);
@@ -350,6 +377,24 @@ export default function App() {
     return () => unwatch();
   }, [settings.theme]);
 
+  // 全局背景（M4）：设置或仓库变化时重铺；图片走 asset 协议，路径是仓库内的相对路径。
+  useEffect(() => {
+    applyBackground(settings, vault);
+  }, [settings, vault]);
+
+  // 行号显示开关：gutter 的显隐走 html 类（CSS 见 styles.css 的 qn-line-numbers）。
+  useEffect(() => {
+    document.documentElement.classList.toggle("qn-line-numbers", settings.showLineNumbers);
+  }, [settings.showLineNumbers]);
+
+  // Markdown 渲染风格（默认 / Blue Topaz 风）：同样走 html 类切换整套覆盖样式。
+  useEffect(() => {
+    document.documentElement.classList.toggle(
+      "qn-style-bluetopaz",
+      settings.renderStyle === "blueTopaz",
+    );
+  }, [settings.renderStyle]);
+
   /**
    * 粘贴附件的配置。刻意用读实时设置的函数而不是快照值：扩展在编辑器状态创建时
    * 就固化了，用快照的话改设置要重开文件才生效。
@@ -369,6 +414,26 @@ export default function App() {
     }),
     [],
   );
+
+  /**
+   * 粘贴代码自动识别（M4）。开关读**库内配置**（与插件同一份 `autoDetectCodeLang`），
+   * 与附件粘贴同一套「实时读取」约定。
+   */
+  const codePasteOptions = useMemo<CodePasteOptions>(
+    () => ({
+      enabled: () => dailyRef.current.settings.autoDetectCodeLang,
+      notice: (message: string) => setStatus(message),
+    }),
+    [],
+  );
+
+  // mermaid 导出等图表操作的提示走统一的通知通道
+  useEffect(() => {
+    setMermaidNotice((message, kind) => {
+      if (kind === "error") setError(message);
+      else setStatus(message);
+    });
+  }, []);
 
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -521,6 +586,7 @@ export default function App() {
         onSave: () => void saveRef.current(),
         resources: resourcesRef.current,
         attachment: attachmentOptions,
+        codePaste: codePasteOptions,
         dark: resolveTheme(getSettings().theme) === "dark",
         onCursorInTable: setInTable,
           onCursorLine: setCursorLine,
@@ -844,17 +910,41 @@ export default function App() {
           onSave: () => void saveRef.current(),
           resources: resourcesRef.current,
           attachment: attachmentOptions,
+          codePaste: codePasteOptions,
           dark: resolveTheme(getSettings().theme) === "dark",
           onCursorInTable: setInTable,
           onCursorLine: setCursorLine,
         });
+        // 「替换当前」模式（Obsidian 默认）：新笔记顶掉当前标签的位置，标签数不增长。
+        // 被顶掉的标签存量状态一并清掉，否则下次打开还会从 stateStore 里复活。
+        // 已打开过的笔记在前面就走 activateTab 了，两种模式一致。
+        const replaceCurrent =
+          getSettings().openNoteMode === "replace" &&
+          activeTabRef.current !== null &&
+          activeTabRef.current !== path;
+        const previousPath = activeTabRef.current;
+        if (replaceCurrent && previousPath) {
+          stateStore.current.delete(previousPath);
+          scrollStore.current.delete(previousPath);
+          dirtyTabs.current.delete(previousPath);
+          staleTabs.current.delete(previousPath);
+        }
         stateStore.current.set(note.path, newState);
         dirtyTabs.current.delete(path);
-        setOpenTabs((prev) =>
-          prev.some((tab) => tab.path === note.path)
-            ? prev.map((tab) => (tab.path === note.path ? note : tab))
-            : [...prev, note],
-        );
+        setOpenTabs((prev) => {
+          if (prev.some((tab) => tab.path === note.path)) {
+            return prev.map((tab) => (tab.path === note.path ? note : tab));
+          }
+          if (replaceCurrent && previousPath) {
+            const index = prev.findIndex((tab) => tab.path === previousPath);
+            if (index >= 0) {
+              const next = prev.slice();
+              next[index] = note;
+              return next;
+            }
+          }
+          return [...prev, note];
+        });
         setActiveTab(note.path);
         viewRef.current?.setState(newState);
         viewRef.current?.scrollDOM.scrollTop !== undefined &&
@@ -898,6 +988,21 @@ export default function App() {
   );
 
   /**
+   * 抓取天气并插进日记正文（M4）。城市未配置或抓取失败都原样返回内容——
+   * 天气是锦上添花，宁可缺一瓣也不能挡住「新建日记」。
+   */
+  const prependWeather = useCallback(
+    async (content: string, city: string): Promise<string> => {
+      const trimmed = city.trim();
+      if (!trimmed) return content;
+      const weather = await fetchWeather(trimmed);
+      if (!weather) return content;
+      return insertWeatherLine(content, weather);
+    },
+    [],
+  );
+
+  /**
    * 打开某天的日记：已有就打开，没有就用模板新建再打开。
    *
    * 「同名直接打开、不覆盖」是硬规则：日记是按日期命名的，重名意味着"这一天的
@@ -922,7 +1027,12 @@ export default function App() {
             daily.settings.dailyTemplatePath,
             { title, dateMoment: parseDateStrict(dateStr, daily.dateFormat) },
           )) ?? defaultNoteContent(title);
-        await writeNote(vault, path, content, false);
+        // 天气（M4）：创建时抓取一次并插进正文，失败静默——不能让天气挡住日记。
+        // 落盘前并入内容，文件只写一次，也就不会有"先建再补写"的监听回声。
+        const withWeather = daily.settings.weatherEnabled
+          ? await prependWeather(content, daily.settings.weatherCity)
+          : content;
+        await writeNote(vault, path, withWeather, false);
         await refresh(vault);
         await openNote(path);
         notice(`已新建日记「${title}」`);
@@ -1127,6 +1237,29 @@ export default function App() {
     setPendingDelete(null);
     try {
       const trashed = await deleteEntry(vault, target.path);
+      // 附件（图片）删除后清理各笔记里的引用：不留一堆破图链接。
+      // 候选集用全文搜索圈定（文件名是足够独特的关键词），再按引用语法精确匹配。
+      let cleanedNotes = 0;
+      if (!target.isDir && !target.path.toLowerCase().endsWith(".md")) {
+        const fileName = target.path.split("/").pop() ?? "";
+        if (fileName) {
+          try {
+            const hits = await searchVault(vault, fileName, 100);
+            for (const hit of hits) {
+              if (!hit.path.toLowerCase().endsWith(".md")) continue;
+              const note = await readNoteOptional(vault, hit.path);
+              if (!note) continue;
+              const next = removeImageReferences(note.content, target.path, fileName);
+              if (next !== null) {
+                await writeNote(vault, hit.path, next, note.hasBom);
+                cleanedNotes += 1;
+              }
+            }
+          } catch {
+            // 引用清理失败不回滚删除——文件已在 .trash，引用可以手动补
+          }
+        }
+      }
       // 删掉的笔记（或目录下的笔记）开着标签就关掉：留着的话，
       // 接下来的一次自动保存会把文件重新写回来
       const affected = openTabsRef.current.filter(
@@ -1179,7 +1312,11 @@ export default function App() {
         }
         return next;
       });
-      setStatus(`已移入回收目录：${trashed}（可以找回）`);
+      setStatus(
+        cleanedNotes > 0
+          ? `已移入回收目录：${trashed}，并清理了 ${cleanedNotes} 篇笔记中的引用`
+          : `已移入回收目录：${trashed}（可以找回）`,
+      );
       setError(null);
     } catch (e) {
       setError(String(e));
@@ -1210,6 +1347,211 @@ export default function App() {
     [openNote, jumpToLine],
   );
 
+  /** 导出 PDF：渲染整篇笔记为打印视图，弹出系统打印对话框（选「另存为 PDF」）。 */
+  const exportPdf = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view || !currentRef.current) {
+      notice("请先打开一个笔记，再导出 PDF", "error");
+      return;
+    }
+    try {
+      await exportNoteToPdf(view.state, resourcesRef.current);
+      setStatus("已打开打印对话框：目标打印机选「另存为 PDF」即可导出");
+    } catch (e) {
+      setError(`导出 PDF 失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [notice]);
+
+  // ------------------------------------------------------------------ 周回顾
+
+  /**
+   * 生成一周的回顾并插入当前笔记光标处（M4）。
+   *
+   * `mondayISO` 是该周周一；`isCurrent` 决定标题用「本周回顾」还是「2026-W37 回顾」。
+   * 日记内容逐篇读取算字数——一周最多几篇，直接读比建索引划算。
+   */
+  const insertWeeklyReview = useCallback(
+    async (mondayISO: string, isCurrent: boolean) => {
+      const view = viewRef.current;
+      if (!vault || !view || !currentRef.current) {
+        notice("请先打开一个笔记，回顾内容会插入到光标处", "error");
+        return;
+      }
+      const start = moment(mondayISO, "YYYY-MM-DD", true).startOf("isoWeek");
+      if (!start.isValid()) return;
+      const end = start.clone().endOf("isoWeek");
+      const format = dailyRef.current.dateFormat;
+
+      const diaries: ReviewDiary[] = [];
+      for (let d = start.clone(); d.isBefore(end) || d.isSame(end, "day"); d.add(1, "day")) {
+        const key = d.format(format);
+        for (const path of dailyRef.current.dailyNotesOn(key)) {
+          try {
+            const note = await readNote(vault, path);
+            diaries.push({ dateKey: key, title: baseNameOf(path), words: wordCount(note.content) });
+          } catch {
+            // 单篇读不出来就跳过，不让整个回顾失败
+          }
+        }
+      }
+
+      const text = buildWeeklyReview({
+        start,
+        end,
+        isCurrent,
+        diaries,
+        todos: dailyRef.current.todos,
+        dateFormat: format,
+        weekdayLabel: weekdayZh,
+      });
+
+      // 插入光标处，前后补空行让标题独立成段（与代码块粘贴同一套补位规则）
+      const pos = view.state.selection.main.head;
+      const line = view.state.doc.lineAt(pos);
+      const lines = view.state.doc.toString().split("\n");
+      const { prefix, suffix } = blockInsertPadding(lines, line.number - 1, pos - line.from);
+      view.dispatch(view.state.replaceSelection(`${prefix}${text}${suffix}`));
+      view.focus();
+      setStatus(isCurrent ? "已插入本周回顾" : `已插入周回顾（${start.format("GGGG-[W]WW")}）`);
+    },
+    [vault, notice],
+  );
+
+  // ------------------------------------------------------------------ 定时提醒
+
+  /** 当天已触发的提醒标记（进程内记忆，与插件一致：重启后时间点已过就不再补提醒）。 */
+  const firedReminders = useRef<ReminderFired>({ todo: "", check: "" });
+
+  // 系统通知。权限没批或插件不可用时静默降级为界面提示——提醒不该报错。
+  const sendSystemNotification = useCallback(async (body: string) => {
+    try {
+      const notification = await import("@tauri-apps/plugin-notification");
+      let granted = await notification.isPermissionGranted();
+      if (!granted) granted = (await notification.requestPermission()) === "granted";
+      if (granted) notification.sendNotification({ title: "Quick Note", body });
+    } catch {
+      // 忽略：通知只是提醒的一种形态
+    }
+  }, []);
+
+  // 30 秒轮询一次（与插件同周期）。配置经 dailyRef 读最新值；配置变化时重挂
+  // 定时器并重置「已过时间点视为已提醒」的初始标记（插件的 setupReminderTimer 语义）。
+  useEffect(() => {
+    if (!daily.ready) return;
+    firedReminders.current = initialFiredMarks(new Date(), {
+      todoEnabled: daily.settings.todoReminderEnabled,
+      todoTime: daily.settings.todoReminderTime,
+      checkEnabled: daily.settings.checkReminderEnabled,
+      checkTime: daily.settings.checkReminderTime,
+    });
+    const timer = window.setInterval(() => {
+      const config = dailyRef.current.settings;
+      const due = dueReminders(
+        new Date(),
+        {
+          todoEnabled: config.todoReminderEnabled,
+          todoTime: config.todoReminderTime,
+          checkEnabled: config.checkReminderEnabled,
+          checkTime: config.checkReminderTime,
+        },
+        firedReminders.current,
+      );
+      firedReminders.current = due.next;
+      if (due.todo) {
+        sendSystemNotification("该添加今天的待办事项了");
+        setStatus("提醒：该添加今天的待办事项了（可在右侧日历面板录入）");
+      }
+      if (due.check) {
+        const today = dailyRef.current.today;
+        const pending = liveItems(dailyRef.current.todos[today]).filter((item) => !item.done);
+        if (pending.length > 0) {
+          sendSystemNotification(`今天还有 ${pending.length} 项待办未完成`);
+          setStatus(`提醒：今天还有 ${pending.length} 项待办未完成`);
+        }
+      }
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [daily.ready, daily.settings, sendSystemNotification]);
+
+  // ------------------------------------------------------------------ 图片工具栏
+
+  /** 把图片复制到系统剪贴板（统一转成 PNG，Chromium 剪贴板对它支持最稳）。 */
+  const copyImageToClipboard = useCallback(
+    async (relativePath: string) => {
+      if (!vault) return;
+      try {
+        const data = await readBinary(vault, relativePath);
+        const binary = atob(data.base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+        let pngBlob: Blob = new Blob([bytes], { type: "image/png" });
+        if (!relativePath.toLowerCase().endsWith(".png")) {
+          // 非 PNG 先经画布转码，ClipboardItem 只保证认 image/png
+          const url = URL.createObjectURL(new Blob([bytes], { type: blobTypeOf(relativePath) }));
+          try {
+            const image = new Image();
+            await new Promise<void>((resolve, reject) => {
+              image.onload = () => resolve();
+              image.onerror = () => reject(new Error("图片解码失败"));
+              image.src = url;
+            });
+            const canvas = document.createElement("canvas");
+            canvas.width = image.naturalWidth;
+            canvas.height = image.naturalHeight;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) throw new Error("Canvas 不可用");
+            ctx.drawImage(image, 0, 0);
+            const converted = await new Promise<Blob | null>((resolve) =>
+              canvas.toBlob(resolve, "image/png"),
+            );
+            if (!converted) throw new Error("图片转码失败");
+            pngBlob = converted;
+          } finally {
+            URL.revokeObjectURL(url);
+          }
+        }
+        await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+        setStatus("已复制图片到剪贴板");
+      } catch (e) {
+        setError(`复制图片失败：${e}`);
+      }
+    },
+    [vault],
+  );
+
+  // Alt+点击增强的动作注入（行内代码复制 / 资源管理器定位）。
+  useEffect(() => {
+    resourcesRef.current.altActions = {
+      copyText: (text) => {
+        void navigator.clipboard.writeText(text).then(() => setStatus(`已复制：${text}`), () => setError("复制失败：剪贴板不可用"));
+      },
+      revealFile: async (target) => {
+        const relative = resolveWikiRelative(resourcesRef.current, target);
+        if (!relative || !vault) {
+          setError(`定位失败：在仓库里找不到「${target}」`);
+          return;
+        }
+        try {
+          const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+          await revealItemInDir(`${vault.replace(/[\/]+$/, "")}/${relative}`);
+          setStatus(`已在资源管理器中显示：${relative}`);
+        } catch (e) {
+          setError(`定位文件失败：${e}`);
+        }
+      },
+    };
+  }, [vault, notice]);
+
+  // 图片工具栏的动作注入（widget 经上下文读到；仓库切换时这里重挂最新闭包）。
+  useEffect(() => {
+    resourcesRef.current.imageActions = {
+      copy: (relativePath) => void copyImageToClipboard(relativePath),
+      crop: (relativePath) => setCropPath(relativePath),
+      rename: (relativePath) => beginRename(relativePath),
+      remove: (relativePath) => setPendingDelete({ path: relativePath, isDir: false }),
+    };
+  }, [copyImageToClipboard, beginRename]);
+
   // ------------------------------------------------------------------ 快捷键
 
   /** 快捷键动作表。命令面板按同一份文案生成动作项，这里集中定义避免两处漂移。 */
@@ -1232,39 +1574,25 @@ export default function App() {
     [beginCreate, changeMode, openVault],
   );
 
+  // 快捷键绑定（Obsidian 式可重绑定）：设置面板改绑定后这里经版本号重算。
+  const [hotkeysEpoch, setHotkeysEpoch] = useState(0);
+  useEffect(() => onHotkeysChange(() => setHotkeysEpoch((n) => n + 1)), []);
+  const bindings = useMemo(() => allBindings(), [hotkeysEpoch]);
+
   // 全局快捷键。CM 的键位只管编辑器内部；这里的键在任何焦点下都要生效。
+  // 具体键位在「设置 → 快捷键」里可改，这里只认绑定表。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
-      const mod = event.ctrlKey || event.metaKey;
-      if (!mod) return;
-      const key = event.key.toLowerCase();
-      // Ctrl+K / Ctrl+P：命令面板（P 是 Obsidian 用户习惯的快速打开）
-      if (key === "k" || key === "p") {
-        event.preventDefault();
-        shortcuts.palette();
-      } else if (key === "n" && !event.shiftKey && !event.altKey) {
-        event.preventDefault();
-        shortcuts.newNote();
-      } else if (key === "s") {
-        event.preventDefault();
-        shortcuts.save();
-      } else if (key === "e") {
-        event.preventDefault();
-        shortcuts.toggleMode();
-      } else if (key === "b" && event.shiftKey) {
-        event.preventDefault();
-        shortcuts.toggleRight();
-      } else if (key === "f" && event.shiftKey) {
-        event.preventDefault();
-        shortcuts.zen();
-      } else if (key === "b") {
-        event.preventDefault();
-        shortcuts.toggleLeft();
-      }
+      const command = matchCommand(event, bindings);
+      if (!command) return;
+      const run = shortcuts[command.id as keyof typeof shortcuts] as (() => void) | undefined;
+      if (!run) return;
+      event.preventDefault();
+      run();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [shortcuts]);
+  }, [shortcuts, bindings]);
 
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
@@ -1294,23 +1622,35 @@ export default function App() {
     }
   }, [vault, current]);
 
+  /** 命令面板动作上的键位提示：跟随「设置 → 快捷键」里的当前绑定。 */
+  const keyHint = useCallback(
+    (id: string): string | undefined => {
+      const keys = bindings.find((cmd) => cmd.id === id)?.keys;
+      return keys && keys.length > 0 ? formatKey(keys[0]) : undefined;
+    },
+    [bindings],
+  );
+
   /** 命令面板的动作清单（快捷操作组）。 */
   const paletteActions = useMemo<PaletteAction[]>(
     () => [
-      { id: "new-note", title: "新建笔记", hint: "Ctrl+N", icon: "📝", run: shortcuts.newNote },
+      { id: "new-note", title: "新建笔记", hint: keyHint("newNote"), icon: "📝", run: shortcuts.newNote },
       { id: "new-diary", title: "新建今日日记", icon: "📅", run: shortcuts.newDiary },
       { id: "new-folder", title: "新建文件夹", icon: "📁", run: shortcuts.newFolder },
-      { id: "save", title: "保存当前笔记", hint: "Ctrl+S", icon: "💾", run: shortcuts.save },
-      { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: "Ctrl+E", icon: "🔀", run: shortcuts.toggleMode },
-      { id: "left", title: leftCollapsed ? "展开文件栏" : "收起文件栏", hint: "Ctrl+B", icon: "◧", run: shortcuts.toggleLeft },
-      { id: "right", title: rightCollapsed ? "展开右侧面板" : "收起右侧面板", hint: "Ctrl+Shift+B", icon: "◨", run: shortcuts.toggleRight },
-      { id: "zen", title: zen ? "退出专注模式" : "专注模式（隐藏侧栏）", hint: "Ctrl+Shift+F", icon: "🎯", run: shortcuts.zen },
+      { id: "save", title: "保存当前笔记", hint: keyHint("save"), icon: "💾", run: shortcuts.save },
+      { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: keyHint("toggleMode"), icon: "🔀", run: shortcuts.toggleMode },
+      { id: "left", title: leftCollapsed ? "展开文件栏" : "收起文件栏", hint: keyHint("toggleLeft"), icon: "◧", run: shortcuts.toggleLeft },
+      { id: "right", title: rightCollapsed ? "展开右侧面板" : "收起右侧面板", hint: keyHint("toggleRight"), icon: "◨", run: shortcuts.toggleRight },
+      { id: "zen", title: zen ? "退出专注模式" : "专注模式（隐藏侧栏）", hint: keyHint("zen"), icon: "🎯", run: shortcuts.zen },
+      { id: "review-week", title: "生成本周回顾（插入光标处）", icon: "🗓️", run: () => void insertWeeklyReview(moment().startOf("isoWeek").format("YYYY-MM-DD"), true) },
+      { id: "review-pick", title: "生成选定周的回顾…", icon: "🗓️", run: () => setWeekDialogOpen(true) },
       { id: "sync", title: "立即同步", icon: "☁️", run: shortcuts.syncNow },
       { id: "vault", title: "打开其他仓库…", icon: "📂", run: shortcuts.openVaultPicker },
-      { id: "settings", title: "打开设置", icon: "⚙️", run: shortcuts.openSettings },
+      { id: "settings", title: "打开设置", hint: keyHint("openSettings"), icon: "⚙️", run: shortcuts.openSettings },
+      { id: "export-pdf", title: "导出 PDF（打印对话框，选「另存为 PDF」）", icon: "🖨️", run: () => void exportPdf() },
       { id: "roundtrip", title: "校验字节往返（写后读比对）", icon: "🧪", run: () => void verifyRoundTrip() },
     ],
-    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip],
+    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf],
   );
 
   return (
@@ -1393,7 +1733,7 @@ export default function App() {
             type="button"
             className={`icon-btn${showSettings ? " is-on" : ""}`}
             onClick={shortcuts.openSettings}
-            title="设置"
+            title={keyHint("openSettings") ? `设置（${keyHint("openSettings")}）` : "设置"}
           >
             <IconSettings size={16} />
           </button>
@@ -1449,6 +1789,7 @@ export default function App() {
         onClose={() => setShowSettings(false)}
         settings={settings}
         applySettings={applySettings}
+        imagePaths={vaultImages}
         daily={daily}
         sync={sync}
         customCssDraft={customCssDraft}
@@ -1746,7 +2087,19 @@ export default function App() {
         </aside>
         <main className="editor-pane">
           {openTabs.length > 0 && (
-            <div className="tabbar" role="tablist" aria-label="打开的笔记">
+            <div
+              className="tabbar"
+              role="tablist"
+              aria-label="打开的笔记"
+              onWheel={(event) => {
+                // 标签多到溢出时，纵向滚轮横着滚标签栏（触控板 deltaX 本来就是横向的）。
+                // 不 preventDefault：这里没有别的纵向滚动可抢，React 的 wheel 监听是被动式
+                const el = event.currentTarget;
+                const delta =
+                  Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+                if (delta !== 0) el.scrollLeft += delta;
+              }}
+            >
               {openTabs.map((tab) => (
                 <div
                   key={tab.path}
@@ -1807,7 +2160,7 @@ export default function App() {
               <button type="button" className="mini-btn" onClick={() => runTableCmd(formatTableAtCursor)} title="对齐所有管道（按显示宽度，中文算两格）">
                 对齐
               </button>
-              <span className="table-toolbar-hint">Tab 下一格 · Shift+Tab 上一格 · 单元格可直接点击编辑</span>
+              <span className="table-toolbar-hint">Tab 下一格 · 单元格可直接编辑 · 右键单元格插入/删除行列</span>
             </div>
           )}
           <div className={`editor-host${mode === "live" ? " is-live" : " is-source"}`} ref={hostRef} />
@@ -1952,6 +2305,20 @@ export default function App() {
         vault={vault}
         onOpenNote={(path, line) => void openNoteAt(path, line)}
         actions={paletteActions}
+      />
+
+      <WeekReviewDialog
+        open={weekDialogOpen}
+        onClose={() => setWeekDialogOpen(false)}
+        onPick={(mondayISO) => void insertWeeklyReview(mondayISO, false)}
+      />
+
+      <ImageCropDialog
+        open={cropPath !== null}
+        vault={vault ?? ""}
+        path={cropPath ?? ""}
+        onClose={() => setCropPath(null)}
+        notice={notice}
       />
     </div>
   );

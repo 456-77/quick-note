@@ -280,3 +280,47 @@ export function linkClickHandler(): Extension {
     },
   });
 }
+
+// ---------------------------------------------------------------- Alt+点击增强
+
+/**
+ * Alt+点击增强（对齐 Obsidian 插件）：
+ *
+ * - 行内代码（含表格单元格内的）：快捷复制代码内容（不含反引号）；
+ * - 图片（wiki 嵌入与 Markdown 语法）：在资源管理器中定位该文件；
+ * - wiki 链接：在资源管理器中定位目标文件。
+ *
+ * 用 Alt 修饰而不是直接点击：直接点击要留给「放光标/编辑」。
+ * 动作由 App 经上下文的 altActions 实现（剪贴板、资源管理器、提示）。
+ */
+export function altClickHandler(): Extension {
+  return EditorView.domEventHandlers({
+    mousedown: (event, view) => {
+      if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+      const target = event.target as HTMLElement | null;
+      if (!target) return false;
+      const actions = view.state.facet(livePreviewContext).altActions;
+      if (!actions) return false;
+
+      const chip = target.closest(".cm-lp-code");
+      if (chip) {
+        event.preventDefault();
+        actions.copyText(chip.textContent ?? "");
+        return true;
+      }
+      const image = target.closest("img.cm-lp-image") as HTMLImageElement | null;
+      if (image?.title) {
+        event.preventDefault();
+        actions.revealFile(image.title);
+        return true;
+      }
+      const wikiLink = target.closest("[data-wiki-target]");
+      if (wikiLink) {
+        event.preventDefault();
+        actions.revealFile(wikiLink.getAttribute("data-wiki-target") ?? "");
+        return true;
+      }
+      return false;
+    },
+  });
+}
