@@ -1545,13 +1545,22 @@ export default function App() {
       <div className={`body${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}`}>
         <aside className="sidebar">
           <div className="sidebar-head">
-                <span className="sidebar-title">文件</span>
-                <span className="spacer" />
-                <button
-                  type="button"
-                  className="mini-btn"
-                  disabled={!vault}
-                  onClick={() => beginCreate("diary")}
+            <button
+              type="button"
+              className="mini-btn collapse-btn"
+              onClick={() => setLeftCollapsed(true)}
+              title="收起文件栏"
+              aria-label="收起文件栏"
+            >
+              «
+            </button>
+            <span className="sidebar-title">文件</span>
+            <span className="spacer" />
+            <button
+              type="button"
+              className="mini-btn"
+              disabled={!vault}
+              onClick={() => beginCreate("diary")}
                   title="新建今天的日记（按日期命名，想建普通笔记请在树里右键 → 新建笔记）"
                 >
                   ＋日记
@@ -1677,8 +1686,40 @@ export default function App() {
               <p>选择仓库目录后，点击左侧笔记开始编辑。</p>
             </div>
           )}
+          {leftCollapsed && (
+            <button
+              type="button"
+              className="sidebar-restore"
+              onClick={() => setLeftCollapsed(false)}
+              title="展开文件栏"
+            >
+              »
+            </button>
+          )}
+          {rightCollapsed && (
+            <button
+              type="button"
+              className="sidebar-restore sidebar-restore-right"
+              onClick={() => setRightCollapsed(false)}
+              title="展开面板"
+            >
+              «
+            </button>
+          )}
         </main>
         <aside className="sidebar sidebar-right">
+          <div className="sidebar-head sidebar-head-right">
+            <button
+              type="button"
+              className="mini-btn collapse-btn"
+              onClick={() => setRightCollapsed(true)}
+              title="收起面板"
+              aria-label="收起面板"
+            >
+              »
+            </button>
+            <span className="sidebar-title">面板</span>
+          </div>
           <div className="sidebar-tabs" role="tablist" aria-label="辅助面板">
             <button
               type="button"

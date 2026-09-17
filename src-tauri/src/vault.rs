@@ -709,7 +709,11 @@ pub fn write_note(
         }
     }
 
-    fs::write(&full, &bytes).map_err(|e| format!("写入失败: {e}"))?;
+    // 原子写：先写临时文件再改名。直接覆盖的话，并发读者（Obsidian、同步进程、
+    // 验收脚本）可能读到半截 JSON/Markdown。
+    let temp = full.with_extension("qntmp");
+    fs::write(&temp, &bytes).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    fs::rename(&temp, &full).map_err(|e| format!("替换文件失败: {e}"))?;
 
     Ok(WriteResult {
         sha256: sha256_hex(&bytes),

@@ -157,7 +157,21 @@ async function pressEnter(ws, selector) {
   );
 }
 
-const readConfig = () => JSON.parse(readFileSync(CONFIG, "utf8"));
+/**
+ * 读取库内配置。应用是防抖后整体重写这份文件——读取恰好撞上写入窗口会拿到
+ * 半截 JSON。此时沿用**上一次完整解析结果**让轮询继续（断言要的新状态稍后
+ * 自然出现），而不是让整个脚本崩溃。
+ */
+let lastGoodConfig = null;
+const readConfig = () => {
+  try {
+    lastGoodConfig = JSON.parse(readFileSync(CONFIG, "utf8"));
+    return lastGoodConfig;
+  } catch (e) {
+    if (lastGoodConfig) return lastGoodConfig;
+    throw e;
+  }
+};
 const editorText = (ws) => evaluate(ws, `document.querySelector('.cm-content')?.innerText ?? ''`);
 
 // ---------------------------------------------------------------- 连接
@@ -723,6 +737,22 @@ try {
   // ---------------------------------------------------------------- 配置
   console.log("\n库内配置的写回\n");
   {
+    // 触发一次设置写入：把附件目录设为同值也会 serialize 全部自有键——
+    // pastedImageFolder 是 0.3 新增的自有键，fixture 里没有它，
+    // 只有真实发生过一次设置写入它才会被追加到末尾。
+    await evaluate(
+      ws,
+      `(() => {
+         const row = [...document.querySelectorAll('.settings-row')].find(r => r.querySelector('span')?.textContent === '附件保存目录');
+         const el = row?.querySelector('input');
+         if (!el) return false;
+         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+         setter.call(el, 'attachments');
+         el.dispatchEvent(new Event('input', { bubbles: true }));
+         return true;
+       })()`,
+    );
+    await sleep(1500);
     const config = readConfig();
     check(
       config.emailAccessKey === "plugin-only-key-do-not-drop",
