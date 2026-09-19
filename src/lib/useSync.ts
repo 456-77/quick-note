@@ -92,9 +92,16 @@ export function useSync(options: {
   todoSnapshot: () => string;
   /** 把云端快照并进本地待办；返回是否有改动。 */
   mergeTodoSnapshot: (content: string) => boolean;
+  /** 不参与同步的文件（仓库相对路径）。背景图这类纯观感文件由此排除。 */
+  excludedSyncPaths?: () => string[];
   notice: Notice;
 }): SyncController {
-  const { vault, folder, todoSnapshot, mergeTodoSnapshot, notice } = options;
+  const { vault, folder, todoSnapshot, mergeTodoSnapshot, excludedSyncPaths, notice } = options;
+
+  const excludedPathsRef = useRef(excludedSyncPaths ?? (() => []));
+  useEffect(() => {
+    excludedPathsRef.current = excludedSyncPaths ?? (() => []);
+  }, [excludedSyncPaths]);
 
   const [state, setState] = useState<SyncDeviceState>(() => ({ ...DEFAULT_SYNC_STATE }));
   const [ready, setReady] = useState(false);
@@ -228,6 +235,7 @@ export function useSync(options: {
         const configured = stateRef.current.vaultName.trim();
         return configured !== "" ? configured : defaultVaultName(target);
       },
+      excludedSyncPaths: () => excludedPathsRef.current(),
       getVirtualFiles: () => ({ [TODO_SYNC_PATH]: todoSnapshotRef.current() }),
       mergeVirtualFile: (_path, content) => mergeRef.current(content),
       onStatus: (kind, detail) => {

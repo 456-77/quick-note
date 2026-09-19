@@ -49,7 +49,7 @@ import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
-import { checkForUpdate } from "./lib/updater";
+import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
 import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
@@ -88,6 +88,27 @@ import { useSync, type SyncController } from "./lib/useSync";
 import "./styles.css";
 
 const VAULT_KEY = "quicknote.vault";
+const FAVORITES_V2_KEY = "quicknote.favorites.v2";
+
+/**
+ * 右键菜单渲染后按实际尺寸夹回视口内。
+ *
+ * 面板边缘（右侧日记面板的 ⋯、顶栏仓库下拉）触发的菜单 x/y 贴着屏幕边，
+ * 直接用 clientX/clientY 会把大半个菜单送出屏幕外。渲染后量一次实际宽高，
+ * 越界就往回收——ref 回调在 DOM 插入后立刻跑，用户看不到跳动。
+ */
+function menuRefClampedToViewport(x: number, y: number) {
+  return (el: HTMLDivElement | null) => {
+    if (!el) return;
+    let left = x;
+    let top = y;
+    const rect = el.getBoundingClientRect();
+    if (rect.right > window.innerWidth - 8) left = Math.max(8, window.innerWidth - rect.width - 8);
+    if (rect.bottom > window.innerHeight - 8) top = Math.max(8, window.innerHeight - rect.height - 8);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  };
+}
 const MODE_KEY = "quicknote.mode";
 const SIDEBAR_KEY = "quicknote.sidebar";
 /** 停止输入多久后自动保存。写盘前会比较内容，未变则不触碰文件。 */
@@ -146,15 +167,8 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** 左栏视图：知识库 / 收藏 / 最近。 */
   const [leftView, setLeftView] = useState<"files" | "favorites" | "recents">("files");
-  /** 收藏的笔记（本机 localStorage）。 */
-  const [favorites, setFavorites] = useState<string[]>(() => {
-    try {
-      const raw = localStorage.getItem("quicknote.favorites");
-      return raw ? (JSON.parse(raw) as string[]) : [];
-    } catch {
-      return [];
-    }
-  });
+  /** 收藏的笔记（本机 localStorage，**按仓库分桶**：切换仓库各看各的收藏）。 */
+  const [favorites, setFavorites] = useState<string[]>([]);
   /** 最近打开的笔记（本机 localStorage，新的在前）。 */
   const [recents, setRecents] = useState<string[]>(() => {
     try {
@@ -247,13 +261,42 @@ export default function App() {
 
   // ---------------------------------------------------------------- 收藏与最近
 
-  const persistFavorites = useCallback((next: string[]) => {
+  // 收藏按仓库分桶存储（键 = 仓库绝对路径），切换仓库各看各的收藏。
+  // 旧版是扁平数组（不区分仓库，切仓后互相串）：首次遇到某仓库时把旧数据
+  // 整体迁移给它——旧收藏本来就主要是在主仓库里攒的。
+  useEffect(() => {
+    if (!vault) return;
     try {
-      localStorage.setItem("quicknote.favorites", JSON.stringify(next));
+      const raw = localStorage.getItem(FAVORITES_V2_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      if (map[vault]) {
+        setFavorites(map[vault]);
+        return;
+      }
+      const legacy = localStorage.getItem("quicknote.favorites");
+      const list = legacy ? (JSON.parse(legacy) as string[]) : [];
+      map[vault] = list;
+      localStorage.setItem(FAVORITES_V2_KEY, JSON.stringify(map));
+      setFavorites(list);
     } catch {
-      // 存不进去只影响下次启动的列表，不打断操作
+      setFavorites([]);
     }
-  }, []);
+  }, [vault]);
+
+  const persistFavorites = useCallback(
+    (next: string[]) => {
+      try {
+        const raw = localStorage.getItem(FAVORITES_V2_KEY);
+        const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+        if (vault) map[vault] = next;
+        localStorage.setItem(FAVORITES_V2_KEY, JSON.stringify(map));
+      } catch {
+        // 存不进去只影响下次启动的列表，不打断操作
+      }
+      setFavorites(next);
+    },
+    [vault],
+  );
 
   const toggleFavorite = useCallback(
     (path: string) => {
@@ -295,10 +338,16 @@ export default function App() {
 
   const [appVersion, setAppVersion] = useState("");
   const [updateCheck, setUpdateCheck] = useState<{
-    state: "idle" | "checking" | "done" | "error";
+    state: "idle" | "checking" | "done" | "error" | "downloading" | "installing";
     message: string;
     url?: string;
+    /** 插件检查发现的新版本（拿到 Update 对象才能走应用内安装）。 */
+    available?: boolean;
+    /** 更新提示条是否被用户关掉（关掉后本次启动不再弹）。 */
+    dismissed?: boolean;
   }>({ state: "idle", message: "" });
+  /** updater 插件的 Update 对象：下载安装必须用它。 */
+  const updateRef = useRef<Update | null>(null);
 
   useEffect(() => {
     getVersion()
@@ -322,6 +371,21 @@ export default function App() {
   const checkUpdate = useCallback(async () => {
     setUpdateCheck({ state: "checking", message: "正在检查更新…" });
     try {
+      // 先走 updater 插件（latest.json）：发现新版本时能直接在应用内安装
+      const update = await checkViaPlugin();
+      if (update) {
+        updateRef.current = update;
+        setUpdateCheck({
+          state: "done",
+          message: `发现新版本 v${update.version}（当前 v${appVersion}），可直接更新`,
+          available: true,
+        });
+        return;
+      }
+    } catch {
+      // 插件检查失败（端点还没有 latest.json 等）——回退到 GitHub API 比较
+    }
+    try {
       const info = await checkForUpdate(appVersion || "0.0.0");
       setUpdateCheck(
         info.newer
@@ -332,6 +396,27 @@ export default function App() {
       setUpdateCheck({ state: "error", message: `检查更新失败：${e}` });
     }
   }, [appVersion]);
+
+  /** 应用内更新：下载（带进度）→ 静默安装 → 重启。 */
+  const installUpdate = useCallback(async () => {
+    const update = updateRef.current;
+    if (!update) return;
+    try {
+      await installAndRelaunch(update, (pct) => {
+        setUpdateCheck({ state: "downloading", message: `正在下载更新… ${pct}%`, available: true });
+      });
+    } catch (e) {
+      setUpdateCheck({ state: "error", message: `更新失败：${e}` });
+    }
+  }, []);
+
+  // 启动后延迟几秒自动检查一次更新（静默；发现新版本时弹提示条）
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      void checkUpdate();
+    }, 4000);
+    return () => clearTimeout(timer);
+  }, [checkUpdate]);
 
   const openReleasePage = useCallback(async (url?: string) => {
     try {
@@ -399,6 +484,11 @@ export default function App() {
     folder: daily.settings.folder,
     todoSnapshot: daily.todoSnapshot,
     mergeTodoSnapshot: daily.mergeTodoSnapshot,
+    // 背景图片是纯观感文件（且往往不小），不参与云同步
+    excludedSyncPaths: () => {
+      const p = settings.bgImagePath?.trim();
+      return p ? [p] : [];
+    },
     notice,
   });
 
@@ -2206,8 +2296,31 @@ export default function App() {
         appVersion={appVersion}
         updateCheck={updateCheck}
         checkUpdate={checkUpdate}
+        installUpdate={() => void installUpdate()}
         openReleasePage={(url) => void openReleasePage(url)}
       />
+
+      {/* 发现新版本的提示条：启动自动检查或手动检查发现可用更新时出现 */}
+      {updateCheck.available && !updateCheck.dismissed && updateCheck.state !== "downloading" && updateCheck.state !== "installing" && (
+        <div className="update-banner" role="alert">
+          <span>{updateCheck.message}</span>
+          <button type="button" className="btn" onClick={() => void installUpdate()}>
+            立即更新
+          </button>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))}
+          >
+            稍后
+          </button>
+        </div>
+      )}
+      {updateCheck.state === "downloading" && (
+        <div className="update-banner" role="status">
+          <span>{updateCheck.message}（完成后应用将自动重启）</span>
+        </div>
+      )}
 
       {error && (
         <div className="banner banner-error">
@@ -2319,7 +2432,7 @@ export default function App() {
             event.preventDefault();
             setVaultMenu(null);
           }} />
-          <div className="context-menu vault-menu" style={{ left: vaultMenu.x, top: vaultMenu.y }}>
+          <div className="context-menu vault-menu" ref={menuRefClampedToViewport(vaultMenu.x, vaultMenu.y)} style={{ left: vaultMenu.x, top: vaultMenu.y }}>
             {vaultRecents.filter((p) => p !== vault).length === 0 && (
               <div className="vault-menu-empty">还没有最近打开的仓库</div>
             )}
@@ -2358,7 +2471,7 @@ export default function App() {
             event.preventDefault();
             setMenu(null);
           }} />
-          <div className="context-menu" style={{ left: menu.x, top: menu.y }}>
+          <div className="context-menu" ref={menuRefClampedToViewport(menu.x, menu.y)} style={{ left: menu.x, top: menu.y }}>
             {!menu.isDir && menu.path.toLowerCase().endsWith(".md") && (
               <button
                 type="button"

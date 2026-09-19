@@ -23,6 +23,10 @@ tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 # 定时提醒的系统通知（M4）。Windows 上走系统通知中心
 tauri-plugin-notification = "2"
+# 应用内更新：检查/下载/安装 + 重启。签名密钥在 %USERPROFILE%.tauriquick-note.key
+# （构建时需 TAURI_SIGNING_PRIVATE_KEY_PATH 指向私钥；发版流程见记忆/发布文档）
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

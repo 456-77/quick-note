@@ -85,3 +85,51 @@ function responseBodyText(response: { bodyBase64: string }): string {
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return new TextDecoder().decode(bytes);
 }
+
+// ---------------------------------------------------------------- 应用内更新
+//
+// Tauri updater 插件路径：端点（tauri.conf.json）指向 GitHub Release 上的
+// latest.json，检查/下载/安装/重启全部在应用内完成。GitHub API 检查保留作
+// 回退——latest.json 还没发布（首个带更新清单的版本之前）或离线时仍能提示。
+
+import { check as pluginCheck, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+
+export type { Update };
+
+/**
+ * 用 updater 插件检查更新。
+ *
+ * 返回 `null` 表示"没有可用更新**或**插件检查没走通"（端点 404、离线）——
+ * 调用方应回退到 {@link checkForUpdate} 的 GitHub API 比较，两种检查不会都失败。
+ */
+export async function checkViaPlugin(): Promise<Update | null> {
+  try {
+    return await pluginCheck();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 下载并安装更新，安装完重启应用（不返回——进程已经被替换）。
+ *
+ * onProgress 收到 0-100 的下载百分比；`Finished` 后进度到 100，剩下的安装
+ * 由 NSIS 安装器静默完成。
+ */
+export async function installAndRelaunch(update: Update, onProgress: (pct: number) => void): Promise<void> {
+  let downloaded = 0;
+  let contentLength = 0;
+  await update.downloadAndInstall((event) => {
+    if (event.event === "Started") {
+      contentLength = event.data.contentLength ?? 0;
+      onProgress(0);
+    } else if (event.event === "Progress") {
+      downloaded += event.data.chunkLength;
+      onProgress(contentLength > 0 ? Math.min(99, Math.round((downloaded / contentLength) * 100)) : 50);
+    } else if (event.event === "Finished") {
+      onProgress(100);
+    }
+  });
+  await relaunch();
+}

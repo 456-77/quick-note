@@ -57,8 +57,15 @@ interface Props {
   customCssDraft: string;
   onCustomCssChange: (value: string) => void;
   appVersion: string;
-  updateCheck: { state: "idle" | "checking" | "done" | "error"; message: string; url?: string };
+  updateCheck: {
+    state: "idle" | "checking" | "done" | "error" | "downloading" | "installing";
+    message: string;
+    url?: string;
+    /** 插件检查发现可用更新：出现「立即更新」按钮（应用内下载安装重启）。 */
+    available?: boolean;
+  };
   checkUpdate: () => void;
+  installUpdate: () => void;
   openReleasePage: (url?: string) => void;
 }
 
@@ -97,6 +104,7 @@ export default function SettingsDialog({
   appVersion,
   updateCheck,
   checkUpdate,
+  installUpdate,
   openReleasePage,
 }: Props) {
   const [active, setActive] = useState<SectionId>("general");
@@ -700,11 +708,21 @@ export default function SettingsDialog({
             <button
               type="button"
               className="btn"
-              disabled={updateCheck.state === "checking"}
+              disabled={updateCheck.state === "checking" || updateCheck.state === "downloading"}
               onClick={() => void checkUpdate()}
             >
               {updateCheck.state === "checking" ? "检查中…" : "检查更新"}
             </button>
+            {updateCheck.available && (
+              <button
+                type="button"
+                className="btn"
+                disabled={updateCheck.state === "downloading"}
+                onClick={() => void installUpdate()}
+              >
+                {updateCheck.state === "downloading" ? "下载中…" : "立即更新"}
+              </button>
+            )}
             <button
               type="button"
               className="btn"

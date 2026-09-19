@@ -127,6 +127,8 @@ export interface SyncHost {
   getFolder(): string;
   /** 云端仓库名。 */
   getVaultName(): string;
+  /** 不参与同步的文件（仓库相对路径）。用于背景图这类纯观感的仓库内文件。 */
+  excludedSyncPaths(): string[];
   /**
    * 需要同步但**不在库内落盘**的内容（路径 -> 文本），目前只有待办快照。
    * 这些路径不写文件：内容由宿主维护，云端拉回来的交给 {@link mergeVirtualFile}。
@@ -430,9 +432,12 @@ export class SyncEngine {
    */
   private async scanAttachments(): Promise<void> {
     const result = await syncScanAttachments(this.vault, this.state.scope, this.host.getFolder());
+    // 背景图这类"纯观感文件"不参与同步：按名引用扫会把它们扫进来，排除掉
+    const excluded = new Set(this.host.excludedSyncPaths().map((p) => p.replace(/\\/g, "/")));
 
     // 本地有的：mtime+size 没变就跳过重读（哈希拿上次的），变了才算一次哈希、比对入队
     for (const item of result.referenced) {
+      if (excluded.has(item.path.replace(/\\/g, "/"))) continue;
       const stamp = attachmentStamp(item.modified, item.size);
       const known = this.state.attachmentHashes[item.path];
       if (this.state.attachmentStamps[item.path] === stamp && known !== undefined) continue;
@@ -442,7 +447,9 @@ export class SyncEngine {
     }
 
     // 本地缺的：记下名字与来源，flush 阶段按名去云端问（这是附件拉下来的主通道）
-    this.missingAttachments = new Map(result.missing.map((item) => [item.name, item.from]));
+    this.missingAttachments = new Map(
+      result.missing.filter((item) => !excluded.has(item.from.replace(/\\/g, "/"))).map((item) => [item.name, item.from]),
+    );
 
     // 同步过、但现在既没被引用、本地也没了的 → 推墓碑，让其他设备跟着清掉。
     // 只删引用、文件还留着的**不**推墓碑：云端那份留着更保守，用户日后重新引用无需重传。

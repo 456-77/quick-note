@@ -30,3 +30,6 @@ test-vault.detect.json
 *.njsproj
 *.sln
 *.sw?
+
+# 应用内更新清单（发版脚本生成，随 Release 附件上传）
+latest.json

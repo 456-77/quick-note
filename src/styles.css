@@ -4586,3 +4586,22 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 .qn-search-replace[hidden] {
   display: none;
 }
+
+/* 应用内更新的提示条：右下角卡片，不遮内容 */
+.update-banner {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 130;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 440px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-2);
+  font-size: 12.5px;
+  color: var(--text);
+}

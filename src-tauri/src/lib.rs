@@ -116,6 +116,9 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // 应用内更新（检查/下载/安装）与更新后的重启；密钥与端点见 tauri.conf.json
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             startup_vault,
             read_text_file,
