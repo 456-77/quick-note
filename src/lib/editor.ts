@@ -3,7 +3,7 @@ import { Compartment, EditorSelection, EditorState, Prec, type Extension } from 
 import type { SyntaxNode } from "@lezer/common";
 import { keymap } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { json } from "@codemirror/lang-json";
 import { sql } from "@codemirror/lang-sql";
 import { yaml } from "@codemirror/lang-yaml";
@@ -214,6 +214,19 @@ function exitEmptyListItem(view: EditorView): boolean {
   const selection = state.selection.main;
   if (!selection.empty) return false;
   const line = state.doc.lineAt(selection.head);
+  if (selection.head !== line.to && selection.head !== line.from) {
+    // ① 光标在成对反引号内部（自动闭合把光标留在对内）：跳到闭合反引号之后，
+    //    再走内置的列表续行/换行——直接回车会把行内代码劈成两半并把下一个
+    //    序号插进劈开的位置，列表渲染错乱
+    const before = line.text.slice(0, selection.head - line.from);
+    const after = line.text.slice(selection.head - line.from);
+    const leftTick = before.length - before.replace(/`+$/, "").length;
+    const rightTick = after.length - after.replace(/^`+/, "").length;
+    if (leftTick >= 1 && rightTick >= 1) {
+      view.dispatch({ selection: { anchor: selection.head + rightTick }, userEvent: "select" });
+      return insertNewlineContinueMarkup(view);
+    }
+  }
   if (selection.head !== line.to) return false; // 光标在行尾才接管
   const match = EMPTY_LIST_ITEM_RE.exec(line.text);
   if (!match || line.from === 0) return false;
