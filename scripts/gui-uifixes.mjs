@@ -484,27 +484,38 @@ const addBtnClicked = await evaluate(
   ws,
   `(() => {
     const row = [...document.querySelectorAll('[data-sec="shortcuts"] .settings-row')].find(r => r.textContent.includes('新建今日日记'));
-    const btn = row?.querySelector('.shortcut-add');
+    const btn = row?.querySelector('.hotkey-plus');
     if (!btn) return false;
     btn.click();
     return true;
   })()`,
 );
-check(addBtnClicked, "未绑定命令显示「添加快捷键」入口");
+check(addBtnClicked, "未绑定命令显示「＋ 设置快捷键」入口");
 await sleep(200);
-check(!!(await evaluate(ws, `!!document.querySelector('.shortcut-capture')`)), "进入捕获态（按任意键组合…）");
-// 真实键盘：Ctrl+J
+check(!!(await evaluate(ws, `!!document.querySelector('.shortcut-capture')`)), "进入录入态（正在录入快捷键…）");
+// 真实键盘：Ctrl+J → 实时回显 → Enter 提交
 await cdp(ws, "Input.dispatchKeyEvent", { type: "keyDown", modifiers: 2, key: "j", windowsVirtualKeyCode: 74 });
 await cdp(ws, "Input.dispatchKeyEvent", { type: "keyUp", modifiers: 2, key: "j", windowsVirtualKeyCode: 74 });
+await sleep(200);
+const pendingShown = await evaluate(
+  ws,
+  `(() => {
+    const cap = document.querySelector('.hotkey-capture');
+    return cap ? cap.textContent.includes('J') : false;
+  })()`,
+);
+check(pendingShown, "录入态实时回显已按下的组合");
+await cdp(ws, "Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", windowsVirtualKeyCode: 13 });
+await cdp(ws, "Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", windowsVirtualKeyCode: 13 });
 await sleep(400);
 const bound = await evaluate(
   ws,
   `(() => {
     const row = [...document.querySelectorAll('[data-sec="shortcuts"] .settings-row')].find(r => r.textContent.includes('新建今日日记'));
-    return { text: row.textContent, hasReset: !!row.querySelector('.shortcut-reset') };
+    return { text: row.textContent.replace(/\\s/g, ''), hasReset: !!row.querySelector('.shortcut-reset') };
   })()`,
 );
-check(bound.text.includes("Ctrl J") && bound.hasReset, "捕获 Ctrl+J 写入绑定");
+check(bound.text.includes("CtrlJ") && bound.hasReset, "录入 Ctrl+J 经 Enter 写入绑定");
 // 触发验证：Ctrl+J 应展开日记输入行
 await evaluate(ws, `document.querySelector('.settings-nav-head .icon-btn')?.click()`);
 await sleep(300);

@@ -934,7 +934,14 @@ div.tree-item:focus-visible {
   color: var(--accent);
 }
 
-.tree-file.is-active .tree-icon {
+/* 选中的目录：粘贴目标（点击目录即选中，再点切换展开） */
+.tree-dir.is-selected {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tree-dir.is-selected .tree-icon,
+.tree-dir.is-selected .tree-caret {
   color: var(--accent);
 }
 
@@ -1015,6 +1022,30 @@ div.tree-item:focus-visible {
   animation: rise-in 0.13s ease;
 }
 
+/* 顶栏仓库下拉：复用右键菜单的容器样式，另加分组分隔线与空态 */
+.vault-menu {
+  min-width: 240px;
+  max-width: 380px;
+}
+
+.vault-menu-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vault-menu-sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--border);
+}
+
+.vault-menu-empty {
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 .context-menu button {
   font: inherit;
   font-size: 13px;
@@ -1068,12 +1099,16 @@ div.tree-item:focus-visible {
 .editor-empty {
   position: absolute;
   inset: 0;
+  z-index: 5;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 6px;
   color: var(--text-dim);
+  /* 不透明底：曾经出现过空状态与上一篇笔记内容叠加透出的怪相——
+     这层只在"确实没有任何打开的标签"时渲染，且必须完全遮住底层编辑器 */
+  background: var(--bg);
   pointer-events: none;
   animation: fade-in 0.25s ease;
 }
@@ -1115,6 +1150,205 @@ div.tree-item:focus-visible {
   margin-top: 22px;
   font-size: 11.5px;
   color: var(--text-faint);
+}
+
+/* 预览窗格：PDF/Word/Excel 的只读查看，覆盖编辑区（编辑器保持挂载） */
+.file-preview {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.file-preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.file-preview-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-kind {
+  font-size: 11px;
+  color: var(--text-faint);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1px 8px;
+  flex: none;
+}
+
+.file-preview-body {
+  flex: 1;
+  overflow: auto;
+  padding: 14px;
+}
+
+.file-preview-loading {
+  padding: 20px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.file-preview-error {
+  padding: 20px;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+.file-preview-pdf {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 100%;
+}
+
+.file-preview-pdf-page {
+  background: #fff;
+  border-radius: 4px;
+  box-shadow: var(--shadow-2);
+  max-width: 100%;
+}
+
+/* PPT 预览：幻灯片自带白底，套用与 PDF 页一致的圆角阴影；
+   库默认给 wrapper 铺纯黑底，换成主题背景色融入整体。
+   重建前的过渡期不撑横向滚动条（宽度重建由 ResizeObserver 驱动） */
+.file-preview-pptx {
+  width: 100%;
+  max-width: 100%;
+  padding-bottom: 18px;
+  overflow-x: hidden;
+}
+
+.file-preview-pptx .pptx-preview-wrapper {
+  background: transparent !important;
+}
+
+.file-preview-pptx .pptx-preview-slide-wrapper {
+  border-radius: 4px;
+  box-shadow: var(--shadow-2);
+  border: 1px solid var(--border);
+}
+
+/* 文档类预览用白纸底色（文档本身是白底黑字） */
+.file-preview-docx {
+  max-width: min(860px, 100%);
+  margin: 0 auto;
+  padding: 36px 40px;
+  background: #fff;
+  color: #222;
+  border-radius: 6px;
+  font-size: 14px;
+  line-height: 1.75;
+  overflow-x: auto;
+}
+
+/* 窄视窗时收拢留白，尽量少出现横向滚动 */
+@media (max-width: 720px) {
+  .file-preview-docx {
+    padding: 16px 12px;
+  }
+}
+
+.file-preview-docx h1,
+.file-preview-docx h2,
+.file-preview-docx h3 {
+  color: #111;
+}
+
+.file-preview-docx table,
+.file-preview-sheet-body table {
+  border-collapse: collapse;
+}
+
+.file-preview-docx td,
+.file-preview-docx th,
+.file-preview-sheet-body td,
+.file-preview-sheet-body th {
+  border: 1px solid #c9c9cf;
+  padding: 4px 9px;
+  font-size: 12.5px;
+  color: #222;
+}
+
+.file-preview-sheets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.file-preview-sheet {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.file-preview-sheet.is-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.file-preview-sheet-body {
+  background: #fff;
+  border-radius: 6px;
+  padding: 8px;
+  overflow: auto;
+}
+
+/* HTML 预览：沙箱 iframe（禁脚本），白底模拟浏览器视图 */
+.file-preview-html {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+}
+
+/* 图片预览：居中 + 限高，浅色衬底让透明 PNG 可见 */
+.file-preview-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  padding: 8px;
+}
+
+.file-preview-image img {
+  max-width: 100%;
+  max-height: 82vh;
+  border-radius: 6px;
+  box-shadow: var(--shadow-2);
+  background:
+    repeating-conic-gradient(#e6e6ea 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;
+}
+
+/* 树条目的「已选中（复制/粘贴目标）」虚线高亮，区别于打开态的实底高亮 */
+.tree-file.is-picked {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+
+.tree-dir.is-picked {
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
 }
 
 .editor-empty-keys span {
@@ -1186,18 +1420,21 @@ html.qn-line-numbers .editor-host .cm-lineNumbers .cm-gutterElement {
   color: var(--text-faint);
 }
 
-/* 行号贴着正文列（Obsidian 式）：gutter 叠进居中偏移区——负 right-margin 使它
-   对正文布局「不可见」，正文按无 gutter 的公式定位，行号紧贴正文左缘。
-   900 = 阅读宽度；窄窗格（偏移为 0）时正文由下面的 50px 下限让出 gutter 空间。 */
+/* 行号贴着正文列（Obsidian 式）：gutter 以「净宽为零」叠进居中偏移区——
+   margin-right 抵消自身宽度后，正文的 margin-left 只需补偿这个零头，
+   两列即可贴合，且正文整体仍严格居中。此前两条 margin 公式各自引用居中
+   偏移 (100cqw - 900px)/2，在 flex 布局里叠加了两次，宽窗口下行号与正文
+   隔出两百余像素。47px ≈ gutter 宽（约 41）+ 6px 间距；窄窗口（居中偏移
+   不足 47px）行号贴左缘、正文让出 47px。 */
 html.qn-line-numbers .editor-host .cm-gutters {
   flex: none;
-  margin-left: max(0px, calc((100cqw - 900px) / 2 - 22px));
-  margin-right: -44px;
+  margin-left: max(0px, calc((100cqw - 900px) / 2 - 47px));
+  margin-right: -41px;
 }
 
-/* 行号开启时正文再让出 gutter 的最小宽度，避免窄窗格上行号压住文字 */
+/* 行号开启时正文让出 gutter 的宽度，避免窄窗格上行号压住文字 */
 html.qn-line-numbers .editor-host .cm-scroller > .cm-content {
-  margin-left: max(50px, (100cqw - 900px) / 2 + 24px);
+  margin-left: 47px;
 }
 
 html.qn-line-numbers .editor-host .cm-gutters .cm-activeLineGutter {
@@ -1233,12 +1470,12 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
      与这里的规则同特异性但**更晚**进文档，常规写法会被它覆盖——曾经因此
      整个编辑区靠左、代码块「全出血」背景也不对称（连 accent 光标色都丢了）。
      用 `.editor-host .cm-scroller >` 提特异性稳赢（CM 的明暗变体是两级类名）。
-     居中用显式 margin 而不是 auto：行号 gutter 要按同一公式贴到正文左缘，
-     auto 边距会被 gutter 的占位挤动。 */
+     居中偏移 = (100cqw - 900px)/2（cqw 容器是 .cm-scroller）；显式 margin 而
+     不是 auto——auto 边距会被 gutter 的占位挤动（见上行号注释）。 */
   flex: 1 1 auto;
   padding: 28px 0 0;
   max-width: 900px;
-  margin-left: max(24px, (100cqw - 900px) / 2 + 24px);
+  margin-left: max(24px, (100cqw - 900px) / 2);
   margin-right: 24px;
   caret-color: var(--accent);
 }
@@ -1395,6 +1632,29 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   color: var(--accent);
   font-weight: 700;
   padding-right: 2px;
+}
+
+/* 按住 Alt 时的编辑区光标：压掉 WebView2 原生的「+」悬停光标，
+   用 pointer 提示「Alt+点击」有动作（复制行内代码 / 定位文件 / 打开链接） */
+html.qn-alt-held .cm-editor,
+html.qn-alt-held .cm-content,
+html.qn-alt-held .cm-line {
+  cursor: pointer !important;
+}
+
+/* 有序列表的序号（1. 2. …）：文字保留、只上标记色，光标行回退普通正文可编辑 */
+.cm-lp-olmark {
+  color: var(--accent);
+  font-weight: 700;
+  padding-right: 2px;
+}
+
+/* 反斜杠转义（\* \$ …）保留的字符：回正文颜色。加 .editor-host 前缀提特异性，
+   否则会输给 CM 运行时注入的 escape 主题色（同特异性的注入样式更晚进文档） */
+.editor-host .cm-lp-plain {
+  color: var(--text);
+  font-family: inherit;
+  font-size: inherit;
 }
 
 .cm-lp-task {
@@ -2802,8 +3062,8 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   right: 12px;
   z-index: 20;
   display: flex;
-  width: min(660px, calc(100vw - 24px));
-  height: min(580px, calc(100% - 92px));
+  width: min(860px, calc(100vw - 24px));
+  height: min(640px, calc(100% - 92px));
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -2821,7 +3081,7 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: 148px;
+  width: 220px;
   flex: none;
   padding: 10px 8px;
   background: var(--surface-2);
@@ -2962,26 +3222,393 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   margin-right: 4px;
 }
 
-/* 快捷键重绑定：kbd 里是可以点的「按键」，未绑定的命令给一个虚线添加钮 */
-.shortcut-keys {
+/* ================================================= 快捷键设置（Obsidian 式面板）
+   结构：粘性头部（标题/恢复默认/导入/导出）→ 搜索 → 筛选胶囊 + 统计 →
+   按功能分组的命令列表。视觉原则：少边框少卡片、深灰分层、主题色只用于
+   选中/聚焦/录入态。 */
+
+.hotkey-pane {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 4px;
 }
 
-.shortcut-edit {
-  font: inherit;
-  border: 0;
-  padding: 0;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  transition: color 0.12s ease;
+/* 粘性头部：内容滚动时标题/搜索/筛选保持稳定，底部一道细分割线 */
+.hotkey-head {
+  position: sticky;
+  top: -12px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: -12px -14px 6px;
+  padding: 12px 14px 10px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
 }
 
-.shortcut-edit:hover {
+.hotkey-head-row {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.hotkey-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hotkey-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hotkey-subtitle {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.hotkey-head-actions {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+/* 次级幽灵按钮：透明底 + 细边框 + hover 提亮；「恢复默认」文字更实一级 */
+.hotkey-action {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.hotkey-action:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.hotkey-action:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.hotkey-action:first-child {
+  color: var(--text);
+}
+
+.hotkey-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.hotkey-search-icon {
+  position: absolute;
+  left: 10px;
+  font-size: 12px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.hotkey-search input {
+  width: 100%;
+  height: 36px;
+  padding: 0 12px 0 32px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.hotkey-search input::placeholder {
+  color: var(--text-faint);
+}
+
+.hotkey-search input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: var(--surface);
+}
+
+.hotkey-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.hotkey-filters {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: var(--surface-2);
+}
+
+.hotkey-filter {
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.hotkey-filter:hover {
+  color: var(--text);
+}
+
+.hotkey-filter.is-on {
+  background: var(--accent);
+  color: #fff;
+}
+
+.hotkey-stats {
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.hotkey-empty {
+  padding: 32px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+/* 分组：低对比度小标题 + 行列表，组间留足垂直间距 */
+.hotkey-group {
+  margin-top: 14px;
+}
+
+.hotkey-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+  padding: 0 10px 6px;
+}
+
+.hotkey-group-count {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.hotkey-group-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 命令行：名称 + 弱化描述在左，键帽与悬停操作在右；hover 轻微提亮。
+   覆盖基础 .settings-row 的定宽 span 与 margin（那套是为表单行设计的）。 */
+.settings-row.hotkey-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  margin-bottom: 0;
+  padding: 7px 10px;
+  border-radius: 10px;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.settings-row.hotkey-row > .hotkey-labelbox,
+.settings-row.hotkey-row > .hotkey-row-side {
+  width: auto;
+  flex: none;
+}
+
+.settings-row.hotkey-row > .hotkey-labelbox {
+  flex: 1 1 auto;
+}
+
+.settings-row.hotkey-row:hover,
+.settings-row.hotkey-row.is-conflict {
+  background: var(--surface-2);
+}
+
+.hotkey-row.is-flash {
+  background: var(--accent-soft);
+}
+
+.hotkey-labelbox {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.hotkey-name {
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hotkey-desc {
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hotkey-row-side {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+/* 键帽：真实按键质感——深色底、低透明度边框、轻微内阴影、等宽字体 */
+.keycap-set {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.keycap-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 27px;
+  min-width: 27px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.25);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.keycap-group:hover .keycap {
+  border-color: var(--accent);
   color: var(--accent);
+}
+
+/* 键帽上的 × 移除钮：hover 键帽组时浮现在右上角 */
+.hotkey-remove {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  width: 15px;
+  height: 15px;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--panel);
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.keycap-set:hover .hotkey-remove {
+  display: inline-flex;
+}
+
+.hotkey-remove:hover {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 未设置：弱化胶囊；行尾 ＋ 与 ↺ 仅 hover 行时淡入，避免每行常驻按钮的噪音 */
+.hotkey-unset {
+  font-size: 11px;
+  color: var(--text-faint);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.hotkey-plus,
+.shortcut-reset {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+}
+
+.hotkey-row:hover .hotkey-plus,
+.hotkey-row:hover .shortcut-reset,
+.hotkey-plus:focus-visible,
+.shortcut-reset:focus-visible {
+  opacity: 1;
+}
+
+.hotkey-plus:hover,
+.shortcut-reset:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+
+/* 已修改：轻量文字徽标 */
+.hotkey-modified {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* 录入态：主题色高亮 + 实时键帽回显 + 冲突就地警告 */
+.hotkey-capture {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 .shortcut-capture {
@@ -2989,23 +3616,133 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   color: var(--accent);
 }
 
-.shortcut-add,
-.shortcut-reset {
-  font: inherit;
-  font-size: 11px;
-  padding: 2px 8px;
-  border: 1px dashed var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-  transition: color 0.12s ease, border-color 0.12s ease;
+.keycap-set.is-live .keycap {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.25), 0 0 0 3px var(--accent-soft);
 }
 
-.shortcut-add:hover,
-.shortcut-reset:hover {
-  color: var(--accent);
+.hotkey-capture-hint {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.hotkey-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--callout-orange);
+}
+
+.hotkey-warn-btn {
+  font: inherit;
+  font-size: 11.5px;
+  padding: 1px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.hotkey-warn-btn:hover {
+  color: var(--text);
   border-color: var(--accent);
+}
+
+/* 恢复默认的二次确认：面板内居中小卡 */
+.hotkey-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(8, 8, 14, 0.55);
+}
+
+.hotkey-modal-card {
+  width: min(320px, calc(100vw - 48px));
+  padding: 18px 18px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2);
+  animation: rise-in 0.13s ease;
+}
+
+.hotkey-modal-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.hotkey-modal-text {
+  margin: 8px 0 14px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.hotkey-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 轻量 Toast：面板底部居中，淡入淡出 */
+.hotkey-toast {
+  position: fixed;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 61;
+  padding: 7px 16px;
+  border-radius: 9px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  font-size: 12.5px;
+  color: var(--text);
+  animation: rise-in 0.15s ease;
+}
+
+.hotkey-toast.is-error {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+/* 设置内容区滚动条：细、低透明度、hover 增强 */
+.settings-body::-webkit-scrollbar {
+  width: 10px;
+}
+
+.settings-body::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  background-clip: padding-box;
+}
+
+.settings-body:hover::-webkit-scrollbar-thumb,
+.settings-body::-webkit-scrollbar-thumb:hover {
+  background: var(--border);
+  background-clip: padding-box;
+}
+
+.settings-body::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: padding-box;
+}
+
+/* 设置 → 存储：路径是长串，允许折行显示 */
+.storage-path {
+  word-break: break-all;
+  text-align: right;
+  font-family: var(--mono, ui-monospace, Consolas, monospace);
+  font-size: 12px;
+  color: var(--text-dim);
 }
 
 .settings-group {
@@ -3727,146 +4464,6 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   font-weight: 700;
 }
 
-/* ============================================================================
-   PDF 导出（打印视图）：导出时把整篇笔记渲染进 #qn-print-root，
-   @media print 隐藏应用界面、只显示它（浅色、A4 友好排版）
-   ========================================================================== */
-#qn-print-root {
-  display: none;
-}
-
-@media print {
-  @page {
-    margin: 16mm 14mm;
-  }
-
-  /* height:100% 的 body 会把第一页占成整页空白，打印时必须放开 */
-  html,
-  body,
-  #root {
-    height: auto !important;
-    overflow: visible !important;
-    background: #fff !important;
-  }
-
-  .app,
-  #root,
-  #qn-bg-layer,
-  .banner {
-    display: none !important;
-  }
-
-  /* callout（PDF 导出） */
-  #qn-print-root .qn-print-callout {
-    border-left: 3px solid #7c93b8;
-    background: #f1f4f8;
-    border-radius: 3px 8px 8px 3px;
-    margin: 0.6em 0;
-    padding: 0.35em 0.9em;
-    page-break-inside: avoid;
-  }
-
-  #qn-print-root .qn-print-callout-title {
-    font-weight: 650;
-    color: #35507c;
-    margin-bottom: 0.2em;
-  }
-
-  #qn-print-root .qn-print-mermaid {
-    text-align: center;
-    margin: 0.8em 0;
-    page-break-inside: avoid;
-  }
-
-  #qn-print-root .qn-print-mermaid svg {
-    max-width: 100%;
-    height: auto;
-  }
-
-  #qn-print-root {
-    display: block !important;
-    color: #1f2328;
-    font-family: var(--font-text);
-    font-size: 13.5px;
-    line-height: 1.75;
-  }
-
-  #qn-print-root h1 { font-size: 1.85em; margin: 0.7em 0 0.35em; line-height: 1.3; }
-  #qn-print-root h2 { font-size: 1.5em; margin: 0.7em 0 0.35em; line-height: 1.35; }
-  #qn-print-root h3 { font-size: 1.25em; margin: 0.6em 0 0.3em; }
-  #qn-print-root h4, #qn-print-root h5, #qn-print-root h6 { margin: 0.6em 0 0.25em; }
-
-  #qn-print-root p { margin: 0.45em 0; }
-
-  #qn-print-root code {
-    font-family: var(--mono);
-    font-size: 0.88em;
-    background: #f1f2f4;
-    border-radius: 4px;
-    padding: 0.1em 0.35em;
-  }
-
-  #qn-print-root pre {
-    background: #f6f7f9;
-    border: 1px solid #e2e4e8;
-    border-radius: 8px;
-    padding: 10px 14px;
-    white-space: pre-wrap;
-    word-break: break-word;
-    page-break-inside: avoid;
-  }
-
-  #qn-print-root pre code {
-    background: none;
-    padding: 0;
-    font-size: 0.92em;
-  }
-
-  #qn-print-root table {
-    border-collapse: collapse;
-    width: 100%;
-    margin: 0.6em 0;
-    page-break-inside: avoid;
-  }
-
-  #qn-print-root th,
-  #qn-print-root td {
-    border: 1px solid #d6d9de;
-    padding: 5px 10px;
-    text-align: left;
-  }
-
-  #qn-print-root thead th {
-    background: #eef1f4;
-  }
-
-  #qn-print-root blockquote {
-    border-left: 3px solid #b8c4d4;
-    margin: 0.6em 0;
-    padding: 0.1em 0.9em;
-    color: #4a5160;
-  }
-
-  #qn-print-root img {
-    max-width: 100%;
-    page-break-inside: avoid;
-  }
-
-  #qn-print-root .cm-lp-link {
-    color: #2f78c2;
-  }
-
-  #qn-print-root hr {
-    border: none;
-    border-top: 1px solid #d9dce1;
-    margin: 1em 0;
-  }
-
-  #qn-print-root ul,
-  #qn-print-root ol {
-    padding-left: 1.6em;
-  }
-}
 
 /* ============================================================================
    搜索面板（0.5 重设计）：浮动卡片 + 毛玻璃 + 图标化 + 动画

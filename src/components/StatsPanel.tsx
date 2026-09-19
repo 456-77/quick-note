@@ -7,7 +7,7 @@
  * Rust 侧出一条扫描命令。
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import moment from "moment";
 import { baseNameOf, monthDiaryCount, streakDays } from "../lib/daily";
 import type { EntryMeta } from "../lib/api";
@@ -28,17 +28,25 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-/** 数字增长动画：从 0 缓动到目标值（ease-out cubic），用于统计卡片。 */
+/** 数字增长动画：从 0 缓动到目标值（ease-out cubic），用于统计卡片。
+ *
+ * 目标值变化时**从上一次显示的值继续**缓动，而不是重播 0 → 目标：
+ * 「今日字数」在打字时每敲一字都会变，重播会让卡片数字反复掉回小值，
+ * 看起来就像"没在更新"。 */
 function useCountUp(target: number, duration = 650): number {
   const [value, setValue] = useState(0);
+  const shownRef = useRef(0);
   useEffect(() => {
-    if (!Number.isFinite(target)) return;
+    const from = shownRef.current;
+    if (from === target) return;
     let raf = 0;
     const start = performance.now();
     const tick = (now: number) => {
       const progress = Math.min((now - start) / duration, 1);
       const eased = 1 - Math.pow(1 - progress, 3);
-      setValue(Math.round(target * eased));
+      const next = Math.round(from + (target - from) * eased);
+      shownRef.current = next;
+      setValue(next);
       if (progress < 1) raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);

@@ -15,7 +15,6 @@ import {
   htmlTableToMarkdown,
   looksLikeMarkdownTable,
   normalizePastedText,
-  tsvToMarkdownTable,
 } from "./pasteTransforms.ts";
 
 export interface AttachmentOptions {
@@ -135,9 +134,10 @@ export function fencedBlock(code: string, lang: string): string {
  *
  * 1. **换行符规范化（始终开启）**：剪贴板文本几乎总是 CRLF，而文档的分隔符是按文件
  *    锁定的——直接插入会留下裸 `\r`，界面上渲染成红色 CR 角标，还污染文件内容。
- * 2. **表格转换（始终开启）**：剪贴板带 HTML `<table>`（Excel/网页/IDE 复制时都会带）
- *    或 TSV 文本时，转成 Markdown 管道表格插入（对齐 Obsidian）。本身就是 Markdown
- *    表格的文本保持原样。
+ * 2. **表格转换（始终开启）**：剪贴板带 HTML `<table>`（Excel/WPS/网页复制时都会带）
+ *    才转成 Markdown 管道表格插入——**真表格才转表格**。纯文本（含 TSV）一律原样粘贴：
+ *    代码缩进、对齐文本里的 tab 以前会被 TSV 规则误判成表格，整段被拆得七零八落。
+ *    本身就是 Markdown 表格的文本保持原样。
  * 3. **代码围栏（受开关控制）**：纯文本代码识别语言后包成围栏块。
  *
  * 接线顺序在 `attachmentPaste` 之后：剪贴板里有文件时轮不到它。
@@ -153,8 +153,9 @@ export function smartPaste(options: CodePasteOptions): Extension {
 
       const separator = view.state.lineBreak;
 
-      // 1) HTML 表格（优先，信息最全；Excel/WPS/网页复制都带）
-      const tableLines = htmlTableToMarkdown(html) ?? tsvToMarkdownTable(raw);
+      // 1) HTML 表格：只有剪贴板里真的有 `<table>`（Excel/WPS/网页复制）才转，
+      //    纯文本（含 TSV）不猜——tab 缩进的代码、对齐文本不是表格
+      const tableLines = htmlTableToMarkdown(html);
       if (tableLines) {
         event.preventDefault();
         insertBlock(view, tableLines.join(separator));

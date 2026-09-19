@@ -297,6 +297,7 @@ export function altClickHandler(): Extension {
   return EditorView.domEventHandlers({
     mousedown: (event, view) => {
       if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+      if (event.button !== 0) return false;
       const target = event.target as HTMLElement | null;
       if (!target) return false;
       const actions = view.state.facet(livePreviewContext).altActions;
@@ -319,6 +320,26 @@ export function altClickHandler(): Extension {
         event.preventDefault();
         actions.revealFile(wikiLink.getAttribute("data-wiki-target") ?? "");
         return true;
+      }
+
+      // 渲染 chip 不存在时的兜底：源码模式整篇、实时模式下光标所在行都没有
+      // cm-lp-code 元素。从点击位置反查语法树，落在 InlineCode 里就剥掉反引号复制。
+      const pos = view.posAtDOM(target);
+      let node: SyntaxNode | null = syntaxTree(view.state).resolveInner(pos, 1);
+      while (node) {
+        if (node.name === "InlineCode") {
+          const code = view.state.doc
+            .sliceString(node.from, node.to)
+            .replace(/^`+/, "")
+            .replace(/`+$/, "");
+          if (code) {
+            event.preventDefault();
+            actions.copyText(code);
+            return true;
+          }
+          return false;
+        }
+        node = node.parent;
       }
       return false;
     },

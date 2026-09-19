@@ -9,9 +9,11 @@
 import moment from "moment";
 import {
   baseNameOf,
+  dailyDateOf,
   dailyFolderFiles,
   dailyNotePath,
   dailyNotesOn,
+  dailyRenameName,
   dailyTitle,
   dateFormatOf,
   defaultNoteContent,
@@ -601,6 +603,48 @@ console.log("\n库内配置（quick-daily-note.json）\n");
   check(
     parseDailyConfig(JSON.stringify({ dateFormat: "" })).settings.dateFormat === "",
     "空 dateFormat 原样读出（由 dateFormatOf 在生效处兜底，而不是在这里悄悄改掉用户的值）",
+  );
+}
+
+// ============================================================ 日记改名保留日期前缀
+console.log("\n场景：日记改名保留日期前缀\n");
+{
+  const fmt = "YYYY-MM-DD";
+  // 日期归属识别
+  check(dailyDateOf("日记/2026-09-18.md", fmt) === "2026-09-18", "日期.md 识别出归属日期");
+  check(dailyDateOf("日记/2026-09-18 复盘.md", fmt) === "2026-09-18", "日期 名字.md 识别出归属日期");
+  check(dailyDateOf("笔记/购物清单.md", fmt) === null, "普通笔记不算日记");
+  check(
+    dailyDateOf("日记/周一周记.md", fmt) === null,
+    "非日期开头的第一段解析不过 → 普通笔记",
+  );
+  check(dailyDateOf("日记/2026-W37 周记.md", fmt) === null, "周记不算日记");
+
+  // 改名补前缀
+  check(
+    dailyRenameName("日记/2026-09-18.md", "复盘", fmt).name === "2026-09-18 复盘" &&
+      dailyRenameName("日记/2026-09-18.md", "复盘", fmt).kept === true,
+    "丢了日期前缀：自动补回「日期 名字」",
+  );
+  check(
+    dailyRenameName("日记/2026-09-18.md", "复盘.md", fmt).name === "2026-09-18 复盘.md",
+    "带 .md 的新名字补前缀后保留 .md",
+  );
+  check(
+    dailyRenameName("日记/2026-09-18.md", "2026-09-18 复盘.md", fmt).kept === false,
+    "新名字已带日期前缀：原样通过",
+  );
+  check(
+    dailyRenameName("日记/2026-09-18.md", "2026-09-18复盘.md", fmt).name === "2026-09-18 复盘.md",
+    "日期后缺空格：补一个空格",
+  );
+  check(
+    dailyRenameName("笔记/购物清单.md", "今日购物.md", fmt).kept === false,
+    "普通笔记改名不插手",
+  );
+  check(
+    dailyRenameName("日记/2026-09-18.md", "2026-09-18.md", fmt).kept === false,
+    "改回原名：不动作",
   );
 }
 

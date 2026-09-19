@@ -225,6 +225,50 @@ export function findWeeklyNote(files: string[], weekKey: string): string | null 
 }
 
 /**
+ * 日记文件归属的日期串：`2026-09-18.md` / `2026-09-18 名字.md` → `2026-09-18`。
+ *
+ * 判定比 {@link diaryDateSet} 更严格：第一段必须能按当前日期格式**严格解析**，
+ * 否则视为普通笔记（重命名保护只针对真日记，不能拿普通笔记的名字开刀）。
+ * 周记按周归属，不算日记。
+ */
+export function dailyDateOf(path: string, dateFormat: string): string | null {
+  const base = baseNameOf(path);
+  if (isWeeklyName(base)) return null;
+  const first = base.split(" ")[0];
+  if (!first) return null;
+  return moment(first, dateFormat, true).isValid() ? first : null;
+}
+
+/**
+ * 日记改名时计算**保留日期前缀**的新名字（重命名保护的纯逻辑）。
+ *
+ * 日记靠「文件名以日期开头」挂在日历上；用户改名时丢掉日期（`2026-09-18.md` →
+ * `复盘.md`）会让日记从当天列表消失。这里把前缀自动补回去；日期后面缺空格的
+ * （`2026-09-18复盘`）也顺手补齐。非日记命名原样返回（`kept: false`）。
+ */
+export function dailyRenameName(
+  originalPath: string,
+  newName: string,
+  dateFormat: string,
+): { name: string; kept: boolean } {
+  const diaryDate = dailyDateOf(originalPath, dateFormat);
+  if (!diaryDate) return { name: newName, kept: false };
+  const hadMd = newName.toLowerCase().endsWith(".md");
+  const newBase = hadMd ? newName.slice(0, -3) : newName;
+  if (newBase === diaryDate) return { name: newName, kept: false };
+  if (!newBase.startsWith(diaryDate)) {
+    return { name: `${diaryDate} ${newName}`, kept: true };
+  }
+  if (!newBase.startsWith(`${diaryDate} `)) {
+    return {
+      name: `${diaryDate} ${newBase.slice(diaryDate.length)}${hadMd ? ".md" : ""}`,
+      kept: true,
+    };
+  }
+  return { name: newName, kept: false };
+}
+
+/**
  * 「有日记的日期」集合，供日历打点与统计。
  *
  * 取文件名里第一个空格之前的部分作为日期串。**周记必须排除**：`2026-W37 周记`

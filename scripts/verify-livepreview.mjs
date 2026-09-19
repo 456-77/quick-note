@@ -264,7 +264,8 @@ const B = decorate(doc.indexOf("**粗体**") + 4); // 光标落在「粗体」�
 
 check(hidesWithin(B.items, "**粗体**").length === 0, "光标在粗体元素内：该元素的 `**` 显形");
 check(
-  !B.items.some((d) => d.cls === "cm-lp-strong"),
+  // 只看该元素所在行：0.5.1 起 callout 内部也渲染行内样式，文档里别处的粗体有样式是正常的
+  !overlapOf(B.items, lineRange("**粗体**")).some((d) => d.cls === "cm-lp-strong"),
   "光标在粗体元素内：该元素不再有粗体样式（不能「看着像源码却已加粗」）",
 );
 // 同行的其他元素保持渲染（元素级激活的核心）
@@ -645,6 +646,28 @@ check(
   A.items.filter((d) => d.kind === "hide" && d.text.startsWith(">")).length === 6,
   "callout 的 5 个 `>` 与文末引用的 1 个 `>` 都被隐藏",
   `实际=${A.items.filter((d) => d.kind === "hide" && d.text.startsWith(">")).length}`,
+);
+
+// 反斜杠转义（`\$`、`\*`）：渲染态藏掉反斜杠、被转义字符回普通正文色
+// （盖掉 escape 语法主题的橙色，对齐 Obsidian 的转义观感）
+const escapes = withClass(A.items, "cm-lp-plain");
+check(
+  escapes.some((d) => d.text === "$") && escapes.some((d) => d.text === "*"),
+  "被转义的 `$` 与 `*` 保留并标为普通正文色",
+  JSON.stringify(escapes.map((d) => d.text)),
+);
+check(
+  hidesWithin(A.items, "\\$5").some((d) => d.text === "\\"),
+  "`\\$` 的反斜杠被隐藏",
+);
+check(
+  !withClass(A.items, "cm-lp-strong").some((d) => d.text === "5"),
+  "转义的星号不会产生粗体样式",
+);
+const Besc = decorate(doc.indexOf("\\$5") + 1); // 光标落在反斜杠上
+check(
+  hidesWithin(Besc.items, "\\$5").length === 0 && withClass(Besc.items, "cm-lp-plain").length === 0,
+  "光标在转义上：显出源码可编辑",
 );
 
 // 标签

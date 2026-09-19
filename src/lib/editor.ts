@@ -2,6 +2,9 @@ import { basicSetup, EditorView } from "codemirror";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import { keymap } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { json } from "@codemirror/lang-json";
+import { sql } from "@codemirror/lang-sql";
+import { yaml } from "@codemirror/lang-yaml";
 import { languages } from "@codemirror/language-data";
 import { separatorFor } from "./lineEndings";
 import { blockWidgetsField, livePreviewExtension } from "./livePreview";
@@ -9,11 +12,30 @@ import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
+import { toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode } from "./codeEdit";
+import { bindingFor, comboOf, comboOfCode, isCapturing } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
 import { isCursorInTable, tableShiftTab, tableTab } from "./tableEdit";
+import type { EditorLanguage } from "./fileTypes";
 
 /** 视图模式：Live Preview（渲染语法）或源码。 */
 export type ViewMode = "live" | "source";
+
+/** 按扩展名选语法：Markdown 笔记走 GFM，json/sql/yaml 走各自语言，其余纯文本。 */
+function languageExtension(language: EditorLanguage): Extension {
+  switch (language) {
+    case "markdown":
+      return markdown({ base: markdownLanguage, codeLanguages: languages });
+    case "json":
+      return json();
+    case "sql":
+      return sql();
+    case "yaml":
+      return yaml();
+    default:
+      return [];
+  }
+}
 
 /**
  * Live Preview 的开关放在 Compartment 里，这样切换模式不必重建整个状态，
@@ -49,6 +71,11 @@ export interface EditorHandle {
 export interface CreateEditorStateOptions {
   lineEnding: string;
   mode: ViewMode;
+  /**
+   * 语法（按文件扩展名解析，默认 markdown）。非 markdown 的文件**强制源码视图**：
+   * 实时预览的 Markdown 装饰对 JSON/SQL/YAML 没有意义（`# 注释` 会变成标题等）。
+   */
+  language?: EditorLanguage;
   onDocChanged: () => void;
   /** Mod-S 的处理函数。用读 ref 的包装传入，避免捕获过期的闭包。 */
   onSave?: () => void;
@@ -91,6 +118,7 @@ export function createEditorState(
   const {
     lineEnding,
     mode,
+    language = "markdown",
     onDocChanged,
     onSave,
     resources,
@@ -100,6 +128,8 @@ export function createEditorState(
     onCursorInTable,
     onCursorLine,
   } = options;
+  // 非 Markdown 一律源码视图（无装饰），且 markdown() 语法解析也换成对应语言
+  const effectiveMode: ViewMode = language === "markdown" ? mode : "source";
   return EditorState.create({
     doc,
     extensions: [
@@ -108,13 +138,13 @@ export function createEditorState(
       darkCompartment.of(EditorView.darkTheme.of(dark === true)),
       // GFM（表格、任务列表）+ 围栏代码块语法高亮。
       // 语言包由 @codemirror/language-data 动态按需加载，不进入主包。
-      markdown({ base: markdownLanguage, codeLanguages: languages }),
+      languageExtension(language),
       EditorView.lineWrapping,
       EditorState.lineSeparator.of(separatorFor(lineEnding)),
       livePreviewContext.of(
         resources ?? { vaultPath: null, notePath: null, embedIndex: new Map(), generation: 0 },
       ),
-      livePreviewCompartment.of(modeExtensions(mode)),
+      livePreviewCompartment.of(modeExtensions(effectiveMode)),
       attachment ? attachmentPaste(attachment) : [],
       codePasteOptions ? smartPaste(codePasteOptions) : [],
       linkClickHandler(),
@@ -123,10 +153,14 @@ export function createEditorState(
       customSearchPanel(),
       // 表格里的 Tab 是"下一格"，必须压过 basicSetup 的缩进键位。
       // 光标不在表格里时处理函数返回 false，缩进照常。
+      // 裸 Tab / Shift+Tab 是 Obsidian 式缩进：此前没有绑定，按键会按浏览器
+      // 默认行为把焦点移出编辑器。
       Prec.high(
         keymap.of([
           { key: "Tab", run: tableTab },
           { key: "S-Tab", run: tableShiftTab },
+          { key: "Tab", run: editorTab },
+          { key: "S-Tab", run: editorShiftTab },
         ]),
       ),
       EditorView.updateListener.of((update) => {
@@ -139,7 +173,42 @@ export function createEditorState(
         }
       }),
       onSave ? modSKeymap(onSave) : [],
+      // 行内代码 / 代码块切换（Mod-` 等，键位在「设置 → 快捷键」里可改）。
+      // 编辑器内分发：焦点不在编辑器时不接管，全局命令也不受影响。
+      editorToggleKeymap(),
     ],
+  });
+}
+
+/**
+ * 行内代码 / 代码块切换的键位分发。
+ *
+ * 键位读 hotkeys 的实时绑定表（不是状态创建时的快照），设置面板里改完立即生效。
+ * 设置面板「捕获下一次按键」期间让路，否则重绑 Mod-` 会先切一次行内代码。
+ */
+function editorToggleKeymap(): Extension {
+  return EditorView.domEventHandlers({
+    keydown: (event, view) => {
+      if (isCapturing() || !view.hasFocus) return false;
+      // comboOfCode：Shift+反引号在美式键盘上 key 是 "~"，用物理键位兜底
+      const combo = comboOfCode(event) ?? comboOf(event);
+      if (bindingFor("toggleInlineCode").includes(combo)) {
+        event.preventDefault();
+        return toggleInlineCode(view);
+      }
+      if (bindingFor("toggleCodeBlock").includes(combo)) {
+        event.preventDefault();
+        return toggleCodeBlock(view);
+      }
+      // 标题 1–6（Ctrl+1..6）：作用于光标所在行，再按同级别取消
+      for (let level = 1; level <= 6; level += 1) {
+        if (bindingFor(`heading${level}`).includes(combo)) {
+          event.preventDefault();
+          return toggleHeading(view, level);
+        }
+      }
+      return false;
+    },
   });
 }
 
@@ -159,6 +228,10 @@ export function modSKeymap(onSave: () => void): Extension {
 
 export function createEditor(parent: HTMLElement, state: EditorState): EditorHandle {
   const view = new EditorView({ state, parent });
+  // dev 调试句柄：GUI 验收脚本（CDP）可以由此直接读编辑器状态，不必碰内部 DOM。
+  if (import.meta.env.DEV) {
+    (window as unknown as Record<string, unknown>).__qnView = view;
+  }
   return {
     view,
     destroy: () => view.destroy(),

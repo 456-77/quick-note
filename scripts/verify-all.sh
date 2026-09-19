@@ -16,7 +16,8 @@
 #  10. 云同步的纯逻辑：冲突决策、状态兜底、快照与条目级合并、哈希口径、范围判定
 #  11. 表格结构编辑与大纲：管道对齐（CJK 宽度）、行列增删、标题提取
 #  12. M4 增强功能：语言识别、周回顾格式、提醒判定、天气文案、引用清理、共享配置写回
-#  13. 比对基线：确认以上过程没有改动任何文件
+#  13. 行内代码 / 代码块切换的纯逻辑：包裹与取消判定、块级补位
+#  14. 比对基线：确认以上过程没有改动任何文件
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -75,7 +76,11 @@ echo "=== 12/13 M4 增强功能的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-m4.mjs
 
 echo
-echo "=== 13/13 比对基线：确认文件未被改动 ==="
+echo "=== 13/14 行内代码 / 代码块切换的纯逻辑 ==="
+node --experimental-strip-types --no-warnings scripts/verify-code-edit.mjs
+
+echo
+echo "=== 14/14 比对基线：确认文件未被改动 ==="
 bash scripts/verify-roundtrip.sh check "$VAULT"
 
 echo

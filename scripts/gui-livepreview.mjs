@@ -953,7 +953,7 @@ check(after.includes("```ts"), "代码块围栏在源码中原样保留（渲染
     );
   }
 
-  // 9. TSV 粘贴自动转 Markdown 表格
+  // 9. 粘贴转换：真表格（HTML <table>）才转 Markdown 表格，纯文本（含 TSV）原样粘贴
   const pre = afterTable;
   await clickLine(ws, "语法覆盖");
   await cdp(ws, "Input.insertText", { text: "\n" });
@@ -975,11 +975,37 @@ check(after.includes("```ts"), "代码块围栏在源码中原样保留（渲染
   for (let i = 0; i < 25; i += 1) {
     await sleep(400);
     afterPaste = readFileSync(filePath, "utf8");
-    if (afterPaste.includes("| 名称 | 数量 |")) break;
+    if (afterPaste.includes("苹果\t3")) break;
   }
   check(
-    afterPaste.includes("| 名称 | 数量 |") && afterPaste.includes("| 苹果 | 3 |"),
-    "TSV 粘贴自动转成 Markdown 表格",
+    afterPaste.includes("名称\t数量") &&
+      afterPaste.includes("苹果\t3") &&
+      !afterPaste.includes("| 名称 | 数量 |"),
+    "TSV 粘贴保持纯文本（不再自动转表格）",
+  );
+
+  // 9b. 剪贴板带 HTML <table>（Excel/网页复制都带）时仍然转成 Markdown 表格
+  await evaluate(
+    ws,
+    `(() => {
+       const data = new DataTransfer();
+       data.setData("text/html", "<table><tr><th>名称</th><th>数量</th></tr><tr><td>香蕉</td><td>5</td></tr></table>");
+       document.querySelector(".cm-content").dispatchEvent(
+         new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
+       );
+       return true;
+     })()`,
+  );
+  await sleep(600);
+  let afterHtmlPaste = afterPaste;
+  for (let i = 0; i < 25; i += 1) {
+    await sleep(400);
+    afterHtmlPaste = readFileSync(filePath, "utf8");
+    if (afterHtmlPaste.includes("| 香蕉 | 5 |")) break;
+  }
+  check(
+    afterHtmlPaste.includes("| 名称 | 数量 |") && afterHtmlPaste.includes("| 香蕉 | 5 |"),
+    "HTML 表格粘贴自动转成 Markdown 表格",
   );
 
   // 10. CRLF 剪贴板文本粘贴规范化为文档换行符，不留裸 \r

@@ -16,6 +16,7 @@ import type { EditorState } from "@codemirror/state";
 import { renderMarkdownToHtml } from "./embed.ts";
 import { CALLOUT_TITLES } from "./inlineSyntax.ts";
 import type { LivePreviewContext } from "./paths.ts";
+import { PRINT_CSS } from "./printStyles.ts";
 
 /** 剥掉 YAML frontmatter（`---` 围起的头部），markdown-it 不认识它。 */
 function stripFrontmatter(markdown: string): string {
@@ -85,4 +86,42 @@ export async function exportNoteToPdf(
   window.addEventListener("afterprint", cleanup);
   window.setTimeout(cleanup, 60_000);
   window.print();
+}
+
+/**
+ * 构建独立 HTML（「导出 PDF 文件」用）：打印样式内联、callout 升级、
+ * 本地图片改写为 file:/// 绝对地址——无头浏览器进程访问不到 tauri 的
+ * asset 协议，只有磁盘路径能加载。
+ */
+export async function buildStandalonePrintHtml(
+  state: EditorState,
+  ctx: LivePreviewContext,
+): Promise<string> {
+  const markdown = stripFrontmatter(state.sliceDoc());
+  if (!markdown.trim()) throw new Error("笔记是空的");
+
+  const html = await renderMarkdownToHtml(markdown, ctx);
+  const parsed = new DOMParser().parseFromString(`<div id="qn-print-root">${html}</div>`, "text/html");
+  const root = parsed.getElementById("qn-print-root");
+  if (!root) throw new Error("渲染失败");
+
+  enhanceCallouts(root);
+
+  // asset 协议图片 → file:/// 绝对路径（无头浏览器在 tauri 协议之外）
+  root.querySelectorAll("img.cm-lp-image").forEach((img) => {
+    const src = img.getAttribute("src") ?? "";
+    const match = /^https?:\/\/asset\.localhost\/(.+)$/.exec(src);
+    if (!match) return;
+    const abs = decodeURIComponent(match[1]).replace(/\\/g, "/");
+    img.setAttribute("src", `file:///${abs.replace(/^\/+/, "")}`);
+  });
+
+  return [
+    "<!doctype html>",
+    '<html><head><meta charset="utf-8">',
+    `<style>${PRINT_CSS}</style>`,
+    "</head><body>",
+    root.outerHTML,
+    "</body></html>",
+  ].join("\n");
 }

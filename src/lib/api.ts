@@ -166,6 +166,14 @@ export const renameEntry = (vault: string, path: string, newName: string) =>
 export const deleteEntry = (vault: string, path: string) =>
   invoke<string>("delete_entry", { vault, path });
 
+/** 把一组绝对路径放入系统剪贴板（资源管理器语义的"复制文件"，可粘贴到 Explorer）。 */
+export const copyPathsToClipboard = (paths: string[]) =>
+  invoke<void>("copy_paths_to_clipboard", { paths });
+
+/** 复制仓库内文件/目录到目标目录（重名自动加序号），返回新仓库相对路径。 */
+export const copyEntry = (vault: string, path: string, destDir: string) =>
+  invoke<string>("copy_entry", { vault, path, destDir });
+
 /** 弹出目录选择框；取消返回 null。 */
 export async function pickVault(): Promise<string | null> {
   const picked = await open({
@@ -176,8 +184,47 @@ export async function pickVault(): Promise<string | null> {
   return typeof picked === "string" ? picked : null;
 }
 
+/** 弹出目录选择框（通用）。取消返回 null。 */
+export async function pickDirectory(title: string): Promise<string | null> {
+  const picked = await open({ directory: true, multiple: false, title });
+  return typeof picked === "string" ? picked : null;
+}
+
 /** 命令行参数指定的仓库目录（没有则为 null）。 */
 export const startupVault = () => invoke<string | null>("startup_vault");
+
+/** 应用数据目录信息（设置面板「存储」分区用）。 */
+export interface AppDataPaths {
+  /** 配置目录：同步状态与数据目录指针文件所在。 */
+  config_dir: string;
+  /** 默认数据目录的上级（WebView 数据默认在它的 EBWebView 子目录）。 */
+  local_data_dir: string;
+  /** 当前生效的 WebView 数据目录（自定义 > 默认）。 */
+  webview_data_dir: string;
+  /** 自定义数据目录；未设置时为 null。 */
+  custom_data_dir: string | null;
+}
+
+export const appDataPaths = () => invoke<AppDataPaths>("app_data_paths");
+
+/** 设置/清除自定义数据目录（null = 恢复默认）。改动重启后生效。 */
+export const setCustomDataDir = (path: string | null) =>
+  invoke<AppDataPaths>("set_custom_data_dir", { path });
+
+/** 读取用户经系统对话框选择的文本文件（UTF-8）。快捷键配置导入用。 */
+export const readTextFile = (path: string) => invoke<string>("read_text_file", { path });
+
+/** 写入文本文件（UTF-8，覆盖）。路径来自系统保存对话框。快捷键配置导出用。 */
+export const writeTextFile = (path: string, contents: string) =>
+  invoke<void>("write_text_file", { path, contents });
+
+/** 返回候选路径里第一个存在的（探测 Edge/Chrome 安装位置）。 */
+export const firstExistingPath = (paths: string[]) =>
+  invoke<string | null>("first_existing_path", { paths });
+
+/** 用无头浏览器把本地 HTML 打印成 PDF 文件（导出 PDF 文件的落盘通道）。 */
+export const exportPdfViaBrowser = (browserPath: string, htmlPath: string, pdfPath: string) =>
+  invoke<void>("export_pdf_via_browser", { browserPath, htmlPath, pdfPath });
 
 /** 开始监听仓库变化（Rust 侧 notify，带去抖）。 */
 export const watchVault = (vault: string) => invoke<void>("watch_vault", { vault });

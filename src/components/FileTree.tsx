@@ -1,16 +1,61 @@
 import { useMemo, useState } from "react";
 import type { EntryMeta } from "../lib/api";
+import { fileKindOf } from "../lib/fileTypes";
 import {
   IconChevronDown,
   IconChevronRight,
   IconClock,
+  IconCode,
+  IconEye,
   IconFile,
   IconFileText,
   IconFolder,
   IconStar,
 } from "./icons";
 
-type NodeKind = "dir" | "note" | "file";
+type NodeKind = "dir" | "markdown" | "text" | "preview" | "file";
+
+/** 类型分组次序：笔记最前，其次预览类文档（pdf/docx/pptx/xlsx/html/图片），
+ *  再是可编辑数据文件，最后其他二进制——不同用途的文件互不混排。 */
+const KIND_ORDER: Record<NodeKind, number> = {
+  dir: -1,
+  markdown: 0,
+  preview: 1,
+  text: 2,
+  file: 3,
+};
+
+/** 名称开头的日期前缀（日记命名惯例：2026-08-17 / 2026_8_2 / 2026年8月2日…）。 */
+const DATE_PREFIX_RE = /^(\d{4})[-/.年]?\s*(\d{1,2})[-/.月]?\s*(\d{1,2})/;
+
+function datePrefixOf(name: string): [number, number, number] | null {
+  const match = DATE_PREFIX_RE.exec(name);
+  if (!match) return null;
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  // 13 月、32 日之类的是普通文件名碰巧数字开头，不当代日期处理
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return [Number(match[1]), month, day];
+}
+
+/**
+ * 同组内的文件名比较：带日期前缀的按日期先后（同年月日再比全名），
+ * 日期条目整体排在无日期条目之前——日记按时间线聚在一起，草稿等散文件殿后。
+ */
+const compareByDatePrefix = (a: string, b: string): number => {
+  const da = datePrefixOf(a);
+  const db = datePrefixOf(b);
+  if (da && db) {
+    if (da[0] !== db[0]) return da[0] - db[0];
+    if (da[1] !== db[1]) return da[1] - db[1];
+    if (da[2] !== db[2]) return da[2] - db[2];
+  } else if (da) {
+    return -1;
+  } else if (db) {
+    return 1;
+  }
+  return a.localeCompare(b, "zh");
+};
 
 export type LeftView = "files" | "favorites" | "recents";
 
@@ -72,10 +117,20 @@ function buildTree(entries: EntryMeta[]): TreeNode[] {
     const name = segments.pop();
     if (!name) continue;
     const level = ensureDir(segments);
+    // 分类：markdown 笔记 / 可编辑数据文件 / 预览类（pdf·docx·xlsx·html·图片）/ 其他
+    const fileKind = fileKindOf(name);
+    const kind: NodeKind =
+      fileKind === "markdown"
+        ? "markdown"
+        : fileKind === "text"
+          ? "text"
+          : fileKind === "other"
+            ? "file"
+            : "preview";
     level.push({
       name,
       path: entry.path,
-      kind: isNoteName(name) ? "note" : "file",
+      kind,
       size: entry.size,
       modified: entry.modified,
       hasNotes: isNoteName(name),
@@ -97,10 +152,12 @@ function buildTree(entries: EntryMeta[]): TreeNode[] {
 
   const sort = (nodes: TreeNode[]) => {
     nodes.sort((a, b) => {
-      const aDir = a.kind === "dir";
-      const bDir = b.kind === "dir";
-      if (aDir !== bDir) return aDir ? -1 : 1;
-      return a.name.localeCompare(b.name, "zh");
+      if (a.kind === "dir" || b.kind === "dir") {
+        if (a.kind !== b.kind) return a.kind === "dir" ? -1 : 1;
+        return a.name.localeCompare(b.name, "zh");
+      }
+      const group = KIND_ORDER[a.kind] - KIND_ORDER[b.kind];
+      return group !== 0 ? group : compareByDatePrefix(a.name, b.name);
     });
     nodes.forEach((node) => sort(node.children));
   };
@@ -120,7 +177,7 @@ function flattenMatches(nodes: TreeNode[], terms: string[], out: TreeNode[]): vo
 
 function collectNotes(nodes: TreeNode[], out: TreeNode[]): void {
   for (const node of nodes) {
-    if (node.kind === "note") out.push(node);
+    if (node.kind === "markdown") out.push(node);
     if (node.children.length > 0) collectNotes(node.children, out);
   }
 }
@@ -144,9 +201,12 @@ function NoteRow({
   indent,
   active,
   favorite,
+  picked,
   onOpen,
   onContext,
+  onReveal,
   leading,
+  kind = "markdown",
 }: {
   node: Pick<TreeNode, "path" | "name" | "size" | "modified">;
   indent?: number;
@@ -154,20 +214,37 @@ function NoteRow({
   favorite: boolean;
   onOpen: (path: string) => void;
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
+  onReveal: (path: string) => void;
+  /** 被 Ctrl+C/V 体系选中的行：虚线高亮（区别于打开态的实底高亮）。 */
+  picked?: boolean;
   /** 替代默认文档图标的图标（收藏视图用星标）。 */
   leading?: React.ReactNode;
+  /** 行类型：markdown 走编辑器；text 是数据文件；preview 打开预览窗格。 */
+  kind?: "markdown" | "text" | "preview";
 }) {
+  const hint =
+    kind === "preview"
+      ? `${node.path}（点击预览 · Alt+点击在资源管理器中定位）`
+      : `${node.path}（Alt+点击在资源管理器中定位）`;
   return (
     <div
       role="button"
       tabIndex={0}
-      className={`tree-item tree-file${active ? " is-active" : ""}`}
+      className={`tree-item tree-file${active ? " is-active" : ""}${picked ? " is-picked" : ""}`}
       style={indent ? { paddingLeft: `${indent}px` } : undefined}
-      onClick={() => onOpen(node.path)}
+      onClick={(event) => {
+        // Alt+点击：在资源管理器中定位文件（revealItemInDir 会高亮它本身）
+        if (event.altKey) {
+          event.preventDefault();
+          onReveal(node.path);
+          return;
+        }
+        onOpen(node.path);
+      }}
       onKeyDown={(event) => {
         if (event.key === "Enter") onOpen(node.path);
       }}
-      title={node.path}
+      title={hint}
       onContextMenu={(event) => {
         event.preventDefault();
         onContext(node.path, false, event.clientX, event.clientY);
@@ -198,15 +275,22 @@ function Node({
   depth,
   activePath,
   favorites,
+  selectedPath,
+  onSelectPath,
   onOpen,
   onContext,
+  onReveal,
 }: {
   node: TreeNode;
   depth: number;
   activePath: string | null;
   favorites: string[];
+  /** 当前选中的目录（粘贴目标）。 */
+  selectedPath: string | null;
+  onSelectPath: (path: string) => void;
   onOpen: (path: string) => void;
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
+  onReveal: (path: string) => void;
 }) {
   // 默认只展开"子树里有笔记"的目录：只放附件的目录（例如装满图片的 image/）
   // 若默认展开，会把侧栏刷满与笔记无关的条目。
@@ -223,10 +307,22 @@ function Node({
       <div className="tree-folder">
         <button
           type="button"
-          className={`tree-item tree-dir${expanded ? " is-open" : ""}`}
+          className={`tree-item tree-dir${expanded ? " is-open" : ""}${
+            selectedPath === node.path ? " is-selected" : ""
+          }`}
           style={{ paddingLeft: `${10 + depth * 14}px` }}
-          onClick={() => setExpanded((value) => !value)}
-          title={node.path}
+          onClick={(event) => {
+            // Alt+点击目录：在资源管理器中定位（高亮这个文件夹）
+            if (event.altKey) {
+              event.preventDefault();
+              onReveal(node.path);
+              return;
+            }
+            // 点击即选中（作为粘贴目标），同时切换展开
+            onSelectPath(node.path);
+            setExpanded((value) => !value);
+          }}
+          title={`${node.path}（点击选中为粘贴目标 · Alt+点击在资源管理器中定位）`}
           {...contextProps}
         >
           <span className="tree-caret">
@@ -244,8 +340,11 @@ function Node({
                 depth={depth + 1}
                 activePath={activePath}
                 favorites={favorites}
+                selectedPath={selectedPath}
+                onSelectPath={onSelectPath}
                 onOpen={onOpen}
                 onContext={onContext}
+                onReveal={onReveal}
               />
             ))}
           </div>
@@ -255,13 +354,19 @@ function Node({
   }
 
   if (node.kind === "file") {
-    // 非 Markdown 文件列出来但不给打开动作：编辑器只能编辑笔记，
-    // 列出来是为了让文件树忠实反映仓库结构。
+    // 其他二进制文件列出来但不给打开动作：编辑器/预览都不支持，
+    // 列出来是为了让文件树忠实反映仓库结构。Alt+点击仍可定位。
     return (
       <div
         className="tree-item tree-other"
         style={{ paddingLeft: `${28 + depth * 14}px` }}
-        title={`${node.path}（非 Markdown，不可编辑）`}
+        title={`${node.path}（不支持打开 · Alt+点击在资源管理器中定位）`}
+        onClick={(event) => {
+          if (event.altKey) {
+            event.preventDefault();
+            onReveal(node.path);
+          }
+        }}
         {...contextProps}
       >
         <IconFile size={14} className="tree-icon" />
@@ -271,14 +376,25 @@ function Node({
     );
   }
 
+  const leading =
+    node.kind === "text" ? (
+      <IconCode size={14} className="tree-icon" />
+    ) : node.kind === "preview" ? (
+      <IconEye size={14} className="tree-icon" />
+    ) : undefined;
+
   return (
     <NoteRow
       node={node}
       indent={28 + depth * 14}
       active={node.path === activePath}
       favorite={favorites.includes(node.path)}
+      picked={node.path === selectedPath}
       onOpen={onOpen}
       onContext={onContext}
+      onReveal={onReveal}
+      leading={leading}
+      kind={node.kind === "text" ? "text" : node.kind === "preview" ? "preview" : "markdown"}
     />
   );
 }
@@ -290,8 +406,11 @@ export default function FileTree({
   view,
   favorites,
   recents,
+  selectedPath,
+  onSelectPath,
   onOpen,
   onContext,
+  onReveal,
 }: {
   entries: EntryMeta[];
   activePath: string | null;
@@ -300,8 +419,13 @@ export default function FileTree({
   view: LeftView;
   favorites: string[];
   recents: string[];
+  /** 当前选中的目录（粘贴目标）。 */
+  selectedPath: string | null;
+  onSelectPath: (path: string) => void;
   onOpen: (path: string) => void;
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
+  /** Alt+点击：在系统资源管理器中定位该文件/目录（并高亮）。 */
+  onReveal: (path: string) => void;
 }) {
   const tree = useMemo(() => buildTree(entries), [entries]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
@@ -353,6 +477,7 @@ export default function FileTree({
             favorite
             onOpen={onOpen}
             onContext={onContext}
+            onReveal={onReveal}
             leading={<IconStar size={14} className="tree-icon tree-icon-fav" />}
           />
         ))}
@@ -374,6 +499,7 @@ export default function FileTree({
             favorite={favoriteSet.has(node.path)}
             onOpen={onOpen}
             onContext={onContext}
+            onReveal={onReveal}
             leading={<IconClock size={14} className="tree-icon" />}
           />
         ))}
@@ -396,6 +522,15 @@ export default function FileTree({
             favorite={favoriteSet.has(node.path)}
             onOpen={onOpen}
             onContext={onContext}
+            onReveal={onReveal}
+            kind={node.kind === "text" ? "text" : node.kind === "preview" ? "preview" : "markdown"}
+            leading={
+              node.kind === "text" ? (
+                <IconCode size={14} className="tree-icon" />
+              ) : node.kind === "preview" ? (
+                <IconEye size={14} className="tree-icon" />
+              ) : undefined
+            }
           />
         ))}
       </div>
@@ -411,8 +546,11 @@ export default function FileTree({
           depth={0}
           activePath={activePath}
           favorites={favorites}
+          selectedPath={selectedPath}
+          onSelectPath={onSelectPath}
           onOpen={onOpen}
           onContext={onContext}
+          onReveal={onReveal}
         />
       ))}
     </div>

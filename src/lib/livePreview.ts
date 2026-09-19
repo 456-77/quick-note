@@ -203,7 +203,13 @@ const MARK = {
   code: Decoration.mark({ class: "cm-lp-code" }),
   link: Decoration.mark({ class: "cm-lp-link" }),
   highlight: Decoration.mark({ class: "cm-lp-highlight" }),
+  /** 有序列表的序号（1. 2. …）：与圆点同风格的列表标记。 */
+  olMark: Decoration.mark({ class: "cm-lp-olmark" }),
+  /** 反斜杠转义里保留的字符：回正文颜色，盖掉 escape 的语法主题色。 */
+  plain: Decoration.mark({ class: "cm-lp-plain" }),
 };
+
+const OL_MARK = MARK.olMark;
 
 /** 行内「语法标记 + 内容」型节点的样式映射。 */
 const INLINE_MARKS: Record<string, Decoration> = {
@@ -1466,18 +1472,6 @@ function imageChip(alt: string, target: string): HTMLElement {
   return chip;
 }
 
-/** 收集某类后代节点的范围（callout 里的 `>` 标记散布在各级段落里）。 */
-function collectNodes(
-  node: SyntaxNode,
-  name: string,
-  out: Array<{ from: number; to: number }>,
-): void {
-  for (let child = node.firstChild; child; child = child.nextSibling) {
-    if (child.name === name) out.push({ from: child.from, to: child.to });
-    else collectNodes(child, name, out);
-  }
-}
-
 /** 外部链接的 mark 装饰：带 title 提示，便于发现 Ctrl+点击的用法。 */
 function externalLinkMark(url: string): Decoration {
   return Decoration.mark({
@@ -1903,6 +1897,11 @@ export function buildLivePreviewDecorations(
     );
   }
 
+  // 当前正在下沉的 callout 块（内层在外）。QuoteMark 用它判断要不要让路，
+  // Link 用它识别 `[!type]` 标记；按范围比对，leave 时弹栈。
+  const calloutStack: Array<{ from: number; to: number }> = [];
+  const inCallout = () => calloutStack.length > 0;
+
   tree.iterate({
     from,
     to,
@@ -1964,6 +1963,11 @@ export function buildLivePreviewDecorations(
         case "Link": {
           // `[[笔记]]` 会被解析器拆成一个内层 Link，这里不处理，交给 wiki 分支。
           if (inWiki(node.from, node.to)) return false;
+          // callout 的 `[!type]` 标记也会被解析成（无 URL 的）Link，但标签替换
+          // 归 Blockquote 的 callout 分支管；这里再藏括号会跟 widget 替换抢区间。
+          if (inCallout() && /^\s*\[![a-zA-Z][a-zA-Z0-9-]*\]\s*$/.test(doc.sliceString(node.from, node.to))) {
+            return false;
+          }
           const open = node.node.firstChild;
           const close = open?.nextSibling;
           if (
@@ -2027,8 +2031,6 @@ export function buildLivePreviewDecorations(
           );
           if (!info) return undefined; // 普通引用：交给下面的 QuoteMark 分支
 
-          const active = isActive(ctx, node.from, node.to);
-
           // 整块加容器样式（按类型区分颜色）。这是逐行装饰：行级 margin/圆角会把
           // 多行 callout 拆成一摞小方块（行间缝 + 每行圆角缺口），所以外边距与
           // 圆角只挂在首尾行（cm-lp-callout-first/last，CSS 见 styles.css）。
@@ -2047,17 +2049,9 @@ export function buildLivePreviewDecorations(
             );
           }
 
-          // `>` 标记由这里统一藏掉：返回 false 之后不会再走 QuoteMark 分支，
-          // 否则同一行会同时拿到引用样式和 callout 样式。
-          const quoteMarks: Array<{ from: number; to: number }> = [];
-          collectNodes(node.node, "QuoteMark", quoteMarks);
-
-          if (!active) {
-            for (const mark of quoteMarks) {
-              let end = mark.to;
-              if (doc.sliceString(end, end + 1) === " ") end += 1;
-              hide(mark.from, end);
-            }
+          // 标签只在光标落到**首行**时显源码（逐行揭示，对齐 Obsidian）：
+          // 光标在正文行时标签保持渲染，其余行照常显示。
+          if (!isActive(ctx, info.markerFrom, info.markerTo)) {
             replaceWith(
               info.markerFrom,
               info.markerTo,
@@ -2069,7 +2063,12 @@ export function buildLivePreviewDecorations(
               );
             }
           }
-          return false;
+
+          // 记入 callout 栈并**继续下沉子节点**：callout 里同样要渲染列表（序号、
+          // 任务框）、行内样式。`>` 标记仍由 QuoteMark 分支藏，但它要据此让路——
+          // 不再叠加 cm-lp-quote 引用样式（否则同一行两套容器样式打架）。
+          calloutStack.push({ from: node.from, to: node.to });
+          return undefined;
         }
 
         case "Image": {
@@ -2113,6 +2112,10 @@ export function buildLivePreviewDecorations(
             if (!isActive(ctx, node.from, node.to)) {
               replaceWith(node.from, node.to, new BulletWidget());
             }
+          } else if (grand?.name === "OrderedList" && !isActive(ctx, node.from, node.to)) {
+            // 序号（1. 2. …）保持原文（编号由源码决定，不能替换），只加标记样式：
+            // 与圆点同色，序号看起来是「渲染过的列表标记」而不是普通正文。
+            marks.push(OL_MARK.range(node.from, node.to));
           }
           return false;
         }
@@ -2126,8 +2129,24 @@ export function buildLivePreviewDecorations(
 
         case "QuoteMark": {
           hidden(node.from, node.to + (doc.sliceString(node.to, node.to + 1) === " " ? 1 : 0));
-          const line = doc.lineAt(node.from);
-          marks.push(Decoration.line({ class: "cm-lp-quote" }).range(line.from));
+          // callout 已经给整行上了自己的容器样式，`>` 的隐藏归它管、引用样式要让路
+          //（callout 现在下沉子节点，行内/列表都靠这条通道渲染）。
+          if (!inCallout()) {
+            const line = doc.lineAt(node.from);
+            marks.push(Decoration.line({ class: "cm-lp-quote" }).range(line.from));
+          }
+          return false;
+        }
+
+        case "Escape": {
+          // `\*`、`\$` 这类反斜杠转义（Obsidian 同款写法）：渲染态藏掉反斜杠、
+          // 保留被转义的字符，并用普通正文色盖掉 escape 的语法主题色（否则 `\$`
+          // 会带着橙色 escape 配色露出来）。光标在本行时显出源码，方便编辑。
+          // 只有「反斜杠 + 1 个字符」才是转义；行尾孤反斜杠不归这里管。
+          if (node.to > node.from + 1 && !isActive(ctx, node.from, node.to)) {
+            hide(node.from, node.from + 1);
+            marks.push(MARK.plain.range(node.from + 1, node.to));
+          }
           return false;
         }
 
@@ -2186,6 +2205,11 @@ export function buildLivePreviewDecorations(
         default:
           return undefined;
       }
+    },
+    leave: (node) => {
+      // callout 块的所有后代都处理完了，弹出栈顶，兄弟节点不再受它影响
+      const top = calloutStack[calloutStack.length - 1];
+      if (top && top.from === node.from && top.to === node.to) calloutStack.pop();
     },
   });
 

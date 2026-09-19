@@ -5,6 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CalendarPanel from "./components/CalendarPanel";
 import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
+import FilePreview from "./components/FilePreview";
 import FileTree from "./components/FileTree";
 import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
@@ -36,9 +37,11 @@ import {
   IconStar,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, createFolder, createNote, deleteEntry, listEntries, onVaultChanged, pickVault, readBinary, readNote, readNoteOptional, renameEntry, searchVault, startupVault, watchVault, writeNote } from "./lib/api";
-import type { EntryMeta, NoteContent } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, onVaultChanged, pickDirectory, pickVault, readBinary, readNote, readNoteOptional, renameEntry, searchVault, setCustomDataDir, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
+import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
+import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
+import { toBase64 } from "./lib/paste";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache } from "./lib/embed";
 import { requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
@@ -61,6 +64,7 @@ import { liveItems } from "./lib/todos";
 import {
   DAILY_CONFIG_FILE,
   dailyNotePath,
+  dailyRenameName,
   dailyTitle,
   defaultNoteContent,
   expandTemplate,
@@ -160,6 +164,25 @@ export default function App() {
       return [];
     }
   });
+  /** 最近打开的仓库（本机 localStorage，新的在前）。顶栏仓库下拉的候选。 */
+  const [vaultRecents, setVaultRecents] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("quicknote.vaultRecents");
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  /** 顶栏仓库下拉菜单（打开状态 + 锚点位置）。 */
+  const [vaultMenu, setVaultMenu] = useState<{ x: number; y: number } | null>(null);
+  /** 应用数据目录信息（设置 → 存储）。 */
+  const [dataPaths, setDataPaths] = useState<AppDataPaths | null>(null);
+  /** 预览窗格：打开的 pdf/docx/xlsx 路径（不进标签，独立浮层）。 */
+  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  /** 知识库内"复制"的文件（Ctrl+V 粘贴进选中的目录；同时已写入系统剪贴板）。 */
+  const [treeClipboard, setTreeClipboard] = useState<{ path: string; isDir: boolean } | null>(null);
+  /** 左侧树当前选中的目录（粘贴目标）。 */
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
   /** 专注模式：隐藏两侧栏与状态栏（Ctrl+Shift+F）。 */
   const [zen, setZen] = useState(false);
   /** 光标是否在表格块内（表格工具栏的显示依据）。 */
@@ -255,6 +278,19 @@ export default function App() {
     });
   }, []);
 
+  /** 记录一个仓库到「最近打开的仓库」（顶栏下拉的候选，最多 8 个）。 */
+  const recordVault = useCallback((dir: string) => {
+    setVaultRecents((prev) => {
+      const next = [dir, ...prev.filter((p) => p !== dir)].slice(0, 8);
+      try {
+        localStorage.setItem("quicknote.vaultRecents", JSON.stringify(next));
+      } catch {
+        // 存不进去只影响下次启动的下拉列表
+      }
+      return next;
+    });
+  }, []);
+
   // ---------------------------------------------------------------- 软件更新
 
   const [appVersion, setAppVersion] = useState("");
@@ -337,6 +373,10 @@ export default function App() {
   // 待办的改动回调要在 useSync 之前挂上，所以先用一个占位 ref 接住它（回调是
   // 惰性读取的，等真正触发时 ref 早已填好）。
   const syncRef = useRef<SyncController | null>(null);
+  // 编辑器引用要提前声明：useDaily 的 liveWords 回调（今日字数实时源）在渲染期
+  // 就要读激活的编辑器状态，而编辑器实例在下面的 effect 里才创建。
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<EditorView | null>(null);
 
   const daily = useDaily({
     vault,
@@ -344,6 +384,14 @@ export default function App() {
     notice,
     // 待办不落盘、没有文件事件，改完要主动通知同步引擎（它按内容哈希决定推不推）
     onTodosChanged: () => syncRef.current?.touchVirtual(),
+    // 今日字数实时源：激活标签是今天那篇日记时，直接按编辑器内容计算
+    liveWords: {
+      path: current?.path ?? null,
+      getWords: () => {
+        const view = viewRef.current;
+        return view ? wordCount(view.state.sliceDoc()) : null;
+      },
+    },
   });
 
   const sync = useSync({
@@ -435,8 +483,6 @@ export default function App() {
     });
   }, []);
 
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const viewRef = useRef<EditorView | null>(null);
   const saveRef = useRef<() => void>(() => {});
   // 事件回调里要读最新状态，但又不想因此反复重新订阅，所以用 ref 镜像。
   const currentRef = useRef<NoteContent | null>(null);
@@ -581,7 +627,8 @@ export default function App() {
       resourcesRef.current.notePath = note.path;
       const newState = createEditorState(note.content, {
         lineEnding: note.lineEnding,
-        mode,
+        mode: isMarkdownPath(note.path) ? mode : "source",
+        language: editorLanguageOf(note.path),
         onDocChanged: handleDocChanged,
         onSave: () => void saveRef.current(),
         resources: resourcesRef.current,
@@ -808,6 +855,7 @@ export default function App() {
   useEffect(() => {
     const useVault = (dir: string) => {
       localStorage.setItem(VAULT_KEY, dir);
+      recordVault(dir);
       setVault(dir);
       activateVault(dir);
       refresh(dir).catch((e) => setError(String(e)));
@@ -823,7 +871,7 @@ export default function App() {
       .then((dir) => {
         if (dir) useVault(dir);
       });
-  }, [refresh, activateVault]);
+  }, [refresh, activateVault, recordVault]);
 
   // 自动保存：revision 每次改动递增，从而重置防抖计时。
   useEffect(() => {
@@ -832,38 +880,94 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [dirty, revision, saveNow]);
 
+  /** 切换到指定仓库（清空全部标签与状态；启动与下拉/对话框共用这一条路径）。 */
+  const switchVault = useCallback(
+    async (picked: string) => {
+      setError(null);
+      localStorage.setItem(VAULT_KEY, picked);
+      recordVault(picked);
+      setVault(picked);
+      setPreviewPath(null);
+      setSelectedPath(null);
+      setTreeClipboard(null);
+      // 换仓库必须把所有标签与编辑器一起清掉：CodeMirror 的状态还挂着上一篇的话，
+      // 旧内容继续显示，下一次输入还会试图写回旧仓库的路径
+      setOpenTabs([]);
+      setActiveTab(null);
+      stateStore.current.clear();
+      scrollStore.current.clear();
+      staleTabs.current.clear();
+      dirtyTabs.current.clear();
+      setDirty(false);
+      setRoundTrip(null);
+      setConflict(null);
+      setStatus("");
+      setInTable(false);
+      resourcesRef.current.notePath = null;
+      viewRef.current?.setState(EditorState.create({}));
+      activateVault(picked);
+      try {
+        await refresh(picked);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [refresh, activateVault, recordVault],
+  );
+
   const openVault = useCallback(async () => {
-    setError(null);
     const picked = await pickVault();
     if (!picked) return;
-    localStorage.setItem(VAULT_KEY, picked);
-    setVault(picked);
-    // 换仓库必须把所有标签与编辑器一起清掉：CodeMirror 的状态还挂着上一篇的话，
-    // 旧内容继续显示，下一次输入还会试图写回旧仓库的路径
-    setOpenTabs([]);
-    setActiveTab(null);
-    stateStore.current.clear();
-    scrollStore.current.clear();
-    staleTabs.current.clear();
-    dirtyTabs.current.clear();
-    setDirty(false);
-    setRoundTrip(null);
-    setConflict(null);
-    setStatus("");
-    setInTable(false);
-    resourcesRef.current.notePath = null;
-    viewRef.current?.setState(EditorState.create({}));
-    activateVault(picked);
+    await switchVault(picked);
+  }, [switchVault]);
+
+  /** 换到最近打开的某个仓库（顶栏下拉）。 */
+  const openRecentVault = useCallback(
+    (dir: string) => {
+      setVaultMenu(null);
+      if (dir !== vault) void switchVault(dir);
+    },
+    [vault, switchVault],
+  );
+
+  // ------------------------------------------------------------------ 数据目录
+
+  // 设置面板要展示数据目录；启动时查一次，改动后由回调就地更新。
+  useEffect(() => {
+    appDataPaths()
+      .then(setDataPaths)
+      .catch(() => {
+        // 查不到就显示"…"，不影响其他功能
+      });
+  }, []);
+
+  const pickDataDir = useCallback(async () => {
+    const picked = await pickDirectory("选择自定义数据目录");
+    if (!picked) return;
     try {
-      await refresh(picked);
+      const next = await setCustomDataDir(picked);
+      setDataPaths(next);
+      setStatus("数据目录已设置，重启应用后生效（现有数据会自动迁移）");
     } catch (e) {
       setError(String(e));
     }
-  }, [refresh, activateVault]);
+  }, []);
+
+  const clearDataDir = useCallback(async () => {
+    try {
+      const next = await setCustomDataDir(null);
+      setDataPaths(next);
+      setStatus("已恢复默认数据目录，重启应用后生效");
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
 
   const openNote = useCallback(
     async (path: string) => {
       if (!vault) return;
+      // 打开任何笔记都收起预览窗格（预览与编辑互斥，对齐 Obsidian 的点击语义）
+      setPreviewPath(null);
       // 已是这个标签且没有外部改动：什么都不做（重置会丢光标位置）
       if (path === activeTabRef.current && !staleTabs.current.has(path)) return;
       recordRecent(path);
@@ -905,7 +1009,8 @@ export default function App() {
         }
         const newState = createEditorState(note.content, {
           lineEnding: note.lineEnding,
-          mode,
+          mode: isMarkdownPath(note.path) ? mode : "source",
+          language: editorLanguageOf(note.path),
           onDocChanged: handleDocChanged,
           onSave: () => void saveRef.current(),
           resources: resourcesRef.current,
@@ -960,6 +1065,27 @@ export default function App() {
       }
     },
     [vault, saveNow, handleDocChanged, mode, activateTab],
+  );
+
+  /**
+   * 文件树的打开入口（按类型路由）：预览类（pdf/docx/xlsx）开预览窗格，
+   * markdown 与数据文件（json/sql/yaml 等）进编辑器。
+   */
+  const openEntry = useCallback(
+    async (path: string) => {
+      const kind = fileKindOf(path);
+      console.log("[openEntry]", path, kind);
+      if (kind === "pdf" || kind === "docx" || kind === "ppt" || kind === "spreadsheet" || kind === "html" || kind === "image") {
+        setSelectedPath(path);
+        setPreviewPath(path);
+        return;
+      }
+      // 打开编辑类文件时关掉预览（与 Obsidian 一致：点击文件切换内容）
+      setPreviewPath(null);
+      setSelectedPath(path);
+      await openNote(path);
+    },
+    [openNote],
   );
 
   /**
@@ -1158,8 +1284,18 @@ export default function App() {
   /** 重命名。被改名的笔记（或所在目录）如果正开着，要跟着换到新路径，否则下次保存会写回旧路径。 */
   const submitRename = useCallback(async () => {
     if (!renaming || !vault) return;
-    const name = draft.trim();
+    let name = draft.trim();
     if (!name) return;
+
+    // 日记改名保留日期前缀。日记靠「文件名以日期开头」挂在日历上（当天列表、
+    // 打点、今日字数都依赖它）；把「2026-09-18.md」改成「复盘.md」会让日记从
+    // 当天列表消失，还会被「新建日记」当成当天没写过再建一篇空的。这里把前缀补回去。
+    let dateKept = false;
+    const renamePlan = dailyRenameName(renaming, name, daily.dateFormat);
+    if (renamePlan.kept && daily.folderFiles.includes(renaming)) {
+      name = renamePlan.name;
+      dateKept = true;
+    }
 
     const openPath = currentRef.current?.path;
     const affectedOpen =
@@ -1219,16 +1355,18 @@ export default function App() {
         await openNote(nextPath);
       }
       setStatus(
-        result.updated.length > 0
-          ? `已重命名为「${name}」，并更新了 ${result.updated.length} 篇笔记里的引用`
-          : `已重命名为「${name}」`,
+        dateKept
+          ? `已重命名为「${name.replace(/\.md$/i, "")}」（已保留日期前缀，日记才会出现在当天列表）`
+          : result.updated.length > 0
+            ? `已重命名为「${name}」，并更新了 ${result.updated.length} 篇笔记里的引用`
+            : `已重命名为「${name}」`,
       );
       setError(null);
     } catch (e) {
       // 输入行保持展开，方便换个名字重试
       setError(String(e));
     }
-  }, [renaming, vault, draft, dirty, saveNow, refresh, openNote]);
+  }, [renaming, vault, draft, dirty, saveNow, refresh, openNote, daily.dateFormat, daily.folderFiles]);
 
   /** 执行删除（移入仓库内的 .trash，可找回）。 */
   const confirmDelete = useCallback(async () => {
@@ -1325,6 +1463,11 @@ export default function App() {
 
   /** 切换视图模式。用 Compartment 重配置，撤销历史与光标位置都保留。 */
   const changeMode = useCallback(    (next: ViewMode) => {
+      // 数据文件（json/sql/yaml…）只有源码视图：实时预览的 Markdown 装饰对它们没意义
+      if (current && !isMarkdownPath(current.path)) {
+        setStatus("该文件类型仅支持源码查看");
+        return;
+      }
       setMode(next);
       localStorage.setItem(MODE_KEY, next);
       const view = viewRef.current;
@@ -1361,6 +1504,69 @@ export default function App() {
       setError(`导出 PDF 失败：${e instanceof Error ? e.message : String(e)}`);
     }
   }, [notice]);
+
+  /**
+   * 导出 PDF 文件（落盘）：笔记渲染成独立 HTML → 无头浏览器打印成 PDF。
+   * 保存对话框预填「上次导出目录 + 笔记名.pdf」；未选位置则取消。
+   * 上次目录记在 localStorage（跨会话）。
+   */
+  const exportPdfFile = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view || !currentRef.current || !vault) {
+      notice("请先打开一个笔记，再导出 PDF", "error");
+      return;
+    }
+    const title = currentRef.current.path.slice(currentRef.current.path.lastIndexOf("/") + 1).replace(/\.md$/i, "");
+    const lastDir = localStorage.getItem("quicknote.pdfExportDir") ?? "";
+    try {
+      const { save } = await import("@tauri-apps/plugin-dialog");
+      const { firstExistingPath, writeTextFile, exportPdfViaBrowser } = await import("./lib/api");
+      const { buildStandalonePrintHtml } = await import("./lib/printExport");
+      const { applyTheme } = await import("./lib/theme");
+
+      // 候选浏览器：Edge（Windows 自带）→ Chrome
+      const candidates = [
+        "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+        "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+        "C:/Program Files/Google/Chrome/Application/chrome.exe",
+        "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+      ];
+      const browser = await firstExistingPath(candidates);
+      if (!browser) {
+        setError("没有找到 Edge 或 Chrome，无法生成 PDF 文件（可用「导出 PDF」走打印对话框）");
+        return;
+      }
+
+      setStatus("正在渲染导出内容…");
+      const html = await buildStandalonePrintHtml(view.state, resourcesRef.current);
+      const tempHtml = `${await import("@tauri-apps/api/path").then((m) => m.tempDir())}quick-note-export-${Date.now()}.html`;
+      await writeTextFile(tempHtml, html);
+
+      // 保存对话框：预填上次目录；取消则不导出
+      const picked = await save({
+        defaultPath: `${lastDir ? `${lastDir.replace(/[\\/]+$/, "")}/` : ""}${title}.pdf`,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (typeof picked !== "string") {
+        setStatus("已取消导出");
+        return;
+      }
+      const dir = picked.slice(0, Math.max(picked.lastIndexOf("/"), picked.lastIndexOf("\\")));
+      if (dir) localStorage.setItem("quicknote.pdfExportDir", dir);
+
+      // 无头浏览器对 file:// 图片等的加载需要一点时间；交给它自己完成后校验产物
+      setStatus("正在生成 PDF 文件…");
+      await exportPdfViaBrowser(browser, tempHtml, picked);
+
+      // 深浅色：无头浏览器读不到应用主题，导出的内容本身就带浅色打印样式，无需处理
+      void applyTheme;
+      setStatus(`已导出 PDF：${picked}`);
+      const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+      await revealItemInDir(picked);
+    } catch (e) {
+      setError(`导出 PDF 失败：${e instanceof Error ? e.message : String(e)}`);
+    }
+  }, [vault, notice]);
 
   // ------------------------------------------------------------------ 周回顾
 
@@ -1519,6 +1725,29 @@ export default function App() {
     [vault],
   );
 
+  /**
+   * 在系统资源管理器中定位仓库内的文件/目录（revealItemInDir 会高亮它本身）。
+   * 文件树的 Alt+点击、右键菜单与编辑器里的 Alt+点击增强共用这一条通道。
+   */
+  const revealInExplorer = useCallback(
+    async (relativePath: string) => {
+      if (!vault) {
+        setError("尚未打开仓库，无法定位");
+        return;
+      }
+      const clean = relativePath.replace(/[\\/]+$/, "");
+      if (!clean) return;
+      try {
+        const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
+        await revealItemInDir(`${vault.replace(/[\/]+$/, "")}/${clean}`);
+        setStatus(`已在资源管理器中显示：${clean}`);
+      } catch (e) {
+        setError(`定位失败：${e}`);
+      }
+    },
+    [vault],
+  );
+
   // Alt+点击增强的动作注入（行内代码复制 / 资源管理器定位）。
   useEffect(() => {
     resourcesRef.current.altActions = {
@@ -1527,20 +1756,189 @@ export default function App() {
       },
       revealFile: async (target) => {
         const relative = resolveWikiRelative(resourcesRef.current, target);
-        if (!relative || !vault) {
+        if (!relative) {
           setError(`定位失败：在仓库里找不到「${target}」`);
           return;
         }
-        try {
-          const { revealItemInDir } = await import("@tauri-apps/plugin-opener");
-          await revealItemInDir(`${vault.replace(/[\/]+$/, "")}/${relative}`);
-          setStatus(`已在资源管理器中显示：${relative}`);
-        } catch (e) {
-          setError(`定位文件失败：${e}`);
-        }
+        await revealInExplorer(relative);
       },
     };
-  }, [vault, notice]);
+  }, [vault, notice, revealInExplorer]);
+
+  // ---------------------------------------------------------------- 文件复制粘贴
+
+  const selectedPathRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedPathRef.current = selectedPath;
+  }, [selectedPath]);
+
+  /**
+   * 复制树里的文件/目录：**两边同时生效**——
+   * 写入系统剪贴板（资源管理器里 Ctrl+V 粘贴文件），并记入应用内剪贴板
+   * （在左侧树选中目录后 Ctrl+V 粘贴进知识库）。
+   */
+  const copyTreeFile = useCallback(
+    async (path: string, isDir: boolean) => {
+      if (!vault) return;
+      setTreeClipboard({ path, isDir });
+      try {
+        await copyPathsToClipboard([`${vault.replace(/[\\/]+$/, "")}/${path}`]);
+        setStatus(
+          isDir
+            ? "已复制文件夹：可在资源管理器 Ctrl+V 粘贴；选中目录后 Ctrl+V 粘贴进知识库"
+            : "已复制文件：可在资源管理器 Ctrl+V 粘贴；选中目录后 Ctrl+V 粘贴进知识库",
+        );
+      } catch (e) {
+        // 系统剪贴板失败不拦着应用内粘贴：内部剪贴板已经记下了
+        setStatus("已复制（系统剪贴板不可用，仍可粘贴进知识库）");
+        setError(`写入系统剪贴板失败：${e}`);
+      }
+    },
+    [vault],
+  );
+
+  /** 把应用内剪贴板的文件/目录粘贴到指定目录。 */
+  const pasteIntoDir = useCallback(
+    async (destDir: string) => {
+      if (!vault) {
+        setError("尚未打开仓库");
+        return;
+      }
+      if (!treeClipboard) {
+        setStatus("剪贴板里还没有从知识库复制的文件（右键 → 复制）");
+        return;
+      }
+      try {
+        const dest = await copyEntry(vault, treeClipboard.path, destDir);
+        await refresh(vault);
+        setStatus(`已粘贴到「${destDir || "仓库根目录"}」：${dest}`);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [vault, treeClipboard, refresh],
+  );
+
+  // 资源管理器 → 知识库：在编辑器/输入框以外按 Ctrl+V 时，把系统剪贴板里的
+  // 文件写进「选中的目录」（无选中则用当前笔记所在目录）。
+  useEffect(() => {
+    const onPaste = (event: ClipboardEvent) => {
+      const files = event.clipboardData?.files;
+      if (!files || files.length === 0) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.closest(".cm-editor, input, textarea, select, [contenteditable='true']")) return;
+      if (!vault) return;
+      const currentPath = currentRef.current?.path;
+      // 粘贴目标：选中的目录本身；选中的是文件则落其所在目录；都没有则当前笔记目录
+      const picked = selectedPathRef.current;
+      const pickedIsDir = picked
+        ? (entries.find((entry) => entry.path === picked)?.isDir ?? false)
+        : false;
+      const dir = picked
+        ? pickedIsDir
+          ? picked
+          : picked.includes("/")
+            ? picked.slice(0, picked.lastIndexOf("/"))
+            : ""
+        : currentPath && currentPath.includes("/")
+          ? currentPath.slice(0, currentPath.lastIndexOf("/"))
+          : "";
+      event.preventDefault();
+      void (async () => {
+        const saved: string[] = [];
+        const failed: string[] = [];
+        for (const file of Array.from(files)) {
+          try {
+            const bytes = new Uint8Array(await file.arrayBuffer());
+            const dest = await writeAttachment(vault, dir, file.name, toBase64(bytes));
+            saved.push(dest);
+          } catch (e) {
+            failed.push(`${file.name}：${e}`);
+          }
+        }
+        await refresh(vault);
+        if (saved.length > 0) {
+          setStatus(`已粘贴 ${saved.length} 个文件到「${dir || "仓库根目录"}」`);
+        }
+        if (failed.length > 0) {
+          setError(`粘贴失败：${failed.join("；")}`);
+        }
+      })();
+    };
+    document.addEventListener("paste", onPaste);
+    return () => document.removeEventListener("paste", onPaste);
+  }, [vault, refresh, entries]);
+
+  // Ctrl+C / Ctrl+V：焦点在编辑器和输入框之外（文件树、空白区）时，
+  // 对「选中的树条目」执行复制/粘贴——与 Obsidian 的文件列表一致。
+  // 内部剪贴板为空时不拦截 Ctrl+V，让资源管理器文件的粘贴事件照常走。
+  const treeClipboardRef = useRef<{ path: string; isDir: boolean } | null>(null);
+  useEffect(() => {
+    treeClipboardRef.current = treeClipboard;
+  }, [treeClipboard]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!event.ctrlKey || event.metaKey || event.altKey || event.shiftKey) return;
+      if (!vault) return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.closest("input, textarea, select, [contenteditable='true']")) return;
+      const inEditor = !!active?.closest(".cm-editor");
+      const key = event.key.toLowerCase();
+      if (key === "c") {
+        if (!selectedPathRef.current) return;
+        // 编辑器里选中了文本 → 让编辑器自己复制；光标悬空（常见：点开笔记后焦点
+        // 在编辑器里）→ 复制树选中项，省得用户必须再点一次文件树
+        if (inEditor && !viewRef.current?.state.selection.main.empty) return;
+        event.preventDefault();
+        const pickedIsDir =
+          entries.find((entry) => entry.path === selectedPathRef.current)?.isDir ?? false;
+        void copyTreeFile(selectedPathRef.current, pickedIsDir);
+      } else if (key === "v") {
+        // 编辑器内 Ctrl+V 永远是粘贴文本；文件粘贴只在编辑器以外生效
+        if (inEditor) return;
+        if (!treeClipboardRef.current) return;
+        event.preventDefault();
+        const picked = selectedPathRef.current;
+        const pickedIsDir = picked
+          ? (entries.find((entry) => entry.path === picked)?.isDir ?? false)
+          : false;
+        const dir = picked
+          ? pickedIsDir
+            ? picked
+            : picked.includes("/")
+              ? picked.slice(0, picked.lastIndexOf("/"))
+              : ""
+          : "";
+        void pasteIntoDir(dir);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [vault, entries, treeClipboard, copyTreeFile, pasteIntoDir]);
+
+
+  // 按住 Alt 时编辑区出现「+」光标：这是 WebView2 的原生悬停表现，但 Alt+点击
+  // 在这里的语义是「复制代码 / 定位文件」，用 pointer 提示可点更贴切。
+  // Alt 是无处的键盘状态，keydown/keyup 都在 window 上跟踪；失焦时清掉。
+  useEffect(() => {
+    const setHeld = (held: boolean) => document.documentElement.classList.toggle("qn-alt-held", held);
+    const down = (event: KeyboardEvent) => {
+      if (event.key === "Alt") setHeld(true);
+    };
+    const up = (event: KeyboardEvent) => {
+      if (event.key === "Alt") setHeld(false);
+    };
+    const clear = () => setHeld(false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", clear);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", clear);
+      setHeld(false);
+    };
+  }, []);
 
   // 图片工具栏的动作注入（widget 经上下文读到；仓库切换时这里重挂最新闭包）。
   useEffect(() => {
@@ -1648,9 +2046,10 @@ export default function App() {
       { id: "vault", title: "打开其他仓库…", icon: "📂", run: shortcuts.openVaultPicker },
       { id: "settings", title: "打开设置", hint: keyHint("openSettings"), icon: "⚙️", run: shortcuts.openSettings },
       { id: "export-pdf", title: "导出 PDF（打印对话框，选「另存为 PDF」）", icon: "🖨️", run: () => void exportPdf() },
+      { id: "export-pdf-file", title: "导出 PDF 文件（选定位置，直接落盘）", icon: "📄", run: () => void exportPdfFile() },
       { id: "roundtrip", title: "校验字节往返（写后读比对）", icon: "🧪", run: () => void verifyRoundTrip() },
     ],
-    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf],
+    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf, exportPdfFile, vault],
   );
 
   return (
@@ -1672,9 +2071,12 @@ export default function App() {
           </div>
           <button
             type="button"
-            className="vault-pill"
-            onClick={shortcuts.openVaultPicker}
-            title={vault ?? "点击选择仓库目录"}
+            className={`vault-pill${vaultMenu ? " is-open" : ""}`}
+            onClick={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              setVaultMenu({ x: rect.left, y: rect.bottom + 6 });
+            }}
+            title={vault ?? "点击选择仓库（最近的仓库会列在下拉里）"}
           >
             {vaultName ?? "未选择仓库"}
           </button>
@@ -1792,6 +2194,9 @@ export default function App() {
         imagePaths={vaultImages}
         daily={daily}
         sync={sync}
+        dataPaths={dataPaths}
+        onPickDataDir={() => void pickDataDir()}
+        onClearDataDir={() => void clearDataDir()}
         customCssDraft={customCssDraft}
         onCustomCssChange={(value) => {
           setCustomCssDraft(value);
@@ -1907,6 +2312,45 @@ export default function App() {
         </div>
       )}
 
+      {vaultMenu && (
+        <>
+          {/* 点空白处关闭菜单 */}
+          <div className="menu-backdrop" onClick={() => setVaultMenu(null)} onContextMenu={(event) => {
+            event.preventDefault();
+            setVaultMenu(null);
+          }} />
+          <div className="context-menu vault-menu" style={{ left: vaultMenu.x, top: vaultMenu.y }}>
+            {vaultRecents.filter((p) => p !== vault).length === 0 && (
+              <div className="vault-menu-empty">还没有最近打开的仓库</div>
+            )}
+            {vaultRecents
+              .filter((p) => p !== vault)
+              .slice(0, 8)
+              .map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  title={p}
+                  onClick={() => openRecentVault(p)}
+                >
+                  <IconLibrary size={13} />
+                  <span className="vault-menu-name">{vaultDisplayName(p)}</span>
+                </button>
+              ))}
+            <div className="vault-menu-sep" />
+            <button
+              type="button"
+              onClick={() => {
+                setVaultMenu(null);
+                void openVault();
+              }}
+            >
+              选择其他仓库…
+            </button>
+          </div>
+        </>
+      )}
+
       {menu && (
         <>
           {/* 点空白处关闭菜单 */}
@@ -1938,6 +2382,35 @@ export default function App() {
             </button>
             <button type="button" onClick={() => beginRename(menu.path)}>
               重命名
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void copyTreeFile(menu.path, menu.isDir);
+                setMenu(null);
+              }}
+            >
+              复制
+            </button>
+            {menu.isDir && treeClipboard && (
+              <button
+                type="button"
+                onClick={() => {
+                  void pasteIntoDir(menu.path);
+                  setMenu(null);
+                }}
+              >
+                粘贴到此目录
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                void revealInExplorer(menu.path);
+                setMenu(null);
+              }}
+            >
+              在资源管理器中显示
             </button>
             <button
               type="button"
@@ -2081,8 +2554,11 @@ export default function App() {
             view={leftView}
             favorites={favorites}
             recents={recents}
-            onOpen={(p) => void openNote(p)}
+            selectedPath={selectedPath}
+            onSelectPath={setSelectedPath}
+            onOpen={(p) => void openEntry(p)}
             onContext={openContextMenu}
+            onReveal={(p) => void revealInExplorer(p)}
           />
         </aside>
         <main className="editor-pane">
@@ -2163,8 +2639,16 @@ export default function App() {
               <span className="table-toolbar-hint">Tab 下一格 · 单元格可直接编辑 · 右键单元格插入/删除行列</span>
             </div>
           )}
-          <div className={`editor-host${mode === "live" ? " is-live" : " is-source"}`} ref={hostRef} />
-          {!current && (
+          <div
+            className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
+            ref={hostRef}
+          />
+          {previewPath && vault && (
+            <FilePreview vault={vault} path={previewPath} onClose={() => setPreviewPath(null)} />
+          )}
+          {/* 空状态只在**确实没有任何标签**时渲染：曾经 activeTab 与 openTabs
+              短暂错位时（替换式打开的中间帧），这层会叠在上一篇内容上透出 */}
+          {!current && openTabs.length === 0 && (
             <div className="editor-empty">
               <div className="editor-empty-logo">
                 <IconSparkles size={26} />
@@ -2246,7 +2730,7 @@ export default function App() {
           {rightPanel === "daily" && (
             <CalendarPanel
               controller={daily}
-              onOpen={(p) => void openNote(p)}
+              onOpen={(p) => void openEntry(p)}
               onCreateDaily={(dateStr, name) => void openDaily(dateStr, name)}
               onOpenWeekly={(weekKey, mondayKey) => void openWeekly(weekKey, mondayKey)}
               onContext={openContextMenu}
@@ -2262,7 +2746,7 @@ export default function App() {
             />
           )}
           {rightPanel === "stats" && (
-            <StatsPanel entries={entries} daily={daily} onOpen={(p) => void openNote(p)} />
+            <StatsPanel entries={entries} daily={daily} onOpen={(p) => void openEntry(p)} />
           )}
         </aside>
       </div>
@@ -2327,6 +2811,11 @@ export default function App() {
 /** 取路径的文件名（标签页标题）。 */
 function baseName(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
+}
+
+/** 取仓库路径的目录名（最近仓库下拉里显示用的短名）。 */
+function vaultDisplayName(path: string): string {
+  return path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 }
 
 /** 状态栏上的同步指示文案。 */

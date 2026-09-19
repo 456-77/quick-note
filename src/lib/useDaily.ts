@@ -108,6 +108,13 @@ export function useDaily(options: {
   files: string[];
   notice: (message: string, kind?: "info" | "error") => void;
   /**
+   * **今日字数的实时来源**：激活标签恰好是今天那篇日记时，App 提供编辑器内容
+   * 的即时字数，让右侧日历/统计里"今日字数"跟着打字实时走，而不是等
+   * 「自动保存 → 列表刷新 → 重读文件」的滞后链路。App 每次渲染都会重建这个
+   * 对象（revision 随文档改动递增），本 hook 借此拿到最新值。
+   */
+  liveWords?: { path: string | null; getWords: () => number | null };
+  /**
    * 用户**手动**改动了待办（增删勾选、顺延）后调用。
    *
    * 待办不落盘，没有文件事件，同步引擎只能靠这个信号入队推送。
@@ -117,10 +124,11 @@ export function useDaily(options: {
    */
   onTodosChanged?: () => void;
 }): DailyController {
-  const { vault, files, notice, onTodosChanged } = options;
+  const { vault, files, notice, onTodosChanged, liveWords } = options;
 
   const [state, setState] = useState<DailyConfigState | null>(null);
-  const [todayWords, setTodayWords] = useState<number | null>(null);
+  /** 今天各篇日记的**磁盘字数**（路径 → 字数；激活那篇的实时值见 todayWords 计算）。 */
+  const [diskWordsByPath, setDiskWordsByPath] = useState<Record<string, number>>({});
   const [configError, setConfigError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState("");
   /** 递增它来强制重读库内配置（配置文件被外部修正后重试）。 */
@@ -176,7 +184,7 @@ export function useDaily(options: {
     pendingRef.current = {};
     setState(null);
     setConfigError(null);
-    setTodayWords(null);
+    setDiskWordsByPath({});
     if (!vault) return;
 
     let cancelled = false;
@@ -380,29 +388,49 @@ export function useDaily(options: {
   // ------------------------------------------------------------- 字数统计
 
   /**
-   * 今日字数。
+   * 今日字数：**当天全部日记的总和**（多篇日记逐篇累加，空篇记 0），
+   * 磁盘值打底、实时值优先。
    *
-   * 依赖 `files` 的数组身份：每次文件树刷新（保存后、外部改动）都会重读一次今日
-   * 日记。一次小文件读取换回"字数跟着编辑走"，这个代价是划算的。
+   * 磁盘值由 effect 逐篇重读（文件树刷新后）；激活标签是今天**任意一篇**
+   * 日记时，那篇改用 App 注入的 `liveWords.getWords()`（按编辑器内容直接算），
+   * 其余各篇仍取磁盘值——打字时右侧日历/统计里的"今日字数"即刻跟着变。
+   * 依赖用 `todayNotesKey`（换行拼接的路径串）而不是数组身份：打字时 App 每
+   * 敲一字就重渲染一次，数组身份会让 effect 每键重读全部日记。
    */
-  const todayNote = findDailyNote(folderFiles, today);
+  const todayNotes = dailyNotesOn(folderFiles, today);
+  const todayNotesKey = todayNotes.join("\n");
   useEffect(() => {
-    if (!vault || !todayNote) {
-      setTodayWords(null);
+    const paths = todayNotesKey === "" ? [] : todayNotesKey.split("\n");
+    if (!vault || paths.length === 0) {
+      setDiskWordsByPath({});
       return;
     }
     let cancelled = false;
-    readNoteOptional(vault, todayNote)
-      .then((note) => {
-        if (!cancelled) setTodayWords(note ? wordCount(note.content) : null);
-      })
-      .catch(() => {
-        if (!cancelled) setTodayWords(null);
-      });
+    void Promise.all(
+      paths.map(async (path) => {
+        try {
+          const note = await readNoteOptional(vault, path);
+          return [path, note ? wordCount(note.content) : 0] as const;
+        } catch {
+          return [path, 0] as const;
+        }
+      }),
+    ).then((entries) => {
+      if (!cancelled) setDiskWordsByPath(Object.fromEntries(entries));
+    });
     return () => {
       cancelled = true;
     };
-  }, [vault, todayNote, files]);
+  }, [vault, files, todayNotesKey]);
+
+  const todayWords =
+    todayNotes.length === 0
+      ? null
+      : todayNotes.reduce((sum, path) => {
+          const words =
+            path === liveWords?.path ? (liveWords.getWords() ?? diskWordsByPath[path]) : diskWordsByPath[path];
+          return sum + (words ?? 0);
+        }, 0);
 
   // ------------------------------------------------------------------ 监听
 

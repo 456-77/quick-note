@@ -624,7 +624,17 @@ pub fn write_attachment(
     let parent = full.parent().ok_or_else(|| format!("非法路径: {rel}"))?;
     let target = unique_path(parent, &name);
 
-    fs::write(&target, &bytes).map_err(|e| format!("写入附件失败: {e}"))?;
+    // 原子写：先写临时文件再改名。直接写目标文件的话，文件监听会在"已创建、
+    // 内容还没落盘"的窗口里触发事件，同步引擎立刻去读就会拿到半个文件甚至
+    // 撞上"文件不存在"（实测踩过：粘贴文件后立刻弹出读取失败的横幅）。
+    // 临时文件用 .qntmp 扩展名：同步范围只认 .md，监听事件也只会是"创建"一个
+    // 无关文件，重命名之后读到的必然是完整内容。
+    let temp = target.with_extension("qntmp");
+    fs::write(&temp, &bytes).map_err(|e| format!("写入附件失败: {e}"))?;
+    if let Err(e) = fs::rename(&temp, &target) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("写入附件失败: {e}"));
+    }
 
     let relative = target
         .strip_prefix(&root)
@@ -925,6 +935,68 @@ pub async fn sync_scan(
     })
     .await
     .map_err(|e| format!("扫描线程失败: {e}"))?
+}
+
+/// 把一组**绝对路径**放入系统剪贴板（资源管理器语义的"复制文件"）。
+///
+/// 之后在资源管理器里 Ctrl+V 就是粘贴这些文件/文件夹。走 PowerShell 的
+/// Set-Clipboard：Windows 内置、支持文件与目录，免去引入剪贴板依赖。
+#[tauri::command]
+pub fn copy_paths_to_clipboard(paths: Vec<String>) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("没有可复制的路径".into());
+    }
+    let list = paths
+        .iter()
+        .map(|p| format!("'{}'", p.replace('\'', "''")))
+        .collect::<Vec<_>>()
+        .join(",");
+    let script = format!("Set-Clipboard -LiteralPath @({list}) | Out-Null");
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .output()
+        .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "写入剪贴板失败: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ))
+    }
+}
+
+/// 复制仓库内的文件或目录到目标目录（重名自动加序号，不覆盖）。
+/// 返回新的仓库相对路径。目录会整棵递归复制。
+#[tauri::command]
+pub fn copy_entry(vault: String, path: String, dest_dir: String) -> Result<String, String> {
+    let root = vault_root(&vault)?;
+    let source = resolve_existing(&root, &path)?;
+    let dest_root = if dest_dir.trim().is_empty() {
+        root.clone()
+    } else {
+        root.join(validate_rel(&dest_dir)?)
+    };
+    if !dest_root.is_dir() {
+        return Err(format!("目标目录不存在: {dest_dir}"));
+    }
+    // 目录不能复制进它自己（或自己的子目录）里
+    if source.is_dir() && dest_root.starts_with(&source) {
+        return Err("目标目录在源目录内部，不能复制".into());
+    }
+    let filename = source
+        .file_name()
+        .ok_or_else(|| "源路径没有文件名".to_string())?
+        .to_string_lossy()
+        .to_string();
+    let target = unique_path(&dest_root, &filename);
+    if source.is_dir() {
+        crate::data_dir::copy_dir_all(&source, &target)
+            .map_err(|e| format!("复制目录失败: {e}"))?;
+    } else {
+        fs::copy(&source, &target).map_err(|e| format!("复制文件失败: {e}"))?;
+    }
+    to_relative(&root, &target)
 }
 
 /// 读取一个附件（二进制）供同步上传。

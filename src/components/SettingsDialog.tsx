@@ -13,20 +13,14 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
-import {
-  allBindings,
-  COMMAND_KEYS,
-  comboOf,
-  formatKey,
-  onHotkeysChange,
-  setBinding,
-  setCapturing,
-} from "../lib/hotkeys";
+import type { AppDataPaths } from "../lib/api";
 import type { Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import type { SyncController } from "../lib/useSync";
+import HotkeysPane from "./HotkeysPane";
 import {
   IconCalendarPlus,
+  IconLibrary,
   IconListTree,
   IconRefresh,
   IconSearch,
@@ -35,13 +29,14 @@ import {
   IconX,
 } from "./icons";
 
-type SectionId = "general" | "appearance" | "daily" | "sync" | "shortcuts" | "about";
+type SectionId = "general" | "appearance" | "daily" | "sync" | "storage" | "shortcuts" | "about";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactNode }[] = [
   { id: "general", label: "通用", icon: <IconSettings size={14} /> },
   { id: "appearance", label: "外观", icon: <IconSparkles size={14} /> },
   { id: "daily", label: "日记与附件", icon: <IconCalendarPlus size={14} /> },
   { id: "sync", label: "云同步", icon: <IconRefresh size={14} /> },
+  { id: "storage", label: "存储", icon: <IconLibrary size={14} /> },
   { id: "shortcuts", label: "快捷键", icon: <IconListTree size={14} /> },
   { id: "about", label: "关于", icon: <span className="settings-nav-logo">i</span> },
 ];
@@ -55,6 +50,10 @@ interface Props {
   imagePaths: string[];
   daily: DailyController;
   sync: SyncController;
+  /** 应用数据目录信息（「存储」分区展示与操作）。 */
+  dataPaths: AppDataPaths | null;
+  onPickDataDir: () => void;
+  onClearDataDir: () => void;
   customCssDraft: string;
   onCustomCssChange: (value: string) => void;
   appVersion: string;
@@ -90,6 +89,9 @@ export default function SettingsDialog({
   imagePaths,
   daily,
   sync,
+  dataPaths,
+  onPickDataDir,
+  onClearDataDir,
   customCssDraft,
   onCustomCssChange,
   appVersion,
@@ -101,51 +103,11 @@ export default function SettingsDialog({
   const [query, setQuery] = useState("");
   const bodyRef = useRef<HTMLDivElement | null>(null);
 
-  // 快捷键：绑定表 + 「捕获下一次按键」的命令 id。捕获期间全局匹配被挂起
-  // （hotkeys.isCapturing），按 Ctrl+B 重绑才不会顺手把文件栏切了。
-  const [bindings, setBindings] = useState(allBindings);
-  const [capturingId, setCapturingId] = useState<string | null>(null);
-  useEffect(() => onHotkeysChange(() => setBindings(allBindings())), []);
-  useEffect(() => {
-    if (!open) return;
-    if (!capturingId) {
-      setCapturing(false);
-      return;
-    }
-    setCapturing(true);
-    const onKey = (event: KeyboardEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setCapturing(false);
-      setCapturingId(null);
-      if (event.key === "Escape") return; // Esc = 取消本次绑定
-      // 只收带修饰键的组合（或功能键）：全局命令绑单个字母会让每次打字都触发命令
-      const bare = !event.ctrlKey && !event.metaKey && !event.altKey && !/^F\d+$/.test(event.key);
-      if (bare) return;
-      const combo = comboOf(event);
-      // 同一组合绑给了别的命令时，从那边移除（覆盖写法，不动它的其余键位）
-      for (const other of bindings) {
-        if (other.id !== capturingId && other.keys.includes(combo)) {
-          setBinding(other.id, other.keys.filter((key) => key !== combo));
-        }
-      }
-      setBinding(capturingId, [combo]);
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => {
-      window.removeEventListener("keydown", onKey, true);
-      setCapturing(false);
-    };
-  }, [capturingId, open, bindings]);
-
-  // 打开时重置到第一页并清空搜索；关闭时取消未完成的键位捕获
+  // 打开时重置到第一页并清空搜索（快捷键分区的录入态随其组件卸载自动结束）
   useEffect(() => {
     if (open) {
       setActive("general");
       setQuery("");
-    } else {
-      setCapturingId(null);
-      setCapturing(false);
     }
   }, [open]);
 
@@ -686,68 +648,47 @@ export default function SettingsDialog({
           </div>
         </section>
 
-        <section className="settings-sec" data-sec="shortcuts" style={{ display: searching || active === "shortcuts" ? undefined : "none" }}>
-          <div className="settings-group">快捷键（点击键位重新绑定，Esc 取消）</div>
-          {bindings.map((command) => {
-            const isDefault =
-              command.keys.join(",") === (COMMAND_KEYS.find((c) => c.id === command.id)?.keys.join(",") ?? "");
-            return (
-              <div className="settings-row" key={command.id}>
-                <span>{command.label}</span>
-                <span className="shortcut-keys">
-                  {capturingId === command.id ? (
-                    <span className="shortcut-capture">按任意键组合…（Esc 取消）</span>
-                  ) : command.keys.length > 0 ? (
-                    command.keys.map((combo) => (
-                      <kbd key={combo}>
-                        <button
-                          type="button"
-                          className="shortcut-edit"
-                          title="点击修改这个快捷键"
-                          onClick={() => setCapturingId(command.id)}
-                        >
-                          {formatKey(combo)}
-                        </button>
-                      </kbd>
-                    ))
-                  ) : (
-                    <button
-                      type="button"
-                      className="shortcut-add"
-                      title="未绑定快捷键，点击设置一个"
-                      onClick={() => setCapturingId(command.id)}
-                    >
-                      添加快捷键
-                    </button>
-                  )}
-                  {!isDefault && (
-                    <button
-                      type="button"
-                      className="shortcut-reset"
-                      title="恢复默认键位"
-                      onClick={() => {
-                        setBinding(command.id, null);
-                      }}
-                    >
-                      ↺
-                    </button>
-                  )}
-                </span>
-              </div>
-            );
-          })}
+        <section className="settings-sec" data-sec="storage" style={{ display: searching || active === "storage" ? undefined : "none" }}>
+          <div className="settings-group">数据与缓存位置</div>
+          <div className="settings-row storage-row">
+            <span>数据目录（当前生效）</span>
+            <span className="settings-value storage-path">{dataPaths?.webview_data_dir ?? "…"}</span>
+          </div>
+          <div className="settings-row storage-row">
+            <span>自定义数据目录</span>
+            <span className="settings-value storage-path">
+              {dataPaths?.custom_data_dir ?? "（未设置，使用默认位置）"}
+            </span>
+          </div>
+          <div className="settings-row storage-row">
+            <span>配置目录（同步状态）</span>
+            <span className="settings-value storage-path">{dataPaths?.config_dir ?? "…"}</span>
+          </div>
+          <div className="settings-actions">
+            <button type="button" className="btn" onClick={onPickDataDir}>
+              选择自定义数据目录…
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={onClearDataDir}
+              disabled={!dataPaths?.custom_data_dir}
+            >
+              恢复默认
+            </button>
+          </div>
           <Hint>
-            与 Obsidian 一样，点命令右侧的键位再按新组合即可重绑定；组合需要带 Ctrl/Alt
-            或功能键（避免打字误触）。同一组合绑定到两条命令时，后绑定的一方生效、
-            原命令的该键位自动让出。编辑器内的键位（Tab 跳格、双击表格回源码等）不在此列。
+            应用设置、快捷键、收藏、最近打开与缓存都在「数据目录」里。选定自定义位置后
+            <b>重启应用生效</b>，启用时会自动把现有数据搬过去；「恢复默认」同样重启后回原位。
+            笔记永远保存在仓库目录里，不受这个设置影响。
           </Hint>
-          <div className="settings-group">固定键位</div>
-          <div className="settings-row"><span>表格内跳格</span><kbd>Tab</kbd><kbd>Shift Tab</kbd></div>
-          <div className="settings-row"><span>表格/图表回到源码</span><span className="settings-value">双击图表区</span></div>
-          <div className="settings-row"><span>系统浏览器打开链接</span><kbd>Ctrl 点击</kbd></div>
-          <div className="settings-row"><span>关闭标签</span><span className="settings-value">中键点击标签</span></div>
-          <div className="settings-row"><span>单元格结构菜单</span><span className="settings-value">右键点击单元格</span></div>
         </section>
+
+                {active === "shortcuts" && (
+          <section className="settings-sec" data-sec="shortcuts">
+            <HotkeysPane />
+          </section>
+        )}
 
         <section className="settings-sec" data-sec="about" style={{ display: searching || active === "about" ? undefined : "none" }}>
           <div className="settings-group">软件更新</div>
