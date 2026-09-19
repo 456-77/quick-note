@@ -147,6 +147,11 @@ export function createEditorState(
       livePreviewCompartment.of(modeExtensions(effectiveMode)),
       attachment ? attachmentPaste(attachment) : [],
       codePasteOptions ? smartPaste(codePasteOptions) : [],
+      // 空列表项上回车 = 退出列表（删掉标记）。必须用 highest 压过 lang-markdown
+      // 内置 Enter——它同样包在 Prec.high 里，同级时先注册的它会赢，导致
+      // 「紧凑两元素列表的空项」不退出而是插空行转松散列表，连按回车退不出
+      // 列表。见 exitEmptyListItem。
+      Prec.highest(keymap.of([{ key: "Enter", run: exitEmptyListItem }])),
       linkClickHandler(),
       altClickHandler(),
       // 重设计的搜索面板（Ctrl+F）：替代 CM 默认 Find Bar
@@ -178,6 +183,45 @@ export function createEditorState(
       editorToggleKeymap(),
     ],
   });
+}
+
+/** 行尾空列表项（只有标记没有内容）：`2. `、`- `、`- [ ] ` 等。 */
+const EMPTY_LIST_ITEM_RE = /^(\s*)(?:[-*+]|\d{1,9}[.)])\s+(?:\[[ xX]\]\s+)?\s*$/;
+
+/** 列表项行（取首部缩进用于兄弟判断）。 */
+const LIST_ITEM_RE = /^(\s*)(?:[-*+]|\d{1,9}[.)])\s+/;
+
+/**
+ * 空列表项上按回车：删掉标记退出列表，回到普通段落。
+ *
+ * lang-markdown 内置的 insertNewlineContinueMarkup 对「紧凑两元素列表的空项」
+ * 有个特殊分支：不退出，而是插一个空行把列表转成松散列表（源码注释
+ * "Move second item down, making tight two-item list non-tight"），表现即
+ * 1. 测试 / 空行 / 2.，要第三次回车才真正退出——快速连按回车时就是
+ * 「隔行续序号、退不出列表」。这里在键位层提前接管，且只查文档文本、
+ * 不查语法树，天然免疫快速连按时的增量解析竞态。
+ *
+ * 仅当紧邻上一行是同缩进的列表兄弟项时接管（这正是内置命令会走错分支的
+ * 场景）；单元素列表、空行之后的退出与嵌套层级的降级仍由内置命令处理。
+ */
+function exitEmptyListItem(view: EditorView): boolean {
+  const { state } = view;
+  const selection = state.selection.main;
+  if (!selection.empty) return false;
+  const line = state.doc.lineAt(selection.head);
+  if (selection.head !== line.to) return false; // 光标在行尾才接管
+  const match = EMPTY_LIST_ITEM_RE.exec(line.text);
+  if (!match || line.from === 0) return false;
+  const prev = state.doc.lineAt(line.from - 1);
+  if (!prev.text.trim()) return false; // 空行之后内置命令本来就会退出
+  const prevIndent = LIST_ITEM_RE.exec(prev.text)?.[1];
+  if (prevIndent === undefined || prevIndent !== match[1]) return false;
+  view.dispatch({
+    changes: { from: line.from, to: line.to, insert: match[1] },
+    selection: { anchor: line.from + match[1].length },
+    userEvent: "input.delete",
+  });
+  return true;
 }
 
 /**
