@@ -1,6 +1,8 @@
 import { basicSetup, EditorView } from "codemirror";
-import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
+import type { SyntaxNode } from "@lezer/common";
 import { keymap } from "@codemirror/view";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { json } from "@codemirror/lang-json";
 import { sql } from "@codemirror/lang-sql";
@@ -13,6 +15,7 @@ import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
 import { toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode } from "./codeEdit";
+import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
 import { isCursorInTable, tableShiftTab, tableTab } from "./tableEdit";
@@ -139,6 +142,8 @@ export function createEditorState(
       // GFM（表格、任务列表）+ 围栏代码块语法高亮。
       // 语言包由 @codemirror/language-data 动态按需加载，不进入主包。
       languageExtension(language),
+      // Markdown 成对符号自动闭合（仅 markdown 语言；判定核心在 autoPairs.ts）
+      autoPairExtension(language),
       EditorView.lineWrapping,
       EditorState.lineSeparator.of(separatorFor(lineEnding)),
       livePreviewContext.of(
@@ -222,6 +227,128 @@ function exitEmptyListItem(view: EditorView): boolean {
     userEvent: "input.delete",
   });
   return true;
+}
+
+/**
+ * basicSetup 内置 closeBrackets 会配对的字符——在代码语境里这些字符一律改为
+ * 原样插入（否则围栏代码块里写 `(`、`"` 会被强行补全，干扰代码内容）。
+ */
+const CODE_PLAIN_CHARS = new Set(["(", ")", "[", "]", "{", "}", '"', "'"]);
+
+/**
+ * Markdown 成对符号自动闭合（判定核心见 autoPairs.ts，本函数只做胶水）：
+ * 输入单字符时按语法上下文（围栏/行内代码）与光标前后文本判定动作并改写事务。
+ *
+ * - 仅 Markdown 语言启用；多光标与 IME 组合不走此路径（交给默认输入）。
+ * - `Prec.high` 保证先于 basicSetup 的 closeBrackets：需要接管 `[`（任务列表/图片）
+ *   并在代码语境里"原样插入"以压制其配对。
+ * - 语法树用 ensureSyntaxTree 强制解析到光标（预算 75ms）——快速输入时增量
+ *   解析可能滞后，直接 query 会把围栏内容误判为普通文本。
+ */
+function autoPairExtension(language: EditorLanguage): Extension {
+  if (language !== "markdown") return [];
+  return Prec.high(
+    EditorView.inputHandler.of((view, from, to, text) => {
+      if (text.length !== 1) return false;
+      const { state } = view;
+      if (state.selection.ranges.length > 1) return false;
+      ensureSyntaxTree(state, to, 75);
+      let inFence = false;
+      let inInlineCode = false;
+      for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(to, -1); node; node = node.parent) {
+        if (node.name === "FencedCode" || node.name === "CodeBlock" || node.name === "HTMLBlock") {
+          inFence = true;
+          break;
+        }
+        if (node.name === "InlineCode") {
+          inInlineCode = true;
+          break;
+        }
+      }
+      const action = markdownPairAction(text, {
+        before: state.sliceDoc(Math.max(0, from - 120), from),
+        after: state.sliceDoc(to, Math.min(state.doc.length, to + 120)),
+        hasSelection: from !== to,
+        inFence,
+        inInlineCode,
+      });
+      if (import.meta.env.DEV) {
+        const w = window as unknown as { __aplog?: string[] };
+        (w.__aplog ||= []).push(
+          `[ap] ${JSON.stringify(text)} f=${from} t=${to} fence=${inFence} inline=${inInlineCode} → ${action.kind}`,
+        );
+      }
+      if (action.kind === "none") {
+        // 代码语境：closeBrackets 的配对字符原样插入（禁用自动闭合）
+        if ((inFence || inInlineCode) && CODE_PLAIN_CHARS.has(text)) {
+          view.dispatch({
+            changes: { from: to, insert: text },
+            selection: { anchor: to + 1 },
+            userEvent: "input.type",
+          });
+          return true;
+        }
+        return false;
+      }
+      switch (action.kind) {
+        case "insert":
+          view.dispatch({
+            changes: { from: to, insert: action.text },
+            selection: { anchor: to + action.cursorOffset },
+            userEvent: "input.type",
+          });
+          return true;
+        case "wrap":
+          view.dispatch({
+            changes: [
+              { from, insert: action.opener },
+              { from: to, insert: action.closer },
+            ],
+            selection: EditorSelection.range(from + action.opener.length, to + action.opener.length),
+            userEvent: "input.type",
+          });
+          return true;
+        case "grow": {
+          const rightChar = action.rightChar ?? action.char;
+          const changes =
+            from === to
+              ? [
+                  { from: to, insert: action.char },
+                  { from: to + action.rightLen, insert: rightChar },
+                ]
+              : [
+                  { from: from - action.leftLen, insert: action.char },
+                  { from: to + action.rightLen, insert: rightChar },
+                ];
+          view.dispatch({
+            changes,
+            selection:
+              from === to
+                ? { anchor: to + 1 }
+                : EditorSelection.range(from + action.char.length, to + action.char.length),
+            userEvent: "input.type",
+          });
+          return true;
+        }
+        case "skip":
+          view.dispatch({ selection: { anchor: to + action.by }, userEvent: "select" });
+          return true;
+        case "edit": {
+          const start = from + action.fromOffset;
+          view.dispatch({
+            changes: {
+              from: start,
+              to: to + action.toOffset,
+              insert: action.text.replace(/\n/g, state.lineBreak),
+            },
+            selection: { anchor: start + action.cursorOffset },
+            userEvent: "input.type",
+          });
+          return true;
+        }
+      }
+    }),
+  );
 }
 
 /**

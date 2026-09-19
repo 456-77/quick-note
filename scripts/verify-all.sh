@@ -17,7 +17,8 @@
 #  11. 表格结构编辑与大纲：管道对齐（CJK 宽度）、行列增删、标题提取
 #  12. M4 增强功能：语言识别、周回顾格式、提醒判定、天气文案、引用清理、共享配置写回
 #  13. 行内代码 / 代码块切换的纯逻辑：包裹与取消判定、块级补位
-#  14. 比对基线：确认以上过程没有改动任何文件
+#  14. Markdown 成对符号自动闭合的纯逻辑：补全规则、选区包裹、成长/跳出、代码语境禁用
+#  15. 比对基线：确认以上过程没有改动任何文件
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -80,7 +81,11 @@ echo "=== 13/14 行内代码 / 代码块切换的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-code-edit.mjs
 
 echo
-echo "=== 14/14 比对基线：确认文件未被改动 ==="
+echo "=== 14/15 Markdown 成对符号自动闭合的纯逻辑 ==="
+node --experimental-strip-types --no-warnings scripts/verify-autopairs.mjs
+
+echo
+echo "=== 15/15 比对基线：确认文件未被改动 ==="
 bash scripts/verify-roundtrip.sh check "$VAULT"
 
 echo
