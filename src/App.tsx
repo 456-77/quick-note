@@ -592,6 +592,12 @@ export default function App() {
   /** 有未保存内容的标签。激活中的那份记在 dirty state；后台的记在这里。 */
   const dirtyTabs = useRef(new Set<string>());
   const activeTabRef = useRef<string | null>(null);
+  /**
+   * 视图当前显示的是哪个路径的内容。**同步更新**，不等 React 提交——
+   * currentRef/activeTabRef 要到渲染后才对齐，重命名换键这类同步流程需要
+   * 「此刻编辑器里的内容属于谁」的准确答案（见 handleDocChanged 与 submitRename）。
+   */
+  const viewOwnerRef = useRef<string | null>(null);
   const openTabsRef = useRef<NoteContent[]>([]);
   const modeRef = useRef(mode);
   /**
@@ -628,8 +634,16 @@ export default function App() {
   }, [dirty]);
 
   const handleDocChanged = useCallback(() => {
-    const path = currentRef.current?.path;
-    if (path) dirtyTabs.current.add(path);
+    const view = viewRef.current;
+    const path = viewOwnerRef.current;
+    // 每次文档变更都把**实时** EditorState 回写 stateStore：stateStore[path] 必须
+    // 始终等于编辑器里的内容。此前只在切走时捕获，激活中的标签一直是打开那一刻的
+    // 旧对象——重命名换键搬走的是旧内容（界面上"写好的内容消失"），实时状态却被
+    // 存进已换掉的旧路径键下（之后用旧名新建就"复用"了它的内容）。
+    if (path && view) {
+      stateStore.current.set(path, view.state);
+      dirtyTabs.current.add(path);
+    }
     setDirty(true);
     setRevision((r) => r + 1);
   }, []);
@@ -731,6 +745,7 @@ export default function App() {
       view?.setState(newState);
       view?.dispatch({ selection: { anchor: Math.min(anchor, view.state.doc.length) } });
       stateStore.current.set(note.path, newState);
+      viewOwnerRef.current = note.path;
       staleTabs.current.delete(note.path);
       dirtyTabs.current.delete(note.path);
       setOpenTabs((prev) =>
@@ -754,13 +769,16 @@ export default function App() {
       const view = viewRef.current;
       const stored = stateStore.current.get(path);
       if (!view || !stored) return;
-      const prev = currentRef.current?.path;
+      // 捕获用 viewOwnerRef 而非 currentRef：后者要等渲染才对齐，重命名换键后的
+      // 同步换页里它还指向旧路径——把实时状态写进死键，之后用旧名新建会复活旧内容。
+      const prev = viewOwnerRef.current;
       if (prev && prev !== path) {
         stateStore.current.set(prev, view.state);
         scrollStore.current.set(prev, view.scrollDOM.scrollTop);
         if (dirtyRef.current) dirtyTabs.current.add(prev);
       }
       view.setState(stored);
+      viewOwnerRef.current = path;
       view.scrollDOM.scrollTop = scrollStore.current.get(path) ?? 0;
       resourcesRef.current.notePath = path;
       // 存量状态的 Compartment 是它创建那一刻的模式/主题，切回来要对齐当前选择
@@ -829,6 +847,7 @@ export default function App() {
           setInTable(false);
           resourcesRef.current.notePath = null;
           viewRef.current?.setState(EditorState.create({}));
+          viewOwnerRef.current = null;
         }
       } else {
         // 关的是后台标签，激活者不变；但 dirty 标记可能在脏集合里，同步一次显示
@@ -988,6 +1007,7 @@ export default function App() {
       scrollStore.current.clear();
       staleTabs.current.clear();
       dirtyTabs.current.clear();
+      viewOwnerRef.current = null;
       setDirty(false);
       setRoundTrip(null);
       setConflict(null);
@@ -1142,6 +1162,7 @@ export default function App() {
         });
         setActiveTab(note.path);
         viewRef.current?.setState(newState);
+        viewOwnerRef.current = note.path;
         viewRef.current?.scrollDOM.scrollTop !== undefined &&
           (viewRef.current.scrollDOM.scrollTop = 0);
         setDirty(false);
@@ -1409,6 +1430,11 @@ export default function App() {
           stateStore.current.delete(tab.path);
           stateStore.current.set(nextPath, state);
         }
+        // 视图正在显示被改名标签的内容：换键后内容属于新路径，要及时改口，
+        // 否则随后的 activateTab 会把实时状态捕获进已不存在的旧路径键下
+        if (viewOwnerRef.current === tab.path) {
+          viewOwnerRef.current = nextPath;
+        }
         if (scrollStore.current.has(tab.path)) {
           const value = scrollStore.current.get(tab.path);
           scrollStore.current.delete(tab.path);
@@ -1517,6 +1543,7 @@ export default function App() {
             setInTable(false);
             resourcesRef.current.notePath = null;
             viewRef.current?.setState(EditorState.create({}));
+            viewOwnerRef.current = null;
           }
         }
       }
