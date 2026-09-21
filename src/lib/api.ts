@@ -174,6 +174,24 @@ export const copyPathsToClipboard = (paths: string[]) =>
 export const copyEntry = (vault: string, path: string, destDir: string) =>
   invoke<string>("copy_entry", { vault, path, destDir });
 
+/** 移动仓库内文件/目录到目标目录（拖拽"剪切"），返回新仓库相对路径。 */
+export const moveEntry = (vault: string, path: string, destDir: string) =>
+  invoke<string>("move_entry", { vault, path, destDir });
+
+/** 读取系统剪贴板里的文件/目录绝对路径列表（资源管理器"复制文件"语义）；没有则空数组。 */
+export const readClipboardFilePaths = () => invoke<string[]>("read_clipboard_file_paths");
+
+export interface CopyExternalResult {
+  /** 成功拷入的仓库相对路径。 */
+  copied: string[];
+  /** 拷入失败的来源（文件消失、占用等）。 */
+  failed: string[];
+}
+
+/** 把一组绝对路径的文件/目录复制进仓库目标目录（重名自动加序号）。 */
+export const copyExternalIntoVault = (vault: string, sources: string[], destDir: string) =>
+  invoke<CopyExternalResult>("copy_external_into_vault", { vault, sources, destDir });
+
 /** 弹出目录选择框；取消返回 null。 */
 export async function pickVault(): Promise<string | null> {
   const picked = await open({

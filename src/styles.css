@@ -1351,6 +1351,18 @@ div.tree-item:focus-visible {
   outline-offset: -1px;
 }
 
+/* 树内拖拽的落点提示：悬中的目录与根目录空白处 */
+.tree-item.is-drop {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.tree.is-root-drop {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
 .editor-empty-keys span {
   display: inline-flex;
   align-items: center;
@@ -4468,6 +4480,17 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 /* ============================================================================
    搜索面板（0.5 重设计）：浮动卡片 + 毛玻璃 + 图标化 + 动画
    ========================================================================== */
+/* 搜索命中高亮：黄色（用户指定）。CM 默认给深色主题的是青色半透明，辨识度差；
+   当前命中的那处用更深的琥珀色，与普通命中区分。!important 压过 CM 运行时
+   注入的主题（同特异性但更晚进文档）。 */
+.cm-editor .cm-searchMatch {
+  background: rgba(255, 213, 79, 0.55) !important;
+}
+
+.cm-editor .cm-searchMatch-selected {
+  background: rgba(255, 160, 0, 0.75) !important;
+}
+
 /* 定位：悬在编辑器右上角。 CM 会把面板挂在 .cm-editor 里 */
 .qn-search {
   position: absolute;

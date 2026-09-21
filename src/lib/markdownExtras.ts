@@ -82,6 +82,14 @@ function mountSanitized(container: HTMLElement, view: EditorView, html: string):
     else image.replaceWith(document.createTextNode(`🖼 ${image.getAttribute("alt") || source}`));
   }
 
+  // 清洗后的 HTML 里带的图片是异步加载的：加载完高度会变，必须让 CM 重测，
+  // 否则高度图陈旧、下方所有行的行号/点击/选区整体漂移
+  for (const image of Array.from(container.querySelectorAll("img"))) {
+    image.addEventListener("load", () => {
+      if (container.isConnected) view.requestMeasure();
+    });
+  }
+
   return true;
 }
 
@@ -171,6 +179,9 @@ export class MathWidget extends WidgetType {
           strict: "ignore",
         });
         box.classList.remove("is-loading");
+        // 渲染产物与占位文字高度不同：重测，别让 CM 的高度图停在占位尺寸上。
+        // 异步回调跑的时候 widget 可能已被移除，isConnected 守卫一下
+        if (box.isConnected) view.requestMeasure();
       })
       .catch((error: unknown) => {
         box.classList.remove("is-loading");

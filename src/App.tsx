@@ -37,7 +37,7 @@ import {
   IconStar,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, onVaultChanged, pickDirectory, pickVault, readBinary, readNote, readNoteOptional, renameEntry, searchVault, setCustomDataDir, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, searchVault, setCustomDataDir, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
@@ -47,6 +47,7 @@ import { clearEmbedCache } from "./lib/embed";
 import { requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
 import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
+import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
 import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
@@ -90,25 +91,6 @@ import "./styles.css";
 const VAULT_KEY = "quicknote.vault";
 const FAVORITES_V2_KEY = "quicknote.favorites.v2";
 
-/**
- * 右键菜单渲染后按实际尺寸夹回视口内。
- *
- * 面板边缘（右侧日记面板的 ⋯、顶栏仓库下拉）触发的菜单 x/y 贴着屏幕边，
- * 直接用 clientX/clientY 会把大半个菜单送出屏幕外。渲染后量一次实际宽高，
- * 越界就往回收——ref 回调在 DOM 插入后立刻跑，用户看不到跳动。
- */
-function menuRefClampedToViewport(x: number, y: number) {
-  return (el: HTMLDivElement | null) => {
-    if (!el) return;
-    let left = x;
-    let top = y;
-    const rect = el.getBoundingClientRect();
-    if (rect.right > window.innerWidth - 8) left = Math.max(8, window.innerWidth - rect.width - 8);
-    if (rect.bottom > window.innerHeight - 8) top = Math.max(8, window.innerHeight - rect.height - 8);
-    el.style.left = `${left}px`;
-    el.style.top = `${top}px`;
-  };
-}
 const MODE_KEY = "quicknote.mode";
 const SIDEBAR_KEY = "quicknote.sidebar";
 /** 停止输入多久后自动保存。写盘前会比较内容，未变则不触碰文件。 */
@@ -308,6 +290,31 @@ export default function App() {
     },
     [favorites, persistFavorites],
   );
+
+  /**
+   * 当前仓库里真实存在的笔记路径（收藏只对这些有意义）。
+   *
+   * 收藏是本机 localStorage 持久化的相对路径：换电脑、换仓库路径、别的机器上
+   * 删过文件，都会让存量收藏指向已不存在的文件——收藏列表只显示还存在的，
+   * 但角标如果直接数 favorites.length 就会对不上（迁移来的旧数据尤其明显）。
+   */
+  const existingNotePaths = useMemo(() => {
+    const set = new Set<string>();
+    for (const entry of entries) {
+      if (!entry.isDir && isMarkdownPath(entry.path)) set.add(entry.path);
+    }
+    return set;
+  }, [entries]);
+
+  /** 去重 + 只保留真实存在条目的收藏列表：角标与收藏视图都用它。 */
+  const visibleFavorites = useMemo(() => {
+    const seen = new Set<string>();
+    return favorites.filter((p) => {
+      if (seen.has(p) || !existingNotePaths.has(p)) return false;
+      seen.add(p);
+      return true;
+    });
+  }, [favorites, existingNotePaths]);
 
   const recordRecent = useCallback((path: string) => {
     setRecents((prev) => {
@@ -1392,36 +1399,19 @@ export default function App() {
     setError(null);
   }, []);
 
-  /** 重命名。被改名的笔记（或所在目录）如果正开着，要跟着换到新路径，否则下次保存会写回旧路径。 */
-  const submitRename = useCallback(async () => {
-    if (!renaming || !vault) return;
-    let name = draft.trim();
-    if (!name) return;
-
-    // 日记改名保留日期前缀。日记靠「文件名以日期开头」挂在日历上（当天列表、
-    // 打点、今日字数都依赖它）；把「2026-09-18.md」改成「复盘.md」会让日记从
-    // 当天列表消失，还会被「新建日记」当成当天没写过再建一篇空的。这里把前缀补回去。
-    let dateKept = false;
-    const renamePlan = dailyRenameName(renaming, name, daily.dateFormat);
-    if (renamePlan.kept && daily.folderFiles.includes(renaming)) {
-      name = renamePlan.name;
-      dateKept = true;
-    }
-
-    const openPath = currentRef.current?.path;
-    const affectedOpen =
-      openPath !== undefined && (openPath === renaming || openPath.startsWith(`${renaming}/`));
-
-    try {
-      if (dirty) await saveNow();
-      const result = await renameEntry(vault, renaming, name);
-      setRenaming(null);
-      setDraft("");
-      await refresh(vault);
-      // 所有受影响的标签（含后台）都要换键：路径是标签与状态存储的主键
+  /**
+   * 打开标签/状态存储/收藏/最近列表里所有以 oldPath 为前缀的键换成 newPath。
+   * 重命名与拖拽移动共用这套簿记：路径是标签与状态存储的主键，漏换键的话
+   * 下一次自动保存会把内容写回旧路径。活动标签被波及时换键后重新打开。
+   */
+  const rekeyEntryPaths = useCallback(
+    async (oldPath: string, newPath: string) => {
+      const openPath = currentRef.current?.path;
+      const affectedOpen =
+        openPath !== undefined && (openPath === oldPath || openPath.startsWith(`${oldPath}/`));
       const remap = (p: string) =>
-        p === renaming ? result.path : `${result.path}${p.slice(renaming.length)}`;
-      const affected = (p: string) => p === renaming || p.startsWith(`${renaming}/`);
+        p === oldPath ? newPath : `${newPath}${p.slice(oldPath.length)}`;
+      const affected = (p: string) => p === oldPath || p.startsWith(`${oldPath}/`);
       for (const tab of openTabsRef.current) {
         if (!affected(tab.path)) continue;
         const nextPath = remap(tab.path);
@@ -1470,6 +1460,33 @@ export default function App() {
         setActiveTab(nextPath);
         await openNote(nextPath);
       }
+    },
+    [openNote, persistFavorites],
+  );
+
+  /** 重命名。被改名的笔记（或所在目录）如果正开着，要跟着换到新路径，否则下次保存会写回旧路径。 */
+  const submitRename = useCallback(async () => {
+    if (!renaming || !vault) return;
+    let name = draft.trim();
+    if (!name) return;
+
+    // 日记改名保留日期前缀。日记靠「文件名以日期开头」挂在日历上（当天列表、
+    // 打点、今日字数都依赖它）；把「2026-09-18.md」改成「复盘.md」会让日记从
+    // 当天列表消失，还会被「新建日记」当成当天没写过再建一篇空的。这里把前缀补回去。
+    let dateKept = false;
+    const renamePlan = dailyRenameName(renaming, name, daily.dateFormat);
+    if (renamePlan.kept && daily.folderFiles.includes(renaming)) {
+      name = renamePlan.name;
+      dateKept = true;
+    }
+
+    try {
+      if (dirty) await saveNow();
+      const result = await renameEntry(vault, renaming, name);
+      setRenaming(null);
+      setDraft("");
+      await refresh(vault);
+      await rekeyEntryPaths(renaming, result.path);
       setStatus(
         dateKept
           ? `已重命名为「${name.replace(/\.md$/i, "")}」（已保留日期前缀，日记才会出现在当天列表）`
@@ -1482,7 +1499,7 @@ export default function App() {
       // 输入行保持展开，方便换个名字重试
       setError(String(e));
     }
-  }, [renaming, vault, draft, dirty, saveNow, refresh, openNote, daily.dateFormat, daily.folderFiles]);
+  }, [renaming, vault, draft, dirty, saveNow, refresh, rekeyEntryPaths, daily.dateFormat, daily.folderFiles]);
 
   /** 执行删除（移入仓库内的 .trash，可找回）。 */
   const confirmDelete = useCallback(async () => {
@@ -1936,6 +1953,54 @@ export default function App() {
     [vault, treeClipboard, refresh],
   );
 
+  /** 拖拽移动（剪切）树条目到目标目录，随后把打开标签/收藏/最近列表换键。 */
+  const moveTreeEntry = useCallback(
+    async (path: string, destDir: string) => {
+      if (!vault) return;
+      const parent = path.includes("/") ? path.slice(0, path.lastIndexOf("/")) : "";
+      if (parent === destDir) {
+        setStatus("文件已在目标目录中");
+        return;
+      }
+      if (destDir === path || destDir.startsWith(`${path}/`)) {
+        setError("不能把目录移动到它自己内部");
+        return;
+      }
+      try {
+        // 正开着的笔记先落盘再移动：拖走的是磁盘文件，未保存内容会留在旧路径
+        if (dirty) await saveNow();
+        const nextPath = await moveEntry(vault, path, destDir);
+        await refresh(vault);
+        await rekeyEntryPaths(path, nextPath);
+        setStatus(`已移动到「${destDir || "仓库根目录"}」`);
+        setError(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [vault, dirty, saveNow, refresh, rekeyEntryPaths],
+  );
+
+  /** 拖拽复制树条目到目标目录（按住 Ctrl 拖）。 */
+  const copyTreeTo = useCallback(
+    async (path: string, destDir: string) => {
+      if (!vault) return;
+      if (destDir === path || destDir.startsWith(`${path}/`)) {
+        setError("不能把目录复制到它自己内部");
+        return;
+      }
+      try {
+        const dest = await copyEntry(vault, path, destDir);
+        await refresh(vault);
+        setStatus(`已复制到「${destDir || "仓库根目录"}」：${dest}`);
+        setError(null);
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [vault, refresh],
+  );
+
   // 资源管理器 → 知识库：在编辑器/输入框以外按 Ctrl+V 时，把系统剪贴板里的
   // 文件写进「选中的目录」（无选中则用当前笔记所在目录）。
   useEffect(() => {
@@ -2013,7 +2078,6 @@ export default function App() {
       } else if (key === "v") {
         // 编辑器内 Ctrl+V 永远是粘贴文本；文件粘贴只在编辑器以外生效
         if (inEditor) return;
-        if (!treeClipboardRef.current) return;
         event.preventDefault();
         const picked = selectedPathRef.current;
         const pickedIsDir = picked
@@ -2026,7 +2090,32 @@ export default function App() {
               ? picked.slice(0, picked.lastIndexOf("/"))
               : ""
           : "";
-        void pasteIntoDir(dir);
+        void (async () => {
+          // 系统剪贴板优先：资源管理器复制的文件直接落库。应用内「复制」也写系统
+          // 剪贴板（copyTreeFile），所以一条路径同时覆盖两种来源；读不到文件列表
+          // （PowerShell 失败、剪贴板被占用）再回落应用内剪贴板。
+          try {
+            const sources = await readClipboardFilePaths();
+            if (sources.length > 0) {
+              const result = await copyExternalIntoVault(vault, sources, dir);
+              await refresh(vault);
+              if (result.copied.length > 0) {
+                setStatus(`已粘贴 ${result.copied.length} 个文件到「${dir || "仓库根目录"}」`);
+              }
+              if (result.failed.length > 0) {
+                setError(`粘贴失败：${result.failed.join("；")}`);
+              }
+              return;
+            }
+          } catch {
+            // 读系统剪贴板失败：走应用内剪贴板的回落
+          }
+          if (!treeClipboardRef.current) {
+            setStatus("剪贴板里没有可粘贴的文件");
+            return;
+          }
+          await pasteIntoDir(dir);
+        })();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -2619,7 +2708,7 @@ export default function App() {
               onClick={() => setLeftView("favorites")}
             >
               <IconStar size={13} />
-              收藏{favorites.length > 0 ? ` ${favorites.length}` : ""}
+              收藏{visibleFavorites.length > 0 ? ` ${visibleFavorites.length}` : ""}
             </button>
             <button
               type="button"
@@ -2692,13 +2781,15 @@ export default function App() {
             activePath={current?.path ?? null}
             filter={treeFilter}
             view={leftView}
-            favorites={favorites}
+            favorites={visibleFavorites}
             recents={recents}
             selectedPath={selectedPath}
             onSelectPath={setSelectedPath}
             onOpen={(p) => void openEntry(p)}
             onContext={openContextMenu}
             onReveal={(p) => void revealInExplorer(p)}
+            onMoveEntry={(p, dest) => void moveTreeEntry(p, dest)}
+            onCopyEntry={(p, dest) => void copyTreeTo(p, dest)}
           />
         </aside>
         <main className="editor-pane">

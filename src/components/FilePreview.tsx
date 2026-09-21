@@ -242,8 +242,16 @@ export default function FilePreview({ vault, path, onClose }: Props) {
         if (kind === "html") {
           const note = await readNote(vault, path);
           if (cancelled) return;
-          // sandbox 空串 = 禁脚本禁表单：预览第三方/导出的 HTML 时不执行其中代码
-          setHtml(DOMPurify.sanitize(note.content, { USE_PROFILES: { html: true } }));
+          // sandbox 空串 = 禁脚本禁表单：预览第三方/导出的 HTML 时不执行其中代码。
+          // FORCE_BODY 必须开：很多导出 HTML 以 <style> 开头（没有 <html> 外壳），
+          // 解析器会把它挪进 <head>，DOMPurify 默认只遍历 body——样式整体丢失，
+          // 预览只剩一堆无样式的裸文本。
+          setHtml(
+            DOMPurify.sanitize(note.content, {
+              USE_PROFILES: { html: true },
+              FORCE_BODY: true,
+            }),
+          );
           setLoading(false);
           return;
         }

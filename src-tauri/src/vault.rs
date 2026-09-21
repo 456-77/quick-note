@@ -999,6 +999,129 @@ pub fn copy_entry(vault: String, path: String, dest_dir: String) -> Result<Strin
     to_relative(&root, &target)
 }
 
+/// 移动仓库内的文件或目录到目标目录（拖拽"剪切"的落点）。
+/// 同卷 `fs::rename`，瞬时完成；重名自动加序号，不覆盖。返回新的仓库相对路径。
+#[tauri::command]
+pub fn move_entry(vault: String, path: String, dest_dir: String) -> Result<String, String> {
+    if path.trim().is_empty() {
+        return Err("不能移动仓库根目录".into());
+    }
+    let root = vault_root(&vault)?;
+    let source = resolve_existing(&root, &path)?;
+    let dest_root = if dest_dir.trim().is_empty() {
+        root.clone()
+    } else {
+        root.join(validate_rel(&dest_dir)?)
+    };
+    if !dest_root.is_dir() {
+        return Err(format!("目标目录不存在: {dest_dir}"));
+    }
+    // 目录不能移动进它自己（或自己的子目录）里
+    if source.is_dir() && dest_root.starts_with(&source) {
+        return Err("目标目录在源目录内部，不能移动".into());
+    }
+    if source.parent() == Some(dest_root.as_path()) {
+        return Err("目标目录就是它现在所在的位置".into());
+    }
+    let filename = source
+        .file_name()
+        .ok_or_else(|| "源路径没有文件名".to_string())?
+        .to_string_lossy()
+        .to_string();
+    let target = unique_path(&dest_root, &filename);
+    fs::rename(&source, &target).map_err(|e| format!("移动失败: {e}"))?;
+    to_relative(&root, &target)
+}
+
+/// 读取系统剪贴板里的**文件/目录列表**（资源管理器"复制文件"的语义）。
+///
+/// 走 PowerShell 的 `Get-Clipboard -Format FileDropList`，与
+/// `copy_paths_to_clipboard`（Set-Clipboard）同一套思路：不引入剪贴板依赖。
+/// 剪贴板里是文本/图片（没有文件列表）时返回空数组——调用方据此决定是否
+/// 回落到应用内剪贴板的粘贴。
+#[tauri::command]
+pub fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
+    // 先把控制台输出编码设成 UTF-8：默认按系统 OEM 代码页（中文系统是 GBK），
+    // 带中文的路径会变乱码
+    let script = "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; \
+                  $ErrorActionPreference='SilentlyContinue'; \
+                  $fl = Get-Clipboard -Format FileDropList; \
+                  if ($fl) { $fl | ForEach-Object { $_.FullName } }";
+    let output = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .output()
+        .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "读取剪贴板失败: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(stdout
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect())
+}
+
+/// 外部文件拷入仓库的结果：成功的落点与失败的名字分开报，部分成功也要反馈清楚。
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyExternalResult {
+    pub copied: Vec<String>,
+    pub failed: Vec<String>,
+}
+
+/// 把剪贴板（或任意来源）的**绝对路径**文件/目录复制进仓库的目标目录。
+/// 重名自动加序号，不覆盖；单个源失败不拦着其余的，失败清单随结果返回。
+#[tauri::command]
+pub fn copy_external_into_vault(
+    vault: String,
+    sources: Vec<String>,
+    dest_dir: String,
+) -> Result<CopyExternalResult, String> {
+    let root = vault_root(&vault)?;
+    let dest_root = if dest_dir.trim().is_empty() {
+        root.clone()
+    } else {
+        root.join(validate_rel(&dest_dir)?)
+    };
+    if !dest_root.is_dir() {
+        return Err(format!("目标目录不存在: {dest_dir}"));
+    }
+    let mut result = CopyExternalResult {
+        copied: Vec::new(),
+        failed: Vec::new(),
+    };
+    for source in sources {
+        let source_path = PathBuf::from(&source);
+        let filename = match source_path.file_name() {
+            Some(name) => name.to_string_lossy().to_string(),
+            None => {
+                result.failed.push(source);
+                continue;
+            }
+        };
+        if !source_path.exists() {
+            result.failed.push(source);
+            continue;
+        }
+        let target = unique_path(&dest_root, &filename);
+        let copied = if source_path.is_dir() {
+            crate::data_dir::copy_dir_all(&source_path, &target)
+                .map_err(|e| format!("复制目录失败: {e}"))
+        } else {
+            fs::copy(&source_path, &target).map(|_| ()).map_err(|e| format!("复制文件失败: {e}"))
+        };
+        match copied.and_then(|_| to_relative(&root, &target)) {
+            Ok(rel) => result.copied.push(rel),
+            Err(_) => result.failed.push(source),
+        }
+    }
+    Ok(result)
+}
+
 /// 读取一个附件（二进制）供同步上传。
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]

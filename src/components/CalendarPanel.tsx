@@ -14,6 +14,7 @@ import {
   validateDailyName,
 } from "../lib/daily";
 import type { DailyController } from "../lib/useDaily";
+import { menuRefClampedToViewport } from "../lib/menuClamp";
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
 
@@ -439,7 +440,7 @@ export default function CalendarPanel({
                   setTodoMenu(null);
                 }}
               />
-              <div className="context-menu" style={{ left: todoMenu.x, top: todoMenu.y }}>
+              <div className="context-menu" ref={menuRefClampedToViewport(todoMenu.x, todoMenu.y)} style={{ left: todoMenu.x, top: todoMenu.y }}>
                 <button
                   type="button"
                   onClick={() => {

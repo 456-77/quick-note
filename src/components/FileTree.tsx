@@ -59,6 +59,15 @@ const compareByDatePrefix = (a: string, b: string): number => {
 
 export type LeftView = "files" | "favorites" | "recents";
 
+/** 树内拖拽的 MIME 标记：dragover 时靠它区分「树内拖拽」与外部拖放。 */
+export const TREE_DRAG_MIME = "application/x-quicknote-tree-entry";
+
+/** 拖拽源通用处理：把条目路径写进 dataTransfer，允许移动与复制两种效果。 */
+function dragEntryStart(event: React.DragEvent, path: string): void {
+  event.dataTransfer.setData(TREE_DRAG_MIME, path);
+  event.dataTransfer.effectAllowed = "copyMove";
+}
+
 interface TreeNode {
   name: string;
   path: string;
@@ -232,6 +241,8 @@ function NoteRow({
       tabIndex={0}
       className={`tree-item tree-file${active ? " is-active" : ""}${picked ? " is-picked" : ""}`}
       style={indent ? { paddingLeft: `${indent}px` } : undefined}
+      draggable
+      onDragStart={(event) => dragEntryStart(event, node.path)}
       onClick={(event) => {
         // Alt+点击：在资源管理器中定位文件（revealItemInDir 会高亮它本身）
         if (event.altKey) {
@@ -280,6 +291,8 @@ function Node({
   onOpen,
   onContext,
   onReveal,
+  onMoveEntry,
+  onCopyEntry,
 }: {
   node: TreeNode;
   depth: number;
@@ -291,10 +304,15 @@ function Node({
   onOpen: (path: string) => void;
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
   onReveal: (path: string) => void;
+  /** 树内拖拽落点：普通拖 = 移动（剪切），Ctrl+拖 = 复制。 */
+  onMoveEntry: (path: string, destDir: string) => void;
+  onCopyEntry: (path: string, destDir: string) => void;
 }) {
   // 默认只展开"子树里有笔记"的目录：只放附件的目录（例如装满图片的 image/）
   // 若默认展开，会把侧栏刷满与笔记无关的条目。
   const [expanded, setExpanded] = useState(node.hasNotes);
+  /** 是不是正在被拖悬的落点：高亮提示松手就落到这里。 */
+  const [dropActive, setDropActive] = useState(false);
   const contextProps = {
     onContextMenu: (event: React.MouseEvent) => {
       event.preventDefault();
@@ -309,8 +327,27 @@ function Node({
           type="button"
           className={`tree-item tree-dir${expanded ? " is-open" : ""}${
             selectedPath === node.path ? " is-selected" : ""
-          }`}
+          }${dropActive ? " is-drop" : ""}`}
           style={{ paddingLeft: `${10 + depth * 14}px` }}
+          draggable
+          onDragStart={(event) => dragEntryStart(event, node.path)}
+          onDragOver={(event) => {
+            // 只接树内拖拽（外部文件拖放走别处）；Ctrl 决定复制还是移动
+            if (!event.dataTransfer.types.includes(TREE_DRAG_MIME)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = event.ctrlKey ? "copy" : "move";
+            setDropActive(true);
+          }}
+          onDragLeave={() => setDropActive(false)}
+          onDrop={(event) => {
+            const source = event.dataTransfer.getData(TREE_DRAG_MIME);
+            event.preventDefault();
+            event.stopPropagation();
+            setDropActive(false);
+            if (!source || source === node.path) return;
+            if (event.ctrlKey) onCopyEntry(source, node.path);
+            else onMoveEntry(source, node.path);
+          }}
           onClick={(event) => {
             // Alt+点击目录：在资源管理器中定位（高亮这个文件夹）
             if (event.altKey) {
@@ -345,6 +382,8 @@ function Node({
                 onOpen={onOpen}
                 onContext={onContext}
                 onReveal={onReveal}
+                onMoveEntry={onMoveEntry}
+                onCopyEntry={onCopyEntry}
               />
             ))}
           </div>
@@ -361,6 +400,8 @@ function Node({
         className="tree-item tree-other"
         style={{ paddingLeft: `${28 + depth * 14}px` }}
         title={`${node.path}（不支持打开 · Alt+点击在资源管理器中定位）`}
+        draggable
+        onDragStart={(event) => dragEntryStart(event, node.path)}
         onClick={(event) => {
           if (event.altKey) {
             event.preventDefault();
@@ -411,6 +452,8 @@ export default function FileTree({
   onOpen,
   onContext,
   onReveal,
+  onMoveEntry,
+  onCopyEntry,
 }: {
   entries: EntryMeta[];
   activePath: string | null;
@@ -426,9 +469,14 @@ export default function FileTree({
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
   /** Alt+点击：在系统资源管理器中定位该文件/目录（并高亮）。 */
   onReveal: (path: string) => void;
+  /** 树内拖拽：普通拖 = 移动（剪切），Ctrl+拖 = 复制。 */
+  onMoveEntry: (path: string, destDir: string) => void;
+  onCopyEntry: (path: string, destDir: string) => void;
 }) {
   const tree = useMemo(() => buildTree(entries), [entries]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
+  /** 拖到根目录空白处的落点高亮。 */
+  const [rootDrop, setRootDrop] = useState(false);
   const terms = useMemo(
     () => filter.trim().toLowerCase().split(/\s+/).filter(Boolean),
     [filter],
@@ -538,7 +586,36 @@ export default function FileTree({
   }
 
   return (
-    <div className="tree">
+    <div
+      className={`tree${rootDrop ? " is-root-drop" : ""}`}
+      onDragOver={(event) => {
+        if (!event.dataTransfer.types.includes(TREE_DRAG_MIME)) return;
+        // 落点在某个条目上（文件行没有自己的 drop 逻辑）：不抢，避免
+        // 「拖到文件上松手却落进了根目录」的误会
+        if ((event.target as HTMLElement).closest(".tree-item")) {
+          setRootDrop(false);
+          return;
+        }
+        event.preventDefault();
+        event.dataTransfer.dropEffect = event.ctrlKey ? "copy" : "move";
+        setRootDrop(true);
+      }}
+      onDragLeave={(event) => {
+        const next = event.relatedTarget as Node | null;
+        if (!next || !event.currentTarget.contains(next)) {
+          setRootDrop(false);
+        }
+      }}
+      onDrop={(event) => {
+        setRootDrop(false);
+        if ((event.target as HTMLElement).closest(".tree-item")) return;
+        const source = event.dataTransfer.getData(TREE_DRAG_MIME);
+        if (!source) return;
+        event.preventDefault();
+        if (event.ctrlKey) onCopyEntry(source, "");
+        else onMoveEntry(source, "");
+      }}
+    >
       {tree.map((node) => (
         <Node
           key={node.path}
@@ -551,6 +628,8 @@ export default function FileTree({
           onOpen={onOpen}
           onContext={onContext}
           onReveal={onReveal}
+          onMoveEntry={onMoveEntry}
+          onCopyEntry={onCopyEntry}
         />
       ))}
     </div>

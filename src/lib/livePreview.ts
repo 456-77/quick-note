@@ -452,6 +452,10 @@ class MermaidWidget extends WidgetType {
       box.innerHTML = svg;
       const element = box.querySelector("svg");
       if (element) enhanceMermaid(box, element as SVGSVGElement, context.vaultPath, context.notePath);
+      // 渲染后的 SVG 比占位文字高得多：不重测的话 CM 的高度图停在占位尺寸上，
+      // 后续所有点击定位/选区/行号都整体错位（选中的行和实际行对不上）。
+      // 异步回调跑的时候 widget 可能已被移除，isConnected 守卫一下。
+      if (box.isConnected) view.requestMeasure();
     };
     const cached = svgCache.get(this.code);
     if (cached) {
@@ -479,6 +483,7 @@ class MermaidWidget extends WidgetType {
         box.classList.add("is-error");
         const message = error instanceof Error ? error.message : String(error);
         box.textContent = `图表渲染失败：${message.split("\n")[0]}`;
+        if (box.isConnected) view.requestMeasure();
       }
     })();
 
@@ -1196,6 +1201,8 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
   cell.addEventListener("mousedown", (event) => event.stopPropagation());
 
   cell.addEventListener("focus", () => {
+    // 新一轮编辑：清掉上一轮的提交标记，否则改过的内容在 blur 时不会写回
+    committedCells.delete(cell);
     // 含行内样式的单元格（`code`、**粗体** 等被渲染成了元素）先切到**原文**编辑：
     // 直接以渲染态的 innerText 写回会把 `` ` `` / `**` 丢掉（等于静默破坏语法）。
     // 纯文本单元格 raw 与显示一致，交换是无感的。
@@ -1275,6 +1282,10 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
           cell.innerText = cell.dataset.orig;
         }
       }
+      // 标记为已提交：Esc 的语义是「放弃编辑」，但恢复渲染态后 innerText 是
+      // 渲染文本、与源码原文不等——紧随其后的 blur 会把标记吃掉变成一次提交，
+      // 把 `**粗体**` 写成粗体。先占住 committedCells，blur 就不会再走提交。
+      committedCells.add(cell);
       cell.blur();
     }
   });
@@ -1289,7 +1300,16 @@ function commitCellEdit(view: EditorView, wrap: HTMLElement, cell: HTMLElement):
 
   const orig = (cell.dataset.orig ?? "").trim();
   const raw = cell.innerText.replace(/\r?\n/g, " ").replace(/\|/g, "").trim();
-  if (raw === orig) return; // 没改：不动文档，widget 也就不用重建
+  if (raw === orig) {
+    // 切到原文编辑后没改就失焦：把渲染态恢复回来，否则格子会一直停在
+    // `**粗体**` 这样的源码显示（widget 不重建，没人替它换回去）。
+    const runs = cellRuns.get(cell);
+    if (runs && cell.children.length === 0) {
+      cell.textContent = "";
+      appendRuns(cell, runs);
+    }
+    return; // 没改：不动文档，widget 也就不用重建
+  }
 
   const row = Number(cell.dataset.row ?? "0");
   const col = Number(cell.dataset.col ?? "0");
@@ -1612,9 +1632,17 @@ class ImageWidget extends WidgetType {
     img.alt = this.alt;
     img.title = this.target;
     if (this.width !== null) img.style.width = `${this.width}px`;
+    // 图片从 0 高涨到真实高度：必须通知 CM 重新测量，否则高度图停在第 0 帧上，
+    // 下方的行号、点击落点、选区全部按旧几何算——整体往下漂移。error 分支
+    // （降级成标签）高度同样会变，一并重测。isConnected 守卫：事件触发时
+    // widget 可能已被移除。
+    img.addEventListener("load", () => {
+      if (box.isConnected) view.requestMeasure();
+    });
     // 文件不存在或目录未授权时退化成标签，避免留一个破图。
     img.addEventListener("error", () => {
       box.replaceChildren(imageChip(this.alt, this.target));
+      if (box.isConnected) view.requestMeasure();
     });
     // asset 协议按完整 URL 缓存：带上代际，裁剪覆写后立刻看到新图
     img.src = this.local ? `${source}?v=${imageEpoch}` : source;
@@ -1693,6 +1721,14 @@ class NoteEmbedWidget extends WidgetType {
     void renderEmbeddedNote(view.state.facet(livePreviewContext), this.target).then((html) => {
       box.classList.remove("is-loading");
       box.innerHTML = html;
+      // 嵌入内容比占位文字高得多：重测高度，别让下方行的几何停在占位尺寸上
+      if (box.isConnected) view.requestMeasure();
+      // 嵌入渲染出的 HTML 里可能带图片：加载完成还会再变一次高度
+      for (const image of Array.from(box.querySelectorAll("img"))) {
+        image.addEventListener("load", () => {
+          if (box.isConnected) view.requestMeasure();
+        });
+      }
     });
 
     return box;
