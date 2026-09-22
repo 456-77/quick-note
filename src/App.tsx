@@ -90,6 +90,8 @@ import "./styles.css";
 
 const VAULT_KEY = "quicknote.vault";
 const FAVORITES_V2_KEY = "quicknote.favorites.v2";
+/** 固定标签页的存储键（按仓库分桶，同收藏）。 */
+const PINNED_TABS_KEY = "quicknote.ui.pinnedTabs";
 
 const MODE_KEY = "quicknote.mode";
 const SIDEBAR_KEY = "quicknote.sidebar";
@@ -126,6 +128,12 @@ export default function App() {
   const [createFolderOverride, setCreateFolderOverride] = useState("");
   /** 正在重命名的条目路径；与 creating 共用同一行输入。 */
   const [renaming, setRenaming] = useState<string | null>(null);
+  /**
+   * 重命名输入行渲染在哪一侧：tree = 左侧栏（文件树发起），daily = 右侧面板
+   * （当天日记发起）。此前不区分——从右面板点重命名，输入框却出现在左栏，
+   * 左栏收起时用户根本找不到输入框。
+   */
+  const [renameOwner, setRenameOwner] = useState<"tree" | "daily">("tree");
   const [draft, setDraft] = useState("");
   /** 右键菜单：条目路径 + 是否目录 + 鼠标位置。 */
   const [menu, setMenu] = useState<{ path: string; isDir: boolean; x: number; y: number } | null>(
@@ -198,12 +206,25 @@ export default function App() {
   const [weekDialogOpen, setWeekDialogOpen] = useState(false);
   /** 正在裁剪的图片（仓库相对路径；null = 弹窗关闭）。 */
   const [cropPath, setCropPath] = useState<string | null>(null);
+  /** 标签页右键菜单（固定 / 关闭左侧·右侧·其他·全部）。 */
+  const [tabMenu, setTabMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  /** 固定的标签页路径（本机 localStorage 按仓库分桶）。固定 = 置顶显示、不可误关。 */
+  const [pinnedTabs, setPinnedTabs] = useState<string[]>([]);
 
   /** 激活标签的 meta。其余标签的未保存内容在各自的 EditorState 里。 */
   const current = useMemo(
     () => openTabs.find((tab) => tab.path === activeTab) ?? null,
     [openTabs, activeTab],
   );
+
+  const pinnedSet = useMemo(() => new Set(pinnedTabs), [pinnedTabs]);
+  /** 标签栏显示顺序：固定标签置顶（其余保持打开顺序）。右键菜单的左右侧也按它算。 */
+  const orderedOpenTabs = useMemo(() => {
+    if (pinnedSet.size === 0) return openTabs;
+    const pinned = openTabs.filter((tab) => pinnedSet.has(tab.path));
+    const rest = openTabs.filter((tab) => !pinnedSet.has(tab.path));
+    return pinned.length > 0 ? [...pinned, ...rest] : rest;
+  }, [openTabs, pinnedSet]);
 
   const applySettings = useCallback((patch: Partial<Settings>) => {
     setSettings(updateSettings(patch));
@@ -265,6 +286,31 @@ export default function App() {
     }
   }, [vault]);
 
+  // 固定标签与收藏一样按仓库分桶：切仓库各看各的固定。
+  useEffect(() => {
+    if (!vault) return;
+    try {
+      const raw = localStorage.getItem(PINNED_TABS_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      setPinnedTabs(map[vault] ?? []);
+    } catch {
+      setPinnedTabs([]);
+    }
+  }, [vault]);
+
+  // 固定列表变化就写回分桶存储（rename/move 的换键也走这里落盘）
+  useEffect(() => {
+    if (!vault) return;
+    try {
+      const raw = localStorage.getItem(PINNED_TABS_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      map[vault] = pinnedTabs;
+      localStorage.setItem(PINNED_TABS_KEY, JSON.stringify(map));
+    } catch {
+      // 存不进去只影响下次启动的固定状态
+    }
+  }, [pinnedTabs, vault]);
+
   const persistFavorites = useCallback(
     (next: string[]) => {
       try {
@@ -290,6 +336,13 @@ export default function App() {
     },
     [favorites, persistFavorites],
   );
+
+  /** 固定/取消固定标签：固定后置顶显示、不响应关闭，直到取消固定。 */
+  const togglePinTab = useCallback((path: string) => {
+    setPinnedTabs((prev) =>
+      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
+    );
+  }, []);
 
   /**
    * 当前仓库里真实存在的笔记路径（收藏只对这些有意义）。
@@ -369,6 +422,12 @@ export default function App() {
 
   useEffect(() => {
     localStorage.setItem("quicknote.ui.leftCollapsed", leftCollapsed ? "1" : "0");
+  }, [leftCollapsed]);
+
+  // 展开左栏时把水平滚动复位。收起状态下（宽 0、内容仍占位）焦点可能把容器的
+  // scrollLeft 顶开，展开后表现为面板内容整体左移、右侧"被截断"，重启才恢复。
+  useEffect(() => {
+    if (!leftCollapsed) sidebarLeftRef.current?.scrollTo({ left: 0 });
   }, [leftCollapsed]);
 
   useEffect(() => {
@@ -468,6 +527,7 @@ export default function App() {
   // 编辑器引用要提前声明：useDaily 的 liveWords 回调（今日字数实时源）在渲染期
   // 就要读激活的编辑器状态，而编辑器实例在下面的 effect 里才创建。
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const sidebarLeftRef = useRef<HTMLElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
 
   const daily = useDaily({
@@ -606,6 +666,8 @@ export default function App() {
    */
   const viewOwnerRef = useRef<string | null>(null);
   const openTabsRef = useRef<NoteContent[]>([]);
+  /** 固定标签的实时镜像：closeTab 等回调里避免为它重建闭包。 */
+  const pinnedTabsRef = useRef<Set<string>>(new Set());
   const modeRef = useRef(mode);
   /**
    * 编辑器状态里携带的资源上下文。
@@ -631,6 +693,10 @@ export default function App() {
   useEffect(() => {
     openTabsRef.current = openTabs;
   }, [openTabs]);
+
+  useEffect(() => {
+    pinnedTabsRef.current = pinnedSet;
+  }, [pinnedSet]);
 
   useEffect(() => {
     modeRef.current = mode;
@@ -821,6 +887,8 @@ export default function App() {
   /** 关闭标签。有未保存内容先落盘（后台标签直接用它存量的状态写，不用先激活）。 */
   const closeTab = useCallback(
     async (path: string) => {
+      // 固定标签不响应任何关闭入口（中键/关闭钮已被 UI 隐藏，这里兜底逻辑入口）
+      if (pinnedTabsRef.current.has(path)) return;
       if (dirtyTabs.current.has(path)) {
         const state = stateStore.current.get(path);
         const meta =
@@ -858,6 +926,61 @@ export default function App() {
         }
       } else {
         // 关的是后台标签，激活者不变；但 dirty 标记可能在脏集合里，同步一次显示
+        setDirty(dirtyTabs.current.has(activeTabRef.current ?? ""));
+      }
+    },
+    [vault, activateTab],
+  );
+
+  /**
+   * 批量关闭标签（标签右键菜单：关闭左侧/右侧/其他/全部）。
+   *
+   * 不能循环调 closeTab：它读的 openTabsRef 要等 React 渲染后才更新，连关两个
+   * 会拿同一份旧列表各滤一次，把已关的标签"复活"。这里一次性算好目标集合再动手。
+   */
+  const closeTabsBatch = useCallback(
+    async (targets: string[]) => {
+      const targetSet = new Set(targets);
+      if (targetSet.size === 0) return;
+      for (const path of targets) {
+        if (!dirtyTabs.current.has(path)) continue;
+        const state = stateStore.current.get(path);
+        const meta =
+          path === activeTabRef.current
+            ? currentRef.current
+            : openTabsRef.current.find((tab) => tab.path === path);
+        if (state && meta && vault) {
+          try {
+            await writeNote(vault, path, state.sliceDoc(), meta.hasBom);
+          } catch (e) {
+            setError(`关闭前保存失败：${e}`);
+            return; // 保存失败就不关，免得丢内容
+          }
+        }
+      }
+      for (const path of targets) {
+        dirtyTabs.current.delete(path);
+        staleTabs.current.delete(path);
+        stateStore.current.delete(path);
+        scrollStore.current.delete(path);
+      }
+      const previous = openTabsRef.current;
+      const index = previous.findIndex((tab) => tab.path === activeTabRef.current);
+      const next = previous.filter((tab) => !targetSet.has(tab.path));
+      setOpenTabs(next);
+      if (activeTabRef.current && targetSet.has(activeTabRef.current)) {
+        const neighbor = next[Math.min(Math.max(index, 0), next.length - 1)]?.path ?? null;
+        if (neighbor) {
+          activateTab(neighbor);
+        } else {
+          setActiveTab(null);
+          setDirty(false);
+          setInTable(false);
+          resourcesRef.current.notePath = null;
+          viewRef.current?.setState(EditorState.create({}));
+          viewOwnerRef.current = null;
+        }
+      } else {
         setDirty(dirtyTabs.current.has(activeTabRef.current ?? ""));
       }
     },
@@ -1392,8 +1515,9 @@ export default function App() {
     setMenu({ path, isDir, x, y });
   }, []);
 
-  const beginRename = useCallback((path: string) => {
+  const beginRename = useCallback((path: string, owner: "tree" | "daily" = "tree") => {
     setRenaming(path);
+    setRenameOwner(owner);
     setDraft(path.slice(path.lastIndexOf("/") + 1));
     setMenu(null);
     setError(null);
@@ -1439,6 +1563,8 @@ export default function App() {
       setOpenTabs((prev) =>
         prev.map((tab) => (affected(tab.path) ? { ...tab, path: remap(tab.path) } : tab)),
       );
+      // 固定标签跟着换键，否则固定状态指向不存在的旧路径
+      setPinnedTabs((prev) => prev.map((p) => (affected(p) ? remap(p) : p)));
       // 收藏与最近列表跟着换键，否则指向不存在的旧路径
       setFavorites((prev) => {
         const next = prev.map((p) => (affected(p) ? remap(p) : p));
@@ -1464,6 +1590,106 @@ export default function App() {
     [openNote, persistFavorites],
   );
 
+  /**
+   * 把正文**第一个一级标题**改成新名字（「重命名时同步一级标题」设置）。
+   *
+   * 三种存放位置各走各路：激活中的标签直接在视图里改（保住撤销历史）并立即落盘；
+   * 后台标签改它存量的 EditorState（标脏，交给关闭/自动保存写回）；没打开的
+   * 读盘-改-写回。找不到一级标题（或文档只有未闭合的 frontmatter）就不动内容，
+   * 不会凭空补标题。返回是否有改动。
+   */
+  const syncFirstHeading = useCallback(
+    async (path: string, title: string): Promise<boolean> => {
+      if (!vault) return false;
+      /** 找第一个 H1 行的下标（跳过 YAML frontmatter；未闭合的 frontmatter 不动）。 */
+      const findHeadingLine = (lines: string[]): number | null => {
+        let start = 0;
+        if (lines[0]?.trim() === "---") {
+          let closed = false;
+          for (let i = 1; i < lines.length; i += 1) {
+            if (lines[i].trim() === "---") {
+              start = i + 1;
+              closed = true;
+              break;
+            }
+          }
+          if (!closed) return null;
+        }
+        for (let i = start; i < lines.length; i += 1) {
+          if (/^\s*#[ \t]+\S/.test(lines[i])) return i;
+        }
+        return null;
+      };
+
+      const view = viewRef.current;
+      if (view && viewOwnerRef.current === path) {
+        const doc = view.state.doc;
+        const lines: string[] = [];
+        for (let n = 1; n <= doc.lines; n += 1) lines.push(doc.line(n).text);
+        const index = findHeadingLine(lines);
+        if (index === null) return false;
+        const line = doc.line(index + 1);
+        const match = /^(\s*)#[ \t]*/.exec(line.text);
+        if (!match) return false;
+        const insert = `${match[1]}# ${title}`;
+        if (insert === line.text) return false;
+        view.dispatch({ changes: { from: line.from, to: line.to, insert } });
+        // 改完立即落盘：重命名刚换过路径键，别把脏内容留给下一轮自动保存
+        const meta = openTabsRef.current.find((tab) => tab.path === path);
+        if (meta) {
+          try {
+            const result = await writeNote(vault, path, view.state.sliceDoc(), meta.hasBom);
+            setOpenTabs((prev) =>
+              prev.map((tab) =>
+                tab.path === path ? { ...tab, sha256: result.sha256, size: result.bytes } : tab,
+              ),
+            );
+            dirtyTabs.current.delete(path);
+            setDirty(false);
+          } catch (e) {
+            setError(String(e));
+          }
+        }
+        return true;
+      }
+
+      const stored = stateStore.current.get(path);
+      if (stored) {
+        const lines: string[] = [];
+        for (let n = 1; n <= stored.doc.lines; n += 1) lines.push(stored.doc.line(n).text);
+        const index = findHeadingLine(lines);
+        if (index === null) return false;
+        const line = stored.doc.line(index + 1);
+        const match = /^(\s*)#[ \t]*/.exec(line.text);
+        if (!match) return false;
+        const insert = `${match[1]}# ${title}`;
+        if (insert === line.text) return false;
+        stateStore.current.set(
+          path,
+          stored.update({ changes: { from: line.from, to: line.to, insert } }).state,
+        );
+        dirtyTabs.current.add(path);
+        return true;
+      }
+
+      const note = await readNoteOptional(vault, path);
+      if (!note) return false;
+      const lines = note.content.split("\n");
+      const index = findHeadingLine(lines);
+      if (index === null) return false;
+      const raw = lines[index];
+      const match = /^(\s*)#[ \t]*/.exec(raw);
+      if (!match) return false;
+      // CRLF 文件按 \n 切开后行尾带着 \r，替换时要原样保留
+      const cr = raw.endsWith("\r") ? "\r" : "";
+      lines[index] = `${match[1]}# ${title}${cr}`;
+      if (lines[index] === raw) return false;
+      await writeNote(vault, path, lines.join("\n"), note.hasBom);
+      return true;
+    },
+    [vault],
+  );
+
   /** 重命名。被改名的笔记（或所在目录）如果正开着，要跟着换到新路径，否则下次保存会写回旧路径。 */
   const submitRename = useCallback(async () => {
     if (!renaming || !vault) return;
@@ -1473,11 +1699,14 @@ export default function App() {
     // 日记改名保留日期前缀。日记靠「文件名以日期开头」挂在日历上（当天列表、
     // 打点、今日字数都依赖它）；把「2026-09-18.md」改成「复盘.md」会让日记从
     // 当天列表消失，还会被「新建日记」当成当天没写过再建一篇空的。这里把前缀补回去。
+    // 输入自带合法日期前缀（「2026-09-25 复盘」）时尊重输入：日记整体改到那一天。
     let dateKept = false;
+    let dateMoved: string | undefined;
     const renamePlan = dailyRenameName(renaming, name, daily.dateFormat);
     if (renamePlan.kept && daily.folderFiles.includes(renaming)) {
       name = renamePlan.name;
       dateKept = true;
+      dateMoved = renamePlan.date;
     }
 
     try {
@@ -1487,19 +1716,28 @@ export default function App() {
       setDraft("");
       await refresh(vault);
       await rekeyEntryPaths(renaming, result.path);
+      // 设置开启时，把正文第一个一级标题同步成新名字
+      let headingSynced = false;
+      if (getSettings().syncRenameHeading && result.path.toLowerCase().endsWith(".md")) {
+        const title = (result.path.split("/").pop() ?? "").replace(/\.md$/i, "");
+        if (title) headingSynced = await syncFirstHeading(result.path, title);
+      }
+      const suffix = headingSynced ? "，并同步了第一个一级标题" : "";
       setStatus(
-        dateKept
-          ? `已重命名为「${name.replace(/\.md$/i, "")}」（已保留日期前缀，日记才会出现在当天列表）`
-          : result.updated.length > 0
-            ? `已重命名为「${name}」，并更新了 ${result.updated.length} 篇笔记里的引用`
-            : `已重命名为「${name}」`,
+        dateMoved
+          ? `已改名为「${name.replace(/\.md$/i, "")}」，日记已改到 ${dateMoved}${suffix}`
+          : dateKept
+            ? `已重命名为「${name.replace(/\.md$/i, "")}」（已保留日期前缀，日记才会出现在当天列表）${suffix}`
+            : result.updated.length > 0
+              ? `已重命名为「${name}」，并更新了 ${result.updated.length} 篇笔记里的引用${suffix}`
+              : `已重命名为「${name}」${suffix}`,
       );
       setError(null);
     } catch (e) {
       // 输入行保持展开，方便换个名字重试
       setError(String(e));
     }
-  }, [renaming, vault, draft, dirty, saveNow, refresh, rekeyEntryPaths, daily.dateFormat, daily.folderFiles]);
+  }, [renaming, vault, draft, dirty, saveNow, refresh, rekeyEntryPaths, syncFirstHeading, daily.dateFormat, daily.folderFiles]);
 
   /** 执行删除（移入仓库内的 .trash，可找回）。 */
   const confirmDelete = useCallback(async () => {
@@ -1573,6 +1811,10 @@ export default function App() {
         persistFavorites(next);
         return next;
       });
+      // 固定状态同理：文件没了固定也没有意义
+      setPinnedTabs((prev) =>
+        prev.filter((p) => p !== target.path && !p.startsWith(`${target.path}/`)),
+      );
       setRecents((prev) => {
         const next = prev.filter(
           (p) => p !== target.path && !p.startsWith(`${target.path}/`),
@@ -2198,6 +2440,36 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [shortcuts, bindings]);
 
+  // 全局 Esc 兜底：重命名/新建输入行、右键菜单。此前 Esc 只挂在输入框自身的
+  // onKeyDown 上，焦点一点走（比如去点别的面板）Esc 就再也关不掉重命名了。
+  // 输入框内的 Esc 由输入框自己处理（冒泡到这里时 activeElement 还在行内，直接放过）。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      const active = document.activeElement as HTMLElement | null;
+      if (active?.closest(".create-row")) return;
+      if (tabMenu) {
+        setTabMenu(null);
+        return;
+      }
+      if (vaultMenu) {
+        setVaultMenu(null);
+        return;
+      }
+      if (menu) {
+        setMenu(null);
+        return;
+      }
+      if (renaming) {
+        cancelRename();
+        return;
+      }
+      if (creating) cancelCreate();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [renaming, creating, menu, vaultMenu, tabMenu, cancelRename, cancelCreate]);
+
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
   /**
@@ -2609,7 +2881,15 @@ export default function App() {
             >
               新建笔记
             </button>
-            <button type="button" onClick={() => beginRename(menu.path)}>
+            <button
+              type="button"
+              onClick={() =>
+                beginRename(
+                  menu.path,
+                  daily.folderFiles.includes(menu.path) ? "daily" : "tree",
+                )
+              }
+            >
               重命名
             </button>
             <button
@@ -2655,8 +2935,87 @@ export default function App() {
         </>
       )}
 
+      {tabMenu &&
+        (() => {
+          const index = orderedOpenTabs.findIndex((tab) => tab.path === tabMenu.path);
+          const closable = (tab: NoteContent) => !pinnedSet.has(tab.path);
+          const left = orderedOpenTabs.slice(0, index).filter(closable);
+          const right = orderedOpenTabs.slice(index + 1).filter(closable);
+          const others = orderedOpenTabs.filter((tab) => tab.path !== tabMenu.path && closable(tab));
+          const all = orderedOpenTabs.filter(closable);
+          const isPinned = pinnedSet.has(tabMenu.path);
+          return (
+            <>
+              <div
+                className="menu-backdrop"
+                onClick={() => setTabMenu(null)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setTabMenu(null);
+                }}
+              />
+              <div
+                className="context-menu"
+                ref={menuRefClampedToViewport(tabMenu.x, tabMenu.y)}
+                style={{ left: tabMenu.x, top: tabMenu.y }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    togglePinTab(tabMenu.path);
+                    setTabMenu(null);
+                  }}
+                >
+                  {isPinned ? "取消固定" : "固定标签"}
+                </button>
+                <button
+                  type="button"
+                  disabled={left.length === 0}
+                  onClick={() => {
+                    void closeTabsBatch(left.map((tab) => tab.path));
+                    setTabMenu(null);
+                  }}
+                >
+                  关闭左侧标签{left.length > 0 ? `（${left.length}）` : ""}
+                </button>
+                <button
+                  type="button"
+                  disabled={right.length === 0}
+                  onClick={() => {
+                    void closeTabsBatch(right.map((tab) => tab.path));
+                    setTabMenu(null);
+                  }}
+                >
+                  关闭右侧标签{right.length > 0 ? `（${right.length}）` : ""}
+                </button>
+                <button
+                  type="button"
+                  disabled={others.length === 0}
+                  onClick={() => {
+                    void closeTabsBatch(others.map((tab) => tab.path));
+                    setTabMenu(null);
+                  }}
+                >
+                  关闭其他标签
+                </button>
+                <button
+                  type="button"
+                  className="danger"
+                  disabled={all.length === 0}
+                  onClick={() => {
+                    void closeTabsBatch(all.map((tab) => tab.path));
+                    setTabMenu(null);
+                  }}
+                >
+                  关闭全部标签
+                </button>
+              </div>
+            </>
+          );
+        })()}
+
       <div className={`body${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}`}>
-        <aside className="sidebar sidebar-left">
+        <aside className="sidebar sidebar-left" ref={sidebarLeftRef}>
           <div className="panel-head">
             <span className="panel-title">知识库</span>
             <span className="panel-count" title="仓库内笔记数">{noteCount}</span>
@@ -2745,7 +3104,7 @@ export default function App() {
               )}
             </div>
           )}
-          {(creating || renaming) && (
+          {(creating || (renaming && renameOwner === "tree")) && (
             <div className="create-row">
               <input
                 autoFocus
@@ -2769,7 +3128,7 @@ export default function App() {
               />
               <div className="create-hint">
                 {renaming
-                  ? `重命名 ${renaming} · Enter 确认 / Esc 取消`
+                  ? `重命名 ${renaming.slice(renaming.lastIndexOf("/") + 1)} · Enter 确认 / Esc 取消`
                   : creating === "diary"
                     ? `新建到 ${daily.settings.folder || "仓库根目录"} · 文件名 = 日期 + 空格 + 名字 · Enter 确认 / Esc 取消`
                     : `新建到 ${(creating === "note" ? createFolderOverride : "") || createTargetFolder() || "仓库根目录"} · Enter 确认 / Esc 取消`}
@@ -2807,40 +3166,50 @@ export default function App() {
                 if (delta !== 0) el.scrollLeft += delta;
               }}
             >
-              {openTabs.map((tab) => (
-                <div
-                  key={tab.path}
-                  role="tab"
-                  aria-selected={tab.path === activeTab}
-                  tabIndex={0}
-                  className={`tab${tab.path === activeTab ? " is-active" : ""}${
-                    dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
-                  }`}
-                  title={tab.path}
-                  onClick={() => void openNote(tab.path)}
-                  onAuxClick={(event) => {
-                    // 中键关闭
-                    if (event.button === 1) {
+              {orderedOpenTabs.map((tab) => {
+                const isPinned = pinnedSet.has(tab.path);
+                return (
+                  <div
+                    key={tab.path}
+                    role="tab"
+                    aria-selected={tab.path === activeTab}
+                    tabIndex={0}
+                    className={`tab${tab.path === activeTab ? " is-active" : ""}${
+                      dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
+                    }${isPinned ? " is-pinned" : ""}`}
+                    title={isPinned ? `${tab.path}（已固定）` : tab.path}
+                    onClick={() => void openNote(tab.path)}
+                    onAuxClick={(event) => {
+                      // 中键关闭（固定标签不响应）
+                      if (event.button === 1) {
+                        event.preventDefault();
+                        if (!isPinned) void closeTab(tab.path);
+                      }
+                    }}
+                    onContextMenu={(event) => {
+                      // 浏览器式的标签页菜单：固定 / 关闭左侧·右侧·其他·全部
                       event.preventDefault();
-                      void closeTab(tab.path);
-                    }
-                  }}
-                >
-                  <span className="tab-title">{baseName(tab.path)}</span>
-                  <button
-                    type="button"
-                    className="tab-close"
-                    aria-label={`关闭 ${baseName(tab.path)}`}
-                    title="关闭（有改动会先保存）"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void closeTab(tab.path);
+                      setTabMenu({ path: tab.path, x: event.clientX, y: event.clientY });
                     }}
                   >
-                    <IconX size={11} />
-                  </button>
-                </div>
-              ))}
+                    <span className="tab-title">{baseName(tab.path)}</span>
+                    {!isPinned && (
+                      <button
+                        type="button"
+                        className="tab-close"
+                        aria-label={`关闭 ${baseName(tab.path)}`}
+                        title="关闭（有改动会先保存）"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void closeTab(tab.path);
+                        }}
+                      >
+                        <IconX size={11} />
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
           {inTable && current && (
@@ -2965,6 +3334,18 @@ export default function App() {
               onCreateDaily={(dateStr, name) => void openDaily(dateStr, name)}
               onOpenWeekly={(weekKey, mondayKey) => void openWeekly(weekKey, mondayKey)}
               onContext={openContextMenu}
+              renaming={
+                renaming && renameOwner === "daily"
+                  ? {
+                      path: renaming,
+                      draft,
+                      hint: `重命名 ${renaming.slice(renaming.lastIndexOf("/") + 1)} · Enter 确认 / Esc 取消`,
+                    }
+                  : null
+              }
+              onRenameDraft={setDraft}
+              onRenameSubmit={() => void submitRename()}
+              onRenameCancel={cancelRename}
             />
           )}
           {rightPanel === "outline" && (

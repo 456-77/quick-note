@@ -15,6 +15,7 @@ import { indentLess, indentMore } from "@codemirror/commands";
 import { indentUnit } from "@codemirror/language";
 import { EditorView } from "@codemirror/view";
 import { isInsideFence } from "./paste.ts";
+import { detectLanguage } from "./languageDetect.ts";
 
 // ---------------------------------------------------------------- 行内代码
 
@@ -152,9 +153,13 @@ export function toggleCodeBlock(view: EditorView): boolean {
     toLine.number - 1,
     range.to - toLine.from,
   );
-  const text = `${prefix}\`\`\`\n${selected}\n\`\`\`${suffix}`;
-  // 围栏开始（"```\n"）之后、正文之前的位置
-  const bodyFrom = range.from + prefix.length + 4;
+  // 围栏语言：选区能识别出来就用识别结果，识别不出来（含空选区）一律 text——
+  // 无语言围栏在一些渲染器里按容错处理不一致，text 永远是安全的"纯文本"声明
+  const lang = detectLanguage(selected, selected.includes("\n")) ?? "text";
+  const fence = `\`\`\`${lang}`;
+  const text = `${prefix}${fence}\n${selected}\n\`\`\`${suffix}`;
+  // 围栏开始（"```xxx\n"）之后、正文之前的位置
+  const bodyFrom = range.from + prefix.length + fence.length + 1;
 
   view.dispatch({
     changes: { from: range.from, to: range.to, insert: text },
@@ -231,6 +236,162 @@ export function toggleHeading(view: EditorView, level: number): boolean {
   });
   view.focus();
   return true;
+}
+
+// ---------------------------------------------------------------- 列表
+
+/** 列表项行：缩进 + 标记（`-`/`*`/`+` 或 `1.`/`1)`）+ 空白 + 内容。 */
+const LIST_ITEM_RE = /^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))([ \t]+)(.*)$/;
+/** 任务列表勾选框（列表项内容开头的 `[ ]`/`[x]`）。 */
+const TASK_BOX_RE = /^\[[ xX]\]([ \t]+|$)/;
+
+export type ListKind = "bullet" | "ordered";
+
+export interface ListMarkerInfo {
+  indent: string;
+  kind: ListKind;
+  /** 标记总长（缩进之后、内容之前，含标记后空白）。 */
+  markerLen: number;
+  content: string;
+}
+
+/** 解析一行的列表标记；不是列表项返回 null。 */
+export function listMarkerOf(lineText: string): ListMarkerInfo | null {
+  const match = LIST_ITEM_RE.exec(lineText);
+  if (!match) return null;
+  const marker = match[2] ?? `${match[3]}${match[4]}`;
+  return {
+    indent: match[1],
+    kind: match[2] !== undefined ? "bullet" : "ordered",
+    markerLen: marker.length + match[5].length,
+    content: match[6],
+  };
+}
+
+/**
+ * 对一行应用「切换列表」的变换（纯函数）。
+ *
+ * - `add`：非列表行加标记（保留原缩进）；已是另一种列表的换标记
+ *   （`1. 内容` ↔ `- 内容`，任务勾选框原样保留）；
+ * - `remove`：列表行摘掉标记；任务项连勾选框一起摘——标记与框是一体的，
+ *   只留一个孤零零的 `[ ]` 反而像没删干净。
+ * - 有序列表的 `add` 可传 `orderedMarker`（如 `"2. "`）：改写/新增的行用它，
+ *   让多行选区写出递增序号、已有序号一并归一（渲染端按位置算号，源码也
+ *   保持所见即所得）。
+ *
+ * 返回 `null` 表示此行没有可做的变换（非列表行删标记、已是目标类型且序号
+ * 无需归一化等），调用方跳过。
+ */
+export function listToggleLine(
+  lineText: string,
+  kind: ListKind,
+  mode: "add" | "remove",
+  orderedMarker?: string,
+): { text: string; delta: number } | null {
+  const item = listMarkerOf(lineText);
+  if (mode === "remove") {
+    if (!item) return null;
+    let content = item.content;
+    if (item.kind === "bullet") {
+      const box = TASK_BOX_RE.exec(content);
+      if (box) content = content.slice(box[0].length);
+    }
+    const text = item.indent + content;
+    return { text, delta: text.length - lineText.length };
+  }
+  const marker = orderedMarker ?? (kind === "bullet" ? "- " : "1. ");
+  if (item) {
+    if (item.kind === kind) {
+      // 同类型：有序列表带序号归一时要改写（如全 1. 归一成 1. 2. 3.）
+      if (!(kind === "ordered" && orderedMarker)) return null;
+      const text = `${item.indent}${orderedMarker}${item.content}`;
+      if (text === lineText) return null;
+      return { text, delta: text.length - lineText.length };
+    }
+    const text = `${item.indent}${marker}${item.content}`;
+    return { text, delta: text.length - lineText.length };
+  }
+  const indent = /^[ \t]*/.exec(lineText)?.[0] ?? "";
+  const rest = lineText.slice(indent.length);
+  const text = `${indent}${marker}${rest}`;
+  return { text, delta: marker.length };
+}
+
+/**
+ * 「切换无序/有序列表」：作用于选区覆盖的**所有行**（选中多段一次设/去序号）。
+ *
+ * 方向自动：选区内每个非空行都已是目标类型的列表 → 整体取消；否则整体添加/换类型。
+ * 与标题切换一样，围栏代码块内不动作。
+ */
+export function toggleList(view: EditorView, kind: ListKind): boolean {
+  const { state } = view;
+  const range = state.selection.main;
+  const fromLine = state.doc.lineAt(range.from);
+  const toLine = state.doc.lineAt(range.to);
+  const lines = state.doc.toString().split("\n");
+  if (isInsideFence(lines, fromLine.number - 1) || isInsideFence(lines, toLine.number - 1)) {
+    return false;
+  }
+
+  const target = state.doc.lineAt(range.head);
+  const targets: { line: ReturnType<typeof state.doc.line>; text: string }[] = [];
+  for (let number = fromLine.number; number <= toLine.number; number += 1) {
+    const line = state.doc.line(number);
+    targets.push({ line, text: line.text });
+  }
+  const nonEmpty = targets.filter(({ text }) => text.trim() !== "");
+  // 空选区/选区全空行时只处理光标所在行；多行选区中的空行不插标记
+  // （在选中的段落间留白是排版，不是列表项）
+  const scope =
+    nonEmpty.length > 0
+      ? nonEmpty
+      : [targets.find(({ line }) => line === target) ?? targets[0]];
+  const allKind = scope.length > 0 && scope.every(({ text }) => listMarkerOf(text)?.kind === kind);
+  const mode = allKind ? "remove" : "add";
+
+  const changes: Array<{ from: number; to: number; insert: string }> = [];
+  let headAnchor: number | null = null;
+  // 有序 add：序号按位置递增。起始值取选区内第一个有序项的源码序号（4. 开头
+  // 仍从 4 数起）；已有项也推进计数（占号），这样「1. a / b / c」会归一成
+  // 「1. a / 2. b / 3. c」而不是跳号。
+  let seq: number | null = null;
+  for (const { line, text } of scope) {
+    const item = listMarkerOf(text);
+    let orderedMarker: string | undefined;
+    if (mode === "add" && kind === "ordered") {
+      if (seq === null) {
+        seq = item?.kind === "ordered" ? Number(/^\s*(\d{1,9})/.exec(text)?.[1] ?? 1) : 1;
+      }
+      orderedMarker = `${seq}. `;
+      seq += 1;
+    }
+    const result = listToggleLine(text, kind, mode, orderedMarker);
+    if (!result) continue;
+    changes.push({ from: line.from, to: line.to, insert: result.text });
+    if (line === target) {
+      const headCol = Math.min(Math.max(range.head - line.from, 0), text.length);
+      headAnchor = line.from + Math.min(Math.max(headCol + result.delta, 0), result.text.length);
+    }
+  }
+  if (changes.length === 0) return false;
+
+  view.dispatch({
+    changes,
+    selection: { anchor: headAnchor ?? range.head },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
+/** 切换无序列表（`- `）的编辑器入口。 */
+export function toggleBulletList(view: EditorView): boolean {
+  return toggleList(view, "bullet");
+}
+
+/** 切换有序列表（`1. `）的编辑器入口。 */
+export function toggleNumberList(view: EditorView): boolean {
+  return toggleList(view, "ordered");
 }
 
 // ---------------------------------------------------------------- Tab 缩进

@@ -9,12 +9,12 @@ import { sql } from "@codemirror/lang-sql";
 import { yaml } from "@codemirror/lang-yaml";
 import { languages } from "@codemirror/language-data";
 import { separatorFor } from "./lineEndings";
-import { blockWidgetsField, livePreviewExtension } from "./livePreview";
+import { blockWidgetsField, gutterNumberAlign, livePreviewExtension } from "./livePreview";
 import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
-import { toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode } from "./codeEdit";
+import { toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
 import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
@@ -186,6 +186,8 @@ export function createEditorState(
       // 行内代码 / 代码块切换（Mod-` 等，键位在「设置 → 快捷键」里可改）。
       // 编辑器内分发：焦点不在编辑器时不接管，全局命令也不受影响。
       editorToggleKeymap(),
+      // 行号对到每行第一个文本行（标题行的 padding 补偿）；源码模式下自愈为无补丁
+      gutterNumberAlign(),
     ],
   });
 }
@@ -383,6 +385,14 @@ function editorToggleKeymap(): Extension {
       if (bindingFor("toggleCodeBlock").includes(combo)) {
         event.preventDefault();
         return toggleCodeBlock(view);
+      }
+      if (bindingFor("toggleBulletList").includes(combo)) {
+        event.preventDefault();
+        return toggleBulletList(view);
+      }
+      if (bindingFor("toggleNumberList").includes(combo)) {
+        event.preventDefault();
+        return toggleNumberList(view);
       }
       // 标题 1–6（Ctrl+1..6）：作用于光标所在行，再按同级别取消
       for (let level = 1; level <= 6; level += 1) {

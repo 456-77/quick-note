@@ -240,22 +240,36 @@ export function dailyDateOf(path: string, dateFormat: string): string | null {
 }
 
 /**
- * 日记改名时计算**保留日期前缀**的新名字（重命名保护的纯逻辑）。
+ * 日记改名时计算新名字（重命名保护的纯逻辑）。
  *
  * 日记靠「文件名以日期开头」挂在日历上；用户改名时丢掉日期（`2026-09-18.md` →
  * `复盘.md`）会让日记从当天列表消失。这里把前缀自动补回去；日期后面缺空格的
  * （`2026-09-18复盘`）也顺手补齐。非日记命名原样返回（`kept: false`）。
+ *
+ * 用户输入**自带合法日期前缀**时（`2026-09-25 复盘`）尊重输入——这正是把日记
+ * 挪到另一天的入口；新日期会随返回值给出，供调用方提示。周记格式（2026-W37）
+ * 不当日期处理。
  */
 export function dailyRenameName(
   originalPath: string,
   newName: string,
   dateFormat: string,
-): { name: string; kept: boolean } {
+): { name: string; kept: boolean; date?: string } {
   const diaryDate = dailyDateOf(originalPath, dateFormat);
   if (!diaryDate) return { name: newName, kept: false };
   const hadMd = newName.toLowerCase().endsWith(".md");
   const newBase = hadMd ? newName.slice(0, -3) : newName;
   if (newBase === diaryDate) return { name: newName, kept: false };
+
+  const userFirst = newBase.split(" ")[0];
+  if (
+    userFirst &&
+    userFirst !== diaryDate &&
+    moment(userFirst, dateFormat, true).isValid() &&
+    !isWeeklyName(userFirst)
+  ) {
+    return { name: newBase + (hadMd ? ".md" : ""), kept: true, date: userFirst };
+  }
   if (!newBase.startsWith(diaryDate)) {
     return { name: `${diaryDate} ${newName}`, kept: true };
   }
@@ -266,6 +280,70 @@ export function dailyRenameName(
     };
   }
   return { name: newName, kept: false };
+}
+
+/**
+ * 解析待办输入里的**日期前缀**，支持把待办记到未来/过去某一天：
+ * - 相对：`明天 买礼物` / `后天 交房租` / `大后天 面试`；
+ * - 绝对：`2026-10-01 出发`（完整日期）或 `10-01 出发`（补当前年份）。
+ *
+ * 只有前缀没有正文的（`2026-10-01`）不算日期语法——那更像是用户就想记这串字。
+ * 返回的 `date` 已按 `dateFormat` 格式化（与待办存储键同一格式）；不是日期语法
+ * 返回 null，调用方按普通待办处理。
+ */
+export function parseTodoDateInput(
+  text: string,
+  dateFormat: string,
+  today: string,
+): { date: string; text: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const base = moment(today, dateFormat, true).isValid() ? moment(today, dateFormat) : moment();
+
+  // 相对词定长两个字，允许不写空格（「明天买礼物」）；数字日期必须有空格，
+  // 免得「3-5 折优惠」这类文本被误当前缀
+  const relative = /^(明天|后天|大后天)\s*(.+)$/.exec(trimmed);
+  if (relative) {
+    const body = relative[2].trim();
+    if (!body) return null;
+    const days = relative[1] === "明天" ? 1 : relative[1] === "后天" ? 2 : 3;
+    return { date: base.clone().add(days, "day").format(dateFormat), text: body };
+  }
+
+  const absolute = /^(\d{4})-(\d{1,2})-(\d{1,2})(?:\s+(.+))?$/.exec(trimmed);
+  if (absolute) {
+    const body = (absolute[4] ?? "").trim();
+    if (!body) return null;
+    const candidate = moment({
+      year: Number(absolute[1]),
+      month: Number(absolute[2]) - 1,
+      date: Number(absolute[3]),
+    });
+    // 严格校验：2026-13-45 这类不是日期，当普通文本待办
+    if (
+      candidate.year() !== Number(absolute[1]) ||
+      candidate.month() !== Number(absolute[2]) - 1 ||
+      candidate.date() !== Number(absolute[3])
+    ) {
+      return null;
+    }
+    return { date: candidate.format(dateFormat), text: body };
+  }
+
+  const monthDay = /^(\d{1,2})-(\d{1,2})(?:\s+(.+))?$/.exec(trimmed);
+  if (monthDay) {
+    const body = (monthDay[3] ?? "").trim();
+    if (!body) return null;
+    const month = Number(monthDay[1]);
+    const day = Number(monthDay[2]);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    const candidate = moment({ year: base.year(), month: month - 1, date: day });
+    if (candidate.month() !== month - 1 || candidate.date() !== day) return null;
+    return { date: candidate.format(dateFormat), text: body };
+  }
+
+  return null;
 }
 
 /**

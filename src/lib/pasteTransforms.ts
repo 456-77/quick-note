@@ -68,6 +68,10 @@ export function htmlTableToMarkdown(html: string): string[] | null {
     ),
   );
   if (!matrix.some((row) => row.length > 0)) return null;
+  // 单行单列（1×1）没有表格语义——大量网页把整段文字套在 1×1 布局表格里，
+  // 转成只有一格的 Markdown 管道表格纯属噪音。返回 null 回落到纯文本粘贴。
+  const cellCount = matrix.reduce((sum, row) => sum + row.length, 0);
+  if (cellCount <= 1) return null;
   return tableLines(matrix);
 }
 

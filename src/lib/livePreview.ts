@@ -22,6 +22,7 @@ import {
   type ViewUpdate,
   WidgetType,
 } from "@codemirror/view";
+import type { Extension } from "@codemirror/state";
 import type { EditorState, Range } from "@codemirror/state";
 import { StateEffect, StateField } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
@@ -203,13 +204,9 @@ const MARK = {
   code: Decoration.mark({ class: "cm-lp-code" }),
   link: Decoration.mark({ class: "cm-lp-link" }),
   highlight: Decoration.mark({ class: "cm-lp-highlight" }),
-  /** 有序列表的序号（1. 2. …）：与圆点同风格的列表标记。 */
-  olMark: Decoration.mark({ class: "cm-lp-olmark" }),
   /** 反斜杠转义里保留的字符：回正文颜色，盖掉 escape 的语法主题色。 */
   plain: Decoration.mark({ class: "cm-lp-plain" }),
 };
-
-const OL_MARK = MARK.olMark;
 
 /** 行内「语法标记 + 内容」型节点的样式映射。 */
 const INLINE_MARKS: Record<string, Decoration> = {
@@ -269,6 +266,31 @@ class BulletWidget extends WidgetType {
     const span = document.createElement("span");
     span.className = "cm-lp-bullet";
     span.textContent = "•";
+    return span;
+  }
+}
+
+/**
+ * 有序列表的序号：按**位置**计算渲染（CommonMark 语义，Obsidian 同款）。
+ *
+ * 源码里写全 `1.`（快捷键切换、手工续写都这么写）是合法的，但逐字显示就是
+ * 「每行都是 1.」。这里按「列表第几项」渲染真正的序号，起始值取第一项的
+ * 源码数字（`4.` 开头就从 4 开始数）。
+ */
+class OrderedMarkWidget extends WidgetType {
+  readonly num: number;
+
+  constructor(num: number) {
+    super();
+    this.num = num;
+  }
+  eq(other: OrderedMarkWidget) {
+    return other.num === this.num;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-lp-olmark";
+    span.textContent = `${this.num}.`;
     return span;
   }
 }
@@ -1729,6 +1751,11 @@ class NoteEmbedWidget extends WidgetType {
           if (box.isConnected) view.requestMeasure();
         });
       }
+    }).catch(() => {
+      // 渲染管线抛错（正常错误会走错误 HTML 不进这里）：至少把加载态退掉并重测，
+      // 别让高度图停在占位尺寸上
+      box.classList.remove("is-loading");
+      if (box.isConnected) view.requestMeasure();
     });
 
     return box;
@@ -2149,9 +2176,23 @@ export function buildLivePreviewDecorations(
               replaceWith(node.from, node.to, new BulletWidget());
             }
           } else if (grand?.name === "OrderedList" && !isActive(ctx, node.from, node.to)) {
-            // 序号（1. 2. …）保持原文（编号由源码决定，不能替换），只加标记样式：
-            // 与圆点同色，序号看起来是「渲染过的列表标记」而不是普通正文。
-            marks.push(OL_MARK.range(node.from, node.to));
+            // 序号按位置计算渲染：源码写全 1. 也显示成 1. 2. 3.…（CommonMark 渲染语义）。
+            // 起始数字取列表第一项的源码序号（`4.` 开头就从 4 起），任务项占号不显示标记。
+            let index = 0;
+            for (let sibling = item.prevSibling; sibling; sibling = sibling.prevSibling) {
+              if (sibling.name === "OrderedItem") index += 1;
+            }
+            let start = 1;
+            let first = grand.firstChild;
+            while (first && first.name !== "OrderedItem") first = first.nextSibling;
+            if (first) {
+              const firstMark = first.getChild("ListMark");
+              const parsed = firstMark
+                ? /^\s*(\d{1,9})[.)]/.exec(doc.sliceString(firstMark.from, firstMark.to))
+                : null;
+              if (parsed) start = Number(parsed[1]);
+            }
+            replaceWith(node.from, node.to, new OrderedMarkWidget(start + index));
           }
           return false;
         }
@@ -2287,27 +2328,140 @@ function decorationsFor(view: EditorView): DecorationSet {
   );
 }
 
-/** Live Preview 扩展。装饰只在视口内计算，长文档不会因全量装饰而变慢。 */
-export function livePreviewExtension() {
+/**
+ * 行号 ↔ 内容对齐：把行号数字对到每行**第一个文本行**的视觉中心。
+ *
+ * CM 的行号盒与内容行等高、数字顶对齐——普通行与 wrap 的长段落（行号停第一行，
+ * Obsidian 式）这正是想要的位置；但标题行带着上下 padding，数字就吊在文字上方
+ * 一大截。纯 CSS 无法感知「这个行号盒对应的是不是标题行」（两列是平级子树），
+ * 这里在 CM 的测量阶段逐行配对：标题行把它计算出的 paddingTop + 半个行距差
+ * 补到行号盒上，非标题行清掉补丁（CM 会复用行号 DOM，不清会串行）。
+ *
+ * 无条件注册（不进 live 的 Compartment）：源码模式没有标题类，read 阶段什么都
+ * 配不上，顺手把残留补丁清干净。
+ */
+export function gutterNumberAlign(): Extension {
   return ViewPlugin.fromClass(
     class {
-      decorations: DecorationSet;
-
       constructor(view: EditorView) {
-        this.decorations = decorationsFor(view);
+        requestGutterAlign(view);
       }
-
       update(update: ViewUpdate) {
-        const forced = update.transactions.some((tr) =>
-          tr.effects.some((effect) => effect.is(refreshDecorations)),
-        );
-        if (update.docChanged || update.selectionSet || update.viewportChanged || forced) {
-          this.decorations = decorationsFor(update.view);
+        if (update.docChanged || update.viewportChanged || update.geometryChanged) {
+          requestGutterAlign(update.view);
         }
       }
     },
-    { decorations: (plugin) => plugin.decorations },
   );
+}
+
+interface GutterPadPlan {
+  el: HTMLElement;
+  pad: number;
+}
+
+/** 测量并落盘行号盒的 paddingTop 补偿（read 只读，write 统一改样式）。 */
+function requestGutterAlign(view: EditorView): void {
+  view.requestMeasure({
+    read(): GutterPadPlan[] {
+      const gutters = Array.from(
+        view.scrollDOM.querySelectorAll<HTMLElement>(".cm-lineNumbers .cm-gutterElement"),
+      );
+      const lines = Array.from(
+        view.scrollDOM.querySelectorAll<HTMLElement>(".cm-content > .cm-line"),
+      );
+      const tops = lines.map((el) => el.getBoundingClientRect().top);
+      const plan: GutterPadPlan[] = [];
+      gutters.forEach((el, index) => {
+        // 首个元素是 CM 的测量占位（"999"），没有对应内容行
+        if (index === 0) return;
+        const top = el.getBoundingClientRect().top;
+        let best = -1;
+        let bestDist = 5;
+        for (let j = 0; j < lines.length; j += 1) {
+          const dist = Math.abs(tops[j] - top);
+          if (dist < bestDist) {
+            bestDist = dist;
+            best = j;
+          }
+        }
+        const heading = best >= 0 && /\bcm-lp-h[1-6]\b/.test(lines[best].className);
+        if (!heading) {
+          if (el.style.paddingTop) plan.push({ el, pad: 0 });
+          return;
+        }
+        const lineStyle = getComputedStyle(lines[best]);
+        const padTop = parseFloat(lineStyle.paddingTop) || 0;
+        const rowHeight = parseFloat(lineStyle.lineHeight) || 0;
+        const numHeight = parseFloat(getComputedStyle(el).lineHeight) || 0;
+        const pad = Math.max(0, Math.round(padTop + (rowHeight - numHeight) / 2));
+        const current = parseFloat(el.style.paddingTop || "0") || 0;
+        if (Math.abs(current - pad) > 0.5) plan.push({ el, pad });
+      });
+      return plan;
+    },
+    write(plan) {
+      for (const { el, pad } of plan) {
+        if (pad > 0) el.style.paddingTop = `${pad}px`;
+        else el.style.paddingTop = "";
+      }
+    },
+  });
+}
+
+/** Live Preview 扩展。装饰只在视口内计算，长文档不会因全量装饰而变慢。 */
+export function livePreviewExtension() {
+  return [
+    ViewPlugin.fromClass(
+      class {
+        decorations: DecorationSet;
+
+        constructor(view: EditorView) {
+          this.decorations = decorationsFor(view);
+        }
+
+        update(update: ViewUpdate) {
+          const forced = update.transactions.some((tr) =>
+            tr.effects.some((effect) => effect.is(refreshDecorations)),
+          );
+          if (update.docChanged || update.selectionSet || update.viewportChanged || forced) {
+            this.decorations = decorationsFor(update.view);
+          }
+        }
+      },
+      { decorations: (plugin) => plugin.decorations },
+    ),
+    // 跟踪「鼠标拖选」窗口期：mousedown 起步、mouseup/失焦收尾。期间 blockWidgetsField
+    // 冻结翻转（见其 update），收尾时重算一次按最终选区定渲染态。
+    EditorView.domEventHandlers({
+      mousedown: (_event, view) => {
+        endMouseSelection();
+        mouseSelecting = true;
+        const release = () => {
+          window.removeEventListener("mouseup", release);
+          window.removeEventListener("blur", release);
+          if (releaseMouseSelection === release) releaseMouseSelection = null;
+          if (!mouseSelecting) return;
+          mouseSelecting = false;
+          // 冻结期间攒下的选区变化在这里一次性结算：该退源码的退源码
+          requestDecorationRefresh(view);
+        };
+        releaseMouseSelection = release;
+        window.addEventListener("mouseup", release);
+        window.addEventListener("blur", release);
+        return false;
+      },
+    }),
+  ];
+}
+
+/** 是否处于鼠标拖选窗口期（模块级：编辑器实例全局只有一份）。 */
+let mouseSelecting = false;
+let releaseMouseSelection: (() => void) | null = null;
+
+/** 提前结束拖选窗口（视图销毁等场景兜底，避免冻结卡死）。 */
+function endMouseSelection(): void {
+  if (releaseMouseSelection) releaseMouseSelection();
 }
 
 /**
@@ -2396,6 +2550,13 @@ export function computeBlockDecorations(state: EditorState): DecorationSet {
 export const blockWidgetsField = StateField.define<DecorationSet>({
   create: (state) => computeBlockDecorations(state),
   // 选区变化也要重算：光标进出表格/图表决定「渲染」还是「显示源码」。
-  update: (_value, tr) => computeBlockDecorations(tr.state),
+  update: (value, tr) => {
+    // 鼠标拖选进行中且文档未变：沿用现有装饰。选区一掠过表格/图表就把渲染块换成
+    // 源码行，高度骤变会让正在进行的拖选在新布局下命中不同的文本——选区一变又
+    // 触发重算、再翻回来……反复横跳就是用户看到的「选中表格源码时抖动」。
+    // 松手后由 mousedown 处的收尾逻辑按最终选区重算一次。
+    if (mouseSelecting && !tr.docChanged) return value;
+    return computeBlockDecorations(tr.state);
+  },
   provide: (field) => EditorView.decorations.from(field),
 });

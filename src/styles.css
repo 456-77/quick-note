@@ -677,9 +677,12 @@ kbd {
   box-shadow: -1px 0 0 var(--border-soft);
 }
 
-/* 让收起动画不把内容挤变形：内容保持自身宽度，被裁掉而不是重排 */
+/* 让收起动画不把内容挤变形：内容保持自身宽度，被裁掉而不是重排。
+   宽度要给子元素自带的左右 margin（各 10px，共 20px）留出余量——此前直接用
+   面板全宽，子元素外宽超出容器 20px，被 overflow:hidden 永久裁掉右边一条，
+   表现为「面板右侧内容被截断」（重命名输入行挂出来时尤其明显）。 */
 .sidebar > * {
-  min-width: var(--sidebar-width);
+  min-width: calc(var(--sidebar-width) - 20px);
 }
 
 .body.left-collapsed > .sidebar-left,
@@ -1020,6 +1023,11 @@ div.tree-item:focus-visible {
   display: flex;
   flex-direction: column;
   animation: rise-in 0.13s ease;
+}
+
+.context-menu button:disabled {
+  opacity: 0.38;
+  cursor: default;
 }
 
 /* 顶栏仓库下拉：复用右键菜单的容器样式，另加分组分隔线与空态 */
@@ -1430,6 +1438,10 @@ html.qn-line-numbers .editor-host .cm-lineNumbers .cm-gutterElement {
   padding: 0 6px 0 4px;
   text-align: right;
   color: var(--text-faint);
+  /* 数字默认顶在行盒顶部：普通行/长段落（wrap 多行）这正是想要的位置——
+     Obsidian 式「行号对第一行」。标题行因上下 padding 需要把数字下移，
+     由 gutterNumberAlign 插件在测量阶段逐行补 paddingTop（见 livePreview.ts），
+     纯 CSS 无法感知「这个行号盒对应的是不是标题行」。 */
 }
 
 /* 行号贴着正文列（Obsidian 式）：gutter 以「净宽为零」叠进居中偏移区——
@@ -2171,6 +2183,22 @@ html.qn-alt-held .cm-line {
   content: "•";
   margin-left: 4px;
   color: var(--accent);
+}
+
+/* 固定标签：左侧强调点代替关闭钮（固定中不可关闭），弱化背景示意"钉住了" */
+.tab.is-pinned .tab-title::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-right: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+  vertical-align: 1px;
+}
+
+.tab.is-pinned .tab-close {
+  display: none;
 }
 
 .tab-close {

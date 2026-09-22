@@ -85,7 +85,11 @@ echo "=== 14/15 Markdown 成对符号自动闭合的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-autopairs.mjs
 
 echo
-echo "=== 15/15 比对基线：确认文件未被改动 ==="
+echo "=== 15/16 列表切换 / 日记改名日期 / 待办日期前缀的纯逻辑 ==="
+node --experimental-strip-types --no-warnings scripts/verify-lists-daily.mjs
+
+echo
+echo "=== 16/16 比对基线：确认文件未被改动 ==="
 bash scripts/verify-roundtrip.sh check "$VAULT"
 
 echo

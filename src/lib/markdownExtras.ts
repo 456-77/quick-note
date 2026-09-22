@@ -182,6 +182,11 @@ export class MathWidget extends WidgetType {
         // 渲染产物与占位文字高度不同：重测，别让 CM 的高度图停在占位尺寸上。
         // 异步回调跑的时候 widget 可能已被移除，isConnected 守卫一下
         if (box.isConnected) view.requestMeasure();
+        // KaTeX 的 woff2 字体是渲染之后才异步下载的，就位后公式高度还会再变一次
+        // （字号相同但基线/行高不同）——字体就绪再补一次重测，行号/选区才不会漂
+        void document.fonts?.ready.then(() => {
+          if (box.isConnected) view.requestMeasure();
+        });
       })
       .catch((error: unknown) => {
         box.classList.remove("is-loading");

@@ -33,6 +33,11 @@ export interface Settings {
   /** 编辑器是否显示行号数字（默认关：笔记不是代码）。 */
   showLineNumbers: boolean;
   /**
+   * 重命名笔记/日记时是否把正文**第一个一级标题**同步改成新名字。
+   * 只改已存在的 `# 标题` 行，不会凭空补标题。
+   */
+  syncRenameHeading: boolean;
+  /**
    * Markdown 渲染风格：
    * - `default`：内置的深色高级观感；
    * - `blueTopaz`：Blue Topaz 同源的渲染观感（彩色标题、tint 表头、重 callout）。
@@ -73,6 +78,7 @@ const DEFAULTS: Settings = {
   // 默认 Obsidian 式：打开笔记替换当前标签；要并存才切 newTab
   openNoteMode: "replace",
   showLineNumbers: false,
+  syncRenameHeading: true,
   renderStyle: "default",
   bgEnabled: false,
   bgImagePath: "",

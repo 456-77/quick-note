@@ -261,6 +261,20 @@ export default function SettingsDialog({
             已打开过的笔记永远切回原有标签，两种模式一致。标签多时可以在标签栏上
             用滚轮左右滑动。
           </Hint>
+          <label className="settings-row">
+            <span>重命名时同步一级标题</span>
+            <input
+              type="checkbox"
+              checked={settings.syncRenameHeading}
+              onChange={(event) =>
+                applySettings({ syncRenameHeading: event.target.checked })
+              }
+            />
+          </label>
+          <Hint>
+            重命名笔记或日记后，把正文**第一个** `# 一级标题` 行同步改成新名字
+            （不会凭空补标题；标题里有时间时也会跟着日期一起变）。只影响设置后的重命名。
+          </Hint>
         </section>
 
         <section className="settings-sec" data-sec="appearance" style={{ display: searching || active === "appearance" ? undefined : "none" }}>

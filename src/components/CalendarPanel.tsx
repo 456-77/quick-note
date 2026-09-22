@@ -10,6 +10,7 @@ import {
   monthDiaryCount,
   monthGrid,
   monthTitle,
+  parseTodoDateInput,
   streakDays,
   validateDailyName,
 } from "../lib/daily";
@@ -40,6 +41,15 @@ interface Props {
    * 就等于把 M1 已经验证过的改名会同步 wiki 引用、删除进 .trash 这些行为复制一遍。
    */
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
+  /**
+   * 由本面板发起的重命名（当天日记行的右键/⋯）：输入行就渲染在本面板里，
+   * 不再借用左侧栏的输入行——之前复用的结果是「点右侧的重命名，输入框出现在
+   * 左侧知识库」，左栏收起时甚至根本看不见输入框。
+   */
+  renaming: { path: string; draft: string; hint: string } | null;
+  onRenameDraft: (value: string) => void;
+  onRenameSubmit: () => void;
+  onRenameCancel: () => void;
 }
 
 /**
@@ -55,6 +65,10 @@ export default function CalendarPanel({
   onCreateDaily,
   onOpenWeekly,
   onContext,
+  renaming,
+  onRenameDraft,
+  onRenameSubmit,
+  onRenameCancel,
 }: Props) {
   const { settings, dateFormat, today, selectedDate, setSelectedDate, dateSet, weeklySet } =
     controller;
@@ -148,6 +162,17 @@ export default function CalendarPanel({
   const submitTodo = () => {
     const text = todoDraft.trim();
     if (!text) return;
+    // 日期前缀语法：明天 / 后天 / 10-01 / 2026-10-01 → 待办记到那天（未来待办）。
+    // 添加后把选中日（和视图月份）跳过去，"记到那天了"立刻看得见。
+    const scheduled = parseTodoDateInput(text, dateFormat, today);
+    if (scheduled) {
+      controller.addTodo(scheduled.date, scheduled.text);
+      setTodoDraft("");
+      setSelectedDate(scheduled.date);
+      const target = moment(scheduled.date, dateFormat, true);
+      if (target.isValid()) setViewMonth(target.clone().startOf("month"));
+      return;
+    }
     controller.addTodo(selectedDate, text);
     setTodoDraft("");
   };
@@ -287,6 +312,22 @@ export default function CalendarPanel({
               ＋ 新建
             </button>
           </div>
+          {renaming && (
+            <div className="create-row cal-create-row">
+              <input
+                autoFocus
+                type="text"
+                value={renaming.draft}
+                onChange={(event) => onRenameDraft(event.target.value)}
+                onFocus={(event) => event.currentTarget.select()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") onRenameSubmit();
+                  if (event.key === "Escape") onRenameCancel();
+                }}
+              />
+              <div className="create-hint">{renaming.hint}</div>
+            </div>
+          )}
           {dayNotes.length === 0 && <div className="cal-daynotes-empty">当天还没有日记</div>}
           {dayNotes.map((path) => (
             <div
@@ -481,7 +522,7 @@ export default function CalendarPanel({
             ref={addInputRef}
             rows={1}
             value={todoDraft}
-            placeholder="添加待办：Enter 确认 · Shift+Enter 换行"
+            placeholder="添加待办：Enter 确认 · Shift+Enter 换行 · 前缀「明天 / 10-01 / 2026-10-01」记到那天"
             onChange={(event) => setTodoDraft(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {

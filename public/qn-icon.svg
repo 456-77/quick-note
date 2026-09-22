@@ -1,0 +1,11 @@
+<!-- 应用图标（与 src-tauri/icons 同一设计：靛蓝渐变圆角方块 + 白色闪电）。 -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7676f2"/>
+      <stop offset="1" stop-color="#4646c2"/>
+    </linearGradient>
+  </defs>
+  <rect x="0" y="0" width="1024" height="1024" rx="226" fill="url(#bg)"/>
+  <path fill="#ffffff" d="M614.4 61.44 L266.24 573.44 L471.04 573.44 L389.12 962.56 L757.76 450.56 L542.72 450.56 Z"/>
+</svg>

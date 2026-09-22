@@ -41,6 +41,8 @@ export const COMMAND_KEYS: CommandKeys[] = [
   { id: "newFolder", label: "新建文件夹", group: "edit", keys: [] },
   { id: "toggleInlineCode", label: "切换行内代码", desc: "选中则包裹，再按取消", group: "edit", keys: ["Mod-`"] },
   { id: "toggleCodeBlock", label: "切换代码块", desc: "围栏包裹选区或插入空块", group: "edit", keys: ["Mod-Shift-`"] },
+  { id: "toggleBulletList", label: "切换无序列表", desc: "选中多行整体加/去「- 」标记", group: "markdown", keys: ["Mod-Shift-8"] },
+  { id: "toggleNumberList", label: "切换有序列表", desc: "选中多行整体加/去「1. 」序号", group: "markdown", keys: ["Mod-Shift-9"] },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },
   { id: "heading2", label: "标题 2", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-2"] },
@@ -134,17 +136,34 @@ export function comboOf(event: KeyboardEvent): string {
 /**
  * 用 `event.code` 归一的组合串；无法归一时返回 null。
  *
- * Shift + 反引号在美式键盘上 `event.key` 是 `~`，按 key 匹配会让
- * 「切换代码块」的默认键位 `Mod-Shift-\`` 永远打不中。code（物理键位）才与
- * 键盘布局无关，捕获与匹配两侧都要用它兜底。
+ * Shift 会改写 `event.key`（Shift+反引号是 `~`、Shift+8 是 `*`），按 key 匹配会让
+ * 「切换代码块」的 `Mod-Shift-\``、「切换无序列表」的 `Mod-Shift-8` 永远打不中。
+ * code（物理键位）与键盘布局无关，捕获与匹配两侧都要用它兜底。
  */
+const CODE_KEY_NAMES: Record<string, string> = {
+  Backquote: "`",
+  Digit1: "1",
+  Digit2: "2",
+  Digit3: "3",
+  Digit4: "4",
+  Digit5: "5",
+  Digit6: "6",
+  Digit7: "7",
+  Digit8: "8",
+  Digit9: "9",
+  Digit0: "0",
+  Minus: "-",
+  Equal: "=",
+};
+
 export function comboOfCode(event: KeyboardEvent): string | null {
-  if (event.code !== "Backquote") return null;
+  const name = CODE_KEY_NAMES[event.code];
+  if (!name) return null;
   const parts: string[] = [];
   if (event.ctrlKey || event.metaKey) parts.push("Mod");
   if (event.altKey) parts.push("Alt");
   if (event.shiftKey) parts.push("Shift");
-  parts.push("`");
+  parts.push(name);
   return parts.join("-");
 }
 
