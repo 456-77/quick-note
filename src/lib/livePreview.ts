@@ -39,6 +39,7 @@ import {
   type TableBlock,
 } from "./table.ts";
 import { renderEmbeddedNote } from "./embed.ts";
+import { openLightbox } from "./lightbox.ts";
 import {
   findComments,
   findHighlights,
@@ -365,6 +366,19 @@ class CodeHeaderWidget extends WidgetType {
     box.append(chip, copy);
     return box;
   }
+}
+
+/**
+ * 日志行 → 级别（log 块阅读优化用）。栈帧跟随行归入 error 语境：
+ * `at com.foo.Bar(...)`、`Caused by:` 总是跟在 ERROR 行后面。
+ */
+function logLevelOf(text: string): "error" | "warn" | "info" | "debug" | null {
+  if (/^\s*(?:at\s+[\w$./]+\(|Caused by:|\.\.\.\s*\d+\s+more)/.test(text)) return "error";
+  if (/\b(?:ERROR|SEVERE|FATAL|CRITICAL)\b/.test(text)) return "error";
+  if (/\b(?:WARN|WARNING)\b/.test(text)) return "warn";
+  if (/\bINFO\b/.test(text)) return "info";
+  if (/\b(?:DEBUG|TRACE)\b/.test(text)) return "debug";
+  return null;
 }
 
 /** Mermaid 的渲染入口（只用到这两个方法，不必依赖它的完整类型定义）。 */
@@ -1689,6 +1703,7 @@ class ImageWidget extends WidgetType {
         });
         bar.appendChild(btn);
       };
+      mk("⤢", "放大查看", () => openLightbox(img.src, this.alt));
       mk("⧉", "复制图片到剪贴板", () => actions.copy(this.relativePath!));
       mk("✂", "裁剪图片", () => actions.crop(this.relativePath!));
       mk("✎", "重命名（同步更新引用）", () => actions.rename(this.relativePath!));
@@ -2178,13 +2193,15 @@ export function buildLivePreviewDecorations(
           } else if (grand?.name === "OrderedList" && !isActive(ctx, node.from, node.to)) {
             // 序号按位置计算渲染：源码写全 1. 也显示成 1. 2. 3.…（CommonMark 渲染语义）。
             // 起始数字取列表第一项的源码序号（`4.` 开头就从 4 起），任务项占号不显示标记。
+            // 注意节点名：lezer-markdown 里有序/无序列表的条目都叫 ListItem，
+            // 不存在 OrderedItem——按那个名字数兄弟节点永远数出 0，全部渲染成「1.」。
             let index = 0;
             for (let sibling = item.prevSibling; sibling; sibling = sibling.prevSibling) {
-              if (sibling.name === "OrderedItem") index += 1;
+              if (sibling.name === "ListItem") index += 1;
             }
             let start = 1;
             let first = grand.firstChild;
-            while (first && first.name !== "OrderedItem") first = first.nextSibling;
+            while (first && first.name !== "ListItem") first = first.nextSibling;
             if (first) {
               const firstMark = first.getChild("ListMark");
               const parsed = firstMark
@@ -2265,6 +2282,43 @@ export function buildLivePreviewDecorations(
               const line = doc.lineAt(closing.from);
               if (line.from === closing.from && line.to === closing.to) {
                 marks.push(Decoration.line({ class: "cm-lp-fence" }).range(line.from));
+              }
+            }
+            // log 块的阅读优化：按行识别级别整行着色（左侧色条 + 淡底），
+            // 行内的时间戳与级别词再单独上 mark——读服务器日志时 ERROR/WARN
+            // 一眼可辨，长行折行后仍能靠左缘色条认出级别。
+            if (codeInfo && /^log\b/i.test(codeInfo.text.trim())) {
+              for (let n = firstLine + 1; n < lastLine; n += 1) {
+                const line = doc.line(n);
+                const text = line.text;
+                const level = logLevelOf(text);
+                if (level) {
+                  marks.push(
+                    Decoration.line({ class: `cm-lp-log cm-lp-log-${level}` }).range(line.from),
+                  );
+                }
+                const ts = /(?:\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?|\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)/.exec(
+                  text,
+                );
+                if (ts && ts.index >= 0) {
+                  marks.push(
+                    Decoration.mark({ class: "cm-lp-log-ts" }).range(
+                      line.from + ts.index,
+                      line.from + ts.index + ts[0].length,
+                    ),
+                  );
+                }
+                const lv = /\b(?:TRACE|DEBUG|INFO|NOTICE|WARNING?|SEVERE|ERROR|FATAL|CRITICAL)\b/.exec(
+                  text,
+                );
+                if (lv && lv.index >= 0) {
+                  marks.push(
+                    Decoration.mark({ class: "cm-lp-log-lv" }).range(
+                      line.from + lv.index,
+                      line.from + lv.index + lv[0].length,
+                    ),
+                  );
+                }
               }
             }
           }

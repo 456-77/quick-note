@@ -197,3 +197,17 @@ export const IconFocus = ({ size, className }: IconProps) => (
     <path d="M3 9h4" /><path d="M3 15h4" /><path d="M17 9h4" /><path d="M17 15h4" />
   </svg>
 );
+
+export const IconPin = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M12 17v5" />
+    <path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1z" />
+  </svg>
+);
+
+export const IconTag = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M12.586 2.586A2 2 0 0 0 11.172 2H4a2 2 0 0 0-2 2v7.172a2 2 0 0 0 .586 1.414l8.704 8.704a2.426 2.426 0 0 0 3.42 0l6.58-6.58a2.426 2.426 0 0 0 0-3.42z" />
+    <circle cx="7.5" cy="7.5" r="1" fill="currentColor" stroke="none" />
+  </svg>
+);

@@ -40,7 +40,7 @@ interface Props {
    * 与文件树共用 App 里的同一份菜单——面板里再实现一套重命名/删除的弹窗，
    * 就等于把 M1 已经验证过的改名会同步 wiki 引用、删除进 .trash 这些行为复制一遍。
    */
-  onContext: (path: string, isDir: boolean, x: number, y: number) => void;
+  onContext: (path: string, isDir: boolean, x: number, y: number, origin?: "tree" | "daily") => void;
   /**
    * 由本面板发起的重命名（当天日记行的右键/⋯）：输入行就渲染在本面板里，
    * 不再借用左侧栏的输入行——之前复用的结果是「点右侧的重命名，输入框出现在
@@ -337,7 +337,7 @@ export default function CalendarPanel({
               onClick={() => onOpen(path)}
               onContextMenu={(event) => {
                 event.preventDefault();
-                onContext(path, false, event.clientX, event.clientY);
+                onContext(path, false, event.clientX, event.clientY, "daily");
               }}
             >
               <span className="cal-daynote-name">{baseNameOf(path)}</span>
@@ -350,7 +350,7 @@ export default function CalendarPanel({
                   // 与右键同一份菜单；用按钮自身的右下角定位，菜单才会贴着它出现
                   event.stopPropagation();
                   const rect = event.currentTarget.getBoundingClientRect();
-                  onContext(path, false, rect.right, rect.bottom);
+                  onContext(path, false, rect.right, rect.bottom, "daily");
                 }}
               >
                 ⋯

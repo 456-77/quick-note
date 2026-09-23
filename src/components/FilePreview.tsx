@@ -28,7 +28,7 @@ import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readBinary, readNote } from "../lib/api";
 import { extOf, fileKindOf } from "../lib/fileTypes";
-import { IconX } from "./icons";
+import { IconMinus, IconPlus, IconX } from "./icons";
 
 interface Props {
   vault: string;
@@ -153,10 +153,22 @@ export default function FilePreview({ vault, path, onClose }: Props) {
   const taskRef = useRef<import("pdfjs-dist").PDFDocumentLoadingTask | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
   const renderedRef = useRef<Set<number>>(new Set());
+  /** 在途的页面渲染任务：滚离/重渲时取消，避免白耗 CPU 与双倍画布内存。 */
+  const renderTasksRef = useRef<Map<number, import("pdfjs-dist").RenderTask>>(new Map());
+  /** 在途的文字层（与画布同生命周期，一起取消）。 */
+  const textLayersRef = useRef<Map<number, import("pdfjs-dist").TextLayer>>(new Map());
+  /** PDF 缩放："fit" = 适应宽度（自动），数字 = 用户手动缩放倍率。 */
+  const [pdfZoom, setPdfZoom] = useState<"fit" | number>("fit");
+  const pdfZoomRef = useRef<"fit" | number>("fit");
+  useEffect(() => {
+    pdfZoomRef.current = pdfZoom;
+  }, [pdfZoom]);
   const pptxRef = useRef<import("pptx-preview").PPTXPreviewer | null>(null);
   const pptxHostRef = useRef<HTMLDivElement | null>(null);
   const scaleRef = useRef(1);
   const pdfRelayoutRef = useRef<() => void>(() => {});
+  /** PDF 缩放的实际执行器（渲染 effect 内部赋值）：按 fit 或指定倍率重建页位。 */
+  const pdfZoomApplyRef = useRef<(explicit?: number) => void>(() => {});
   const pptxRelayoutRef = useRef<() => void>(() => {});
   const pptxRelayoutTokenRef = useRef(0);
   const pptxBytesRef = useRef<ArrayBuffer | null>(null);
@@ -175,6 +187,14 @@ export default function FilePreview({ vault, path, onClose }: Props) {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  /** 切换 PDF 缩放：fit 走适应宽度，数字为手动倍率（0.4–3.0，防画布爆内存）。 */
+  const changePdfZoom = (next: "fit" | number) => {
+    const clamped = next === "fit" ? "fit" : Math.min(3, Math.max(0.4, Math.round(next * 20) / 20));
+    setPdfZoom(clamped);
+    pdfZoomRef.current = clamped;
+    pdfZoomApplyRef.current?.(clamped === "fit" ? undefined : clamped);
+  };
 
   // 视窗尺寸变化：PDF 换缩放重渲可见页、pptx 按新宽度重建（统一防抖 250ms）
   useEffect(() => {
@@ -212,6 +232,10 @@ export default function FilePreview({ vault, path, onClose }: Props) {
     const releasePdf = () => {
       observerRef.current?.disconnect();
       observerRef.current = null;
+      for (const task of renderTasksRef.current.values()) task.cancel();
+      renderTasksRef.current.clear();
+      for (const layer of textLayersRef.current.values()) layer.cancel();
+      textLayersRef.current.clear();
       void taskRef.current?.destroy();
       taskRef.current = null;
       docRef.current = null;
@@ -261,6 +285,7 @@ export default function FilePreview({ vault, path, onClose }: Props) {
 
         if (kind === "pdf") {
           const pdfjs = await import("pdfjs-dist");
+          const { TextLayer } = await import("pdfjs-dist");
           const worker = await acquirePdfWorker(pdfjs);
           const task = pdfjs.getDocument({ data: bytes, worker });
           taskRef.current = task;
@@ -280,8 +305,9 @@ export default function FilePreview({ vault, path, onClose }: Props) {
           if (!host) return;
           const first = await doc.getPage(1);
           const base = first.getViewport({ scale: 1 });
-          // 缩放上限 1.2：画布内存 = 宽×高×4 字节，高倍缩放会让多页文档爆内存
-          const scale = Math.min(1.2, Math.max(0.4, (host.clientWidth - 24) / base.width));
+          const fitScale = () =>
+            Math.min(1.2, Math.max(0.4, (host.clientWidth - 24) / base.width));
+          const scale = pdfZoomRef.current === "fit" ? fitScale() : pdfZoomRef.current;
           scaleRef.current = scale;
           const pageHeight = Math.round(base.height * scale);
           const pageWidth = Math.round(base.width * scale);
@@ -299,6 +325,15 @@ export default function FilePreview({ vault, path, onClose }: Props) {
             host.appendChild(placeholder);
           }
 
+          /**
+           * 渲染一页：画布 + 文字选择层。
+           *
+           * 文字层（pdfjs TextLayer）把 PDF 里的文字以透明 span 铺在画布上——
+           * 这样代码/正文都能选中复制（用户在 IDE 导出的 PDF 里看到的"复制按钮"
+           * 是烤进 PDF 的位图，点不了；真正可行的复制路径就是选中文字）。
+           * 画布渲染与文字层并行；滚离视口时两者都要 cancel（在途任务白耗
+           * CPU，还会让新旧两套画布同时占内存）。
+           */
           const renderPage = async (pageNumber: number, slot: HTMLElement) => {
             const docCurrent = docRef.current;
             if (!docCurrent || renderedRef.current.has(pageNumber)) return;
@@ -312,13 +347,42 @@ export default function FilePreview({ vault, path, onClose }: Props) {
               canvas.height = viewport.height;
               canvas.style.width = "100%";
               canvas.style.height = "100%";
-              slot.replaceChildren(canvas);
-              // 真正把页面内容画上去（只建画布不渲染就是一整页空白）
-              await pdfPage.render({ canvas, viewport }).promise;
+              const textDiv = document.createElement("div");
+              textDiv.className = "qn-pdf-text";
+              // pdfjs 的文字层 CSS 用 --total-scale-factor 计算字号与位移
+              textDiv.style.setProperty("--total-scale-factor", String(viewport.scale));
+              slot.replaceChildren(canvas, textDiv);
+              const renderTask = pdfPage.render({ canvas, viewport });
+              renderTasksRef.current.set(pageNumber, renderTask);
+              const textLayer = new TextLayer({
+                textContentSource: pdfPage.streamTextContent({ includeMarkedContent: true }),
+                container: textDiv,
+                viewport,
+              });
+              textLayersRef.current.set(pageNumber, textLayer);
+              await Promise.all([renderTask.promise, textLayer.render()]);
             } catch {
-              // 页面渲染被销毁打断：占位保持原样；清掉标记允许 observer 稍后重试
+              // 页面渲染被销毁/取消打断：占位保持原样；清掉标记允许 observer 稍后重试
               renderedRef.current.delete(pageNumber);
+            } finally {
+              renderTasksRef.current.delete(pageNumber);
+              textLayersRef.current.delete(pageNumber);
             }
+          };
+
+          /** 释放某页的全部渲染产物（画布位图尺寸先清零，立即归还内存）。 */
+          const discardPage = (slot: HTMLElement) => {
+            const pageNumber = Number((slot as HTMLElement).dataset.page);
+            renderTasksRef.current.get(pageNumber)?.cancel();
+            renderTasksRef.current.delete(pageNumber);
+            textLayersRef.current.get(pageNumber)?.cancel();
+            textLayersRef.current.delete(pageNumber);
+            renderedRef.current.delete(pageNumber);
+            for (const canvas of slot.querySelectorAll("canvas")) {
+              canvas.width = 0;
+              canvas.height = 0;
+            }
+            slot.replaceChildren();
           };
 
           // 首屏页立即渲染（IntersectionObserver 的首次回调时机在部分驱动下
@@ -329,7 +393,7 @@ export default function FilePreview({ vault, path, onClose }: Props) {
             if (slot) void renderPage(pageNumber, slot);
           }
 
-          // 进入视口（前后预渲染 600px）才渲染；离开视口时释放画布
+          // 进入视口（前后预渲染 600px）才渲染；离开视口时取消在途任务并释放画布
           const observer = new IntersectionObserver(
             (entries) => {
               for (const entry of entries) {
@@ -338,13 +402,7 @@ export default function FilePreview({ vault, path, onClose }: Props) {
                 if (entry.isIntersecting) {
                   void renderPage(pageNumber, slot);
                 } else if (renderedRef.current.has(pageNumber)) {
-                  renderedRef.current.delete(pageNumber);
-                  // 位图尺寸先清零再摘除：立即归还画布内存，不等 GC
-                  for (const canvas of slot.querySelectorAll("canvas")) {
-                    canvas.width = 0;
-                    canvas.height = 0;
-                  }
-                  slot.replaceChildren();
+                  discardPage(slot);
                 }
               }
             },
@@ -353,30 +411,34 @@ export default function FilePreview({ vault, path, onClose }: Props) {
           observerRef.current = observer;
           Array.from(host.children).forEach((child) => observer.observe(child));
 
-          // 视窗变化后按新宽度重算缩放：清画布、改占位宽度，再重新 observe
-          // 让 observer 立刻回发相交状态、视口内页按新缩放重渲（防抖在外层）
-          pdfRelayoutRef.current = () => {
+          /**
+           * 按新的缩放重建全部页位：清画布、改占位宽度，再重新 observe——
+           * observer 会立刻回发相交状态，视口内页按新缩放重渲（防抖在外层）。
+           * explicit 给出用户手动缩放；省略时按"适应宽度"重算。
+           */
+          const applyScale = (explicit?: number) => {
             if (cancelled || docRef.current !== doc) return;
             const hostNow = pdfHostRef.current;
             if (!hostNow) return;
-            const next = Math.min(1.2, Math.max(0.4, (hostNow.clientWidth - 24) / base.width));
-            if (Math.abs(next - scaleRef.current) / scaleRef.current < 0.12) return;
+            const next = explicit ?? fitScale();
+            if (Math.abs(next - scaleRef.current) / scaleRef.current < 0.02) return;
             scaleRef.current = next;
             const width = Math.round(base.width * next);
             for (const slot of Array.from(hostNow.children) as HTMLElement[]) {
               slot.style.width = `${width}px`;
-              for (const canvas of slot.querySelectorAll("canvas")) {
-                canvas.width = 0;
-                canvas.height = 0;
-              }
-              slot.replaceChildren();
+              discardPage(slot);
             }
-            renderedRef.current.clear();
             for (const slot of Array.from(hostNow.children)) {
               observer.unobserve(slot);
               observer.observe(slot);
             }
           };
+          // 视窗尺寸变化只在"适应宽度"模式下跟随；手动缩放时保持用户的选择
+          pdfRelayoutRef.current = () => {
+            if (pdfZoomRef.current !== "fit") return;
+            applyScale();
+          };
+          pdfZoomApplyRef.current = applyScale;
           setLoading(false);
           return;
         }
@@ -496,6 +558,37 @@ export default function FilePreview({ vault, path, onClose }: Props) {
           {name}
         </span>
         <span className="file-preview-kind">{KIND_LABEL[kind] ?? "预览"}</span>
+        {kind === "pdf" && !error && (
+          <span className="file-preview-zoom" role="group" aria-label="缩放">
+            <button
+              type="button"
+              className="icon-btn"
+              title="缩小"
+              onClick={() => changePdfZoom((pdfZoom === "fit" ? scaleRef.current : pdfZoom) - 0.2)}
+            >
+              <IconMinus size={13} />
+            </button>
+            <span className="file-preview-zoom-value" title="当前缩放">
+              {Math.round((pdfZoom === "fit" ? scaleRef.current : pdfZoom) * 100)}%
+            </span>
+            <button
+              type="button"
+              className="icon-btn"
+              title="放大"
+              onClick={() => changePdfZoom((pdfZoom === "fit" ? scaleRef.current : pdfZoom) + 0.2)}
+            >
+              <IconPlus size={13} />
+            </button>
+            <button
+              type="button"
+              className={`icon-btn${pdfZoom === "fit" ? " is-on" : ""}`}
+              title="适应宽度"
+              onClick={() => changePdfZoom("fit")}
+            >
+              <span className="file-preview-zoom-fit">适应</span>
+            </button>
+          </span>
+        )}
         <span className="spacer" />
         <button type="button" className="icon-btn" onClick={onClose} title="关闭预览（Esc）">
           <IconX size={14} />

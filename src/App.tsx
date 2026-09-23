@@ -11,6 +11,7 @@ import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
 import SettingsDialog from "./components/SettingsDialog";
 import StatsPanel from "./components/StatsPanel";
+import TagPopover from "./components/TagPopover";
 import WeekReviewDialog from "./components/WeekReviewDialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
@@ -28,6 +29,7 @@ import {
   IconMinus,
   IconPanelLeft,
   IconPanelRight,
+  IconPin,
   IconPlus,
   IconSave,
   IconSearch,
@@ -35,12 +37,14 @@ import {
   IconSparkles,
   IconSquare,
   IconStar,
+  IconTag,
   IconX,
 } from "./components/icons";
 import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, searchVault, setCustomDataDir, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
+import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit } from "./lib/tags";
 import { toBase64 } from "./lib/paste";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache } from "./lib/embed";
@@ -135,10 +139,14 @@ export default function App() {
    */
   const [renameOwner, setRenameOwner] = useState<"tree" | "daily">("tree");
   const [draft, setDraft] = useState("");
-  /** 右键菜单：条目路径 + 是否目录 + 鼠标位置。 */
-  const [menu, setMenu] = useState<{ path: string; isDir: boolean; x: number; y: number } | null>(
-    null,
-  );
+  /** 右键菜单：条目路径 + 是否目录 + 鼠标位置 + 发起面板（重命名输入行跟发起处走）。 */
+  const [menu, setMenu] = useState<{
+    path: string;
+    isDir: boolean;
+    x: number;
+    y: number;
+    origin?: "tree" | "daily";
+  } | null>(null);
   /** 待确认的删除。删笔记不可逆，先问一次。 */
   const [pendingDelete, setPendingDelete] = useState<{ path: string; isDir: boolean } | null>(null);
   /**
@@ -262,6 +270,13 @@ export default function App() {
     };
   }, [appWindow]);
 
+  // 窗口置顶（悬浮钉住）：持久化在 localStorage，启动时恢复。
+  const [alwaysOnTop, setAlwaysOnTop] = useState(() => localStorage.getItem("quicknote.alwaysOnTop") === "1");
+  useEffect(() => {
+    localStorage.setItem("quicknote.alwaysOnTop", alwaysOnTop ? "1" : "0");
+    appWindow.setAlwaysOnTop(alwaysOnTop).catch(() => {});
+  }, [alwaysOnTop, appWindow]);
+
   // ---------------------------------------------------------------- 收藏与最近
 
   // 收藏按仓库分桶存储（键 = 仓库绝对路径），切换仓库各看各的收藏。
@@ -345,16 +360,17 @@ export default function App() {
   }, []);
 
   /**
-   * 当前仓库里真实存在的笔记路径（收藏只对这些有意义）。
+   * 当前仓库里真实存在的文件路径（收藏只对这些有意义）。
    *
    * 收藏是本机 localStorage 持久化的相对路径：换电脑、换仓库路径、别的机器上
    * 删过文件，都会让存量收藏指向已不存在的文件——收藏列表只显示还存在的，
    * 但角标如果直接数 favorites.length 就会对不上（迁移来的旧数据尤其明显）。
+   * 收藏不限于 md：pdf/docx/图片等预览类文件同样可收藏。
    */
   const existingNotePaths = useMemo(() => {
     const set = new Set<string>();
     for (const entry of entries) {
-      if (!entry.isDir && isMarkdownPath(entry.path)) set.add(entry.path);
+      if (!entry.isDir) set.add(entry.path);
     }
     return set;
   }, [entries]);
@@ -732,6 +748,72 @@ export default function App() {
       handle.destroy();
       viewRef.current = null;
     };
+  }, []);
+
+  // ---------------------------------------------------------------- 标签
+  // 标签本体是正文里的 `#标签`（lib/tags.ts 负责增删的纯文本编辑）。
+  // 入口在标题栏的标签按钮（浮层管理，不占编辑区空间）；补全词表按仓库
+  // 分桶渐进积累：打开/编辑过的笔记里出现过的标签都会被记住。
+
+  /** 标签管理浮层开关。 */
+  const [tagPopoverOpen, setTagPopoverOpen] = useState(false);
+
+  /** 当前激活笔记的标签（revision 随文档变更/切换递增，是这里的响应源）。 */
+  const noteTagList = useMemo(
+    () =>
+      current && isMarkdownPath(current.path)
+        ? noteTags(viewRef.current?.state.doc.toString() ?? "")
+        : [],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [current, revision],
+  );
+
+  /** 词表：{ 仓库路径: 标签[] }。 */
+  const [tagVocab, setTagVocab] = useState<string[]>([]);
+  useEffect(() => {
+    if (!vault) {
+      setTagVocab([]);
+      return;
+    }
+    try {
+      const map = JSON.parse(localStorage.getItem("quicknote.tags.v2") ?? "{}") as Record<string, string[]>;
+      setTagVocab(map[vault] ?? []);
+    } catch {
+      setTagVocab([]);
+    }
+  }, [vault]);
+  useEffect(() => {
+    if (!vault || noteTagList.length === 0) return;
+    setTagVocab((prev) => {
+      const known = new Set(prev);
+      const added = noteTagList.filter((tag) => !known.has(tag));
+      if (added.length === 0) return prev;
+      try {
+        const map = JSON.parse(localStorage.getItem("quicknote.tags.v2") ?? "{}") as Record<string, string[]>;
+        map[vault] = [...new Set([...(map[vault] ?? []), ...noteTagList])].sort((a, b) =>
+          a.localeCompare(b, "zh"),
+        );
+        localStorage.setItem("quicknote.tags.v2", JSON.stringify(map));
+      } catch {
+        // 词表丢一次更新无伤大雅，别打断编辑
+      }
+      return [...prev, ...added];
+    });
+  }, [vault, noteTagList]);
+
+  const addNoteTag = useCallback((input: string) => {
+    const name = normalizeTagName(input);
+    const view = viewRef.current;
+    if (!name || !view) return;
+    const text = view.state.doc.toString();
+    const edit = tagAddEdit(text, name, view.state.lineBreak);
+    if (edit) view.dispatch({ changes: { from: edit.at, to: edit.to, insert: edit.insert } });
+  }, []);
+  const removeNoteTag = useCallback((tag: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+    const edit = tagRemoveEdit(view.state.doc.toString(), tag);
+    if (edit) view.dispatch({ changes: { from: edit.at, to: edit.to, insert: edit.insert } });
   }, []);
 
   const refresh = useCallback(async (dir: string) => {
@@ -1319,6 +1401,8 @@ export default function App() {
       if (kind === "pdf" || kind === "docx" || kind === "ppt" || kind === "spreadsheet" || kind === "html" || kind === "image") {
         setSelectedPath(path);
         setPreviewPath(path);
+        // 预览类文件同样进「最近」列表（此前只记笔记，最近里永远看不到 pdf/docx）
+        recordRecent(path);
         return;
       }
       // 打开编辑类文件时关掉预览（与 Obsidian 一致：点击文件切换内容）
@@ -1326,7 +1410,7 @@ export default function App() {
       setSelectedPath(path);
       await openNote(path);
     },
-    [openNote],
+    [openNote, recordRecent],
   );
 
   /**
@@ -1510,10 +1594,13 @@ export default function App() {
     }
   }, [creating, vault, draft, createFolderOverride, createTargetFolder, refresh, openNote, daily.today, openDaily, cancelCreate]);
 
-  /** 打开右键菜单。 */
-  const openContextMenu = useCallback((path: string, isDir: boolean, x: number, y: number) => {
-    setMenu({ path, isDir, x, y });
-  }, []);
+  /** 打开右键菜单。origin 记录发起面板：重命名输入行渲染在发起处，而不是按文件类型猜。 */
+  const openContextMenu = useCallback(
+    (path: string, isDir: boolean, x: number, y: number, origin: "tree" | "daily" = "tree") => {
+      setMenu({ path, isDir, x, y, origin });
+    },
+    [],
+  );
 
   const beginRename = useCallback((path: string, owner: "tree" | "daily" = "tree") => {
     setRenaming(path);
@@ -2400,6 +2487,14 @@ export default function App() {
 
   // ------------------------------------------------------------------ 快捷键
 
+  /** 在编辑器光标处插入文本（插入时间/日期快捷键的实现基底）。 */
+  const insertAtCursor = useCallback((text: string) => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch(view.state.replaceSelection(text));
+    view.focus();
+  }, []);
+
   /** 快捷键动作表。命令面板按同一份文案生成动作项，这里集中定义避免两处漂移。 */
   const shortcuts = useMemo(
     () => ({
@@ -2415,9 +2510,11 @@ export default function App() {
       openVaultPicker: () => void openVault(),
       syncNow: () => syncRef.current?.syncNow(),
       zen: () => setZen((value) => !value),
+      insertDate: () => insertAtCursor(daily.today),
+      insertTime: () => insertAtCursor(moment().format("HH:mm")),
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
-    [beginCreate, changeMode, openVault],
+    [beginCreate, changeMode, openVault, insertAtCursor, daily.today],
   );
 
   // 快捷键绑定（Obsidian 式可重绑定）：设置面板改绑定后这里经版本号重算。
@@ -2609,6 +2706,17 @@ export default function App() {
               <IconSave size={16} />
             </button>
           )}
+          {current && isMarkdownPath(current.path) && (
+            <button
+              type="button"
+              className={`icon-btn${tagPopoverOpen ? " is-on" : ""}`}
+              onClick={() => setTagPopoverOpen((value) => !value)}
+              title={noteTagList.length > 0 ? `标签（${noteTagList.length}）` : "添加标签"}
+              aria-pressed={tagPopoverOpen}
+            >
+              <IconTag size={16} />
+            </button>
+          )}
           <button
             type="button"
             className={`icon-btn${showSettings ? " is-on" : ""}`}
@@ -2638,6 +2746,15 @@ export default function App() {
           <div className="window-controls" data-tauri-drag-region>
             <button
               type="button"
+              className={`win-btn${alwaysOnTop ? " is-on" : ""}`}
+              title={alwaysOnTop ? "取消窗口置顶" : "窗口置顶（悬浮不被遮挡）"}
+              aria-pressed={alwaysOnTop}
+              onClick={() => setAlwaysOnTop((value) => !value)}
+            >
+              <IconPin size={14} />
+            </button>
+            <button
+              type="button"
               className="win-btn"
               title="最小化"
               onClick={() => void appWindow.minimize()}
@@ -2663,6 +2780,16 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      {tagPopoverOpen && current && isMarkdownPath(current.path) && (
+        <TagPopover
+          tags={noteTagList}
+          vocabulary={tagVocab}
+          onAdd={addNoteTag}
+          onRemove={removeNoteTag}
+          onClose={() => setTagPopoverOpen(false)}
+        />
+      )}
 
       <SettingsDialog
         open={showSettings}
@@ -2860,7 +2987,7 @@ export default function App() {
             setMenu(null);
           }} />
           <div className="context-menu" ref={menuRefClampedToViewport(menu.x, menu.y)} style={{ left: menu.x, top: menu.y }}>
-            {!menu.isDir && menu.path.toLowerCase().endsWith(".md") && (
+            {!menu.isDir && (
               <button
                 type="button"
                 onClick={() => {
@@ -2883,12 +3010,7 @@ export default function App() {
             </button>
             <button
               type="button"
-              onClick={() =>
-                beginRename(
-                  menu.path,
-                  daily.folderFiles.includes(menu.path) ? "daily" : "tree",
-                )
-              }
+              onClick={() => beginRename(menu.path, menu.origin === "daily" ? "daily" : "tree")}
             >
               重命名
             </button>

@@ -43,6 +43,8 @@ export const COMMAND_KEYS: CommandKeys[] = [
   { id: "toggleCodeBlock", label: "切换代码块", desc: "围栏包裹选区或插入空块", group: "edit", keys: ["Mod-Shift-`"] },
   { id: "toggleBulletList", label: "切换无序列表", desc: "选中多行整体加/去「- 」标记", group: "markdown", keys: ["Mod-Shift-8"] },
   { id: "toggleNumberList", label: "切换有序列表", desc: "选中多行整体加/去「1. 」序号", group: "markdown", keys: ["Mod-Shift-9"] },
+  { id: "insertDate", label: "插入今天日期", desc: "在光标处插入当前日期（日记日期格式）", group: "edit", keys: ["Mod-Shift-D"] },
+  { id: "insertTime", label: "插入当前时间", desc: "在光标处插入 HH:mm（Ctrl+Shift+T 是浏览器保留键，勿绑）", group: "edit", keys: ["Mod-Alt-T"] },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },
   { id: "heading2", label: "标题 2", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-2"] },

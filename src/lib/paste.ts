@@ -13,6 +13,7 @@ import { livePreviewContext } from "./paths.ts";
 import { detectLanguage } from "./languageDetect.ts";
 import {
   htmlTableToMarkdown,
+  looksLikeLog,
   looksLikeMarkdownTable,
   normalizePastedText,
 } from "./pasteTransforms.ts";
@@ -175,7 +176,10 @@ export function smartPaste(options: CodePasteOptions): Extension {
         const line = view.state.doc.lineAt(pos);
         const lines = view.state.doc.toString().split("\n");
         if (!isInsideFence(lines, line.number - 1)) {
-          const lang = detectLanguage(fenceCandidate, fenceCandidate.includes("\n"));
+          // 日志优先于编程语言识别：带异常栈的运行日志按特征打分会误判成
+          // java/python 代码，而用户要的是可读的 log 块（级别配色，见 livePreview）。
+          const isLog = fenceCandidate.includes("\n") && looksLikeLog(fenceCandidate);
+          const lang = isLog ? "log" : detectLanguage(fenceCandidate, fenceCandidate.includes("\n"));
           if (lang) {
             event.preventDefault();
             const { prefix, suffix } = blockInsertPadding(lines, line.number - 1, pos - line.from);
@@ -183,7 +187,7 @@ export function smartPaste(options: CodePasteOptions): Extension {
               view.state.replaceSelection(`${prefix}${fencedBlock(fenceCandidate, lang)}${suffix}`),
             );
             view.focus();
-            options.notice?.(`已识别为 ${lang} 代码块`);
+            options.notice?.(isLog ? "已识别为日志，按 log 块插入" : `已识别为 ${lang} 代码块`);
             return true;
           }
         }

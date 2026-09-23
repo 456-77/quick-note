@@ -184,9 +184,13 @@ function flattenMatches(nodes: TreeNode[], terms: string[], out: TreeNode[]): vo
   }
 }
 
+/**
+ * 收藏 / 最近视图的扁平列表：目录以外的文件都收（md 笔记、可编辑文本、
+ * 预览类文件）——收藏不只属于笔记，pdf/docx/图片同样可以钉在收藏里。
+ */
 function collectNotes(nodes: TreeNode[], out: TreeNode[]): void {
   for (const node of nodes) {
-    if (node.kind === "markdown") out.push(node);
+    if (node.kind !== "dir") out.push(node);
     if (node.children.length > 0) collectNotes(node.children, out);
   }
 }

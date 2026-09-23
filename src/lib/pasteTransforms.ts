@@ -86,3 +86,42 @@ export function looksLikeMarkdownTable(text: string): boolean {
     .filter((line) => line.trim() !== "");
   return lines.length >= 2 && lines.every((line) => /^\s*\|.*\|\s*$/.test(line));
 }
+
+// ---------------------------------------------------------------- 日志识别
+
+/** 日志行首时间戳：ISO、常见 Java/Python/Nginx/Tomcat 等格式。 */
+const LOG_TIMESTAMP =
+  /(?:^|\s)(?:\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?|\[[\d\s:,-]+\]|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}|\d{2}-\w{3}-\d{4}|\d{4}\/\d{2}\/\d{2})/;
+
+/** 日志级别（含方括号与全小写变体）。 */
+const LOG_LEVEL = /(?:^|\[|\s)(?:TRACE|DEBUG|INFO|NOTICE|WARN(?:ING)?|ERROR|SEVERE|FATAL|CRITICAL)(?:\]|\s|:)/;
+
+/** Java 栈帧 / Caused by / Python traceback 等"异常跟随行"。 */
+const LOG_EXCEPTION = /^\s*(?:at\s+[\w$./]+\(|Caused by:|\.\.\.\s*\d+\s+more|Traceback\s|\w+(?:Exception|Error)\b)/;
+
+/**
+ * 判断多行文本是不是服务端/程序运行日志。判据（满足行数阈值才认）：
+ * - 行首时间戳 + 级别关键词（最典型的 Logback/log4j/Nginx 行）；
+ * - 或时间戳 + logger 名（com.foo.bar.Baz 这类点分类名）；
+ * - 异常栈跟随行（at xxx(yyy:zz)、Caused by:）单独算弱信号。
+ *
+ * 优先级高于编程语言识别：带异常栈的日志按 Java 规则会误判成 java 代码，
+ * 所以 smartPaste 先问这里。阈值取「强信号 ≥2 行」或「强 1 行 + 栈 ≥2 行」。
+ */
+export function looksLikeLog(text: string): boolean {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n").filter((line) => line.trim() !== "");
+  if (lines.length < 2) return false;
+  let strong = 0;
+  let exceptions = 0;
+  for (const line of lines) {
+    if (LOG_EXCEPTION.test(line)) {
+      exceptions += 1;
+      continue;
+    }
+    const hasTs = LOG_TIMESTAMP.test(line);
+    const hasLevel = LOG_LEVEL.test(line);
+    const hasLogger = /\b(?:[a-z]\w*\.)+[A-Z]\w*\b/.test(line);
+    if (hasTs && (hasLevel || hasLogger)) strong += 1;
+  }
+  return strong >= 2 || (strong >= 1 && exceptions >= 2);
+}
