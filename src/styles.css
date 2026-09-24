@@ -1432,6 +1432,21 @@ div.tree-item:focus-visible {
     repeating-conic-gradient(#e6e6ea 0% 25%, #fff 0% 50%) 0 0 / 16px 16px;
 }
 
+/* 可拖动/缩放的图片预览：抓手光标 + transform 由 JS 控制 */
+.file-preview-image-pannable {
+  cursor: grab;
+  overflow: hidden;
+}
+
+.file-preview-image-pannable:active {
+  cursor: grabbing;
+}
+
+.file-preview-image-pannable img {
+  will-change: transform;
+  user-select: none;
+}
+
 /* 树条目的「已选中（复制/粘贴目标）」虚线高亮，区别于打开态的实底高亮 */
 .tree-file.is-picked {
   outline: 1px dashed var(--accent);
@@ -4348,13 +4363,26 @@ html.qn-bg-on .calendar-card {
   align-items: center;
   justify-content: center;
   background: rgba(8, 8, 14, 0.82);
-  cursor: zoom-out;
+  /* 灯箱支持拖动/选中：默认抓手，按住拖动时由 JS 无所谓；SVG 文字保持可选 */
+  cursor: grab;
+}
+
+.qn-mermaid-overlay:active {
+  cursor: grabbing;
 }
 
 .qn-mermaid-overlay svg {
   background: var(--surface);
   border-radius: var(--radius);
   padding: 16px;
+  will-change: transform;
+}
+
+/* mermaid 节点文字在灯箱里可选中复制（foreignObject 内的 div 默认继承） */
+.qn-mermaid-overlay svg text,
+.qn-mermaid-overlay svg foreignObject div,
+.qn-mermaid-overlay svg foreignObject span {
+  user-select: text;
 }
 
 /* ------------------------------------------------- 图片工具栏 */
@@ -4541,19 +4569,23 @@ html.qn-style-bluetopaz {
   --bt-teal: #2aa198;
   --bt-amber: #d9862f;
   --bt-rose: #c85a7a;
+  /* 对齐 Obsidian Blue Topaz 深色的三主色：标题绿、行内代码橙、表头深蓝 */
+  --bt-green: #3eb267;
+  --bt-code: #e08c3a;
+  --bt-thead: #17416b;
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-h1 {
   font-size: 2.1em;
-  color: var(--bt-blue-strong);
-  border-bottom: 2px solid color-mix(in srgb, var(--bt-blue) 45%, transparent);
+  color: var(--bt-green);
+  border-bottom: 2px solid color-mix(in srgb, var(--bt-green) 40%, transparent);
   padding: 0.35em 0 0.22em;
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-h2 {
   font-size: 1.62em;
-  color: var(--bt-blue);
-  border-bottom: 1px solid color-mix(in srgb, var(--bt-blue) 30%, transparent);
+  color: var(--bt-green);
+  border-bottom: 1px solid color-mix(in srgb, var(--bt-green) 28%, transparent);
   padding: 0.45em 0 0.28em;
 }
 
@@ -4573,13 +4605,16 @@ html.qn-style-bluetopaz .editor-host .cm-lp-h6 {
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-strong {
-  color: color-mix(in srgb, var(--bt-blue) 70%, var(--text));
+  color: var(--text);
+  font-weight: 700;
 }
 
+/* 行内代码：Obsidian Blue Topaz 的橙色文字 + 深灰胶囊（图1 口径） */
 html.qn-style-bluetopaz .editor-host .cm-lp-code {
-  background: color-mix(in srgb, var(--bt-blue) 16%, transparent);
-  color: color-mix(in srgb, var(--bt-blue) 75%, var(--text));
-  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 12%, var(--surface-3));
+  color: var(--bt-code);
+  border-radius: 5px;
+  padding: 0.1em 0.45em;
 }
 
 /* 引用同样是逐行装饰：左边框 + 底色 + 左内边距逐行保留（拼成连续竖条），
@@ -4621,9 +4656,9 @@ html.qn-style-bluetopaz .editor-host .cm-lp-table {
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-table thead th {
-  background: color-mix(in srgb, var(--bt-blue) 22%, var(--surface-2));
-  color: color-mix(in srgb, var(--bt-blue) 65%, var(--text));
-  border-bottom: 2px solid color-mix(in srgb, var(--bt-blue) 45%, transparent);
+  background: var(--bt-thead);
+  color: #eaf2fb;
+  border-bottom: 2px solid color-mix(in srgb, var(--bt-blue) 55%, transparent);
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-table tbody tr:hover {
@@ -4971,4 +5006,53 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   margin-top: 6px;
   font-size: 11px;
   color: var(--text-faint);
+}
+
+/* ------------------------------------------------- 更新弹窗（新版本介绍） */
+
+.update-dialog {
+  position: fixed;
+  top: 90px;
+  right: 24px;
+  z-index: 950;
+  width: 420px;
+  max-width: calc(100vw - 48px);
+  max-height: min(70vh, 560px);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.update-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.update-dialog-title {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.update-dialog-notes {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-y: auto;
+}
+
+.update-dialog-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
 }

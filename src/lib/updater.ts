@@ -26,6 +26,8 @@ export interface UpdateInfo {
   url: string;
   /** 是否比当前版本新。 */
   newer: boolean;
+  /** 新版本介绍（release body / latest.json 的 notes），更新弹窗展示。 */
+  body: string;
 }
 
 /** 比较两个点分版本号；解析不出的段按 0 处理，相等返回 false。 */
@@ -60,7 +62,7 @@ export async function checkForUpdate(current: string): Promise<UpdateInfo> {
   if (response.status !== 200) {
     throw new Error(`GitHub 返回 HTTP ${response.status}`);
   }
-  let data: { tag_name?: string; html_url?: string; draft?: boolean; prerelease?: boolean };
+  let data: { tag_name?: string; html_url?: string; body?: string; draft?: boolean; prerelease?: boolean };
   try {
     data = JSON.parse(responseBodyText(response));
   } catch {
@@ -75,6 +77,7 @@ export async function checkForUpdate(current: string): Promise<UpdateInfo> {
     latest,
     url: data.html_url,
     newer: isNewer(current, latest),
+    body: data.body ?? "",
   };
 }
 

@@ -188,6 +188,87 @@ export default function FilePreview({ vault, path, onClose }: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  // ---------------------------------------------------------------- 图片预览：拖动 + 滚轮缩放
+  // 按住左键拖动移动、滚轮缩放（以指针为锚）、双击重置。与 mermaid 灯箱同一套手感。
+  const imageHostRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (kind !== "image") return;
+    const host = imageHostRef.current;
+    if (!host) return;
+    const img = host.querySelector("img");
+    if (!img) return;
+
+    let scale = 1;
+    let x = 0;
+    let y = 0;
+    const apply = () => {
+      img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    };
+
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const hostRect = host.getBoundingClientRect();
+      const next = Math.min(8, Math.max(0.1, scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+      if (next === scale) return;
+      // 以指针为锚缩放（指针坐标转成 host 中心坐标系）
+      const cx = event.clientX - hostRect.left - hostRect.width / 2;
+      const cy = event.clientY - hostRect.top - hostRect.height / 2;
+      const dx = cx - x;
+      const dy = cy - y;
+      const ratio = next / scale;
+      x += dx * (1 - ratio);
+      y += dy * (1 - ratio);
+      scale = next;
+      apply();
+    };
+
+    let dragging = false;
+    let moved = false;
+    let lastX = 0;
+    let lastY = 0;
+    const onDown = (event: MouseEvent) => {
+      if (event.button !== 0) return;
+      dragging = true;
+      moved = false;
+      lastX = event.clientX;
+      lastY = event.clientY;
+    };
+    const onMove = (event: MouseEvent) => {
+      if (!dragging) return;
+      const dx = event.clientX - lastX;
+      const dy = event.clientY - lastY;
+      if (!moved && Math.hypot(dx, dy) < 4) return;
+      moved = true;
+      x += dx;
+      y += dy;
+      lastX = event.clientX;
+      lastY = event.clientY;
+      apply();
+    };
+    const onUp = () => {
+      dragging = false;
+    };
+    const onDbl = () => {
+      scale = 1;
+      x = 0;
+      y = 0;
+      apply();
+    };
+
+    img.addEventListener("wheel", onWheel, { passive: false });
+    img.addEventListener("mousedown", onDown);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    img.addEventListener("dblclick", onDbl);
+    return () => {
+      img.removeEventListener("wheel", onWheel);
+      img.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      img.removeEventListener("dblclick", onDbl);
+    };
+  }, [kind, imageUrl]);
+
   /** 切换 PDF 缩放：fit 走适应宽度，数字为手动倍率（0.4–3.0，防画布爆内存）。 */
   const changePdfZoom = (next: "fit" | number) => {
     const clamped = next === "fit" ? "fit" : Math.min(3, Math.max(0.4, Math.round(next * 20) / 20));
@@ -610,8 +691,8 @@ export default function FilePreview({ vault, path, onClose }: Props) {
           />
         )}
         {kind === "image" && imageUrl && (
-          <div className="file-preview-image">
-            <img src={imageUrl} alt={name} />
+          <div className="file-preview-image file-preview-image-pannable" ref={imageHostRef}>
+            <img src={imageUrl} alt={name} draggable={false} />
           </div>
         )}
         {kind === "spreadsheet" && sheets && sheets.length > 0 && (

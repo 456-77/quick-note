@@ -31,12 +31,36 @@ fn configure_webview2() {
 ///
 /// 用途：从命令行/文件管理器直接打开一个文件夹；也让自动化冒烟测试无需操作
 /// 目录选择框就能进入有内容的状态。
+///
+/// 参数是一个 **.md 文件**（资源管理器「打开方式 → Quick Note」/ 双击关联文件）
+/// 时取其父目录为仓库；文件本身经 {@link startup_file} 传给前端打开。
 #[tauri::command]
 fn startup_vault() -> Option<String> {
-    std::env::args()
+    let arg = std::env::args()
         .skip(1)
-        .find(|arg| !arg.starts_with('-'))
-        .filter(|arg| std::path::Path::new(arg).is_dir())
+        .find(|arg| !arg.starts_with('-'))?;
+    let path = std::path::Path::new(&arg);
+    if path.is_dir() {
+        return Some(arg);
+    }
+    if path.is_file() {
+        return path.parent().map(|dir| dir.to_string_lossy().into_owned());
+    }
+    None
+}
+
+/// 启动参数里指定的**笔记文件**（可选）：资源管理器双击 .md 打开时，
+/// 前端进入参数里的仓库后自动打开这一篇。
+#[tauri::command]
+fn startup_file() -> Option<String> {
+    let arg = std::env::args()
+        .skip(1)
+        .find(|arg| !arg.starts_with('-'))?;
+    let path = std::path::Path::new(&arg);
+    if path.is_file() {
+        return Some(arg);
+    }
+    None
 }
 
 /// 读取任意文本文件（UTF-8）。
@@ -121,6 +145,7 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             startup_vault,
+            startup_file,
             read_text_file,
             write_text_file,
             first_existing_path,

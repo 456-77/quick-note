@@ -211,6 +211,9 @@ export async function pickDirectory(title: string): Promise<string | null> {
 /** 命令行参数指定的仓库目录（没有则为 null）。 */
 export const startupVault = () => invoke<string | null>("startup_vault");
 
+/** 启动参数里的笔记文件（资源管理器双击 .md / 打开方式）：进仓库后自动打开。 */
+export const startupFile = () => invoke<string | null>("startup_file");
+
 /** 应用数据目录信息（设置面板「存储」分区用）。 */
 export interface AppDataPaths {
   /** 配置目录：同步状态与数据目录指针文件所在。 */

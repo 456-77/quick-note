@@ -57,14 +57,17 @@ const WRAP_MAP: Record<string, [string, string]> = {
   "~": ["~~", "~~"],
   "=": ["==", "=="],
   "%": ["%%", "%%"],
+  "'": ["'", "'"],
+  '"': ['"', '"'],
 };
 
 /** 对称 run 的成长上限：达到即改为跳过（`*|*`→成长，`**|**`→跳出）。 */
 const MAX_RUN = 2;
 
-/** 参与对称 run 成长/跳出的字符（非对称的 ( { " ' 不参与，交给内置 closeBrackets；
+/** 参与对称 run 成长/跳出的字符（引号也对称：'text'| 输入 ' 直接闭合；
+ *  `( { 等真非对称对交给内置 closeBrackets；
  *  `[` 的任务列表/图片/wiki 链接在触发分支单独处理）。 */
-const RUN_CHARS = new Set(["*", "_", "`", "$", "~", "=", "%"]);
+const RUN_CHARS = new Set(["*", "_", "`", "$", "~", "=", "%", "'", '"']);
 
 /** 字符串首/尾的连续同字符长度。 */
 function runLen(s: string, ch: string, dir: 1 | -1): number {
@@ -168,6 +171,14 @@ export function markdownPairAction(input: string, ctx: PairContext): PairAction 
       return { kind: "insert", text: input + input, cursorOffset: 1 };
     case "`":
       return { kind: "insert", text: "``", cursorOffset: 1 };
+    case "'":
+    case '"': {
+      // 撇号/英寸保护：字母或数字后输入引号是 it's、3" 这类原文字符，不配对
+      // （此时落到 default 由内置 closeBrackets 决定，它同样不做字母前缀配对）。
+      const prev = before.slice(-1);
+      if (/[\p{L}\p{N}]/u.test(prev)) return { kind: "none" };
+      return { kind: "insert", text: input + input, cursorOffset: 1 };
+    }
     case "$": {
       // 货币保护：只在行首或空白后触发
       const prev = before.slice(-1);

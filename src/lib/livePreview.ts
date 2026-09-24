@@ -40,6 +40,7 @@ import {
 } from "./table.ts";
 import { renderEmbeddedNote } from "./embed.ts";
 import { openLightbox } from "./lightbox.ts";
+import { getSettings } from "./settings.ts";
 import {
   findComments,
   findHighlights,
@@ -661,10 +662,17 @@ function enhanceMermaid(
 }
 
 /** 全屏放大浮层：克隆 SVG 铺到视口，点任意处 / Esc 关闭。 */
+/**
+ * 全屏放大浮层（mermaid 灯箱）。
+ *
+ * 交互与图片灯箱对齐：**按住左键拖动**移动位置（按下后位移超过 5px 才算拖动，
+ * 轻点不拖仍然能选中 SVG 里的节点文字并复制）、滚轮缩放（以指针为锚）、
+ * Esc / 点击背景关闭。缩放平移只改 transform，不影响 SVG 文本的选中。
+ */
 function openMermaidOverlay(svg: SVGSVGElement): void {
   const overlay = document.createElement("div");
   overlay.className = "qn-mermaid-overlay";
-  overlay.title = "点击任意处或按 Esc 关闭";
+  overlay.title = "拖动移动 · 滚轮缩放 · Esc 关闭";
   const clone = svg.cloneNode(true) as SVGSVGElement;
   clone.classList.remove("me-fit-tall", "me-zoom-px");
   clone.removeAttribute("style");
@@ -673,7 +681,65 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
   clone.style.width = "auto";
   clone.style.height = "auto";
   overlay.appendChild(clone);
+
+  let scale = 1;
+  let x = 0;
+  let y = 0;
+  const apply = () => {
+    clone.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+  };
+
+  const onWheel = (event: WheelEvent) => {
+    event.preventDefault();
+    const next = Math.min(8, Math.max(0.1, scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+    if (next === scale) return;
+    // 以指针为锚缩放：指针下的图点保持不动
+    const dx = event.clientX - window.innerWidth / 2 - x;
+    const dy = event.clientY - window.innerHeight / 2 - y;
+    const ratio = next / scale;
+    x += dx * (1 - ratio);
+    y += dy * (1 - ratio);
+    scale = next;
+    apply();
+  };
+  overlay.addEventListener("wheel", onWheel, { passive: false });
+
+  // 左键拖动：位移超过 5px 才进入拖动态——轻点的按下/抬起留给文字选中
+  let dragging = false;
+  let moved = false;
+  let lastX = 0;
+  let lastY = 0;
+  const onDown = (event: MouseEvent) => {
+    if (event.button !== 0) return;
+    dragging = true;
+    moved = false;
+    lastX = event.clientX;
+    lastY = event.clientY;
+  };
+  const onMove = (event: MouseEvent) => {
+    if (!dragging) return;
+    const dx = event.clientX - lastX;
+    const dy = event.clientY - lastY;
+    if (!moved && Math.hypot(event.clientX - lastX, event.clientY - lastY) < 5) return;
+    moved = true;
+    x += dx;
+    y += dy;
+    lastX = event.clientX;
+    lastY = event.clientY;
+    apply();
+  };
+  const onUp = () => {
+    dragging = false;
+  };
+  overlay.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+
   const close = () => {
+    overlay.removeEventListener("wheel", onWheel);
+    overlay.removeEventListener("mousedown", onDown);
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
     document.removeEventListener("keydown", onKey, true);
     overlay.remove();
   };
@@ -684,7 +750,11 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
       close();
     }
   };
-  overlay.addEventListener("click", close);
+  overlay.addEventListener("click", (event) => {
+    // 拖动结束的那次 click 不关灯箱；点背景（非图）关闭
+    if (moved) return;
+    if (event.target === overlay) close();
+  });
   document.addEventListener("keydown", onKey, true);
   document.body.appendChild(overlay);
 }
@@ -712,8 +782,10 @@ async function downloadDiagram(
     const base = (notePath ?? "diagram").replace(/\.md$/i, "").split("/").pop() || "diagram";
     const seq = (diagramExportSeq += 1);
     const name = `${base}-mermaid-${seq}.${format}`;
-    // 落点：当前笔记同目录；没有目录信息的（仓库根的笔记）就是仓库根
-    const dir = notePath && notePath.includes("/") ? notePath.slice(0, notePath.lastIndexOf("/")) : "";
+    // 落点：设置里的导出目录（默认仓库根「导出」，与导出 PDF 同一处）；
+    // 没配置就退回当前笔记同目录
+    const exportFolder = getSettings().exportFolder.trim();
+    const dir = exportFolder || (notePath && notePath.includes("/") ? notePath.slice(0, notePath.lastIndexOf("/")) : "");
     const target = dir ? `${dir}/${name}` : name;
 
     if (format === "svg") {
@@ -989,6 +1061,37 @@ class TableWidget extends WidgetType {
       event.preventDefault();
       event.stopPropagation();
       event.clipboardData?.setData("text/plain", selection.toString());
+    });
+    // 与 copy 同一套：跨格选区的剪切 = 复制 + 删除选中内容。原生 cut 只能删一格内
+    // 文本，跨格选区删不掉。含行内样式的单元格（dataset.raw 存在）不做 DOM 删除——
+    // 渲染文本删掉的字符映射不回源码，强删会丢 `**`/`` ` `` 标记；这类格子保持
+    // 原样（内容已进剪贴板）。纯文本格子删完直接按新文本写回源码。
+    table.addEventListener("cut", (event) => {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      if (!table.contains(range.commonAncestorContainer)) return;
+      if (range.commonAncestorContainer.parentElement?.closest("td,th")) return; // 单格内：原生剪切
+      event.preventDefault();
+      event.stopPropagation();
+      event.clipboardData?.setData("text/plain", selection.toString());
+      const touched = [...table.querySelectorAll("td,th")].filter(
+        (c) =>
+          !(c as HTMLElement).dataset.raw &&
+          (range.intersectsNode(c) || c.contains(range.startContainer)),
+      );
+      range.deleteContents();
+      for (const c of touched) {
+        const raw = (c as HTMLElement).innerText.replace(/\r?\n/g, " ").replace(/\|/g, "").trim();
+        const row = Number((c as HTMLElement).dataset.row ?? "0");
+        const col = Number((c as HTMLElement).dataset.col ?? "0");
+        replaceTableCell(view, wrap, (block) => {
+          const normalized = normalizeColumns(block);
+          if (row === 0) normalized.header[col] = raw;
+          else if (normalized.rows[row - 1]) normalized.rows[row - 1][col] = raw;
+          return formatTable(normalized);
+        });
+      }
     });
 
     // 点击表格空白处保持渲染：不把光标放进源码。单元格内的按下事件已在
@@ -1283,6 +1386,24 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
       event.preventDefault();
       return;
     }
+    // Ctrl+`：对选中文字切换行内代码（正文里走 CM keymap，单元格是独立编辑宿主
+    // 收不到，这里补上同一行为）。无选区时插一对 ``。
+    if (event.key === "`" && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleCellInlineCode(cell);
+      return;
+    }
+    // 有选区时输入包裹字符（` * _ ~ = %）：包住选中文字而不是替换它——
+    // 单元格是独立 contenteditable 宿主，不走编辑器的 autoPairs inputHandler，
+    // 原生行为是选区被覆盖（用户反馈的"输入 ` 直接把内容覆盖了"）。
+    if (!event.ctrlKey && !event.metaKey && !event.altKey) {
+      const wrapPair = CELL_WRAP_KEYS[event.key];
+      if (wrapPair && wrapCellSelection(cell, wrapPair[0], wrapPair[1])) {
+        event.preventDefault();
+        return;
+      }
+    }
     if (event.key === "Enter") {
       event.preventDefault();
       commitCellEdit(view, wrap, cell);
@@ -1327,6 +1448,128 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
   });
 
   cell.addEventListener("blur", () => commitCellEdit(view, wrap, cell));
+}
+
+/** 单元格内支持「选中包裹」的字符 → [前缀, 后缀]（与正文 autoPairs 的 WRAP_MAP 对齐）。 */
+const CELL_WRAP_KEYS: Record<string, [string, string]> = {
+  "`": ["`", "`"],
+  "*": ["*", "*"],
+  _: ["_", "_"],
+  "~": ["~~", "~~"],
+  "=": ["==", "=="],
+  "%": ["%%", "%%"],
+  $: ["$", "$"],
+};
+
+/** 选区起点/终点在 cell 纯文本中的偏移；不在 cell 内时返回 null。 */
+function cellSelectionOffsets(cell: HTMLElement): [number, number, string] | null {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  if (!cell.contains(range.startContainer) || !cell.contains(range.endContainer)) return null;
+  const full = document.createRange();
+  full.selectNodeContents(cell);
+  full.setEnd(range.startContainer, range.startOffset);
+  const start = full.toString().length;
+  const end = start + range.toString().length;
+  return [start, end, cell.innerText];
+}
+
+/** 把 cell 内 [start,end) 文本范围重新设为选区。 */
+function reselectCellRange(cell: HTMLElement, start: number, end: number): void {
+  const sel = window.getSelection();
+  if (!sel) return;
+  const full = document.createRange();
+  full.selectNodeContents(cell);
+  const scan = (target: number): [Node, number] => {
+    let remaining = target;
+    const walk = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+    let node = walk.nextNode();
+    while (node) {
+      const len = (node.textContent ?? "").length;
+      if (remaining <= len) return [node, remaining];
+      remaining -= len;
+      node = walk.nextNode();
+    }
+    const last = cell.lastChild;
+    return last ? [last, last.textContent?.length ?? 0] : [cell, 0];
+  };
+  const [sn, so] = scan(start);
+  const [en, eo] = scan(end);
+  const range = document.createRange();
+  try {
+    range.setStart(sn, so);
+    range.setEnd(en, eo);
+  } catch {
+    range.selectNodeContents(cell);
+  }
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+/**
+ * 单元格内把选中文字包裹成 opener+text+closer（contenteditable 里用 execCommand
+ * insertText 一次写入，插入点天然落尾部），再重新选中中间的 text——连续按两次
+ * 同字符即成长为双层包裹，与正文一致。没有选区或选区跨格时返回 false（放行默认）。
+ */
+function wrapCellSelection(cell: HTMLElement, opener: string, closer: string): boolean {
+  const got = cellSelectionOffsets(cell);
+  if (!got) return false;
+  const [start, end, text] = got;
+  if (end <= start) return false;
+  const selected = text.slice(start, end);
+  const unit = opener.length;
+  // 已带同字符包裹（`text`）→ 成长为双层（``text``）：整段替换再重选中间
+  const before = text.slice(start - unit, start);
+  const after = text.slice(end, end + unit);
+  if (start >= unit && before === opener && after === closer) {
+    reselectCellRange(cell, start - unit, end + unit);
+    document.execCommand("insertText", false, opener + opener + selected + closer + closer);
+    reselectCellRange(cell, start + unit, start + unit + selected.length);
+    return true;
+  }
+  document.execCommand("insertText", false, `${opener}${selected}${closer}`);
+  reselectCellRange(cell, start + opener.length, start + opener.length + selected.length);
+  return true;
+}
+
+/** 单元格内 Ctrl+`：选中文字切行内代码（已包裹则剥掉），无选区插一对 ``。 */
+function toggleCellInlineCode(cell: HTMLElement): void {
+  const got = cellSelectionOffsets(cell);
+  if (!got) {
+    document.execCommand("insertText", false, "``");
+    return;
+  }
+  const [start, end, text] = got;
+  if (end > start) {
+    const before = text.slice(start - 1, start);
+    const after = text.slice(end, end + 1);
+    if (before === "`" && after === "`") {
+      // 已包裹：剥掉两侧反引号，保持文字选中
+      const inner = text.slice(start, end);
+      const whole = document.createRange();
+      whole.setStart(cell, 0);
+      // 用整格替换最稳：``inner`` → inner
+      const replaceStart = start - 1;
+      const replaceEnd = end + 1;
+      reselectCellRange(cell, replaceStart, replaceEnd);
+      document.execCommand("insertText", false, inner);
+      reselectCellRange(cell, replaceStart, replaceStart + inner.length);
+      return;
+    }
+    document.execCommand("insertText", false, `\`${text}\``);
+    reselectCellRange(cell, start + 1, end + 1);
+    return;
+  }
+  // 无选区：光标在成对 `` 中间则跳出，否则插一对
+  const before = text.slice(start - 1, start);
+  const after = text.slice(start, start + 1);
+  if (before === "`" && after === "`") {
+    reselectCellRange(cell, start + 1, start + 1);
+    return;
+  }
+  document.execCommand("insertText", false, "``");
+  reselectCellRange(cell, start + 1, start + 1);
 }
 
 /** 把编辑后的单元格写回源码（整块替换、管道重新对齐）。没改或已提交过就跳过。 */

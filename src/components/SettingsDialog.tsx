@@ -217,6 +217,20 @@ export default function SettingsDialog({
             </select>
           </label>
           <label className="settings-row">
+            <span>导出目录</span>
+            <input
+              type="text"
+              className="settings-text"
+              value={settings.exportFolder}
+              placeholder="导出"
+              onChange={(event) => applySettings({ exportFolder: event.target.value })}
+            />
+          </label>
+          <Hint>
+            导出 PDF、mermaid 图表的默认保存位置（仓库内相对路径，默认「导出」= 仓库根的
+            导出文件夹）。保存对话框会预填这个目录；手动选过一次位置后以手动选择优先。
+          </Hint>
+          <label className="settings-row">
             <span>粘贴时保存附件</span>
             <input
               type="checkbox"

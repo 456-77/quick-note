@@ -40,7 +40,7 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, searchVault, setCustomDataDir, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, searchVault, setCustomDataDir, startupFile, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
@@ -419,6 +419,8 @@ export default function App() {
     url?: string;
     /** 插件检查发现的新版本（拿到 Update 对象才能走应用内安装）。 */
     available?: boolean;
+    /** 新版本介绍（latest.json 的 notes / GitHub release body），更新弹窗展示。 */
+    notes?: string;
     /** 更新提示条是否被用户关掉（关掉后本次启动不再弹）。 */
     dismissed?: boolean;
   }>({ state: "idle", message: "" });
@@ -461,6 +463,7 @@ export default function App() {
           state: "done",
           message: `发现新版本 v${update.version}（当前 v${appVersion}），可直接更新`,
           available: true,
+          notes: update.body ?? "",
         });
         return;
       }
@@ -471,7 +474,7 @@ export default function App() {
       const info = await checkForUpdate(appVersion || "0.0.0");
       setUpdateCheck(
         info.newer
-          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可到发布页下载`, url: info.url }
+          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可到发布页下载`, url: info.url, notes: info.body }
           : { state: "done", message: `已是最新版本（最新发布 v${info.latest}）` },
       );
     } catch (e) {
@@ -1190,7 +1193,26 @@ export default function App() {
       .catch(() => null) // 拿不到启动参数不影响使用，用户手动选目录即可
       .then((dir) => dir ?? localStorage.getItem(VAULT_KEY))
       .then((dir) => {
-        if (dir) useVault(dir);
+        if (!dir) return;
+        useVault(dir);
+        // 资源管理器双击 .md（「打开方式 → Quick Note」）：进仓库后自动打开这一篇。
+        // openEntry 经 ref 取**最新**实例——本 effect 只跑一次，直接闭包会捕获
+        // vault 尚为 null 的初始版本。树刷新完成后路径才存在，等一轮再开。
+        void startupFile()
+          .catch(() => null)
+          .then((file) => {
+            if (!file) return;
+            const normalized = file.replace(/\\/g, "/");
+            if (!normalized.toLowerCase().endsWith(".md")) {
+              setPreviewPath(normalized);
+              return;
+            }
+            const prefix = dir.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
+            const relative = normalized.toLowerCase().startsWith(prefix.toLowerCase())
+              ? normalized.slice(prefix.length)
+              : normalized;
+            window.setTimeout(() => void openEntryRef.current(relative), 600);
+          });
       });
   }, [refresh, activateVault, recordVault]);
 
@@ -1412,6 +1434,12 @@ export default function App() {
     },
     [openNote, recordRecent],
   );
+
+  /** 最新 openEntry：启动参数「双击 .md 打开」的 effect 只跑一次，用它避免旧闭包。 */
+  const openEntryRef = useRef(openEntry);
+  useEffect(() => {
+    openEntryRef.current = openEntry;
+  }, [openEntry]);
 
   /**
    * 读取模板文件并展开占位符。
@@ -1980,7 +2008,17 @@ export default function App() {
       return;
     }
     const title = currentRef.current.path.slice(currentRef.current.path.lastIndexOf("/") + 1).replace(/\.md$/i, "");
-    const lastDir = localStorage.getItem("quicknote.pdfExportDir") ?? "";
+    // 预填目录优先级：用户上次的导出目录 > 设置里的导出目录（默认仓库根「导出」）。
+    // 默认目录不存在时先建出来，保存对话框才能直接定位进去。
+    let lastDir = localStorage.getItem("quicknote.pdfExportDir") ?? "";
+    if (!lastDir && settings.exportFolder) {
+      lastDir = `${vault}/${settings.exportFolder}`;
+      try {
+        await createFolder(vault, "", settings.exportFolder);
+      } catch {
+        // 已存在等情况的失败无所谓，save 对话框仍能预填路径
+      }
+    }
     try {
       const { save } = await import("@tauri-apps/plugin-dialog");
       const { firstExistingPath, writeTextFile, exportPdfViaBrowser } = await import("./lib/api");
@@ -2029,7 +2067,7 @@ export default function App() {
     } catch (e) {
       setError(`导出 PDF 失败：${e instanceof Error ? e.message : String(e)}`);
     }
-  }, [vault, notice]);
+  }, [vault, notice, settings.exportFolder]);
 
   // ------------------------------------------------------------------ 周回顾
 
@@ -2512,9 +2550,16 @@ export default function App() {
       zen: () => setZen((value) => !value),
       insertDate: () => insertAtCursor(daily.today),
       insertTime: () => insertAtCursor(moment().format("HH:mm")),
+      toggleTags: () => {
+        if (!currentRef.current || !isMarkdownPath(currentRef.current.path)) {
+          notice("请先打开一篇笔记再打标签", "error");
+          return;
+        }
+        setTagPopoverOpen((value) => !value);
+      },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
-    [beginCreate, changeMode, openVault, insertAtCursor, daily.today],
+    [beginCreate, changeMode, openVault, insertAtCursor, daily.today, notice],
   );
 
   // 快捷键绑定（Obsidian 式可重绑定）：设置面板改绑定后这里经版本号重算。
@@ -2815,21 +2860,44 @@ export default function App() {
         openReleasePage={(url) => void openReleasePage(url)}
       />
 
-      {/* 发现新版本的提示条：启动自动检查或手动检查发现可用更新时出现 */}
+      {/* 发现新版本的弹窗：启动自动检查或手动检查发现可用更新时出现，展示新版本介绍 */}
       {updateCheck.available && !updateCheck.dismissed && updateCheck.state !== "downloading" && updateCheck.state !== "installing" && (
-        <div className="update-banner" role="alert">
-          <span>{updateCheck.message}</span>
-          <button type="button" className="btn" onClick={() => void installUpdate()}>
-            立即更新
-          </button>
-          <button
-            type="button"
-            className="btn btn-ghost"
-            onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))}
-          >
-            稍后
-          </button>
-        </div>
+        <>
+          <div className="menu-backdrop" onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))} />
+          <div className="update-dialog" role="alertdialog" aria-label="发现新版本">
+            <div className="update-dialog-head">
+              <span className="update-dialog-title">{updateCheck.message}</span>
+              <button
+                type="button"
+                className="icon-btn"
+                title="稍后再说"
+                onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))}
+              >
+                <IconX size={14} />
+              </button>
+            </div>
+            {updateCheck.notes && (
+              <div className="update-dialog-notes">{updateCheck.notes}</div>
+            )}
+            <div className="update-dialog-actions">
+              <button type="button" className="btn" onClick={() => void installUpdate()}>
+                立即更新
+              </button>
+              {updateCheck.url && (
+                <button type="button" className="btn btn-ghost" onClick={() => void openReleasePage(updateCheck.url!)}>
+                  查看发布页
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))}
+              >
+                稍后
+              </button>
+            </div>
+          </div>
+        </>
       )}
       {updateCheck.state === "downloading" && (
         <div className="update-banner" role="status">

@@ -43,6 +43,11 @@ export interface Settings {
    * - `blueTopaz`：Blue Topaz 同源的渲染观感（彩色标题、tint 表头、重 callout）。
    */
   renderStyle: "default" | "blueTopaz";
+  /**
+   * 导出落点（仓库内相对路径）：导出 PDF / mermaid 图片默认保存到这个目录，
+   * 保存对话框也会预填它。空串 = 仓库根。
+   */
+  exportFolder: string;
   // ---- 全局背景（每设备独立，与插件同一种归属：不进仓库、不随同步走）----
 
   /** 启用全局背景图片。 */
@@ -80,6 +85,7 @@ const DEFAULTS: Settings = {
   showLineNumbers: false,
   syncRenameHeading: true,
   renderStyle: "default",
+  exportFolder: "导出",
   bgEnabled: false,
   bgImagePath: "",
   bgOpacity: 0.35,
