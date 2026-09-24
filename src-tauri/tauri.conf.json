@@ -43,11 +43,11 @@
     ],
     "fileAssociations": [
       {
-        "name": "Quick Note Markdown 文档",
+        "name": "Quick Note Markdown",
         "ext": [
           "md"
         ],
-        "description": "Markdown 笔记（Quick Note）",
+        "description": "Markdown document (Quick Note)",
         "role": "Editor"
       }
     ]
