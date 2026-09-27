@@ -24,6 +24,7 @@ import {
   adaptStateToVault,
   defaultVaultName,
   normalizeSyncState,
+  type PendingConflict,
   type SyncDeviceState,
   type SyncStatusKind,
 } from "./sync.ts";
@@ -45,8 +46,10 @@ export interface SyncController {
   error: string | null;
   /** 上次成功同步的时间（ms），0 表示从未。 */
   lastSyncAt: number;
-  /** 最近一次同步里"本地胜出"的冲突文件。 */
-  conflicts: string[];
+  /** 待用户裁决的冲突清单（本地与云端都改过，选云端覆盖或本地覆盖）。 */
+  conflicts: PendingConflict[];
+  /** 对一条冲突做出选择：remote = 用云端覆盖本地，local = 用本地覆盖云端。 */
+  resolveConflict: (path: string, choice: "remote" | "local") => void;
   /** 读到状态文件失败时的原因（此时按默认值走，改动不会写回）。 */
   stateError: string | null;
   /** 状态**落盘**失败的原因（只警告，同步继续）。 */
@@ -108,7 +111,7 @@ export function useSync(options: {
   const [status, setStatus] = useState<SyncStatusKind>("off");
   const [error, setError] = useState<string | null>(null);
   const [lastSyncAt, setLastSyncAt] = useState(0);
-  const [conflicts, setConflicts] = useState<string[]>([]);
+  const [conflicts, setConflicts] = useState<PendingConflict[]>([]);
   const [stateError, setStateError] = useState<string | null>(null);
   /** 状态**落盘**失败（盘满、权限）。它只警告，不停同步——状态还在内存里，同步照跑。 */
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -243,7 +246,7 @@ export function useSync(options: {
         setError(detail ?? null);
       },
       onNotice: (message, kind) => noticeRef.current(message, kind),
-      onConflicts: (files) => setConflicts(files.slice(0, 5)),
+      onConflicts: (items) => setConflicts(items),
       persist,
     };
 
@@ -306,6 +309,10 @@ export function useSync(options: {
   const reloadState = useCallback(() => setReloadToken((value) => value + 1), []);
 
   const dismissConflicts = useCallback(() => setConflicts([]), []);
+
+  const resolveConflict = useCallback((path: string, choice: "remote" | "local") => {
+    void engineRef.current?.resolveConflict(path, choice);
+  }, []);
   const dismissSaveError = useCallback(() => setSaveError(null), []);
 
   const handleVaultChange = useCallback((paths: string[]) => {
@@ -341,6 +348,7 @@ export function useSync(options: {
     error,
     lastSyncAt,
     conflicts,
+    resolveConflict,
     stateError,
     saveError,
     updateConfig,

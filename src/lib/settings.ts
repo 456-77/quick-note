@@ -48,6 +48,14 @@ export interface Settings {
    * 保存对话框也会预填它。空串 = 仓库根。
    */
   exportFolder: string;
+  /**
+   * 打开其他仓库时的行为：
+   * - `ask`（默认）：每次弹窗问「当前窗口打开还是新窗口」；
+   * - `current`：总是当前窗口替换（Obsidian 式）；
+   * - `newWindow`：总是另起一个应用窗口打开新仓库。
+   * 选择弹窗里勾「记住选择」即写入这里；设置页可随时改回。
+   */
+  vaultOpenMode: "ask" | "current" | "newWindow";
   // ---- 全局背景（每设备独立，与插件同一种归属：不进仓库、不随同步走）----
 
   /** 启用全局背景图片。 */
@@ -86,6 +94,7 @@ const DEFAULTS: Settings = {
   syncRenameHeading: true,
   renderStyle: "default",
   exportFolder: "导出",
+  vaultOpenMode: "ask",
   bgEnabled: false,
   bgImagePath: "",
   bgOpacity: 0.35,

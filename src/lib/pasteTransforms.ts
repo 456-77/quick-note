@@ -103,6 +103,7 @@ const LOG_EXCEPTION = /^\s*(?:at\s+[\w$./]+\(|Caused by:|\.\.\.\s*\d+\s+more|Tra
  * 判断多行文本是不是服务端/程序运行日志。判据（满足行数阈值才认）：
  * - 行首时间戳 + 级别关键词（最典型的 Logback/log4j/Nginx 行）；
  * - 或时间戳 + logger 名（com.foo.bar.Baz 这类点分类名）；
+ * - 或 Maven/Gradle 构建输出的行首 `[INFO]` / `[ERROR]`；
  * - 异常栈跟随行（at xxx(yyy:zz)、Caused by:）单独算弱信号。
  *
  * 优先级高于编程语言识别：带异常栈的日志按 Java 规则会误判成 java 代码，
@@ -116,6 +117,11 @@ export function looksLikeLog(text: string): boolean {
   for (const line of lines) {
     if (LOG_EXCEPTION.test(line)) {
       exceptions += 1;
+      continue;
+    }
+    // Maven/Gradle：行首方括号级别，本身就是强信号
+    if (/^\[(?:INFO|DEBUG|WARNING|ERROR|TRACE)\]/.test(line.trimStart())) {
+      strong += 1;
       continue;
     }
     const hasTs = LOG_TIMESTAMP.test(line);

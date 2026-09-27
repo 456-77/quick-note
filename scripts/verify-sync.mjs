@@ -25,7 +25,6 @@ import {
   adaptStateToVault,
   attachmentStamp,
   baseUrl,
-  conflictLabel,
   decideRecord,
   defaultVaultName,
   headerValue,
@@ -294,12 +293,6 @@ console.log("\n冲突决策（判断错了就是丢改动或覆盖别人）\n");
     }) === "resurrect-local",
     "云端已删、本地有未同步修改 → 本地胜，复活并回推",
   );
-
-  check(
-    conflictLabel("keep-local", "日记/a.md")?.includes("重新上传") === true,
-    "冲突提示说明了「已重新上传」",
-  );
-  check(conflictLabel("noop-identical", "日记/a.md") === null, "无冲突时不给提示文案");
 }
 
 // ---------------------------------------------------------------- 哈希口径

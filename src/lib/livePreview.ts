@@ -2110,10 +2110,16 @@ export function buildLivePreviewDecorations(
 
   // 手写 HTML 最先注册：它是最外层的结构，重叠时应当由它接管
   // （例如 `<font color=red>[[某笔记]]</font>` 整段归 HTML）。
+  // 成对标签内含 Markdown 语法时（`<span>[[引用]]</span>`、`<span>![图](url)</span>`），
+  // 交给 HtmlWidget 走 Markdown 管线渲染内层——原样输出会把 `[[..]]`、`![..](..)` 暴露成文字。
   const htmlSpans = findInlineHtml(slice, from, excluded);
   for (const item of htmlSpans) {
     if (ctx.cursorIn(item.from, item.to)) continue; // 光标在该元素内才显示源码
-    replaceWith(item.from, item.to, new HtmlWidget(item.inner));
+    const looksMarkdown = /\[\[|!\[|\*\*|`|\$[^$\n]+\$/.test(item.inner);
+    const inner = looksMarkdown
+      ? item.inner.replace(/^<[^<>]+>/, "").replace(/<[^<>]+>$/, "")
+      : item.inner;
+    replaceWith(item.from, item.to, new HtmlWidget(inner, false, looksMarkdown));
   }
 
   // Obsidian 的 `[[...]]` / `![[...]]` 解析器不认识，得自己找。
@@ -2730,6 +2736,8 @@ export function livePreviewExtension() {
     ),
     // 跟踪「鼠标拖选」窗口期：mousedown 起步、mouseup/失焦收尾。期间 blockWidgetsField
     // 冻结翻转（见其 update），收尾时重算一次按最终选区定渲染态。
+    // wiki 引用的点击跟随不在 CM 事件流里做（CM 对 widget 内事件的处理时机不可控），
+    // 由 App 在 document 捕获阶段统一委托（见 App 的 wiki-click 委托）。
     EditorView.domEventHandlers({
       mousedown: (_event, view) => {
         endMouseSelection();

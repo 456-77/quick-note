@@ -259,6 +259,17 @@ const RULES: LangRule[] = [
   // ---- Mermaid ----
   { lang: "mermaid", weight: 5, re: /^(graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram|gantt|pie|journey|mindmap|timeline|gitGraph|requirementDiagram|quadrantChart|sankey-beta|block-beta|architecture-beta|xyChart)\b/m },
   { lang: "mermaid", weight: 3, re: /^\s*[A-Za-z0-9_()"']+\s*(-->|---|==>|-\.->|--x|--o|==|-.->)\s*[A-Za-z0-9_()"']/m, cap: 6 },
+
+  // ---- 运行日志（logback / log4j / Maven 构建输出等）----
+  // logback 典型行：`2026-09-27 22:11:22.345  INFO 190827 --- [main] c.foo.Bar : started`
+  // （时间戳开头 + 级别词；也覆盖 log4j2 的 `[main] INFO` 变体）
+  { lang: "log", weight: 4, re: /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\s+(?:\[[^\]]+\]\s+)?(?:TRACE|DEBUG|INFO|WARN|WARNING|ERROR|FATAL|NOTICE)\b/gm, cap: 12 },
+  // Maven / Gradle 构建日志：行首 `[INFO]` / `[ERROR]` / `[WARNING]`
+  { lang: "log", weight: 4, re: /^\[(?:INFO|DEBUG|WARNING|ERROR|TRACE)\]/gm, cap: 12 },
+  // Java 异常栈跟随行：`at com.foo.Bar.baz(Bar.java:42)` / `Caused by: ...`
+  { lang: "log", weight: 3, re: /^\s+at\s+[\w$.]+\([\w$.?/:~[\]]+\)|^Caused by: /gm, cap: 9 },
+  // Spring Boot 启动横幅式的分隔行与 `... :` logger 分隔
+  { lang: "log", weight: 2, re: /^\s*(?:-+|={3,})\s*$/gm, cap: 4 },
 ];
 
 /** 整段可解析的 JSON 直接判定；无法解析时按引号键数量打分 */

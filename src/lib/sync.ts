@@ -62,6 +62,22 @@ export interface SyncDeviceState {
   lastSyncAt: number;
   /** 服务端签发的 refreshToken（30 天滚动轮换），用于静默续期 accessToken。 */
   refreshToken: string;
+  /**
+   * 待用户裁决的冲突（本地与云端都改过）。进入这份名单的文件**扣住不推**：
+   * 既不自动推本地（会覆盖云端，正是要避免的），也不自动采纳云端（会丢本地改动），
+   * 直到用户在冲突面板里二选一。随状态文件持久化——否则重启后推送扫描会把
+   * 扣住的文件当成普通本地修改推上去，裁决就失去意义了。
+   */
+  pendingConflicts: PendingConflict[];
+}
+
+/** 一条等待用户裁决的同步冲突。`remoteContent` 为 null 表示云端已删除（选云端 = 删本地）。 */
+export interface PendingConflict {
+  path: string;
+  kind: "note" | "attachment";
+  remoteContent: string | null;
+  /** 附件冲突时云端内容的 SHA-256；连同 remoteContent 为 null 一起表示「云端已删除」。 */
+  remoteSha256?: string;
 }
 
 /** 附件同步（M3 范围外）也要用到的占位状态，保持与插件同一份字段，便于将来接上。 */
@@ -79,6 +95,7 @@ export const DEFAULT_SYNC_STATE: SyncDeviceState = {
   attachmentStamps: {},
   lastSyncAt: 0,
   refreshToken: "",
+  pendingConflicts: [],
 };
 
 /**
@@ -100,6 +117,7 @@ export function adaptStateToVault(state: SyncDeviceState, vault: string): SyncDe
     attachmentHashes: {},
     attachmentStamps: {},
     lastSyncAt: 0,
+    pendingConflicts: [],
   };
 }
 
@@ -123,6 +141,14 @@ export function normalizeSyncState(raw: Partial<SyncDeviceState> | null | undefi
     scope: raw?.scope === "vault" ? "vault" : "folder",
     cursor: typeof raw?.cursor === "number" && raw.cursor >= 0 ? raw.cursor : 0,
     lastSyncAt: typeof raw?.lastSyncAt === "number" ? raw.lastSyncAt : 0,
+    pendingConflicts: Array.isArray(raw?.pendingConflicts)
+      ? raw.pendingConflicts.filter(
+          (item): item is PendingConflict =>
+            typeof item?.path === "string" &&
+            (item.kind === "note" || item.kind === "attachment") &&
+            (typeof item.remoteContent === "string" || item.remoteContent === null),
+        )
+      : [],
   };
 }
 
@@ -308,13 +334,6 @@ export function decideRecord(input: RecordDecisionInput): RecordAction {
   return "create-local";
 }
 
-
-/** 冲突提示里那一行话（决定动作是本地胜时才会用到）。 */
-export function conflictLabel(action: RecordAction, path: string): string | null {
-  if (action === "keep-local") return `${path}（本地与云端都修改过，已保留本地并重新上传）`;
-  if (action === "resurrect-local") return `${path}（云端已删除，本地有修改，已恢复上传）`;
-  return null;
-}
 
 // ---------------------------------------------------------------- 附件
 

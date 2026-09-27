@@ -65,7 +65,7 @@ check("块级公式 $$（成长）", "$", c("$", "$"), { kind: "grow", char: "$"
 // ── 中优先级：非对称与两字符单位 ──
 check("圆括号交给 closeBrackets", "(", c("", ""), none);
 check("大括号交给 closeBrackets", "{", c("", ""), none);
-check("双引号交给 closeBrackets", '"', c("", ""), none);
+check("双引号空对插入（0.13 引号配对）", '"', c("", ""), { kind: "insert", text: '""', cursorOffset: 1 });
 check("高亮 ==", "=", c("a =", ""), { kind: "insert", text: "===", cursorOffset: 1 });
 check("注释 %%", "%", c("%%", ""), none);
 check("注释 %%（恰一）", "%", c("a %", ""), { kind: "insert", text: "%%%", cursorOffset: 1 });

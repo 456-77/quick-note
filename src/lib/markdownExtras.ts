@@ -98,26 +98,64 @@ export class HtmlWidget extends WidgetType {
   readonly html: string;
   /** 块级 HTML（由 StateField 做整块替换）还是行内标签。 */
   readonly block: boolean;
+  /** 行内标签里包着 Markdown 语法（`<span>[[引用]]</span>`）：内层按 Markdown 渲染。 */
+  readonly renderMarkdown: boolean;
 
-  constructor(html: string, block = false) {
+  constructor(html: string, block = false, renderMarkdown = false) {
     super();
     this.html = html;
     this.block = block;
+    this.renderMarkdown = renderMarkdown;
   }
 
   eq(other: HtmlWidget) {
-    return other.html === this.html && other.block === this.block;
+    return other.html === this.html && other.block === this.block && other.renderMarkdown === this.renderMarkdown;
   }
 
   toDOM(view: EditorView) {
     const box = document.createElement("span");
     box.className = this.block ? "cm-lp-html cm-lp-html-block" : "cm-lp-html";
+    if (this.renderMarkdown) {
+      // 先放原文占位（渲染是异步的），完成后替换并重测——嵌入笔记同一套路
+      box.textContent = this.html;
+      void this.renderInto(box, view);
+      return box;
+    }
     if (!mountSanitized(box, view, this.html)) {
       // 清洗不可用时显示源码，绝不注入
       box.textContent = this.html;
       box.className = `${box.className} is-raw`;
     }
     return box;
+  }
+
+  /**
+   * 把内层内容交给 Markdown 管线（wiki 引用、图片、加粗都会渲染），再清洗注入。
+   * 复用嵌入笔记的渲染器（动态 import，避免 markdownExtras → embed → livePreview 的静态环）。
+   */
+  private async renderInto(box: HTMLElement, view: EditorView): Promise<void> {
+    try {
+      const { renderMarkdownToHtml } = await import("./embed.ts");
+      const ctx = view.state.facet(livePreviewContext);
+      let html = await renderMarkdownToHtml(this.html, ctx);
+      // 单段落剥壳：<p> 是块级，行内 span 里装它会撑破行盒
+      const single = /^<p>([\s\S]*)<\/p>\n?$/.exec(html);
+      if (single) html = single[1];
+      if (!box.isConnected) return;
+      if (!mountSanitized(box, view, html)) {
+        box.textContent = this.html; // 清洗不可用：退回原文
+        return;
+      }
+      if (box.isConnected) view.requestMeasure();
+      // 图片异步加载改变高度：不重测会让下方行号/点击整体漂移（CM6 老规矩）
+      for (const img of box.querySelectorAll("img")) {
+        img.addEventListener("load", () => {
+          if (box.isConnected) view.requestMeasure();
+        });
+      }
+    } catch {
+      if (box.isConnected) box.textContent = this.html;
+    }
   }
 }
 

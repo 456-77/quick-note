@@ -67,11 +67,11 @@ import {
   DownloadBudget,
   attachmentStamp,
   baseUrl,
-  conflictLabel,
   decideRecord,
   headerValue,
   inScope,
   isAttachmentPath,
+  type PendingConflict,
   type SyncDeviceState,
   type SyncStatusKind,
 } from "./sync.ts";
@@ -142,8 +142,8 @@ export interface SyncHost {
   onStatus(kind: SyncStatusKind, detail?: string): void;
   /** 给用户看的消息。与编辑器的提示共用一条通道。 */
   onNotice(message: string, kind?: "info" | "error"): void;
-  /** 冲突文件（本地胜的那些），同步结束时汇报一次。 */
-  onConflicts(files: string[], at: number): void;
+  /** 待用户裁决的冲突清单变化时回调（新增冲突或用户裁决后都会发）。 */
+  onConflicts(items: PendingConflict[], at: number): void;
   /** 持久化同步状态（含游标与各文件哈希）。 */
   persist(state: SyncDeviceState): Promise<void>;
 }
@@ -180,10 +180,14 @@ export class SyncEngine {
   /** 已经报告过"无法同步"的文件，避免每个周期重复提示同一件事。 */
   private reportedSkips = new Set<string>();
 
+  /** 待裁决冲突扣住的路径：推送扫描与 doFlush 都跳过，防止未裁决就被自动覆盖云端。 */
+  private readonly conflictHold: Set<string>;
+
   constructor(vault: string, state: SyncDeviceState, host: SyncHost) {
     this.vault = vault;
     this.state = state;
     this.host = host;
+    this.conflictHold = new Set((state.pendingConflicts ?? []).map((item) => item.path));
   }
 
   /** 服务端地址与账号密码都已配置。 */
@@ -251,6 +255,7 @@ export class SyncEngine {
     if (!this.state.enabled || !this.configured) return;
     let touched = false;
     for (const path of paths) {
+      if (this.conflictHold.has(path)) continue; // 冲突待裁决，不自动推
       if (path.endsWith(".md") && inScope(path, this.state.scope, this.host.getFolder())) {
         this.dirty.set(path, "mod");
         touched = true;
@@ -378,6 +383,7 @@ export class SyncEngine {
   private async scanLocalFiles(): Promise<void> {
     const result = await syncScan(this.vault, this.state.scope, this.host.getFolder());
     for (const file of result.files) {
+      if (this.conflictHold.has(file.path)) continue; // 冲突待裁决，不自动推
       if (this.state.hashes[file.path] !== file.syncSha256) {
         this.dirty.set(file.path, "mod");
       }
@@ -408,6 +414,7 @@ export class SyncEngine {
       const entries = await listEntries(this.vault);
       const onDisk = new Set(entries.filter((entry) => !entry.isDir).map((entry) => entry.path));
       for (const path of hashed) {
+        if (this.conflictHold.has(path)) continue; // 冲突待裁决，不自动推墓碑
         if (!onDisk.has(path)) this.dirty.set(path, "del");
       }
     }
@@ -482,6 +489,7 @@ export class SyncEngine {
       const batchPaths: string[] = [];
       for (const [path, op] of this.dirty) {
         if (items.length >= MAX_BATCH) break;
+        if (this.conflictHold.has(path)) continue; // 冲突待裁决，不自动推
         if (op === "del") {
           items.push({ path, content: null, deleted: true, hash: null });
           batchPaths.push(path);
@@ -577,20 +585,25 @@ export class SyncEngine {
       since = next;
     }
 
-    const conflicts: string[] = [];
     // 附件先落地再落正文：正文里的 ![[图]] 一出现就该有图可看，不用等下一轮
     for (const attachment of appliedAttachments.values()) {
-      await this.applyAttachment(attachment, conflicts);
+      await this.applyAttachment(attachment);
     }
     for (const record of applied.values()) {
-      await this.applyRecord(record, conflicts);
+      await this.applyRecord(record);
     }
-    if (conflicts.length > 0) this.host.onConflicts(conflicts, Date.now());
+    this.reportConflicts();
     this.state.cursor = finalCursor;
   }
 
-  /** 应用单条远端记录（冲突时本地胜：保留本地并标记重推）。 */
-  private async applyRecord(record: RemoteRecord, conflicts: string[]): Promise<void> {
+  /**
+   * 应用单条远端记录。
+   *
+   * 冲突（双边都改过 / 云端删而本地改）不再默认「本地胜并重推」——那会静默覆盖云端，
+   * 多端同时编辑时后同步的一端丢改动。冲突路径进入待裁决清单并**扣住**：推送扫描、
+   * doFlush、文件事件都不碰它，直到用户在冲突面板里选「用云端覆盖」或「用本地覆盖云端」。
+   */
+  private async applyRecord(record: RemoteRecord): Promise<void> {
     if (this.virtualPaths.has(record.path)) {
       if (record.deleted) return;
       if (this.host.mergeVirtualFile(record.path, record.content)) {
@@ -642,9 +655,12 @@ export class SyncEngine {
       }
       case "keep-local":
       case "resurrect-local": {
-        const label = conflictLabel(action, record.path);
-        if (label) conflicts.push(label);
-        this.dirty.set(record.path, "mod");
+        this.dirty.delete(record.path); // 本轮扫描可能已排了推送，撤下
+        this.enqueueConflict({
+          path: record.path,
+          kind: "note",
+          remoteContent: record.deleted ? null : record.content,
+        });
         return;
       }
       case "push-delete":
@@ -737,12 +753,87 @@ export class SyncEngine {
     delete this.state.attachmentStamps[path];
   }
 
+  // ------------------------------------------------------------ 冲突裁决
+
+  /** 登记一条待裁决冲突（去重），扣住该路径并通知界面与状态落盘。 */
+  private enqueueConflict(item: PendingConflict): void {
+    if (this.conflictHold.has(item.path)) return; // 已在待裁决清单里，保留先到的
+    this.conflictHold.add(item.path);
+    this.state.pendingConflicts = [...(this.state.pendingConflicts ?? []), item];
+    this.reportConflicts();
+    void this.host.persist(this.state).catch(() => {});
+  }
+
+  /** 把当前待裁决清单发给界面（新增冲突与裁决后都调用）。 */
+  private reportConflicts(): void {
+    this.host.onConflicts([...(this.state.pendingConflicts ?? [])], Date.now());
+  }
+
   /**
-   * 应用单条远端附件元数据（冲突策略与正文一致：本地改过就本地胜并重推）。
+   * 用户对一条冲突做出选择：
+   *
+   * - `remote`：用云端覆盖本地。笔记写回远端内容（保留本地 BOM 习惯）并记哈希；
+   *   云端已删除的（含附件）删除本地文件并清哈希——下一轮扫描即视为已一致。
+   * - `local`：用本地覆盖云端。解除扣住并排入推送队列，立即冲刷一轮。
+   */
+  async resolveConflict(path: string, choice: "remote" | "local"): Promise<void> {
+    const item = (this.state.pendingConflicts ?? []).find((entry) => entry.path === path);
+    if (!item) return;
+    this.state.pendingConflicts = (this.state.pendingConflicts ?? []).filter(
+      (entry) => entry.path !== path,
+    );
+    this.conflictHold.delete(path);
+
+    if (choice === "remote") {
+      if (item.kind === "note") {
+        if (item.remoteContent === null) {
+          try {
+            await deleteEntry(this.vault, path);
+          } catch (e) {
+            this.host.onNotice(`云同步：删除 ${path} 失败（${e}）`, "error");
+          }
+          delete this.state.hashes[path];
+        } else {
+          const note = await readNoteOptional(this.vault, path);
+          try {
+            await writeNote(this.vault, path, item.remoteContent, note?.hasBom ?? false);
+          } catch (e) {
+            this.host.onNotice(`云同步：写入 ${path} 失败（${e}）`, "error");
+            return;
+          }
+          this.state.hashes[path] = await sha256Hex(item.remoteContent);
+        }
+      } else {
+        // 附件：云端已删除 -> 删本地；否则重新下载（downloadInto 会记哈希）
+        if (item.remoteSha256 === undefined) {
+          try {
+            await deleteEntry(this.vault, path);
+          } catch (e) {
+            this.host.onNotice(`云同步：删除附件 ${path} 失败（${e}）`, "error");
+          }
+          delete this.state.attachmentHashes[path];
+          delete this.state.attachmentStamps[path];
+        } else {
+          await this.downloadInto(path);
+        }
+      }
+    } else {
+      if (item.kind === "note") this.dirty.set(path, "mod");
+      else this.dirtyAttachments.set(path, "mod");
+      // 立即冲刷：用户选了「本地覆盖云端」，别让改动等到下一个周期
+      await this.doFlush();
+    }
+
+    this.reportConflicts();
+    await this.host.persist(this.state).catch(() => {});
+  }
+
+  /**
+   * 应用单条远端附件元数据（冲突进入待裁决清单，与正文同一套交互）。
    *
    * 这是"云端主动告知"的补充路径；主要下载入口是按引用反推（见 scanAttachments）。
    */
-  private async applyAttachment(rec: RemoteAttachment, conflicts: string[]): Promise<void> {
+  private async applyAttachment(rec: RemoteAttachment): Promise<void> {
     const exists = await this.pathExists(rec.path);
     const knownHash = this.state.attachmentHashes[rec.path];
 
@@ -765,8 +856,8 @@ export class SyncEngine {
             this.host.onNotice(`云同步：删除附件 ${rec.path} 失败（${e}）`, "error");
           }
         } else {
-          conflicts.push(`${rec.path}（云端已删除，本地有修改，已恢复上传）`);
-          this.dirtyAttachments.set(rec.path, "mod");
+          this.dirtyAttachments.delete(rec.path);
+          this.enqueueConflict({ path: rec.path, kind: "attachment", remoteContent: null });
         }
       }
       return;
@@ -782,8 +873,13 @@ export class SyncEngine {
         // 本地自上次同步后未改 -> 云端覆盖
         await this.downloadInto(rec.path);
       } else {
-        conflicts.push(`${rec.path}（本地与云端都修改过，已保留本地并重新上传）`);
-        this.dirtyAttachments.set(rec.path, "mod");
+        this.dirtyAttachments.delete(rec.path);
+        this.enqueueConflict({
+          path: rec.path,
+          kind: "attachment",
+          remoteContent: null,
+          remoteSha256: rec.sha256,
+        });
       }
       return;
     }

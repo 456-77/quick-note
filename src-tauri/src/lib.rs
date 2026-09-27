@@ -63,6 +63,21 @@ fn startup_file() -> Option<String> {
     None
 }
 
+/// 另起一个应用进程打开指定仓库（「在新窗口打开仓库」）。
+///
+/// 用新进程而不是 Tauri 的 WebviewWindow：仓库状态存在 localStorage（按 WebView
+/// 数据目录共享），同进程开第二个窗口会和当前窗口共用同一份 vault 键互相打架；
+/// 独立进程各自走一遍启动流程（启动参数里的仓库优先于 localStorage），互不干扰。
+#[tauri::command]
+fn open_new_window(vault: String) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("定位应用失败: {e}"))?;
+    std::process::Command::new(exe)
+        .arg(&vault)
+        .spawn()
+        .map_err(|e| format!("启动新窗口失败: {e}"))?;
+    Ok(())
+}
+
 /// 读取任意文本文件（UTF-8）。
 ///
 /// 用途：快捷键配置导入等"用户经系统对话框自选文件"的场景。路径来自用户在
@@ -146,6 +161,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             startup_vault,
             startup_file,
+            open_new_window,
             read_text_file,
             write_text_file,
             first_existing_path,

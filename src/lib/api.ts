@@ -214,6 +214,9 @@ export const startupVault = () => invoke<string | null>("startup_vault");
 /** 启动参数里的笔记文件（资源管理器双击 .md / 打开方式）：进仓库后自动打开。 */
 export const startupFile = () => invoke<string | null>("startup_file");
 
+/** 另起一个应用窗口打开指定仓库（「在新窗口打开」）。 */
+export const openNewWindow = (vault: string) => invoke<void>("open_new_window", { vault });
+
 /** 应用数据目录信息（设置面板「存储」分区用）。 */
 export interface AppDataPaths {
   /** 配置目录：同步状态与数据目录指针文件所在。 */

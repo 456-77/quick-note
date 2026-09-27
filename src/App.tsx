@@ -40,14 +40,14 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, searchVault, setCustomDataDir, startupFile, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
 import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit } from "./lib/tags";
 import { toBase64 } from "./lib/paste";
 import { lineEndingLabel } from "./lib/lineEndings";
-import { clearEmbedCache } from "./lib/embed";
+import { clearEmbedCache, splitEmbedTarget } from "./lib/embed";
 import { requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
 import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
@@ -1262,8 +1262,46 @@ export default function App() {
   const openVault = useCallback(async () => {
     const picked = await pickVault();
     if (!picked) return;
-    await switchVault(picked);
-  }, [switchVault]);
+    if (picked === vault) return;
+    // 打开方式：设置里固定了就直接走；默认（ask）弹窗让用户选当前窗口/新窗口
+    const mode = getSettings().vaultOpenMode;
+    if (mode === "newWindow") {
+      try {
+        await openNewWindow(picked);
+        setStatus(`已在新窗口打开：${picked}`);
+      } catch (e) {
+        setError(`在新窗口打开失败：${e}`);
+      }
+      return;
+    }
+    if (mode === "current") {
+      await switchVault(picked);
+      return;
+    }
+    setVaultChoice({ picked, remember: false });
+  }, [pickVault, vault, switchVault]);
+
+  /** 「打开其他仓库」的方式选择弹窗（vaultOpenMode = ask 时出现）。 */
+  const [vaultChoice, setVaultChoice] = useState<{ picked: string; remember: boolean } | null>(null);
+  const chooseVaultOpen = useCallback(
+    async (way: "current" | "newWindow", remember: boolean) => {
+      const picked = vaultChoice?.picked;
+      setVaultChoice(null);
+      if (!picked) return;
+      if (remember) applySettings({ vaultOpenMode: way });
+      if (way === "newWindow") {
+        try {
+          await openNewWindow(picked);
+          setStatus(`已在新窗口打开：${picked}`);
+        } catch (e) {
+          setError(`在新窗口打开失败：${e}`);
+        }
+        return;
+      }
+      await switchVault(picked);
+    },
+    [vaultChoice, applySettings, switchVault],
+  );
 
   /** 换到最近打开的某个仓库（顶栏下拉）。 */
   const openRecentVault = useCallback(
@@ -1628,6 +1666,25 @@ export default function App() {
       setMenu({ path, isDir, x, y, origin });
     },
     [],
+  );
+
+  /** 复制条目路径（绝对 = 仓库目录 + 相对路径，Windows 风格分隔符）。 */
+  const copyEntryPaths = useCallback(
+    async (path: string, kind: "absolute" | "relative") => {
+      const value =
+        kind === "relative"
+          ? path
+          : vault
+            ? `${vault.replace(/[\\/]+$/, "")}\\${path.replace(/\//g, "\\")}`
+            : path;
+      try {
+        await navigator.clipboard.writeText(value);
+        setStatus(kind === "absolute" ? `已复制绝对路径：${value}` : `已复制相对路径：${value}`);
+      } catch {
+        setError("复制失败：剪贴板不可用");
+      }
+    },
+    [vault],
   );
 
   const beginRename = useCallback((path: string, owner: "tree" | "daily" = "tree") => {
@@ -2256,15 +2313,76 @@ export default function App() {
         void navigator.clipboard.writeText(text).then(() => setStatus(`已复制：${text}`), () => setError("复制失败：剪贴板不可用"));
       },
       revealFile: async (target) => {
-        const relative = resolveWikiRelative(resourcesRef.current, target);
+        // 目标可能带 `#标题` / `^块`（Obsidian 笔记引用）——定位只关心文件本身
+        const { path } = splitEmbedTarget(target);
+        const relative = resolveWikiRelative(resourcesRef.current, path);
         if (!relative) {
-          setError(`定位失败：在仓库里找不到「${target}」`);
+          setError(`定位失败：在仓库里找不到「${path}」`);
           return;
         }
         await revealInExplorer(relative);
       },
     };
   }, [vault, notice, revealInExplorer]);
+
+  // ---------------------------------------------------------------- wiki 引用点击跟随
+  // Obsidian 式：单击引用文字打开目标笔记（带 #标题/^块 时打开后跳转）。
+  // 委托挂在 **document 捕获阶段**：编辑器 widget 内的 mousedown 走 CM 内部事件流，
+  // 时机不可控（实测 domEventHandlers 收不到 HtmlWidget 内的合成点击）；捕获阶段
+  // 最先执行，preventDefault 后 CM 不会放置光标，行装饰保持渲染态。
+  const openWikiTarget = useCallback(
+    (target: string) => {
+      const { path: notePath, section } = splitEmbedTarget(target);
+      const relative = resolveWikiRelative(resourcesRef.current, notePath);
+      if (!relative) {
+        setError(`找不到笔记「${notePath}」`);
+        return;
+      }
+      void openEntryRef.current(relative).then(() => {
+        if (!section) return;
+        // 内容就位后跳到标题/块：按标题文本（忽略大小写）或块尾标记搜索
+        window.setTimeout(() => {
+          const view = viewRef.current;
+          if (!view) return;
+          const doc = view.state.doc;
+          const wanted = section.replace(/^\^/, "").toLowerCase();
+          for (let n = 1; n <= doc.lines; n += 1) {
+            const line = doc.line(n);
+            const hit = section.startsWith("^")
+              ? line.text.trimEnd().toLowerCase().endsWith(`^${wanted}`)
+              : new RegExp(`^#{1,6}\\s+${wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i").test(
+                  line.text.trim(),
+                );
+            if (hit) {
+              view.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+              return;
+            }
+          }
+          setStatus(`没在笔记里找到「${section}」，已打开整篇`);
+        }, 500);
+      });
+    },
+    [],
+  );
+  useEffect(() => {
+    const onDown = (event: MouseEvent) => {
+      if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      const link = (event.target as HTMLElement | null)?.closest?.("[data-wiki-target]");
+      if (!link) return;
+      const startX = event.clientX;
+      const startY = event.clientY;
+      const onUp = (up: MouseEvent) => {
+        window.removeEventListener("mouseup", onUp);
+        // 位移明显是拖选文字，不跟随
+        if (Math.hypot(up.clientX - startX, up.clientY - startY) > 5) return;
+        openWikiTarget(link.getAttribute("data-wiki-target") ?? "");
+      };
+      window.addEventListener("mouseup", onUp);
+      event.preventDefault();
+    };
+    document.addEventListener("mousedown", onDown, true);
+    return () => document.removeEventListener("mousedown", onDown, true);
+  }, [openWikiTarget]);
 
   // ---------------------------------------------------------------- 文件复制粘贴
 
@@ -2836,6 +2954,43 @@ export default function App() {
         />
       )}
 
+      {vaultChoice && (
+        <>
+          <div className="menu-backdrop" onClick={() => setVaultChoice(null)} />
+          <div className="vault-choice" role="dialog" aria-label="打开仓库">
+            <div className="update-dialog-title">在新窗口打开仓库？</div>
+            <div className="vault-choice-path" title={vaultChoice.picked}>
+              {vaultChoice.picked}
+            </div>
+            <div className="vault-choice-hint">
+              当前窗口打开会替换这里已打开的笔记；新窗口会另起一个 Quick Note 实例，
+              两边互不影响。
+            </div>
+            <label className="vault-choice-remember">
+              <input
+                type="checkbox"
+                checked={vaultChoice.remember}
+                onChange={(event) =>
+                  setVaultChoice((prev) => (prev ? { ...prev, remember: event.target.checked } : prev))
+                }
+              />
+              记住我的选择，不再询问（可在 设置 → 通用 里改回）
+            </label>
+            <div className="update-dialog-actions">
+              <button type="button" className="btn" onClick={() => void chooseVaultOpen("current", vaultChoice.remember)}>
+                当前窗口打开
+              </button>
+              <button type="button" className="btn" onClick={() => void chooseVaultOpen("newWindow", vaultChoice.remember)}>
+                在新窗口打开
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={() => setVaultChoice(null)}>
+                取消
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+
       <SettingsDialog
         open={showSettings}
         onClose={() => setShowSettings(false)}
@@ -2956,17 +3111,37 @@ export default function App() {
         <div className="banner banner-warn">
           <div>
             <div>
-              云同步：本地与云端都改动过 {sync.conflicts.length} 个文件，已保留本地版本并重新上传。
+              云同步：{sync.conflicts.length} 个文件本地与云端都有改动，已暂停同步这些文件——请逐个选择保留哪一边。
             </div>
             <ul className="conflict-list">
               {sync.conflicts.map((item) => (
-                <li key={item}>{item}</li>
+                <li key={item.path} className="conflict-row">
+                  <span className="conflict-row-path" title={item.path}>
+                    {item.path}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => sync.resolveConflict(item.path, "remote")}
+                    title="丢弃本地改动，以云端版本为准"
+                  >
+                    用云端覆盖
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => sync.resolveConflict(item.path, "local")}
+                    title="保留本地改动并上传，覆盖云端版本"
+                  >
+                    本地覆盖云端
+                  </button>
+                </li>
               ))}
             </ul>
           </div>
           <span className="spacer" />
           <button type="button" className="btn btn-ghost" onClick={() => sync.dismissConflicts()}>
-            知道了
+            稍后处理
           </button>
         </div>
       )}
@@ -3066,6 +3241,24 @@ export default function App() {
                 {favorites.includes(menu.path) ? "取消收藏" : "收藏"}
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => {
+                void copyEntryPaths(menu.path, "absolute");
+                setMenu(null);
+              }}
+            >
+              复制绝对路径
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void copyEntryPaths(menu.path, "relative");
+                setMenu(null);
+              }}
+            >
+              复制仓库相对路径
+            </button>
             <button
               type="button"
               onClick={() => {

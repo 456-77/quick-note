@@ -43,6 +43,8 @@ export interface AltActions {
   copyText: (text: string) => void;
   /** 在资源管理器中定位仓库内文件。 */
   revealFile: (relativePath: string) => void;
+  /** 打开 wiki 引用指向的笔记（含 `#标题` / `^块` 时打开后跳转）。Obsidian 式点击跟随。 */
+  openWikiLink?: (target: string) => void;
 }
 
 /** 图片工具栏触发的动作，由 App 实现（要落盘、要弹窗，widget 只负责发起）。 */

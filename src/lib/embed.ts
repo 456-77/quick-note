@@ -202,11 +202,14 @@ export async function renderMarkdownToHtml(
     >;
   };
 
-  // 链接：一律不可导航（点 <a href> 会把整个应用导航走）
+  // 链接：一律不可导航（点 <a href> 会把整个应用导航走）。
+  // wiki 链接带 data-wiki-target：点击跟随打开目标笔记（与编辑器渲染的引用同一交互）。
   renderer.rules.link_open = (tokens, idx) => {
     const href = tokens[idx].attrGet("href") ?? "";
-    const title = href.startsWith("wiki-link:") ? href.slice("wiki-link:".length) : href;
-    return `<span class="cm-lp-link" title="${escapeHtml(title)}">`;
+    const isWiki = href.startsWith("wiki-link:");
+    const title = isWiki ? href.slice("wiki-link:".length) : href;
+    const dataAttr = isWiki ? ` data-wiki-target="${escapeHtml(title)}"` : "";
+    return `<span class="cm-lp-link"${dataAttr} title="${escapeHtml(title)}">`;
   };
   renderer.rules.link_close = () => "</span>";
 

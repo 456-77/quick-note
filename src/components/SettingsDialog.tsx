@@ -231,6 +231,23 @@ export default function SettingsDialog({
             导出文件夹）。保存对话框会预填这个目录；手动选过一次位置后以手动选择优先。
           </Hint>
           <label className="settings-row">
+            <span>打开其他仓库时</span>
+            <select
+              value={settings.vaultOpenMode}
+              onChange={(event) =>
+                applySettings({ vaultOpenMode: event.target.value as Settings["vaultOpenMode"] })
+              }
+            >
+              <option value="ask">每次询问</option>
+              <option value="current">总是当前窗口</option>
+              <option value="newWindow">总是新窗口</option>
+            </select>
+          </label>
+          <Hint>
+            「每次询问」在切换仓库时弹窗让你选当前窗口还是新窗口；勾过「记住我的选择」后
+            会跳过询问，在这里改回「每次询问」即可恢复。
+          </Hint>
+          <label className="settings-row">
             <span>粘贴时保存附件</span>
             <input
               type="checkbox"
