@@ -11,8 +11,9 @@
  * 非激活分区**渲染但隐藏**：脚本是程序化赋值，隐藏元素照样能触发 onChange。
  */
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
+import { pickDirectory } from "../lib/api";
 import type { AppDataPaths } from "../lib/api";
 import type { Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
@@ -71,21 +72,8 @@ interface Props {
 
 /** 设置面板里的说明文字：默认只显示一个「?」，点击才展开。 */
 function Hint({ children }: { children: ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <p className="settings-hint">
-      <button
-        type="button"
-        className="hint-toggle"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-        title={open ? "收起说明" : "查看说明"}
-      >
-        ?
-      </button>
-      {open && <span className="hint-body">{children}</span>}
-    </p>
-  );
+  // 直接平铺的灰色小字（0.13：去掉「?」折叠钮——关键说明一眼可见，不再点一下才能看）
+  return <p className="settings-hint">{children}</p>;
 }
 
 export default function SettingsDialog({
@@ -109,7 +97,36 @@ export default function SettingsDialog({
 }: Props) {
   const [active, setActive] = useState<SectionId>("general");
   const [query, setQuery] = useState("");
+  /** 改动落盘后的轻反馈：「已保存」闪现 1.6s */
+  const [savedFlash, setSavedFlash] = useState(false);
+  const savedTimerRef = useRef<number | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+
+  /** applySettings 的包装：闪一次「已保存」。所有设置改动都走这里。 */
+  const saveWithFlash: typeof applySettings = useCallback(
+    (patch) => {
+      applySettings(patch);
+      setSavedFlash(true);
+      if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+      savedTimerRef.current = window.setTimeout(() => setSavedFlash(false), 1600);
+    },
+    [applySettings],
+  );
+
+  // 面板打开时 Ctrl/Cmd+F 聚焦「搜索设置」（拦掉浏览器默认页内搜索）
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
 
   // 打开时重置到第一页并清空搜索（快捷键分区的录入态随其组件卸载自动结束）
   useEffect(() => {
@@ -159,23 +176,25 @@ export default function SettingsDialog({
     <div className="settings-panel" role="dialog" aria-label="设置">
       <div className="settings-nav">
         <div className="settings-nav-head">
-          <span className="settings-nav-title">设置</span>
+          <span className="settings-nav-title">设置{searching ? "" : ` / ${SECTIONS.find((s) => s.id === active)?.label ?? ""}`}</span>
+          {savedFlash && <span className="settings-saved">已保存</span>}
           <button
             type="button"
-            className="icon-btn"
+            className="icon-btn settings-close"
             onClick={onClose}
             title="关闭设置（Esc）"
             aria-label="关闭设置"
           >
-            <IconX size={14} />
+            <IconX size={13} />
           </button>
         </div>
         <div className="settings-search">
           <IconSearch size={13} />
           {/* type=search：GUI 验收按「面板里第一个 input[type=text] = 附件目录」定位控件 */}
           <input
+            ref={searchInputRef}
             type="search"
-            placeholder="搜索设置…"
+            placeholder="搜索设置…（Ctrl+F）"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={(event) => {
@@ -203,13 +222,13 @@ export default function SettingsDialog({
         {/* 顺序即 DOM 顺序：gui 验收依赖「第一个 checkbox 是粘贴开关、
             第一个 text input 是附件目录」，不要调整分区先后。 */}
         <section className="settings-sec" data-sec="general" style={{ display: searching || active === "general" ? undefined : "none" }}>
-          <div className="settings-group">通用</div>
+          <div className="settings-group">链接与附件</div>
           <label className="settings-row">
             <span>插入链接写法</span>
             <select
               value={settings.linkFormat}
               onChange={(event) =>
-                applySettings({ linkFormat: event.target.value as Settings["linkFormat"] })
+                saveWithFlash({ linkFormat: event.target.value as Settings["linkFormat"] })
               }
             >
               <option value="wiki">Wiki：![[图.png]]</option>
@@ -217,43 +236,12 @@ export default function SettingsDialog({
             </select>
           </label>
           <label className="settings-row">
-            <span>导出目录</span>
-            <input
-              type="text"
-              className="settings-text"
-              value={settings.exportFolder}
-              placeholder="导出"
-              onChange={(event) => applySettings({ exportFolder: event.target.value })}
-            />
-          </label>
-          <Hint>
-            导出 PDF、mermaid 图表的默认保存位置（仓库内相对路径，默认「导出」= 仓库根的
-            导出文件夹）。保存对话框会预填这个目录；手动选过一次位置后以手动选择优先。
-          </Hint>
-          <label className="settings-row">
-            <span>打开其他仓库时</span>
-            <select
-              value={settings.vaultOpenMode}
-              onChange={(event) =>
-                applySettings({ vaultOpenMode: event.target.value as Settings["vaultOpenMode"] })
-              }
-            >
-              <option value="ask">每次询问</option>
-              <option value="current">总是当前窗口</option>
-              <option value="newWindow">总是新窗口</option>
-            </select>
-          </label>
-          <Hint>
-            「每次询问」在切换仓库时弹窗让你选当前窗口还是新窗口；勾过「记住我的选择」后
-            会跳过询问，在这里改回「每次询问」即可恢复。
-          </Hint>
-          <label className="settings-row">
             <span>粘贴时保存附件</span>
             <input
               type="checkbox"
               checked={settings.savePastedAttachments}
               onChange={(event) =>
-                applySettings({ savePastedAttachments: event.target.checked })
+                saveWithFlash({ savePastedAttachments: event.target.checked })
               }
             />
           </label>
@@ -275,12 +263,71 @@ export default function SettingsDialog({
             粘贴一段代码时自动识别语言（30+ 种）并包成围栏代码块；已带围栏的代码、
             代码块内部的粘贴不会被改写。开关存在库内配置里（与 Obsidian 插件共用）。
           </Hint>
+
+          <div className="settings-group">导出</div>
+          <label className="settings-row">
+            <span>导出目录</span>
+            <span className="settings-inline">
+              <input
+                type="text"
+                className="settings-text"
+                value={settings.exportFolder}
+                placeholder="导出"
+                onChange={(event) => saveWithFlash({ exportFolder: event.target.value })}
+              />
+              <button
+                type="button"
+                className="btn btn-mini"
+                title="在仓库里选一个目录作为导出目录（取所选目录名）"
+                onClick={async () => {
+                  const picked = await pickDirectory("选择导出目录");
+                  if (picked) {
+                    const folder = picked.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+                    saveWithFlash({ exportFolder: folder });
+                  }
+                }}
+              >
+                选择…
+              </button>
+              <button
+                type="button"
+                className="btn btn-mini"
+                title="恢复默认（仓库根的「导出」）"
+                onClick={() => saveWithFlash({ exportFolder: "导出" })}
+              >
+                重置
+              </button>
+            </span>
+          </label>
+          <Hint>
+            导出 PDF、mermaid 图表的默认保存位置（仓库内相对路径，默认「导出」= 仓库根的
+            导出文件夹）。保存对话框会预填这个目录；手动选过一次位置后以手动选择优先。
+          </Hint>
+
+          <div className="settings-group">打开行为</div>
+          <label className="settings-row">
+            <span>打开其他仓库时</span>
+            <select
+              value={settings.vaultOpenMode}
+              onChange={(event) =>
+                saveWithFlash({ vaultOpenMode: event.target.value as Settings["vaultOpenMode"] })
+              }
+            >
+              <option value="ask">每次询问（在新窗口或当前窗口打开）</option>
+              <option value="current">总是当前窗口</option>
+              <option value="newWindow">总是新窗口</option>
+            </select>
+          </label>
+          <Hint>
+            「每次询问」在切换仓库时弹窗让你选当前窗口还是新窗口；勾过「记住我的选择」后
+            会跳过询问，在这里改回「每次询问」即可恢复。
+          </Hint>
           <label className="settings-row">
             <span>打开笔记时</span>
             <select
               value={settings.openNoteMode}
               onChange={(event) =>
-                applySettings({ openNoteMode: event.target.value as Settings["openNoteMode"] })
+                saveWithFlash({ openNoteMode: event.target.value as Settings["openNoteMode"] })
               }
             >
               <option value="replace">替换当前标签（Obsidian 式）</option>
@@ -298,7 +345,7 @@ export default function SettingsDialog({
               type="checkbox"
               checked={settings.syncRenameHeading}
               onChange={(event) =>
-                applySettings({ syncRenameHeading: event.target.checked })
+                saveWithFlash({ syncRenameHeading: event.target.checked })
               }
             />
           </label>
@@ -315,7 +362,7 @@ export default function SettingsDialog({
             <select
               value={settings.theme}
               onChange={(event) =>
-                applySettings({ theme: event.target.value as Settings["theme"] })
+                saveWithFlash({ theme: event.target.value as Settings["theme"] })
               }
             >
               <option value="dark">深色</option>
@@ -331,7 +378,7 @@ export default function SettingsDialog({
             <select
               value={settings.renderStyle}
               onChange={(event) =>
-                applySettings({ renderStyle: event.target.value as Settings["renderStyle"] })
+                saveWithFlash({ renderStyle: event.target.value as Settings["renderStyle"] })
               }
             >
               <option value="default">默认</option>
@@ -348,7 +395,7 @@ export default function SettingsDialog({
             <input
               type="checkbox"
               checked={settings.showLineNumbers}
-              onChange={(event) => applySettings({ showLineNumbers: event.target.checked })}
+              onChange={(event) => saveWithFlash({ showLineNumbers: event.target.checked })}
             />
           </label>
           <Hint>
@@ -360,7 +407,7 @@ export default function SettingsDialog({
             <input
               type="checkbox"
               checked={settings.bgEnabled}
-              onChange={(event) => applySettings({ bgEnabled: event.target.checked })}
+              onChange={(event) => saveWithFlash({ bgEnabled: event.target.checked })}
             />
           </label>
           <label className="settings-row">
@@ -368,7 +415,7 @@ export default function SettingsDialog({
             <select
               value={settings.bgImagePath}
               onChange={(event) =>
-                applySettings({
+                saveWithFlash({
                   bgImagePath: event.target.value,
                   // 选了图顺手启用；选回「无」就一并关掉，避免开着背景却没图的悬空状态
                   bgEnabled: event.target.value ? true : false,
@@ -397,7 +444,7 @@ export default function SettingsDialog({
             <select
               value={settings.bgFit}
               onChange={(event) =>
-                applySettings({ bgFit: event.target.value as Settings["bgFit"] })
+                saveWithFlash({ bgFit: event.target.value as Settings["bgFit"] })
               }
             >
               <option value="cover">铺满裁剪（cover）</option>
@@ -409,7 +456,7 @@ export default function SettingsDialog({
             <input
               type="range" min={0} max={100} step={5}
               value={Math.round(settings.bgOpacity * 100)}
-              onChange={(event) => applySettings({ bgOpacity: Number(event.target.value) / 100 })}
+              onChange={(event) => saveWithFlash({ bgOpacity: Number(event.target.value) / 100 })}
             />
           </label>
           <label className="settings-row">
@@ -417,7 +464,7 @@ export default function SettingsDialog({
             <input
               type="range" min={0} max={30} step={1}
               value={settings.bgBlur}
-              onChange={(event) => applySettings({ bgBlur: Number(event.target.value) })}
+              onChange={(event) => saveWithFlash({ bgBlur: Number(event.target.value) })}
             />
           </label>
           <label className="settings-row">
@@ -425,7 +472,7 @@ export default function SettingsDialog({
             <input
               type="range" min={30} max={150} step={5}
               value={settings.bgBrightness}
-              onChange={(event) => applySettings({ bgBrightness: Number(event.target.value) })}
+              onChange={(event) => saveWithFlash({ bgBrightness: Number(event.target.value) })}
             />
           </label>
           <label className="settings-row">
@@ -433,7 +480,7 @@ export default function SettingsDialog({
             <input
               type="range" min={30} max={150} step={5}
               value={settings.bgContrast}
-              onChange={(event) => applySettings({ bgContrast: Number(event.target.value) })}
+              onChange={(event) => saveWithFlash({ bgContrast: Number(event.target.value) })}
             />
           </label>
           <label className="settings-row">
@@ -441,7 +488,7 @@ export default function SettingsDialog({
             <input
               type="range" min={0} max={100} step={5}
               value={settings.bgPosX}
-              onChange={(event) => applySettings({ bgPosX: Number(event.target.value) })}
+              onChange={(event) => saveWithFlash({ bgPosX: Number(event.target.value) })}
             />
           </label>
           <label className="settings-row">
@@ -449,7 +496,7 @@ export default function SettingsDialog({
             <input
               type="range" min={0} max={100} step={5}
               value={settings.bgPosY}
-              onChange={(event) => applySettings({ bgPosY: Number(event.target.value) })}
+              onChange={(event) => saveWithFlash({ bgPosY: Number(event.target.value) })}
             />
           </label>
           <label className="settings-row">
@@ -457,7 +504,7 @@ export default function SettingsDialog({
             <input
               type="range" min={50} max={200} step={5}
               value={settings.bgScale}
-              onChange={(event) => applySettings({ bgScale: Number(event.target.value) })}
+              onChange={(event) => saveWithFlash({ bgScale: Number(event.target.value) })}
             />
           </label>
           <div className="settings-group">自定义样式</div>

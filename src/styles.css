@@ -5126,3 +5126,183 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   color: var(--text-dim);
   cursor: pointer;
 }
+
+/* 主按钮：弹窗的推荐操作用（accent 填充） */
+.btn-primary {
+  border-color: transparent;
+  background: var(--accent, #4c8bf5);
+  color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent, #4c8bf5) 85%, #fff);
+}
+
+/* ------------------------------------------------- 仓库打开方式弹窗（重设计） */
+
+.vault-choice {
+  position: fixed;
+  top: 120px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 950;
+  width: 440px;
+  max-width: calc(100vw - 48px);
+  padding: 20px 22px 18px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.vault-choice h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.vault-choice-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 7px 8px 7px 12px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  border: 0;
+}
+
+.vault-choice-path code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.vault-choice-copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+
+.vault-choice-copy:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.vault-choice-reasons {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-dim);
+}
+
+.vault-choice-reasons kbd {
+  padding: 0 5px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text-dim);
+}
+
+.vault-choice-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.vault-choice-actions .spacer {
+  flex: 1;
+}
+
+.vault-choice-remember {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+
+.vault-choice-remember input {
+  accent-color: var(--accent, #4c8bf5);
+}
+
+/* ------------------------------------------------- 设置面板打磨（0.13） */
+
+/* 关闭按钮弱化：小号淡色，不抢标题 */
+.settings-close {
+  width: 24px;
+  height: 24px;
+  color: var(--text-faint);
+}
+
+.settings-close:hover {
+  color: var(--text);
+}
+
+/* 「已保存」轻反馈：标题右侧淡入 */
+.settings-saved {
+  margin-left: auto;
+  margin-right: 8px;
+  font-size: 11.5px;
+  color: var(--ok);
+  animation: qn-saved-in 0.18s ease;
+}
+
+@keyframes qn-saved-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* 行内控件组（导出目录 = 输入框 + 按钮） */
+.settings-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-inline .settings-text {
+  width: 170px;
+}
+
+/* 迷你按钮（行内操作） */
+.btn-mini {
+  padding: 3px 9px;
+  font-size: 12px;
+}
+
+/* 勾选框行：标签左、勾选框右，整行可点击（label 已天然支持） */
+.settings-row input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  margin: 0 0 0 auto;
+  accent-color: var(--accent, #4c8bf5);
+  cursor: pointer;
+}

@@ -1302,6 +1302,22 @@ export default function App() {
     },
     [vaultChoice, applySettings, switchVault],
   );
+  // 弹窗键盘：Enter = 推荐操作（在新窗口打开），Esc = 取消
+  useEffect(() => {
+    if (!vaultChoice) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        void chooseVaultOpen("newWindow", vaultChoice.remember);
+      }
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setVaultChoice(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [vaultChoice, chooseVaultOpen]);
 
   /** 换到最近打开的某个仓库（顶栏下拉）。 */
   const openRecentVault = useCallback(
@@ -2958,13 +2974,52 @@ export default function App() {
         <>
           <div className="menu-backdrop" onClick={() => setVaultChoice(null)} />
           <div className="vault-choice" role="dialog" aria-label="打开仓库">
-            <div className="update-dialog-title">在新窗口打开仓库？</div>
+            <h3>是否在新窗口中打开此仓库？</h3>
             <div className="vault-choice-path" title={vaultChoice.picked}>
-              {vaultChoice.picked}
+              <code>{vaultChoice.picked}</code>
+              <button
+                type="button"
+                className="vault-choice-copy"
+                title="复制路径"
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(vaultChoice.picked)
+                    .then(() => setStatus("已复制仓库路径"), () => setError("复制失败：剪贴板不可用"));
+                }}
+              >
+                <IconCopy size={13} />
+              </button>
             </div>
-            <div className="vault-choice-hint">
-              当前窗口打开会替换这里已打开的笔记；新窗口会另起一个 Quick Note 实例，
-              两边互不影响。
+            <ul className="vault-choice-reasons">
+              <li>当前窗口打开：将替换已打开的笔记。</li>
+              <li>
+                新窗口打开：另起一个实例，两边互不影响。<kbd>Enter</kbd>
+              </li>
+            </ul>
+            <div className="vault-choice-actions">
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => void chooseVaultOpen("newWindow", vaultChoice.remember)}
+              >
+                在新窗口打开
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => void chooseVaultOpen("current", vaultChoice.remember)}
+              >
+                当前窗口打开
+              </button>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="btn btn-ghost"
+                title="取消 (Esc)"
+                onClick={() => setVaultChoice(null)}
+              >
+                取消
+              </button>
             </div>
             <label className="vault-choice-remember">
               <input
@@ -2976,17 +3031,6 @@ export default function App() {
               />
               记住我的选择，不再询问（可在 设置 → 通用 里改回）
             </label>
-            <div className="update-dialog-actions">
-              <button type="button" className="btn" onClick={() => void chooseVaultOpen("current", vaultChoice.remember)}>
-                当前窗口打开
-              </button>
-              <button type="button" className="btn" onClick={() => void chooseVaultOpen("newWindow", vaultChoice.remember)}>
-                在新窗口打开
-              </button>
-              <button type="button" className="btn btn-ghost" onClick={() => setVaultChoice(null)}>
-                取消
-              </button>
-            </div>
           </div>
         </>
       )}
