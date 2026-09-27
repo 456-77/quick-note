@@ -114,9 +114,13 @@ console.log("同步状态（本机文件，内含凭据，绝不进仓库）\n")
   check(
     otherVault.serverUrl === "http://x" &&
       otherVault.username === "u" &&
-      otherVault.enabled === true &&
       otherVault.refreshToken === "r",
     "换仓库不影响账号配置与 refreshToken（它们是设备/账号级的）",
+  );
+  // 0.13 起换仓库默认停用自动同步：新仓库的文件是否上云应由用户手动决定
+  check(
+    otherVault.enabled === false,
+    "换仓库默认停用自动同步（手动在设置里开启）",
   );
   check(
     adaptStateToVault({ ...DEFAULT_SYNC_STATE, vault: "" }, "D:/notes").vault === "D:/notes",
