@@ -99,19 +99,24 @@ export const DEFAULT_SYNC_STATE: SyncDeviceState = {
 };
 
 /**
- * 把状态对齐到当前仓库：换过仓库就丢掉游标与哈希。
+ * 把状态对齐到当前仓库：换过仓库就丢掉游标与哈希，并**停用自动同步**。
  *
- * 保留的只有与仓库无关的部分：服务端地址、账号密码、开关、范围、仓库名、
+ * 保留的只有与仓库无关的部分：服务端地址、账号密码、范围、仓库名、
  * refreshToken（它是**账号级**的，不是仓库级的）。
  *
- * 代价是"切回上一个仓库会重新全量拉取一次"。这比带着别的仓库的哈希去比对安全得多
- * ——后者会让同名文件被误判成本地改动或云端删除。
+ * 停用是刻意为之（0.13 用户要求）：换到新仓库意味着"这里的文件我还没想好要不要
+ * 上云"，带着上一仓库的开关直接全量推送可能把不想同步的东西推上去。开关在设置里
+ * 手动打开后照常工作。
+ *
+ * 代价是"切回上一个仓库会重新全量拉取一次、且要重开一次同步开关"。这比带着别的
+ * 仓库的哈希去比对安全得多——后者会让同名文件被误判成本地改动或云端删除。
  */
 export function adaptStateToVault(state: SyncDeviceState, vault: string): SyncDeviceState {
   if (state.vault === vault && vault !== "") return state;
   return {
     ...state,
     vault,
+    enabled: false,
     cursor: 0,
     hashes: {},
     attachmentHashes: {},
