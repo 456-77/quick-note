@@ -97,7 +97,7 @@ async function openContextMenu(ws, path) {
   const opened = await evaluate(
     ws,
     `(() => {
-       const row = [...document.querySelectorAll('.tree-item')].find(e => e.title === ${JSON.stringify(path)});
+       const row = [...document.querySelectorAll('.tree-item')].find(e => e.title.startsWith(${JSON.stringify(path)} + '（'));
        if (!row) return false;
        const rect = row.getBoundingClientRect();
        row.dispatchEvent(new MouseEvent('contextmenu', {
@@ -140,8 +140,9 @@ async function clickMenuItem(ws, text) {
   return clicked;
 }
 
+/** 树里的文件路径：title 带提示后缀（「路径（Alt+点击…）」），剥掉后缀取裸路径。 */
 const treeTitles = (ws) =>
-  evaluate(ws, `[...document.querySelectorAll('.tree-file')].map(b => b.title)`);
+  evaluate(ws, `[...document.querySelectorAll('.tree-file')].map(b => b.title.split('（')[0])`);
 const statusText = (ws) => evaluate(ws, `document.querySelector('.statusbar')?.innerText ?? ''`);
 const errorText = (ws) => evaluate(ws, `document.querySelector('.banner-error')?.innerText ?? null`);
 const inputOpen = (ws) => evaluate(ws, `document.querySelector('.create-row') !== null`);
@@ -171,7 +172,7 @@ for (let i = 0; i < 40; i += 1) {
 // 打开一篇笔记，让新建的目标目录是它所在目录（而不是仓库根）
 const opened = await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(NOTE)}); if (!b) return false; b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(NOTE)} + '（')); if (!b) return false; b.click(); return true; })()`,
 );
 check(opened === true, `打开 ${NOTE}`);
 await sleep(800);
@@ -192,7 +193,7 @@ check(
 // 软件里看不到"。现在目录由 Rust 直接返回（含空目录）。
 let treeDirs = [];
 for (let i = 0; i < 20; i += 1) {
-  treeDirs = await evaluate(ws, `[...document.querySelectorAll('.tree-dir')].map(b => b.title)`);
+  treeDirs = await evaluate(ws, `[...document.querySelectorAll('.tree-dir')].map(b => b.title.split('（')[0])`);
   if (treeDirs.includes(FOLDER)) break;
   await sleep(250);
 }
@@ -220,26 +221,71 @@ check(
 
 await typeName(ws, "创建测试笔记");
 check(existsSync(join(vault, NOTE_A)), "笔记文件已在磁盘上创建", NOTE_A);
-check(statSync(join(vault, NOTE_A)).size === 0, "新笔记是空文件");
+check(
+  readFileSync(join(vault, NOTE_A), "utf8") === "# 创建测试笔记\n",
+  "新笔记自动写入「# 文件名」一级标题",
+  JSON.stringify(readFileSync(join(vault, NOTE_A), "utf8")),
+);
 check(!(await inputOpen(ws)), "创建后输入行自动收起");
 check((await treeTitles(ws)).includes(NOTE_A), "新笔记出现在文件树里");
 check((await statusText(ws)).includes(NOTE_A), "新笔记被直接打开（状态栏显示路径）", await statusText(ws));
 check((await errorText(ws)) === null, "创建过程无报错");
 
-// 同名再建一次：应当加序号，而不是覆盖或报错
+// 同名再建一次：应当加序号，而不是覆盖或报错（标题跟着带序号的实际文件名走）
 check(await createNoteViaMenu(ws, NOTE), "再次右键新建（同名测序号）");
 await typeName(ws, "创建测试笔记");
 check(existsSync(join(vault, NOTE_B)), "同名笔记自动加序号，不覆盖已有文件", NOTE_B);
+check(
+  readFileSync(join(vault, NOTE_B), "utf8").startsWith("# 创建测试笔记 1"),
+  "加序号后标题用实际文件名",
+  JSON.stringify(readFileSync(join(vault, NOTE_B), "utf8")),
+);
 
 // 名称里带子目录：中间目录自动创建
 check(await createNoteViaMenu(ws, NOTE), "第三次右键新建（子目录名）");
 await typeName(ws, "创建子目录/嵌套笔记");
 check(existsSync(join(vault, NESTED)), "名称含子目录时会自动创建中间目录", NESTED);
 
+// ---------------------------------------------------------------- 选中文件夹后从顶栏新建
+// 点选一个文件夹（点击 = 选中），再用**顶栏**按钮新建：落点应是选中的文件夹，
+// 而不是仓库根或当前笔记所在目录。
+check(
+  await evaluate(ws, `(() => {
+    const label = [...document.querySelectorAll('.tree-dir .tree-label')].find(e => e.textContent === '创建测试目录');
+    if (!label) return false;
+    label.closest('.tree-item').click();
+    return true;
+  })()`),
+  "点击选中文件夹「创建测试目录」",
+);
+const SELECTED_NOTE = `${FOLDER}/选中目录笔记.md`;
+check(
+  await evaluate(ws, `(() => {
+    const b = [...document.querySelectorAll('.sidebar .panel-head button')].find(x => (x.title || '').includes('新建笔记'));
+    if (!b) return false;
+    b.click();
+    return true;
+  })()`),
+  "点击顶栏「＋」新建笔记按钮",
+);
+await sleep(400);
+check(
+  ((await evaluate(ws, `document.querySelector('.create-hint')?.textContent ?? ''`)) ?? "").includes("创建测试目录"),
+  "提示写明新建到选中的文件夹",
+  await evaluate(ws, `document.querySelector('.create-hint')?.textContent ?? ''`),
+);
+await typeName(ws, "选中目录笔记");
+check(existsSync(join(vault, SELECTED_NOTE)), "新笔记落在选中的文件夹里", SELECTED_NOTE);
+check(
+  readFileSync(join(vault, SELECTED_NOTE), "utf8").startsWith("# 选中目录笔记"),
+  "顶栏新建同样写入一级标题",
+  JSON.stringify(readFileSync(join(vault, SELECTED_NOTE), "utf8")),
+);
+
 // 重新打开一篇 日记/ 下的笔记，让后续新建回到确定的目标目录
 await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(NOTE)}); if (b) b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(NOTE)} + '（')); if (b) b.click(); return true; })()`,
 );
 await sleep(600);
 
@@ -269,7 +315,7 @@ await sleep(900); // 等文件监听刷新
 // 打开被改名的笔记：顺带验证"编辑器会跟着换到新路径"
 await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(NOTE_A)}); if (b) b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(NOTE_A)} + '（')); if (b) b.click(); return true; })()`,
 );
 await sleep(600);
 
@@ -360,7 +406,7 @@ await clearError(ws);
 if (existsSync(join(vault, ".trash"))) {
   rmSync(join(vault, ".trash"), { recursive: true, force: true });
 }
-for (const path of [NOTE_A, NOTE_B, FOLDER, REFERENCER, `${TARGET_DIR}/创建子目录`]) {
+for (const path of [NOTE_A, NOTE_B, FOLDER, REFERENCER, SELECTED_NOTE, `${TARGET_DIR}/创建子目录`]) {
   const full = join(vault, path);
   if (existsSync(full)) rmSync(full, { recursive: true, force: true });
 }
@@ -370,6 +416,7 @@ const leftovers = [
   NESTED,
   FOLDER,
   REFERENCER,
+  SELECTED_NOTE,
   RENAMED,
   `${TARGET_DIR}/.trash`,
 ].filter((path) => existsSync(join(vault, path)));

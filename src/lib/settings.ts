@@ -33,8 +33,8 @@ export interface Settings {
   /** 编辑器是否显示行号数字（默认关：笔记不是代码）。 */
   showLineNumbers: boolean;
   /**
-   * 重命名笔记/日记时是否把正文**第一个一级标题**同步改成新名字。
-   * 只改已存在的 `# 标题` 行，不会凭空补标题。
+   * 新建笔记时写入 `# 文件名` 一级标题；重命名笔记/日记时把正文
+   * **第一个一级标题**同步改成新名字。重命名只改已存在的 `# 标题` 行，不会凭空补标题。
    */
   syncRenameHeading: boolean;
   /**
@@ -49,7 +49,7 @@ export interface Settings {
    */
   exportFolder: string;
   /**
-   * 打开其他仓库时的行为：
+   * 打开其他仓库（含点击最近仓库列表）时的行为：
    * - `ask`（默认）：每次弹窗问「当前窗口打开还是新窗口」；
    * - `current`：总是当前窗口替换（Obsidian 式）；
    * - `newWindow`：总是另起一个应用窗口打开新仓库。

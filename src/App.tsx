@@ -195,6 +195,10 @@ export default function App() {
   const [treeClipboard, setTreeClipboard] = useState<{ path: string; isDir: boolean } | null>(null);
   /** 左侧树当前选中的目录（粘贴目标）。 */
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const selectedPathRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedPathRef.current = selectedPath;
+  }, [selectedPath]);
   /** 专注模式：隐藏两侧栏与状态栏（Ctrl+Shift+F）。 */
   const [zen, setZen] = useState(false);
   /** 光标是否在表格块内（表格工具栏的显示依据）。 */
@@ -1319,11 +1323,26 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [vaultChoice, chooseVaultOpen]);
 
-  /** 换到最近打开的某个仓库（顶栏下拉）。 */
+  /** 换到最近打开的某个仓库（顶栏下拉）：与「选择其他仓库」一样按 vaultOpenMode 走（默认弹窗问当前窗口还是新窗口）。 */
   const openRecentVault = useCallback(
-    (dir: string) => {
+    async (dir: string) => {
       setVaultMenu(null);
-      if (dir !== vault) void switchVault(dir);
+      if (dir === vault) return;
+      const mode = getSettings().vaultOpenMode;
+      if (mode === "newWindow") {
+        try {
+          await openNewWindow(dir);
+          setStatus(`已在新窗口打开：${dir}`);
+        } catch (e) {
+          setError(`在新窗口打开失败：${e}`);
+        }
+        return;
+      }
+      if (mode === "current") {
+        await switchVault(dir);
+        return;
+      }
+      setVaultChoice({ picked: dir, remember: false });
     },
     [vault, switchVault],
   );
@@ -1610,12 +1629,17 @@ export default function App() {
     [vault, daily.settings, daily.dateFormat, daily.weeklyNotesIn, openNote, refresh, notice, templateContent],
   );
 
-  /** 新建的目标目录：当前打开笔记所在的目录；没打开笔记就放仓库根。 */
+  /**
+   * 新建的目标目录：树里选中的文件夹 > 当前打开笔记所在目录 > 仓库根。
+   * 选中项是文件时不算数（点开笔记也会顺手选中它），此时落到当前笔记所在目录。
+   */
   const createTargetFolder = useCallback(() => {
+    const sel = selectedPathRef.current;
+    if (sel && entries.some((entry) => entry.path === sel && entry.isDir)) return sel;
     const path = currentRef.current?.path;
     if (!path || !path.includes("/")) return "";
     return path.slice(0, path.lastIndexOf("/"));
-  }, []);
+  }, [entries]);
 
   /** 右键「新建笔记」的落点：目录用本身，文件用所在目录。 */
   const parentFolderOf = useCallback((path: string) => {
@@ -1660,6 +1684,16 @@ export default function App() {
       if (creating === "note") {
         const path = await createNote(vault, createFolderOverride || createTargetFolder(), name);
         cancelCreate();
+        // 新建即写入「# 文件名」一级标题（与重命名共用同步设置；同名测序号
+        // 会改文件名，所以标题取返回路径的基名，不能用输入原文）
+        const title = (path.split("/").pop() ?? "").replace(/\.md$/i, "");
+        if (getSettings().syncRenameHeading && title) {
+          try {
+            await writeNote(vault, path, `# ${title}\n`, false);
+          } catch (e) {
+            setError(String(e));
+          }
+        }
         await refresh(vault);
         // 新建后直接打开，省掉再去树里找一次
         await openNote(path);
@@ -2401,11 +2435,6 @@ export default function App() {
   }, [openWikiTarget]);
 
   // ---------------------------------------------------------------- 文件复制粘贴
-
-  const selectedPathRef = useRef<string | null>(null);
-  useEffect(() => {
-    selectedPathRef.current = selectedPath;
-  }, [selectedPath]);
 
   /**
    * 复制树里的文件/目录：**两边同时生效**——
@@ -3558,7 +3587,7 @@ export default function App() {
                   ? `重命名 ${renaming.slice(renaming.lastIndexOf("/") + 1)} · Enter 确认 / Esc 取消`
                   : creating === "diary"
                     ? `新建到 ${daily.settings.folder || "仓库根目录"} · 文件名 = 日期 + 空格 + 名字 · Enter 确认 / Esc 取消`
-                    : `新建到 ${(creating === "note" ? createFolderOverride : "") || createTargetFolder() || "仓库根目录"} · Enter 确认 / Esc 取消`}
+                    : `新建到 ${createFolderOverride || createTargetFolder() || "仓库根目录"} · Enter 确认 / Esc 取消`}
               </div>
             </div>
           )}

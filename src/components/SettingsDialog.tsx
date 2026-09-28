@@ -340,7 +340,7 @@ export default function SettingsDialog({
             用滚轮左右滑动。
           </Hint>
           <label className="settings-row">
-            <span>重命名时同步一级标题</span>
+            <span>新建/重命名时同步一级标题</span>
             <input
               type="checkbox"
               checked={settings.syncRenameHeading}
@@ -350,8 +350,9 @@ export default function SettingsDialog({
             />
           </label>
           <Hint>
-            重命名笔记或日记后，把正文**第一个** `# 一级标题` 行同步改成新名字
-            （不会凭空补标题；标题里有时间时也会跟着日期一起变）。只影响设置后的重命名。
+            新建笔记时自动写入 `# 文件名` 一级标题；重命名笔记或日记后，把正文**第一个**
+            `# 一级标题` 行同步改成新名字（不会凭空补标题；标题里有时间时也会跟着日期一起变）。
+            重命名只影响设置后的改动。
           </Hint>
         </section>
 
