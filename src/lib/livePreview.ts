@@ -382,6 +382,32 @@ function logLevelOf(text: string): "error" | "warn" | "info" | "debug" | null {
   return null;
 }
 
+/**
+ * 代码块的语义分类（配合左缘色条与底色，区分「报错栈」与「配置参数」）：
+ * - `log`：偏暗红——报错栈。语言是 log 一族天然算数；info 串里写了
+ *   「报错/错误/异常/error/exception」的任何块也归这里（```java 报错）。
+ * - `config`：深青——配置参数。yaml/ini/nginx 等配置语言；info 里写
+ *   「配置/参数/config」也算（```bash 参数）。
+ * - 其余返回 null，走默认样式（强调色左缘 + 常规底色）。
+ *
+ * 只看围栏 info 串，不嗅探内容：内容判断会把普通 Java 代码误判成报错栈，
+ * 而且每次渲染都要扫全文，代价与惊喜都不划算。
+ */
+export function codeBlockVariantOf(info: string): "log" | "config" | null {
+  const text = info.trim().toLowerCase();
+  if (!text) return null;
+  const lang = text.split(/[\s:]+/)[0] ?? "";
+  if (/(?:^|\s)(?:报错|错误|异常)/.test(text) || /\b(?:error|exception|stacktrace)\b/.test(text)) {
+    return "log";
+  }
+  if (/(?:^|\s)(?:配置|参数)/.test(text) || /\bconfigs?\b/.test(text)) return "config";
+  if (/^(?:log|logback|log4j|maven|gradle)$/.test(lang)) return "log";
+  if (/^(?:yaml|yml|toml|ini|properties|conf|cfg|nginx|apache|env|xml)$/.test(lang)) {
+    return "config";
+  }
+  return null;
+}
+
 /** Mermaid 的渲染入口（只用到这两个方法，不必依赖它的完整类型定义）。 */
 interface MermaidApi {
   initialize: (config: Record<string, unknown>) => void;
@@ -2499,11 +2525,21 @@ export function buildLivePreviewDecorations(
           // 行装饰与块级替换落在同一行会冲突。光标进入该块（active）时则按普通代码块
           // 处理，方便直接改图定义。
           if (!active && mermaidCode(state, node.node) !== null) return false;
+          // 语义色（报错/配置）：只按围栏 info 串判定，见 codeBlockVariantOf。
+          let infoText = "";
+          for (let child = node.node.firstChild; child; child = child.nextSibling) {
+            if (child.name === "CodeInfo") {
+              infoText = doc.sliceString(child.from, child.to);
+              break;
+            }
+          }
+          const variant = codeBlockVariantOf(infoText);
+          const blockClass = `cm-lp-codeblock${variant ? ` cm-lp-codeblock-${variant}` : ""}`;
           // 整块加底色，包含被隐藏的围栏行，视觉上才连续。
           const firstLine = doc.lineAt(node.from).number;
           const lastLine = doc.lineAt(node.to).number;
           for (let n = firstLine; n <= lastLine; n += 1) {
-            marks.push(Decoration.line({ class: "cm-lp-codeblock" }).range(doc.line(n).from));
+            marks.push(Decoration.line({ class: blockClass }).range(doc.line(n).from));
           }
           if (!active) {
             let closing: { from: number; to: number } | null = null;

@@ -38,6 +38,16 @@ export interface Settings {
    */
   syncRenameHeading: boolean;
   /**
+   * 快速笔记（收件箱）：不切换仓库的速记落点。
+   * vault 为绝对路径，空串 = 未配置（快捷键会提示先去设置里选）。
+   * file 是收件仓库内的相对路径，支持 `{{date}}` 占位（按日记文件名一样落一天一篇）。
+   */
+  quickCaptureVault: string;
+  quickCaptureFile: string;
+  /** 新建笔记时自动打上的标签（标签仪表盘里集中整理）；空串 = 不打。 */
+  autoTagNewNote: boolean;
+  autoTagName: string;
+  /**
    * Markdown 渲染风格：
    * - `default`：内置的深色高级观感；
    * - `blueTopaz`：Blue Topaz 同源的渲染观感（彩色标题、tint 表头、重 callout）。
@@ -92,6 +102,10 @@ const DEFAULTS: Settings = {
   openNoteMode: "replace",
   showLineNumbers: false,
   syncRenameHeading: true,
+  quickCaptureVault: "",
+  quickCaptureFile: "Inbox.md",
+  autoTagNewNote: true,
+  autoTagName: "待整理",
   renderStyle: "default",
   exportFolder: "导出",
   vaultOpenMode: "ask",

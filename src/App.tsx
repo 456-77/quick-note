@@ -9,8 +9,10 @@ import FilePreview from "./components/FilePreview";
 import FileTree from "./components/FileTree";
 import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
+import QuickCaptureDialog from "./components/QuickCaptureDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import StatsPanel from "./components/StatsPanel";
+import TagDashboard from "./components/TagDashboard";
 import TagPopover from "./components/TagPopover";
 import WeekReviewDialog from "./components/WeekReviewDialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -163,8 +165,8 @@ export default function App() {
   const [treeFilter, setTreeFilter] = useState("");
   /** 全局命令面板（Ctrl+K）开关。 */
   const [paletteOpen, setPaletteOpen] = useState(false);
-  /** 左栏视图：知识库 / 收藏 / 最近。 */
-  const [leftView, setLeftView] = useState<"files" | "favorites" | "recents">("files");
+  /** 左栏视图：知识库 / 收藏 / 最近 / 标签。 */
+  const [leftView, setLeftView] = useState<"files" | "favorites" | "recents" | "tags">("files");
   /** 收藏的笔记（本机 localStorage，**按仓库分桶**：切换仓库各看各的收藏）。 */
   const [favorites, setFavorites] = useState<string[]>([]);
   /** 最近打开的笔记（本机 localStorage，新的在前）。 */
@@ -823,6 +825,153 @@ export default function App() {
     if (edit) view.dispatch({ changes: { from: edit.at, to: edit.to, insert: edit.insert } });
   }, []);
 
+  // ---------------------------------------------------------------- 快速笔记
+  // 不切换仓库的速记：追加到「收件仓库」的一个文件里（设置 → 通用 配置落点）。
+  // 文件名支持 {{date}} 占位（一天一篇，与日记同思路）；文件不存在时按
+  // 「# 文件名」建头，与新建笔记的标题规则一致。
+
+  const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+
+  const submitQuickCapture = useCallback(
+    async (text: string): Promise<boolean> => {
+      const cfg = getSettings();
+      const inboxVault = cfg.quickCaptureVault.trim();
+      if (!inboxVault) {
+        notice("先在 设置 → 通用 里选择快速笔记的收件仓库", "error");
+        return false;
+      }
+      const raw = (cfg.quickCaptureFile.trim() || "Inbox.md").replace(
+        /\{\{date\}\}/g,
+        moment().format("YYYY-MM-DD"),
+      );
+      const name = raw.toLowerCase().endsWith(".md") ? raw : `${raw}.md`;
+      try {
+        const note = await readNoteOptional(inboxVault, name);
+        const eol = note?.content.includes("\r\n") ? "\r\n" : "\n";
+        const line = `- ${moment().format("YYYY-MM-DD HH:mm")} ${text}`;
+        let next: string;
+        if (!note) {
+          const title = name.replace(/\.md$/i, "");
+          next = `# ${title}${eol}${eol}${line}${eol}`;
+        } else {
+          const sep = note.content.endsWith("\n") ? "" : eol;
+          next = `${note.content}${sep}${line}${eol}`;
+        }
+        await writeNote(inboxVault, name, next, note?.hasBom ?? false);
+        notice(`已记到 ${name}（${vaultDisplayName(inboxVault)}）`);
+        return true;
+      } catch (e) {
+        notice(`快速笔记写入失败：${e}`, "error");
+        return false;
+      }
+    },
+    [notice],
+  );
+
+  // ---------------------------------------------------------------- 标签仪表盘
+  // 全仓库的标签索引：切到「标签」视图时扫描一遍（读文件 → 数标签），文件名
+  // 变化（refresh 换了 entries 身份）或显式 token 递增（移除标签后）才重扫。
+  // 扫描有 600ms 防抖——打字触发的自动保存会让 entries 频繁换身份，别每键全库重读。
+
+  const [tagIndex, setTagIndex] = useState<{
+    loading: boolean;
+    tags: { name: string; notes: string[] }[];
+    noteTags: Record<string, string[]>;
+  }>({ loading: false, tags: [], noteTags: {} });
+  const [tagDashTag, setTagDashTag] = useState<string | null>(null);
+  const [tagScanToken, setTagScanToken] = useState(0);
+
+  useEffect(() => {
+    if (leftView !== "tags" || !vault) return;
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      setTagIndex((prev) => ({ ...prev, loading: true }));
+      const paths = entries.filter((entry) => !entry.isDir && isMarkdownPath(entry.path)).map((entry) => entry.path);
+      const map: Record<string, string[]> = {};
+      let cursor = 0;
+      const worker = async () => {
+        // 小并发逐篇读：一次性把几百个 IPC 全打出去反而更慢，也容易占满通道
+        while (!cancelled) {
+          const index = cursor;
+          cursor += 1;
+          if (index >= paths.length) break;
+          try {
+            const note = await readNoteOptional(vault, paths[index]);
+            if (note) map[paths[index]] = noteTags(note.content);
+          } catch {
+            // 单篇读失败不影响整体：它只是不进索引
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: 8 }, () => worker()));
+      if (cancelled) return;
+      const byTag = new Map<string, string[]>();
+      for (const [path, tags] of Object.entries(map)) {
+        for (const tag of tags) {
+          const bucket = byTag.get(tag);
+          if (bucket) bucket.push(path);
+          else byTag.set(tag, [path]);
+        }
+      }
+      const pinned = getSettings().autoTagName.trim();
+      const list = [...byTag.entries()]
+        .map(([name, notes]) => ({ name, notes }))
+        .sort((a, b) => {
+          if (pinned && a.name === pinned) return -1;
+          if (pinned && b.name === pinned) return 1;
+          return b.notes.length - a.notes.length || a.name.localeCompare(b.name, "zh");
+        });
+      setTagIndex({ loading: false, tags: list, noteTags: map });
+    }, 600);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [leftView, vault, entries, tagScanToken]);
+
+  /**
+   * 从仪表盘移除某篇笔记的标签。三种存放位置各走各路（与 syncFirstHeading 同纪律）：
+   * 激活中的笔记在视图里改（保住撤销历史，自动保存落盘）；后台标签改它的存量
+   * EditorState 并标脏；没打开的读盘-改-写回。改完递增扫描 token 让列表即时刷新。
+   */
+  const removeTagFromNote = useCallback(
+    async (path: string, tag: string) => {
+      if (!vault) return;
+      const bump = () => setTagScanToken((value) => value + 1);
+      const view = viewRef.current;
+      if (view && viewOwnerRef.current === path) {
+        removeNoteTag(tag);
+        bump();
+        return;
+      }
+      const stored = stateStore.current.get(path);
+      if (stored) {
+        const text = stored.doc.toString();
+        const edit = tagRemoveEdit(text, tag);
+        if (!edit) return;
+        stateStore.current.set(
+          path,
+          stored.update({ changes: { from: edit.at, to: edit.to, insert: edit.insert } }).state,
+        );
+        dirtyTabs.current.add(path);
+        bump();
+        return;
+      }
+      try {
+        const note = await readNoteOptional(vault, path);
+        if (!note) return;
+        const text = note.content;
+        const edit = tagRemoveEdit(text, tag);
+        if (!edit) return;
+        await writeNote(vault, path, text.slice(0, edit.at) + edit.insert + text.slice(edit.to), note.hasBom);
+        bump();
+      } catch (e) {
+        setError(String(e));
+      }
+    },
+    [vault, removeNoteTag],
+  );
+
   const refresh = useCallback(async (dir: string) => {
     const list = await listEntries(dir);
     setEntries(list);
@@ -1236,6 +1385,7 @@ export default function App() {
       setVault(picked);
       setPreviewPath(null);
       setSelectedPath(null);
+      setTagDashTag(null);
       setTreeClipboard(null);
       // 换仓库必须把所有标签与编辑器一起清掉：CodeMirror 的状态还挂着上一篇的话，
       // 旧内容继续显示，下一次输入还会试图写回旧仓库的路径
@@ -1685,11 +1835,18 @@ export default function App() {
         const path = await createNote(vault, createFolderOverride || createTargetFolder(), name);
         cancelCreate();
         // 新建即写入「# 文件名」一级标题（与重命名共用同步设置；同名测序号
-        // 会改文件名，所以标题取返回路径的基名，不能用输入原文）
+        // 会改文件名，所以标题取返回路径的基名，不能用输入原文），并可自动
+        // 打上「待整理」标签——标签仪表盘里集中整理，写笔记时不用想分类。
         const title = (path.split("/").pop() ?? "").replace(/\.md$/i, "");
-        if (getSettings().syncRenameHeading && title) {
+        const cfg = getSettings();
+        let content = cfg.syncRenameHeading && title ? `# ${title}\n` : "";
+        const autoTag = cfg.autoTagNewNote ? normalizeTagName(cfg.autoTagName) : null;
+        if (autoTag) {
+          content = `${content}${content ? "\n" : ""}#${autoTag}\n`;
+        }
+        if (content) {
           try {
-            await writeNote(vault, path, `# ${title}\n`, false);
+            await writeNote(vault, path, content, false);
           } catch (e) {
             setError(String(e));
           }
@@ -2696,6 +2853,14 @@ export default function App() {
     view.focus();
   }, []);
 
+  /** 光标跳到当前笔记的最后一行并滚到可视区（长笔记不用滚轮翻到底）。 */
+  const gotoDocEnd = useCallback(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
+    view.focus();
+  }, []);
+
   /** 快捷键动作表。命令面板按同一份文案生成动作项，这里集中定义避免两处漂移。 */
   const shortcuts = useMemo(
     () => ({
@@ -2713,6 +2878,8 @@ export default function App() {
       zen: () => setZen((value) => !value),
       insertDate: () => insertAtCursor(daily.today),
       insertTime: () => insertAtCursor(moment().format("HH:mm")),
+      gotoEnd: gotoDocEnd,
+      quickCapture: () => setQuickCaptureOpen(true),
       toggleTags: () => {
         if (!currentRef.current || !isMarkdownPath(currentRef.current.path)) {
           notice("请先打开一篇笔记再打标签", "error");
@@ -2722,7 +2889,7 @@ export default function App() {
       },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
-    [beginCreate, changeMode, openVault, insertAtCursor, daily.today, notice],
+    [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice],
   );
 
   // 快捷键绑定（Obsidian 式可重绑定）：设置面板改绑定后这里经版本号重算。
@@ -2819,6 +2986,8 @@ export default function App() {
       { id: "new-diary", title: "新建今日日记", icon: "📅", run: shortcuts.newDiary },
       { id: "new-folder", title: "新建文件夹", icon: "📁", run: shortcuts.newFolder },
       { id: "save", title: "保存当前笔记", hint: keyHint("save"), icon: "💾", run: shortcuts.save },
+      { id: "goto-end", title: "跳到笔记末尾", hint: keyHint("gotoEnd"), icon: "⏬", run: shortcuts.gotoEnd },
+      { id: "quick-capture", title: "快速笔记（收件箱）", hint: keyHint("quickCapture"), icon: "📥", run: shortcuts.quickCapture },
       { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: keyHint("toggleMode"), icon: "🔀", run: shortcuts.toggleMode },
       { id: "left", title: leftCollapsed ? "展开文件栏" : "收起文件栏", hint: keyHint("toggleLeft"), icon: "◧", run: shortcuts.toggleLeft },
       { id: "right", title: rightCollapsed ? "展开右侧面板" : "收起右侧面板", hint: keyHint("toggleRight"), icon: "◨", run: shortcuts.toggleRight },
@@ -2996,6 +3165,22 @@ export default function App() {
           onAdd={addNoteTag}
           onRemove={removeNoteTag}
           onClose={() => setTagPopoverOpen(false)}
+        />
+      )}
+
+      {quickCaptureOpen && (
+        <QuickCaptureDialog
+          target={
+            settings.quickCaptureVault
+              ? `${settings.quickCaptureFile.trim() || "Inbox.md"} · ${vaultDisplayName(settings.quickCaptureVault)}`
+              : ""
+          }
+          onSubmit={submitQuickCapture}
+          onClose={() => setQuickCaptureOpen(false)}
+          onOpenSettings={() => {
+            setQuickCaptureOpen(false);
+            setShowSettings(true);
+          }}
         />
       )}
 
@@ -3535,6 +3720,17 @@ export default function App() {
               <IconClock size={13} />
               最近
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={leftView === "tags"}
+              className={`left-view-tab${leftView === "tags" ? " is-on" : ""}`}
+              onClick={() => setLeftView("tags")}
+              title="标签仪表盘：集中查看与整理标签"
+            >
+              <IconTag size={13} />
+              标签
+            </button>
           </div>
           {leftView === "files" && (
             <div className="sidebar-filter">
@@ -3591,21 +3787,35 @@ export default function App() {
               </div>
             </div>
           )}
-          <FileTree
-            entries={entries}
-            activePath={current?.path ?? null}
-            filter={treeFilter}
-            view={leftView}
-            favorites={visibleFavorites}
-            recents={recents}
-            selectedPath={selectedPath}
-            onSelectPath={setSelectedPath}
-            onOpen={(p) => void openEntry(p)}
-            onContext={openContextMenu}
-            onReveal={(p) => void revealInExplorer(p)}
-            onMoveEntry={(p, dest) => void moveTreeEntry(p, dest)}
-            onCopyEntry={(p, dest) => void copyTreeTo(p, dest)}
-          />
+          {leftView === "tags" ? (
+            <TagDashboard
+              loading={tagIndex.loading}
+              tags={tagIndex.tags}
+              noteTags={tagIndex.noteTags}
+              activeTag={tagDashTag}
+              onPickTag={setTagDashTag}
+              onBack={() => setTagDashTag(null)}
+              activePath={current?.path ?? null}
+              onOpen={(p) => void openEntry(p)}
+              onRemoveTag={(p, tag) => void removeTagFromNote(p, tag)}
+            />
+          ) : (
+            <FileTree
+              entries={entries}
+              activePath={current?.path ?? null}
+              filter={treeFilter}
+              view={leftView}
+              favorites={visibleFavorites}
+              recents={recents}
+              selectedPath={selectedPath}
+              onSelectPath={setSelectedPath}
+              onOpen={(p) => void openEntry(p)}
+              onContext={openContextMenu}
+              onReveal={(p) => void revealInExplorer(p)}
+              onMoveEntry={(p, dest) => void moveTreeEntry(p, dest)}
+              onCopyEntry={(p, dest) => void copyTreeTo(p, dest)}
+            />
+          )}
         </aside>
         <main className="editor-pane">
           {openTabs.length > 0 && (

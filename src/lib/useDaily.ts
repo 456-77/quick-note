@@ -34,7 +34,7 @@ import {
   type DailyConfigState,
   type DailyConfigUpdate,
 } from "./dailyConfig.ts";
-import { carryOver, buildSnapshot, newTodoId, type TodoItem, type TodoMap } from "./todos.ts";
+import { carryOver, pastPendingDates, buildSnapshot, newTodoId, type TodoItem, type TodoMap } from "./todos.ts";
 import { mergeTodoSnapshot as mergeRemoteTodoSnapshot } from "./sync.ts";
 
 /** 设置输入框的落盘防抖：每敲一个字符就写一次文件既没必要，还会把同步刷爆。 */
@@ -82,6 +82,8 @@ export interface DailyController {
   updateTodoText: (dateStr: string, index: number, text: string) => void;
   /** 把源日期未完成的待办顺延到目标日期；返回顺延了几项。 */
   moveTodo: (fromDate: string, toDate: string) => number;
+  /** 把目标日期之前**所有**日期的未完成待办一次顺延过来；返回顺延了几项。 */
+  carryAllPendingTo: (toDate: string) => number;
   /** App 收到 `vault-changed` 时调用；内部按哈希区分自己刚写的那一次。 */
   handleVaultChange: (paths: string[]) => void;
   /**
@@ -385,6 +387,44 @@ export function useDaily(options: {
     [apply],
   );
 
+  /**
+   * 一次把 toDate 之前所有日期的未完成待办顺延过来（按日期从近到远逐日 carryOver，
+   * 每个源日期各自打「遗留」前缀与墓碑）。返回实际顺延的总数。
+   */
+  const carryAllPendingTo = useCallback(
+    (toDate: string) => {
+      const current = stateRef.current;
+      if (!current) return 0;
+      const format = dateFormatOf(current.settings.dateFormat);
+      const dates = pastPendingDates(current.todos, toDate, format).map((row) => row.date);
+      const todos: TodoMap = { ...current.todos };
+      let target = todos[toDate] ?? [];
+      let total = 0;
+      for (const date of dates) {
+        const result = carryOver(todos[date], target, date, format, Date.now());
+        todos[date] = result.from;
+        target = result.to;
+        total += result.moved;
+      }
+      if (total === 0) return 0;
+      apply({ todos: { ...todos, [toDate]: target }, todosUpdatedAt: Date.now() }, 0);
+      todosChangedRef.current?.();
+      return total;
+    },
+    [apply],
+  );
+
+  // 跨天跟随：应用挂着过午夜后，把停在「自动选中的那天」的选择翻到新的一天——
+  // 否则待办面板、顺延提示都还对着昨天，得手动点一下日历才对。用户手动导航到
+  // 别的日期（或改了日期格式）则不打扰：只有选择仍等于上一次自动选中的那天才跟。
+  const lastTodayRef = useRef(today);
+  useEffect(() => {
+    const previous = lastTodayRef.current;
+    if (previous === today) return;
+    lastTodayRef.current = today;
+    if (selectedDate === "" || selectedDate === previous) setSelectedDate(today);
+  }, [today, selectedDate]);
+
   // ------------------------------------------------------------- 字数统计
 
   /**
@@ -515,6 +555,7 @@ export function useDaily(options: {
     deleteTodo,
     updateTodoText,
     moveTodo,
+    carryAllPendingTo,
     handleVaultChange,
     todoSnapshot,
     mergeTodoSnapshot,

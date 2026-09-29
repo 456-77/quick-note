@@ -1693,12 +1693,31 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
    在运行时注入 `.cm-line { padding: 0 2px 0 6px }`，同特异性但更晚进文档——
    不提级这里的 padding 会被它整体吃掉。 */
 .editor-host .cm-lp-codeblock {
-  background: var(--surface-2);
+  /* 左缘强调色条画在背景里（逐行装饰禁止动布局），让代码块与正文有一个
+     不占宽度的"边界"，不再是浮在页面上的一块灰色补丁。 */
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 45%, transparent) 0 3px, transparent 3px),
+    var(--surface-2);
   /* 代码框与正文同宽（Obsidian 式，0.5 起撤销 0.4.2 的「全出血」设计：
      宽窗格里背景带铺满编辑区、代码却缩在左边的观感很怪）。
      左右 14px 内边距让代码与圆角正文留一点呼吸空间。 */
   padding-left: 14px;
   padding-right: 14px;
+}
+
+/* 语义变体（判定见 livePreview 的 codeBlockVariantOf，按围栏 info 串）：
+   报错栈块偏暗红、配置参数块偏青。层级必须低于下面的逐行 log 级别色——
+   log 块里 ERROR/WARN 行仍按行着色，块底只兜住没有级别色的行。 */
+.editor-host .cm-lp-codeblock-log {
+  background:
+    linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
+    color-mix(in srgb, var(--danger) 7%, var(--surface-2));
+}
+
+.editor-host .cm-lp-codeblock-config {
+  background:
+    linear-gradient(90deg, var(--callout-green) 0 3px, transparent 3px),
+    color-mix(in srgb, var(--callout-green) 7%, var(--surface-2));
 }
 
 .cm-lp-fence {
@@ -1712,23 +1731,25 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
  * 否则行高变化会让 CM6 高度图与 DOM 漂移（同表格 margin 的教训）。
  * 左缘色条用 linear-gradient 画在背景里，不占布局。
  */
-.cm-lp-log-error {
+/* 逐行级别色：必须带 .editor-host 提到与 .cm-lp-codeblock 同级（0,2,0）——
+   0.13 起漏了这个前缀，级别色一直被代码块底色（同为背景 shorthand）压掉没生效。 */
+.editor-host .cm-lp-log-error {
   background:
     linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
     var(--danger-soft);
 }
 
-.cm-lp-log-warn {
+.editor-host .cm-lp-log-warn {
   background:
     linear-gradient(90deg, var(--warn) 0 3px, transparent 3px),
     var(--warn-soft);
 }
 
-.cm-lp-log-info {
+.editor-host .cm-lp-log-info {
   background: linear-gradient(90deg, var(--text-dim) 0 3px, transparent 3px), var(--surface-2);
 }
 
-.cm-lp-log-debug {
+.editor-host .cm-lp-log-debug {
   background: linear-gradient(90deg, var(--text-faint) 0 3px, transparent 3px), var(--surface-2);
 }
 
@@ -4645,6 +4666,39 @@ html.qn-style-bluetopaz .editor-host .cm-lp-codeblock {
   background: color-mix(in srgb, var(--bt-blue) 8%, var(--surface-2));
 }
 
+/* 蓝顶鸭的代码块底色优先级更高，语义变体与日志逐行级别色要在它之后再声明一次 */
+html.qn-style-bluetopaz .editor-host .cm-lp-codeblock-log {
+  background:
+    linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
+    color-mix(in srgb, var(--danger) 9%, var(--surface-2));
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-codeblock-config {
+  background:
+    linear-gradient(90deg, var(--callout-green) 0 3px, transparent 3px),
+    color-mix(in srgb, var(--callout-green) 9%, var(--surface-2));
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-log-error {
+  background:
+    linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
+    var(--danger-soft);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-log-warn {
+  background:
+    linear-gradient(90deg, var(--warn) 0 3px, transparent 3px),
+    var(--warn-soft);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-log-info {
+  background: linear-gradient(90deg, var(--text-dim) 0 3px, transparent 3px), var(--surface-2);
+}
+
+html.qn-style-bluetopaz .editor-host .cm-lp-log-debug {
+  background: linear-gradient(90deg, var(--text-faint) 0 3px, transparent 3px), var(--surface-2);
+}
+
 html.qn-style-bluetopaz .editor-host .cm-lp-codeinfo,
 html.qn-style-bluetopaz .editor-host .cm-lp-codecopy {
   background: color-mix(in srgb, var(--bt-blue) 18%, var(--surface-3));
@@ -5305,4 +5359,175 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   margin: 0 0 0 auto;
   accent-color: var(--accent, #4c8bf5);
   cursor: pointer;
+}
+
+/* ------------------------------------------------- 快速笔记（收件箱）弹窗 */
+
+.quick-capture {
+  position: fixed;
+  top: 120px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 950;
+  width: 460px;
+  max-width: calc(100vw - 48px);
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+
+.quick-capture-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.quick-capture-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.quick-capture textarea {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  resize: vertical;
+  min-height: 72px;
+}
+
+.quick-capture textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.quick-capture-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 0;
+}
+
+.quick-capture-target {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-capture-setup {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-align: left;
+}
+
+.quick-capture-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+/* ------------------------------------------------- 标签仪表盘（左侧栏第 4 视图） */
+
+.tag-dash {
+  padding: 2px 6px 16px;
+}
+
+.tag-dash-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 6px 0 4px;
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.tag-dash-back:hover {
+  color: var(--text);
+  background: var(--surface-3);
+}
+
+.tag-dash-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.tag-dash-name {
+  font-weight: 600;
+}
+
+.tag-dash-count {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.tag-dash-row {
+  padding-right: 10px;
+}
+
+.tag-dash-row .tree-label {
+  color: var(--text);
+}
+
+.tag-dash-chips {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+}
+
+.tag-dash-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.tag-dash-chip-x {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  padding: 1px;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+
+.tag-dash-chip-x:hover {
+  opacity: 1;
 }

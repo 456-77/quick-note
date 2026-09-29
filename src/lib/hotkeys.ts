@@ -37,6 +37,7 @@ export interface CommandKeys {
 export const COMMAND_KEYS: CommandKeys[] = [
   { id: "save", label: "保存当前笔记", desc: "立即落盘一次（平时自动保存）", group: "edit", keys: ["Mod-S"] },
   { id: "newNote", label: "新建笔记", desc: "可写 子目录/名称", group: "edit", keys: ["Mod-N"] },
+  { id: "quickCapture", label: "快速笔记（收件箱）", desc: "速记追加到收件仓库，不切当前仓库（Ctrl+Shift+I/J 是 DevTools 保留键，勿绑）", group: "edit", keys: ["Mod-Alt-N"] },
   { id: "newDiary", label: "新建今日日记", desc: "按日期命名，落到日记目录", group: "edit", keys: [] },
   { id: "newFolder", label: "新建文件夹", group: "edit", keys: [] },
   { id: "toggleInlineCode", label: "切换行内代码", desc: "选中则包裹，再按取消", group: "edit", keys: ["Mod-`"] },
@@ -56,6 +57,7 @@ export const COMMAND_KEYS: CommandKeys[] = [
   { id: "palette", label: "命令面板 / 全局搜索", desc: "搜索笔记、全文或执行命令", group: "nav", keys: ["Mod-K", "Mod-P"] },
   { id: "toggleLeft", label: "收起 / 展开文件栏", group: "nav", keys: ["Mod-B"] },
   { id: "toggleRight", label: "收起 / 展开右侧面板", group: "nav", keys: ["Mod-Shift-B"] },
+  { id: "gotoEnd", label: "跳到笔记末尾", desc: "光标移到当前笔记最后一行并滚动到位", group: "nav", keys: ["Mod-End"] },
   { id: "zen", label: "专注模式", desc: "隐藏两侧栏与状态栏", group: "nav", keys: ["Mod-Shift-F"] },
   { id: "toggleMode", label: "切换实时 / 源码", group: "view", keys: ["Mod-E"] },
   { id: "openSettings", label: "打开设置", group: "misc", keys: ["Mod-,"] },

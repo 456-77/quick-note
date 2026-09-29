@@ -102,6 +102,33 @@ export function hasCarriedOver(items: TodoItem[] | undefined): boolean {
 }
 
 /**
+ * 今天之前、有未完成待办的日期（**从近到远**排序）。
+ *
+ * 顺延提示用它回看「过去所有日子」而不是只看昨天：放几天假回来，昨天没有任何
+ * 待办，只看昨天的提示就永远不出现了，挂起的待办从此失踪。解析不出合法日期的
+ * 键跳过——没法可靠地与今天比较先后，宁可少提也不能错提未来/乱序的日子。
+ */
+export function pastPendingDates(
+  todos: TodoMap,
+  today: string,
+  format: string,
+): { date: string; pending: number }[] {
+  const todayDate = moment(today, format, true);
+  if (!todayDate.isValid()) return [];
+  const out: { date: string; pending: number }[] = [];
+  for (const [date, items] of Object.entries(todos)) {
+    const pending = pendingCount(items);
+    if (pending === 0) continue;
+    const day = moment(date, format, true);
+    if (!day.isValid() || !day.isBefore(todayDate)) continue;
+    out.push({ date, pending });
+  }
+  return out.sort((a, b) =>
+    moment(a.date, format).isBefore(moment(b.date, format)) ? 1 : -1,
+  );
+}
+
+/**
  * 待办列表的显示顺序：**未完成排在已完成上面**（组内保持原顺序）。
  *
  * `index` 是条目在**原始数组**里的下标，点击勾选要用它回写；因此这里必须从原始

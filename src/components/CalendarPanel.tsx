@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import moment from "moment";
 import {
+  carryPrefix,
   hasCarriedOver,
   orderedTodos,
+  pastPendingDates,
   pendingCount,
+  stripCarryPrefix,
 } from "../lib/todos";
 import {
   baseNameOf,
@@ -24,6 +27,12 @@ function autoResize(el: HTMLTextAreaElement | null): void {
   if (!el) return;
   el.style.height = "auto";
   el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
+}
+
+/** 日期串缩成 MM-DD（解析不出来就原样显示），顺延提示里用。 */
+function shortDay(dateStr: string, format: string): string {
+  const day = moment(dateStr, format, true);
+  return day.isValid() ? day.format("MM-DD") : dateStr;
 }
 
 interface Props {
@@ -120,13 +129,17 @@ export default function CalendarPanel({
   /**
    * 顺延提示只在"选中今天"时出现，且今天尚未顺延过。
    *
-   * 昨天有未完成待办时提醒一次；顺延后今天就有了「遗留」条目，提示自动消失，
-   * 不会反复催促。
+   * 回看今天之前**所有**有未完成待办的日子（此前只看昨天：放几天假回来昨天没有
+   * 待办，提示就再也不出现，挂起的待办从此失踪）；顺延后今天有了「遗留」条目，
+   * 提示自动消失，不会反复催促。
    */
-  const yesterday = moment().subtract(1, "day").format(dateFormat);
-  const yesterdayPending = pendingCount(controller.todos[yesterday]);
+  const pastPending = useMemo(
+    () => pastPendingDates(controller.todos, today, dateFormat),
+    [controller.todos, today, dateFormat],
+  );
+  const pastPendingTotal = pastPending.reduce((sum, row) => sum + row.pending, 0);
   const showCarryOver =
-    selectedDate === today && yesterdayPending > 0 && !hasCarriedOver(controller.todos[today]);
+    selectedDate === today && pastPendingTotal > 0 && !hasCarriedOver(controller.todos[today]);
 
   /** 展开命名输入行（「＋ 新建」与双击空日期都走这里）。 */
   const beginNaming = (dateStr: string) => {
@@ -397,13 +410,17 @@ export default function CalendarPanel({
 
         {showCarryOver && (
           <div className="cal-carryover">
-            <span>昨天有 {yesterdayPending} 项待办未完成</span>
+            <span>
+              {pastPending.length === 1
+                ? `${shortDay(pastPending[0].date, dateFormat)} 有 ${pastPending[0].pending} 项待办未完成`
+                : `过去 ${pastPending.length} 天共有 ${pastPendingTotal} 项待办未完成`}
+            </span>
             <span className="spacer" />
             <button
               type="button"
               className="mini-btn cal-carryover-btn"
-              onClick={() => controller.moveTodo(yesterday, today)}
-              title={`把 ${yesterday} 未完成的待办顺延到 ${today}（带「遗留」前缀）`}
+              onClick={() => controller.carryAllPendingTo(today)}
+              title="把今天之前所有未完成的待办顺延到今天（带「遗留」前缀）"
             >
               顺延到今天
             </button>
@@ -492,6 +509,26 @@ export default function CalendarPanel({
                 >
                   修改
                 </button>
+                {selectedDate !== today && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const row = todos.find(({ item }) => item.id === todoMenu.id);
+                      if (row) {
+                        // 与 carryOver 同一套规则：源条目打墓碑，目标建带前缀的新条目
+                        controller.deleteTodo(selectedDate, row.index);
+                        controller.addTodo(
+                          today,
+                          `${carryPrefix(selectedDate, dateFormat)} ${stripCarryPrefix(row.item.text)}`,
+                        );
+                      }
+                      setTodoMenu(null);
+                    }}
+                    title="把这条待办挪到今天（带「遗留」前缀）"
+                  >
+                    顺延到今天
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => {

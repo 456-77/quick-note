@@ -354,6 +354,78 @@ export default function SettingsDialog({
             `# 一级标题` 行同步改成新名字（不会凭空补标题；标题里有时间时也会跟着日期一起变）。
             重命名只影响设置后的改动。
           </Hint>
+
+          <div className="settings-group">新建与整理</div>
+          <label className="settings-row">
+            <span>新笔记自动打标签</span>
+            <input
+              type="checkbox"
+              checked={settings.autoTagNewNote}
+              onChange={(event) => saveWithFlash({ autoTagNewNote: event.target.checked })}
+            />
+          </label>
+          <label className="settings-row">
+            <span>自动标签名</span>
+            <input
+              type="text"
+              className="settings-text"
+              value={settings.autoTagName}
+              placeholder="待整理"
+              onChange={(event) => saveWithFlash({ autoTagName: event.target.value })}
+            />
+          </label>
+          <Hint>
+            新建笔记自动追加这个标签，在左侧栏「标签」仪表盘里集中整理——写的时候不用
+            先想分类，回头在仪表盘把标签一键清掉即可。留空或不合法（含空格等）不打。
+          </Hint>
+
+          <div className="settings-group">快速笔记（收件箱）</div>
+          <label className="settings-row">
+            <span>收件仓库</span>
+            <span className="settings-inline">
+              <input
+                type="text"
+                className="settings-text"
+                value={settings.quickCaptureVault}
+                placeholder="未选择"
+                readOnly
+                title={settings.quickCaptureVault || "尚未选择收件仓库"}
+              />
+              <button
+                type="button"
+                className="btn btn-mini"
+                onClick={async () => {
+                  const picked = await pickDirectory("选择快速笔记的收件仓库");
+                  if (picked) saveWithFlash({ quickCaptureVault: picked });
+                }}
+              >
+                选择…
+              </button>
+              <button
+                type="button"
+                className="btn btn-mini"
+                title="清除收件仓库（快速笔记将不可用）"
+                onClick={() => saveWithFlash({ quickCaptureVault: "" })}
+              >
+                清除
+              </button>
+            </span>
+          </label>
+          <label className="settings-row">
+            <span>落点文件</span>
+            <input
+              type="text"
+              className="settings-text"
+              value={settings.quickCaptureFile}
+              placeholder="Inbox.md"
+              onChange={(event) => saveWithFlash({ quickCaptureFile: event.target.value })}
+            />
+          </label>
+          <Hint>
+            速记追加到收件仓库里的这个文件，{"{{date}}"} 会换成当天日期（如 {"{{date}}.md"} =
+            一天一篇），每条速记带「日期 时间」前缀逐行追加。快捷键默认 Ctrl+Alt+N
+            （设置 → 快捷键 可改），写完继续干活，不用切换仓库。
+          </Hint>
         </section>
 
         <section className="settings-sec" data-sec="appearance" style={{ display: searching || active === "appearance" ? undefined : "none" }}>
