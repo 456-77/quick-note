@@ -835,6 +835,12 @@ export default function App() {
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   /** 速记管理视图（占据编辑区；命令面板 / Ctrl+Alt+M 打开，Esc 退出）。 */
   const [captureManagerOpen, setCaptureManagerOpen] = useState(false);
+  /** Inbox 的扫描统计（CaptureManager 上报；右侧「今日整理」面板渲染用）。 */
+  const [inboxStats, setInboxStats] = useState<{
+    pending: number;
+    todayNew: number;
+    recentTags: string[];
+  } | null>(null);
 
   const submitQuickCapture = useCallback(
     async (text: string, tags: string[]): Promise<boolean> => {
@@ -3042,7 +3048,7 @@ export default function App() {
   }, [vault, vaultRecents, settings]);
 
   return (
-    <div className={`app${zen ? " zen" : ""}`}>
+    <div className={`app${zen ? " zen" : ""}${captureManagerOpen ? " inbox-open" : ""}`}>
       <header className="topbar" data-tauri-drag-region>
         <div className="topbar-side">
           <button
@@ -3865,6 +3871,7 @@ export default function App() {
               onClose={() => setCaptureManagerOpen(false)}
               notice={notice}
               onNewCapture={() => setQuickCaptureOpen(true)}
+              onStats={setInboxStats}
             />
           ) : (
             <>
@@ -4012,6 +4019,37 @@ export default function App() {
             </>
           )}
         </main>
+        {captureManagerOpen ? (
+          <aside className="sidebar sidebar-right">
+            <div className="inbox-side">
+              <div className="inbox-side-title">今日整理</div>
+              <div className="inbox-side-stats">
+                <div className="inbox-side-stat">
+                  <span className="inbox-side-num">{inboxStats?.pending ?? 0}</span>
+                  <span className="inbox-side-label">待处理</span>
+                </div>
+                <div className="inbox-side-stat">
+                  <span className="inbox-side-num">{inboxStats?.todayNew ?? 0}</span>
+                  <span className="inbox-side-label">今日新增</span>
+                </div>
+              </div>
+              <div className="inbox-side-title">最近标签</div>
+              <div className="inbox-side-tags">
+                {(inboxStats?.recentTags ?? []).map((tag) => (
+                  <span key={tag} className="cm-tag">
+                    #{tag}
+                  </span>
+                ))}
+                {(inboxStats?.recentTags ?? []).length === 0 && (
+                  <span className="inbox-side-hint">还没有带标签的速记</span>
+                )}
+              </div>
+              <div className="inbox-side-hint">
+                日历 / 目录 / 统计在关闭 Inbox（Esc 或 ✕）后照常可用。
+              </div>
+            </div>
+          </aside>
+        ) : (
         <aside className="sidebar sidebar-right">
           <div className="sidebar-tabs" role="tablist" aria-label="右侧面板">
             <button
@@ -4079,6 +4117,7 @@ export default function App() {
             <StatsPanel entries={entries} daily={daily} onOpen={(p) => void openEntry(p)} />
           )}
         </aside>
+        )}
       </div>
 
       <footer className="statusbar">

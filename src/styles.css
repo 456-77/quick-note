@@ -6054,49 +6054,6 @@ button.cm-tag:hover {
   opacity: 0.85;
 }
 
-.cm-row-acts {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-  margin-top: 1px;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-}
-
-.cm-row:hover .cm-row-acts,
-.cm-row.is-sel .cm-row-acts {
-  opacity: 1;
-}
-
-.cm-row-act {
-  padding: 2.5px 7px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 11.5px;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-
-.cm-row-act:hover {
-  background: var(--surface-3);
-  color: var(--text);
-}
-
-.cm-row-act:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.cm-row-act-danger:hover {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-
 .cm-row-edit {
   width: 100%;
   padding: 6px 9px;
@@ -6116,27 +6073,6 @@ button.cm-tag:hover {
 
 /* ---------------- 批量操作栏 ---------------- */
 
-.cm-batch {
-  position: absolute;
-  bottom: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 20;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 7px;
-  row-gap: 6px;
-  max-width: calc(100% - 40px);
-  padding: 7px 12px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel);
-  box-shadow: var(--shadow-2);
-  animation: cmRise 0.18s ease;
-}
-
 @keyframes cmRise {
   from {
     opacity: 0;
@@ -6146,41 +6082,6 @@ button.cm-tag:hover {
     opacity: 1;
     transform: translate(-50%, 0);
   }
-}
-
-.cm-batch-count {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-}
-
-.cm-batch-sep {
-  width: 1px;
-  height: 18px;
-  background: var(--border);
-}
-
-.cm-batch-select {
-  max-width: 180px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-}
-
-.cm-batch-tag-input {
-  width: 150px;
-  padding: 4px 9px;
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  background: var(--surface-2);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
 }
 
 .cm-batch-tag-input:focus {
@@ -6457,4 +6358,159 @@ button.cm-tag:hover {
   .cm-search {
     width: 140px;
   }
+}
+
+/* ---------------- Inbox 响应式（三档：<1000 专注 / 1000-1399 双栏 / >=1400 三栏） ---------------- */
+
+.app.inbox-open .editor-pane {
+  /* Inbox 是主内容：空间不足先藏侧栏，不压列表 */
+  min-width: 700px;
+}
+
+.app.inbox-open .sidebar-right {
+  display: none;
+}
+
+.app.inbox-open .sidebar-left {
+  display: none;
+}
+
+@media (min-width: 1000px) {
+  .app.inbox-open .sidebar-left {
+    display: flex;
+  }
+}
+
+@media (min-width: 1400px) {
+  .app.inbox-open .sidebar-right {
+    display: flex;
+  }
+}
+
+/* ---------------- 工具栏：图标按钮 + 批量模式 ---------------- */
+
+.cm-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.cm-toolbar.is-batch {
+  background: var(--surface-2);
+  border-radius: 10px;
+  padding: 5px 8px;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cm-batch-select {
+  max-width: 150px;
+}
+
+.cm-pop-danger {
+  color: var(--danger);
+}
+
+.cm-pop-danger:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ---------------- 行：⋯ 操作入口 + meta 点分隔 ---------------- */
+
+.cm-row-tool {
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.cm-row-more {
+  opacity: 0;
+}
+
+.cm-row:hover .cm-row-more,
+.cm-row.is-sel .cm-row-more,
+.cm-row-more.is-on {
+  opacity: 1;
+}
+
+.cm-meta-dot {
+  color: var(--text-faint);
+  opacity: 0.7;
+}
+
+/* ---------------- 快捷操作提示 ---------------- */
+
+.cm-hints {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 8px 0 2px;
+  font-size: 11px;
+  color: var(--text-faint);
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.cm-hints kbd {
+  font-size: 10px;
+}
+
+/* ---------------- 右侧「今日整理」面板 ---------------- */
+
+.inbox-side {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  overflow-y: auto;
+}
+
+.inbox-side-title {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.inbox-side-stats {
+  display: flex;
+  gap: 10px;
+}
+
+.inbox-side-stat {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.inbox-side-num {
+  font-size: 20px;
+  font-weight: 650;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.inbox-side-label {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.inbox-side-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.inbox-side-tags .cm-tag {
+  cursor: default;
+}
+
+.inbox-side-hint {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--text-faint);
 }

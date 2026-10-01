@@ -26,7 +26,7 @@ import {
   type CaptureEntry,
 } from "../lib/capture";
 import { normalizeTagName } from "../lib/tags";
-import { IconRefresh, IconX } from "./icons";
+import { IconCalendar, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
 
 /** 「无标签」筛选项的内部键（不是真标签名）。 */
 const NO_TAG = "__none__";
@@ -62,6 +62,7 @@ export default function CaptureManager({
   onClose,
   notice,
   onNewCapture,
+  onStats,
 }: {
   /** 收件仓库绝对路径（settings.quickCaptureVault）；空串 = 未配置。 */
   inboxVault: string;
@@ -73,6 +74,8 @@ export default function CaptureManager({
   notice: (message: string, kind?: "info" | "error") => void;
   /** 空状态的「新建速记」：唤起快速笔记弹窗（视图保持打开）。 */
   onNewCapture: () => void;
+  /** 统计上报：右侧「今日整理」面板渲染用（App 侧持 state）。 */
+  onStats?: (stats: { pending: number; todayNew: number; recentTags: string[] }) => void;
 }) {
   // ---------------------------------------------------------------- 扫描
 
@@ -258,6 +261,15 @@ export default function CaptureManager({
     }
     return { active, archived, all: scan.entries.length, todayNew, todayArchived };
   }, [scan.entries, today]);
+
+  // 上报给右侧「今日整理」面板（App 持 state 渲染；数值或标签变化才触发）
+  useEffect(() => {
+    onStats?.({
+      pending: stats.active,
+      todayNew: stats.todayNew,
+      recentTags: tagCounts.tags.slice(0, 8).map((tag) => tag.name),
+    });
+  }, [onStats, stats.active, stats.todayNew, tagCounts.tags]);
 
   // ------------------------------------------------------------- 选择
 
@@ -602,6 +614,8 @@ export default function CaptureManager({
   // ------------------------------------------------------------- 抽屉与编辑
 
   const [drawerKey, setDrawerKey] = useState<string | null>(null);
+  /** 打开着 ⋯ 操作菜单的行（row key）。 */
+  const [rowMenu, setRowMenu] = useState<string | null>(null);
   const [editKey, setEditKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [batchTagOpen, setBatchTagOpen] = useState(false);
@@ -614,17 +628,24 @@ export default function CaptureManager({
 
   // ------------------------------------------------------------- Esc 逐层退出
 
+  /** 勾选中的条目（按当前排序；批量栏与 A 键归档共用）。 */
+  const selectedEntries = useMemo(
+    () => sorted.filter((entry) => sel.has(keyOf(entry))),
+    [sorted, sel],
+  );
+
   useEffect(() => {
-    // 捕获阶段拦 Esc：先吃掉本视图内的浮层（弹层 → 抽屉 → 行内编辑），
-    // 都没有时放行给全局兜底（关整个视图）。用 stopImmediatePropagation：
+    // 捕获阶段拦 Esc：先吃掉本视图内的浮层（弹层 → 行菜单 → 抽屉 → 行内编辑 →
+    // 取消选择），都没有时放行给全局兜底（关整个视图）。用 stopImmediatePropagation：
     // 全局兜底与本处理器都挂在 window 上，普通 stopPropagation 拦不住
     // 同节点的后续监听（target 就在 window 时两者必同节点）。
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
-      if (popover) {
+      if (popover || rowMenu) {
         event.preventDefault();
         event.stopImmediatePropagation();
         setPopover(null);
+        setRowMenu(null);
         return;
       }
       if (drawerKey) {
@@ -637,18 +658,48 @@ export default function CaptureManager({
         event.preventDefault();
         event.stopImmediatePropagation();
         setEditKey(null);
+        return;
+      }
+      if (sel.size > 0) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        clearSel();
       }
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [popover, drawerKey, editKey]);
+  }, [popover, rowMenu, drawerKey, editKey, sel, clearSel]);
+
+  // 快捷操作：Ctrl/Cmd+Enter 新建速记，A 归档选中（输入焦点在表单里时不抢）。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const inForm =
+        !!target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT" ||
+          target.isContentEditable);
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        // 行内/抽屉编辑里 Ctrl+Enter 是保存，不让给「新建速记」
+        if (target?.closest(".cm-row-edit, .cm-drawer-edit")) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        onNewCapture();
+        return;
+      }
+      if (event.key !== "a" && event.key !== "A") return;
+      if (event.ctrlKey || event.metaKey || event.altKey || inForm) return;
+      if (sel.size === 0 || busy) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void archiveEntries(selectedEntries);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [sel, busy, selectedEntries, archiveEntries, onNewCapture]);
 
   // ------------------------------------------------------------- 小组件
-
-  const selectedEntries = useMemo(
-    () => sorted.filter((entry) => sel.has(keyOf(entry))),
-    [sorted, sel],
-  );
 
   const vaultSelect = (className: string, value: string, onChange: (value: string) => void, title: string) => (
     <select className={className} value={value} title={title} onChange={(event) => onChange(event.target.value)}>
@@ -842,8 +893,71 @@ export default function CaptureManager({
         ))}
       </div>
 
-      {/* -------------------------------------------------------- 筛选工具栏 */}
-      <div className="cm-toolbar">
+      {/* --------- 工具栏：普通态=筛选入口；勾选后=批量模式（原位切换，不遮列表） --------- */}
+      <div className={`cm-toolbar${sel.size > 0 ? " is-batch" : ""}`}>
+        {sel.size > 0 ? (
+          <>
+            <span className="cm-batch-count">已选择 {sel.size} 条</span>
+            <span className="cm-batch-sep" />
+            {vaultSelect("cm-batch-select", targetVault, setTargetVault, "目标仓库（可跨仓库归档）")}
+            {noteSelect("cm-batch-select", targetNote, setTargetNote, "目标笔记（速记将追加到它的末尾）")}
+            {batchTagOpen ? (
+              <input
+                autoFocus
+                type="text"
+                className="cm-batch-tag-input"
+                value={newTag}
+                placeholder="标签名（不含 #）"
+                onChange={(event) => setNewTag(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void addTagToEntries(selectedEntries, newTag).then((done) => {
+                      if (done) setBatchTagOpen(false);
+                    });
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setBatchTagOpen(false);
+                  }
+                }}
+              />
+            ) : (
+              <button
+                type="button"
+                className="cm-btn"
+                disabled={busy}
+                onClick={() => {
+                  setNewTag("");
+                  setBatchTagOpen(true);
+                }}
+              >
+                添加标签
+              </button>
+            )}
+            <button
+              type="button"
+              className="cm-btn cm-btn-primary"
+              disabled={busy || !targetVault || !targetNote}
+              title={targetNote ? `归档到 ${targetNote}` : "先选择目标笔记"}
+              onClick={() => void archiveEntries(selectedEntries)}
+            >
+              归档
+            </button>
+            <button
+              type="button"
+              className="cm-btn cm-btn-danger"
+              disabled={busy}
+              onClick={() => void deleteEntries(selectedEntries)}
+            >
+              删除
+            </button>
+            <button type="button" className="cm-btn cm-btn-ghost" onClick={clearSel}>
+              取消
+            </button>
+          </>
+        ) : (
+        <>
         <div className="cm-tool">
           <button
             type="button"
@@ -904,6 +1018,7 @@ export default function CaptureManager({
               setPopover(popover === "tags" ? null : "tags");
             }}
           >
+            <IconTag size={12} />
             标签
           </button>
           {popover === "tags" && (
@@ -969,6 +1084,7 @@ export default function CaptureManager({
             className={`cm-tool-btn${dateRange !== "any" ? " is-on" : ""}`}
             onClick={() => setPopover(popover === "date" ? null : "date")}
           >
+            <IconCalendar size={12} />
             日期
           </button>
           {popover === "date" && (
@@ -1016,6 +1132,7 @@ export default function CaptureManager({
             className={`cm-tool-btn${sort !== "newest" ? " is-on" : ""}`}
             onClick={() => setPopover(popover === "sort" ? null : "sort")}
           >
+            <IconListTree size={12} />
             排序
           </button>
           {popover === "sort" && (
@@ -1046,8 +1163,18 @@ export default function CaptureManager({
             {sorted.length} / {scan.entries.length} 条
           </span>
         )}
+        </>
+        )}
       </div>
-      {popover && <div className="cm-pop-backdrop" onClick={() => setPopover(null)} />}
+      {(popover || rowMenu) && (
+        <div
+          className="cm-pop-backdrop"
+          onClick={() => {
+            setPopover(null);
+            setRowMenu(null);
+          }}
+        />
+      )}
 
       {/* -------------------------------------------------------- 列表 */}
       <div className="cm-list">
@@ -1144,6 +1271,11 @@ export default function CaptureManager({
                             : entry.timestamp.slice(11)
                           : "--:--"}
                       </span>
+                      <span className="cm-meta-dot">·</span>
+                      <span className={`cm-row-state${entry.archived ? " is-archived" : ""}`}>
+                        {entry.archived ? "已归档" : "未归档"}
+                      </span>
+                      {entry.tags.length > 0 && <span className="cm-meta-dot">·</span>}
                       {entry.tags.map((tag) => (
                         <button
                           key={tag}
@@ -1158,9 +1290,6 @@ export default function CaptureManager({
                           #{tag}
                         </button>
                       ))}
-                      <span className={`cm-row-state${entry.archived ? " is-archived" : ""}`}>
-                        {entry.archived ? "已归档" : "未归档"}
-                      </span>
                       {entry.source && (
                         <span className="cm-row-src" title={entry.source}>
                           {entry.source}
@@ -1169,60 +1298,81 @@ export default function CaptureManager({
                     </div>
                   </div>
                   {!editing && (
-                    <div className="cm-row-acts" onClick={(event) => event.stopPropagation()}>
+                    <div className="cm-tool cm-row-tool" onClick={(event) => event.stopPropagation()}>
                       <button
                         type="button"
-                        className="cm-row-act"
-                        title="编辑"
-                        onClick={() => {
-                          setEditDraft(entry.text);
-                          setEditKey(key);
-                        }}
+                        className={`cm-icon-btn cm-row-more${rowMenu === key ? " is-on" : ""}`}
+                        title="更多操作"
+                        onClick={() => setRowMenu(rowMenu === key ? null : key)}
                       >
-                        编辑
+                        ⋯
                       </button>
-                      <button
-                        type="button"
-                        className="cm-row-act"
-                        title="添加标签"
-                        disabled={busy}
-                        onClick={() => {
-                          const tag = window.prompt("标签名（不含 #）");
-                          if (tag) void addTagToEntries([entry], tag);
-                        }}
-                      >
-                        标签
-                      </button>
-                      {entry.archived ? (
-                        <button
-                          type="button"
-                          className="cm-row-act"
-                          title="撤销归档"
-                          disabled={busy}
-                          onClick={() => void unarchiveEntries([entry])}
-                        >
-                          撤销
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          className="cm-row-act"
-                          title={`归档到 ${targetNote || "（未选目标笔记）"}`}
-                          disabled={busy || !targetVault || !targetNote}
-                          onClick={() => void archiveEntries([entry])}
-                        >
-                          归档
-                        </button>
+                      {rowMenu === key && (
+                        <div className="cm-pop cm-pop-right">
+                          <button
+                            type="button"
+                            className="cm-pop-item"
+                            onClick={() => {
+                              setEditDraft(entry.text);
+                              setEditKey(key);
+                              setRowMenu(null);
+                            }}
+                          >
+                            编辑
+                          </button>
+                          <button
+                            type="button"
+                            className="cm-pop-item"
+                            disabled={busy}
+                            onClick={() => {
+                              setRowMenu(null);
+                              const tag = window.prompt("标签名（不含 #）");
+                              if (tag) void addTagToEntries([entry], tag);
+                            }}
+                          >
+                            添加标签
+                          </button>
+                          {entry.archived ? (
+                            <button
+                              type="button"
+                              className="cm-pop-item"
+                              disabled={busy}
+                              title="撤销归档（去掉 ^archived 标记）"
+                              onClick={() => {
+                                setRowMenu(null);
+                                void unarchiveEntries([entry]);
+                              }}
+                            >
+                              撤销归档
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              className="cm-pop-item"
+                              disabled={busy || !targetVault || !targetNote}
+                              title={targetNote ? `归档到 ${targetNote}` : "先在批量栏选目标笔记"}
+                              onClick={() => {
+                                setRowMenu(null);
+                                void archiveEntries([entry]);
+                              }}
+                            >
+                              归档
+                            </button>
+                          )}
+                          <div className="cm-pop-sep" />
+                          <button
+                            type="button"
+                            className="cm-pop-item cm-pop-danger"
+                            disabled={busy}
+                            onClick={() => {
+                              setRowMenu(null);
+                              void deleteEntries([entry]);
+                            }}
+                          >
+                            删除
+                          </button>
+                        </div>
                       )}
-                      <button
-                        type="button"
-                        className="cm-row-act cm-row-act-danger"
-                        title="删除该行"
-                        disabled={busy}
-                        onClick={() => void deleteEntries([entry])}
-                      >
-                        删除
-                      </button>
                     </div>
                   )}
                 </div>
@@ -1232,64 +1382,18 @@ export default function CaptureManager({
         ))}
       </div>
 
-      {/* -------------------------------------------------------- 批量操作栏 */}
-      {sel.size > 0 && (
-        <div className="cm-batch">
-          <span className="cm-batch-count">已选择 {sel.size} 条</span>
-          <span className="cm-batch-sep" />
-          {vaultSelect("cm-batch-select", targetVault, setTargetVault, "目标仓库（可跨仓库归档）")}
-          {noteSelect("cm-batch-select", targetNote, setTargetNote, "目标笔记（速记将追加到它的末尾）")}
-          {batchTagOpen ? (
-            <input
-              autoFocus
-              type="text"
-              className="cm-batch-tag-input"
-              value={newTag}
-              placeholder="标签名（不含 #）"
-              onChange={(event) => setNewTag(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  void addTagToEntries(selectedEntries, newTag).then((done) => {
-                    if (done) setBatchTagOpen(false);
-                  });
-                }
-                if (event.key === "Escape") {
-                  event.preventDefault();
-                  setBatchTagOpen(false);
-                }
-              }}
-            />
-          ) : (
-            <button
-              type="button"
-              className="cm-btn"
-              disabled={busy}
-              onClick={() => {
-                setNewTag("");
-                setBatchTagOpen(true);
-              }}
-            >
-              添加标签
-            </button>
-          )}
-          <button
-            type="button"
-            className="cm-btn cm-btn-primary"
-            disabled={busy || !targetVault || !targetNote}
-            title={targetNote ? `归档到 ${targetNote}` : "先选择目标笔记"}
-            onClick={() => void archiveEntries(selectedEntries)}
-          >
-            归档
-          </button>
-          <button type="button" className="cm-btn cm-btn-danger" disabled={busy} onClick={() => void deleteEntries(selectedEntries)}>
-            删除
-          </button>
-          <button type="button" className="cm-btn cm-btn-ghost" onClick={clearSel}>
-            取消选择
-          </button>
-        </div>
-      )}
+      {/* -------------------------------------------------------- 快捷操作提示 */}
+      <div className="cm-hints">
+        <span>
+          <kbd>Ctrl</kbd> <kbd>Enter</kbd> 新建速记
+        </span>
+        <span>
+          <kbd>A</kbd> 归档选中
+        </span>
+        <span>
+          <kbd>Esc</kbd> 取消选择 / 返回
+        </span>
+      </div>
 
       {/* -------------------------------------------------------- 详情抽屉 */}
       {drawerEntry && (

@@ -295,7 +295,12 @@ try {
   await sleep(200);
 
   // ------------------------------------------------ 行内编辑
-  await evaluate(ws, `[...document.querySelectorAll('.cm-row-act')].find((b) => b.title === '编辑')?.click()`);
+  // 行操作收进 ⋯ 菜单：hover 入口 → 编辑
+  await evaluate(ws, `document.querySelector('.cm-row-more')?.click()`);
+  await sleep(400);
+  check(await evaluate(ws, `!!document.querySelector('.cm-pop .cm-pop-item')`), "行 ⋯ 菜单打开");
+  await evaluate(ws, `[...document.querySelectorAll('.cm-pop .cm-pop-item')].find((b) => b.textContent === '编辑')?.click()`);
+  await sleep(300);
   await sleep(300);
   check(await evaluate(ws, `!!document.querySelector('.cm-row-edit')`), "行内编辑展开");
   await evaluate(
@@ -317,12 +322,25 @@ try {
   // ------------------------------------------------ 勾选 → 批量栏
   await evaluate(ws, `document.querySelectorAll('.cm-check')[0].click()`);
   await sleep(350);
-  check(await evaluate(ws, `!!document.querySelector('.cm-batch')`), "勾选后批量操作栏浮出");
+  check(await evaluate(ws, `!!document.querySelector('.cm-toolbar.is-batch')`), "勾选后工具栏切批量模式（不遮列表）");
+  check(
+    (await evaluate(ws, `document.querySelector('.app')?.className ?? ''`)).includes("inbox-open"),
+    "Inbox 模式挂 inbox-open 类（响应式生效入口）",
+  );
+  const rightVisible = await evaluate(
+    ws,
+    `(() => { const el = document.querySelector('.sidebar-right'); return el ? getComputedStyle(el).display !== 'none' : false; })()`,
+  );
+  const leftVisible = await evaluate(
+    ws,
+    `(() => { const el = document.querySelector('.sidebar-left'); return el ? getComputedStyle(el).display !== 'none' : false; })()`,
+  );
+  check(leftVisible && !rightVisible, "中等窗口：左栏保留、右栏隐藏（<1400）");
   const batchCount = (await evaluate(ws, `document.querySelector('.cm-batch-count')?.textContent ?? ''`)) ?? "";
   check(batchCount.includes("已选择 1 条"), "批量栏显示已选择条数", batchCount);
 
   // 批量加标签
-  await evaluate(ws, `[...document.querySelectorAll('.cm-batch .cm-btn')].find((b) => b.textContent === '添加标签')?.click()`);
+  await evaluate(ws, `[...document.querySelectorAll('.cm-toolbar.is-batch .cm-btn')].find((b) => b.textContent === '添加标签')?.click()`);
   await sleep(300);
   await evaluate(
     ws,
@@ -374,7 +392,7 @@ try {
     })()`,
   );
   await sleep(400);
-  await evaluate(ws, `[...document.querySelectorAll('.cm-batch .cm-btn')].find((b) => b.textContent === '归档')?.click()`);
+  await evaluate(ws, `[...document.querySelectorAll('.cm-toolbar.is-batch .cm-btn')].find((b) => b.textContent === '归档')?.click()`);
   await sleep(1800);
   const features = existsSync(FEATURES) ? readFileSync(FEATURES, "utf8") : "";
   check(
@@ -441,7 +459,7 @@ try {
     if (opts > 1) break;
     await sleep(200);
   }
-  await evaluate(ws, `[...document.querySelectorAll('.cm-batch .cm-btn')].find((b) => b.textContent === '归档')?.click()`);
+  await evaluate(ws, `[...document.querySelectorAll('.cm-toolbar.is-batch .cm-btn')].find((b) => b.textContent === '归档')?.click()`);
   await sleep(1600);
   const emptyText = (await evaluate(ws, `document.querySelector('.cm-empty')?.textContent ?? ''`)) ?? "";
   check(
@@ -450,10 +468,39 @@ try {
     emptyText.slice(0, 80),
   );
 
+  // 快捷操作提示（底部常驻）
+  const hints = (await evaluate(ws, `document.querySelector('.cm-hints')?.textContent ?? ''`)) ?? "";
+  check(
+    hints.includes("新建速记") && hints.includes("归档选中") && hints.includes("取消选择"),
+    "底部显示快捷键提示（新建/归档选中/取消选择）",
+    hints,
+  );
+
+  // Esc 第一层：取消选择（有勾选时不关视图）。空状态没有行，先切到已归档段
+  await evaluate(
+    ws,
+    `(() => { const tab = [...document.querySelectorAll('.cm-seg-btn')].find((b) => b.textContent.includes('已归档')); tab?.click(); return true; })()`,
+  );
+  await sleep(500);
+  await evaluate(ws, `document.querySelectorAll('.cm-check')[0]?.click()`);
+  await sleep(400);
+  check(await evaluate(ws, `!!document.querySelector('.cm-toolbar.is-batch')`), "重新勾选进入批量模式");
+  await evaluate(ws, `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await sleep(400);
+  check(
+    !(await evaluate(ws, `!!document.querySelector('.cm-toolbar.is-batch')`)) &&
+      !!(await evaluate(ws, `!!document.querySelector('.cm-root')`)),
+    "Esc 取消选择（视图保留）",
+  );
+
   // Esc：视图内无浮层时放行给全局（关整个视图）
   await evaluate(ws, `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await sleep(500);
   check(!(await evaluate(ws, `!!document.querySelector('.cm-root')`)), "Esc 退出 Inbox 视图回笔记");
+  check(
+    !((await evaluate(ws, `document.querySelector('.app')?.className ?? ''`)) ?? "").includes("inbox-open"),
+    "关闭后 inbox-open 类摘除（侧栏恢复）",
+  );
 } finally {
   // ------------------------------------------------------------- 清理
   rmSync(inbox, { recursive: true, force: true });
