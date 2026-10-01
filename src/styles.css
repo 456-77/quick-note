@@ -5959,7 +5959,10 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 }
 
 .cm-row.is-sel {
-  background: var(--accent-soft);
+  /* 选中：比 hover 略亮一点点的底 + 左缘 2px 主题色条（inset 不挤内容），
+     避免大面积色块 */
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .cm-row.is-archived {
@@ -6403,10 +6406,6 @@ button.cm-tag:hover {
   gap: 6px;
 }
 
-.cm-batch-select {
-  max-width: 150px;
-}
-
 .cm-pop-danger {
   color: var(--danger);
 }
@@ -6513,4 +6512,166 @@ button.cm-tag:hover {
   font-size: 11.5px;
   line-height: 1.6;
   color: var(--text-faint);
+}
+
+/* ---------------- 「移动到」目标选择器（Command Palette 风格） ---------------- */
+
+.cm-batch-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cm-target-pop {
+  width: 320px;
+  max-width: calc(100vw - 48px);
+  padding: 8px;
+}
+
+.cm-target-vaults {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 7px;
+}
+
+.cm-target-vault {
+  padding: 2.5px 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cm-target-vault:hover {
+  color: var(--text);
+}
+
+.cm-target-vault.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.cm-target-search {
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.cm-target-search:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.cm-target-list {
+  max-height: 300px;
+  margin-top: 5px;
+  overflow-y: auto;
+}
+
+.cm-target-item {
+  display: flex;
+  align-items: baseline;
+  gap: 1px;
+  width: 100%;
+  padding: 5.5px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.cm-target-item:hover,
+.cm-target-item.is-on {
+  background: var(--hover);
+}
+
+.cm-target-item.is-current .cm-target-item-name::after {
+  content: "（当前）";
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.cm-target-item-dir {
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+}
+
+.cm-target-item-name {
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.cm-target-foot {
+  padding: 6px 10px 2px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+/* ---------------- 行 hover 快捷操作（编辑/标签/归档 + ⋯） ---------------- */
+
+.cm-row-tool {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  margin-top: 1px;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.cm-row:hover .cm-row-tool,
+.cm-row.is-sel .cm-row-tool,
+.cm-row-tool:has(.cm-row-more.is-on),
+.cm-row-tool:has(.cm-pop) {
+  opacity: 1;
+}
+
+.cm-row-quick {
+  padding: 2.5px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cm-row-quick:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.cm-row-quick:disabled {
+  opacity: 0.4;
+  cursor: default;
 }

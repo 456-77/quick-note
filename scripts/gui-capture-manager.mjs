@@ -295,14 +295,10 @@ try {
   await sleep(200);
 
   // ------------------------------------------------ 行内编辑
-  // 行操作收进 ⋯ 菜单：hover 入口 → 编辑
-  await evaluate(ws, `document.querySelector('.cm-row-more')?.click()`);
-  await sleep(400);
-  check(await evaluate(ws, `!!document.querySelector('.cm-pop .cm-pop-item')`), "行 ⋯ 菜单打开");
-  await evaluate(ws, `[...document.querySelectorAll('.cm-pop .cm-pop-item')].find((b) => b.textContent === '编辑')?.click()`);
+  // 行 hover 快捷按钮：编辑 / 标签 / 归档；⋯ 菜单收「复制文本/删除」
+  await evaluate(ws, `[...document.querySelectorAll('.cm-row-quick')].find((b) => b.textContent === '编辑')?.click()`);
   await sleep(300);
-  await sleep(300);
-  check(await evaluate(ws, `!!document.querySelector('.cm-row-edit')`), "行内编辑展开");
+  check(await evaluate(ws, `!!document.querySelector('.cm-row-edit')`), "hover「编辑」展开行内编辑");
   await evaluate(
     ws,
     `(() => { const el = document.querySelector('.cm-row-edit'); (${nativeSet})(el, '给快速笔记添加一个页面（改）'); return true; })()`,
@@ -363,35 +359,33 @@ try {
   await sleep(350);
   await evaluate(ws, `document.querySelectorAll('.cm-check')[1].click()`);
   await sleep(350);
-  // 等目标笔记列表加载（最多 5s）
-  for (let i = 0; i < 25; i += 1) {
-    const opts = await evaluate(
-      ws,
-      `document.querySelectorAll('.cm-batch-select')[1]?.options.length ?? 0`,
-    );
-    if (opts > 1) break;
-    await sleep(200);
-  }
+  // 「移动到」命令面板式选择器：打开 → 仓库 chip → 搜索 → Enter 确认
+  await evaluate(ws, `document.querySelector('.cm-batch-target')?.click()`);
+  await sleep(500);
+  check(await evaluate(ws, `!!document.querySelector('.cm-target-pop')`), "「移动到」打开命令面板式选择器");
+  check(
+    await evaluate(ws, `!!document.querySelector('.cm-target-search')`) &&
+      (await evaluate(ws, `document.querySelectorAll('.cm-target-vault').length`)) > 1,
+    "选择器含搜索框与仓库 chips",
+  );
   await evaluate(
     ws,
-    `(() => {
-      const selects = document.querySelectorAll('.cm-batch-select');
-      selects[0].value = ${JSON.stringify(absVault)};
-      selects[0].dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`,
+    `(() => { const chip = [...document.querySelectorAll('.cm-target-vault')].find((b) => b.textContent === 'test-vault'); chip?.click(); return true; })()`,
   );
-  await sleep(800);
+  await sleep(700);
   await evaluate(
     ws,
-    `(() => {
-      const selects = document.querySelectorAll('.cm-batch-select');
-      selects[1].value = 'features.md';
-      selects[1].dispatchEvent(new Event('change', { bubbles: true }));
-      return true;
-    })()`,
+    `(() => { const el = document.querySelector('.cm-target-search'); (${nativeSet})(el, 'features'); return true; })()`,
   );
-  await sleep(400);
+  await sleep(300);
+  await evaluate(
+    ws,
+    `document.querySelector('.cm-target-search').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`,
+  );
+  await sleep(500);
+  const targetLabel = (await evaluate(ws, `document.querySelector('.cm-batch-target')?.textContent ?? ''`)) ?? "";
+  check(targetLabel.includes("features.md"), "Enter 确认后「移动到」显示所选笔记", targetLabel);
+  await sleep(300);
   await evaluate(ws, `[...document.querySelectorAll('.cm-toolbar.is-batch .cm-btn')].find((b) => b.textContent === '归档')?.click()`);
   await sleep(1800);
   const features = existsSync(FEATURES) ? readFileSync(FEATURES, "utf8") : "";
@@ -406,6 +400,16 @@ try {
     "源速记行打上 ^archived",
     JSON.stringify(readFileSync(INBOX_FILE, "utf8")),
   );
+  const statsText = (await evaluate(ws, `document.querySelector('.cm-head-stats')?.textContent ?? ''`)) ?? "";
+  check(statsText.includes("最近整理"), "顶栏统计出现「最近整理」", statsText);
+  const selShadow = await evaluate(
+    ws,
+    `(() => {
+      const row = document.querySelector('.cm-row.is-sel');
+      return row ? getComputedStyle(row).boxShadow !== 'none' : 'no-sel-row';
+    })()`,
+  );
+  check(selShadow === true || selShadow === "no-sel-row", "选中行有左 accent 标识或已随归档清除", String(selShadow));
 
   // ------------------------------------------------ Toast + 撤销
   const toastText = (await evaluate(ws, `document.querySelector('.cm-toast')?.textContent ?? ''`)) ?? "";
@@ -454,11 +458,6 @@ try {
     await evaluate(ws, `document.querySelectorAll('.cm-check')[${idx}].click()`);
     await sleep(300);
   }
-  for (let i = 0; i < 20; i += 1) {
-    const opts = await evaluate(ws, `document.querySelectorAll('.cm-batch-select')[1]?.options.length ?? 0`);
-    if (opts > 1) break;
-    await sleep(200);
-  }
   await evaluate(ws, `[...document.querySelectorAll('.cm-toolbar.is-batch .cm-btn')].find((b) => b.textContent === '归档')?.click()`);
   await sleep(1600);
   const emptyText = (await evaluate(ws, `document.querySelector('.cm-empty')?.textContent ?? ''`)) ?? "";
@@ -471,8 +470,8 @@ try {
   // 快捷操作提示（底部常驻）
   const hints = (await evaluate(ws, `document.querySelector('.cm-hints')?.textContent ?? ''`)) ?? "";
   check(
-    hints.includes("新建速记") && hints.includes("归档选中") && hints.includes("取消选择"),
-    "底部显示快捷键提示（新建/归档选中/取消选择）",
+    hints.includes("新建") && hints.includes("归档") && hints.includes("返回"),
+    "底部显示快捷键提示（新建/归档/返回）",
     hints,
   );
 

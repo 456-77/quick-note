@@ -26,7 +26,7 @@ import {
   type CaptureEntry,
 } from "../lib/capture";
 import { normalizeTagName } from "../lib/tags";
-import { IconCalendar, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
+import { IconCalendar, IconFolder, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
 
 /** 「无标签」筛选项的内部键（不是真标签名）。 */
 const NO_TAG = "__none__";
@@ -38,7 +38,7 @@ export interface VaultOption {
 
 type Scope = "active" | "archived" | "all";
 type SortKey = "newest" | "oldest" | "modified" | "tagCount";
-type Popover = "filter" | "tags" | "date" | "sort" | "more" | null;
+type Popover = "filter" | "tags" | "date" | "sort" | "more" | "target" | null;
 
 const SORT_LABELS: Record<SortKey, string> = {
   newest: "最新优先",
@@ -52,6 +52,20 @@ function localDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
     date.getDate(),
   ).padStart(2, "0")}`;
+}
+
+/** Mac 检测（快捷键提示的 ⌘/Ctrl 显示）。 */
+const IS_MAC =
+  typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent);
+
+/** 时间戳 → 人话：今天显示 HH:mm，昨天「昨天 HH:mm」，更早 MM-DD HH:mm。 */
+function fmtWhen(ts: number): string {
+  const d = new Date(ts);
+  const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const day = localDate(d);
+  if (day === localDate(new Date())) return hhmm;
+  if (day === localDate(new Date(Date.now() - 86400000))) return `昨天 ${hhmm}`;
+  return `${day.slice(5)} ${hhmm}`;
 }
 
 export default function CaptureManager({
@@ -307,7 +321,7 @@ export default function CaptureManager({
   // ------------------------------------------------------------- 目标笔记
 
   const [targetVault, setTargetVault] = useState(currentVault ?? "");
-  const [targetNotes, setTargetNotes] = useState<string[]>([]);
+  const [, setTargetNotes] = useState<string[]>([]);
   const [targetNote, setTargetNote] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -469,6 +483,14 @@ export default function CaptureManager({
           ? `${target.content}${target.content.endsWith("\n") ? "" : eol}${eol}${block}${eol}`
           : `# ${title}${eol}${eol}${block}${eol}`;
         await writeNote(targetVault, targetNote, nextContent, target?.hasBom ?? false);
+        // 记录最近整理时间（顶栏「最近整理」；本机偏好不进仓库）
+        const archivedAt = Date.now();
+        try {
+          localStorage.setItem("quicknote.inbox.lastArchiveAt", String(archivedAt));
+        } catch {
+          // 存不上只影响这一处显示
+        }
+        setLastArchiveAt(archivedAt);
         const keys = chosen.map(keyOf);
         clearSel();
         leaveAndRescan(keys);
@@ -616,6 +638,46 @@ export default function CaptureManager({
   const [drawerKey, setDrawerKey] = useState<string | null>(null);
   /** 打开着 ⋯ 操作菜单的行（row key）。 */
   const [rowMenu, setRowMenu] = useState<string | null>(null);
+  /** 「移动到」目标选择器（popover === "target"）的内部状态。 */
+  const [pickVault, setPickVault] = useState("");
+  const [pickQuery, setPickQuery] = useState("");
+  const [pickIdx, setPickIdx] = useState(0);
+  const [pickNotes, setPickNotes] = useState<string[]>([]);
+  /** 最近一次归档时间（本机记录；顶栏「最近整理」用）。 */
+  const [lastArchiveAt, setLastArchiveAt] = useState<number | null>(() => {
+    try {
+      const raw = Number(localStorage.getItem("quicknote.inbox.lastArchiveAt") ?? 0);
+      return raw > 0 ? raw : null;
+    } catch {
+      return null;
+    }
+  });
+
+  // 「移动到」选择器打开时按 pickVault 加载笔记列表
+  useEffect(() => {
+    if (popover !== "target") return;
+    if (!pickVault) {
+      setPickNotes([]);
+      return;
+    }
+    let cancelled = false;
+    listEntries(pickVault)
+      .then((all) => {
+        if (cancelled) return;
+        setPickNotes(
+          all
+            .filter((entry) => !entry.isDir && entry.name.toLowerCase().endsWith(".md"))
+            .map((entry) => entry.path)
+            .sort((a, b) => a.localeCompare(b, "zh")),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setPickNotes([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [popover, pickVault]);
   const [editKey, setEditKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [batchTagOpen, setBatchTagOpen] = useState(false);
@@ -701,29 +763,116 @@ export default function CaptureManager({
 
   // ------------------------------------------------------------- 小组件
 
-  const vaultSelect = (className: string, value: string, onChange: (value: string) => void, title: string) => (
-    <select className={className} value={value} title={title} onChange={(event) => onChange(event.target.value)}>
-      {!vaultOptions.some((option) => option.value === value) && value && (
-        <option value={value}>{value.replace(/^.*[\\/]/, "")}（当前仓库）</option>
-      )}
-      {vaultOptions.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
-  );
+  /** 打开「移动到」目标选择器（重置内部状态）。 */
+  const openTargetPicker = () => {
+    setPickVault(targetVault || currentVault || vaultOptions[0]?.value || "");
+    setPickQuery("");
+    setPickIdx(0);
+    setPopover("target");
+  };
 
-  const noteSelect = (className: string, value: string, onChange: (value: string) => void, title: string) => (
-    <select className={className} value={value} title={title} onChange={(event) => onChange(event.target.value)}>
-      <option value="">{targetNotes.length === 0 ? "（该仓库没有笔记）" : "选择笔记…"}</option>
-      {targetNotes.map((path) => (
-        <option key={path} value={path}>
-          {path}
-        </option>
-      ))}
-    </select>
-  );
+  /** 确认归档目标（仓库用选择器内的 pickVault）。 */
+  const pickTarget = (note: string) => {
+    setTargetVault(pickVault);
+    setTargetNote(note);
+    setPopover(null);
+  };
+
+  /**
+   * Command Palette 风格的归档目标选择器（popover === "target" 时渲染）：
+   * 仓库 chips + 搜索框 + 笔记列表（文件夹层级以 dim 路径前缀呈现），
+   * ↑↓ 移动高亮、Enter 确认、Esc 关闭——替代原生 select。
+   */
+  const targetPicker = (anchorClass: string) => {
+    const q = pickQuery.trim().toLowerCase();
+    const list = q ? pickNotes.filter((path) => path.toLowerCase().includes(q)) : pickNotes;
+    const clamped = Math.min(pickIdx, Math.max(0, list.length - 1));
+    return (
+      <div className={`cm-pop cm-target-pop ${anchorClass}`}>
+        <div className="cm-target-vaults">
+          {vaultOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={`cm-target-vault${option.value === pickVault ? " is-on" : ""}`}
+              title={option.value}
+              onClick={() => {
+                setPickVault(option.value);
+                setPickQuery("");
+                setPickIdx(0);
+              }}
+            >
+              {option.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            className="cm-target-vault"
+            title="选择其他目录"
+            onClick={() => {
+              void pickDirectory("选择归档目标仓库").then((picked) => {
+                if (picked) {
+                  setPickVault(picked);
+                  setPickQuery("");
+                  setPickIdx(0);
+                }
+              });
+            }}
+          >
+            其他…
+          </button>
+        </div>
+        <input
+          autoFocus
+          type="text"
+          className="cm-target-search"
+          value={pickQuery}
+          placeholder="搜索笔记…（↑↓ 选择 · Enter 确认）"
+          onChange={(event) => {
+            setPickQuery(event.target.value);
+            setPickIdx(0);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setPickIdx(Math.min(clamped + 1, list.length - 1));
+            }
+            if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setPickIdx(Math.max(clamped - 1, 0));
+            }
+            if (event.key === "Enter") {
+              event.preventDefault();
+              const path = list[clamped];
+              if (path) pickTarget(path);
+            }
+          }}
+        />
+        <div className="cm-target-list">
+          {list.map((path, index) => {
+            const slash = path.lastIndexOf("/");
+            return (
+              <button
+                key={path}
+                type="button"
+                className={`cm-target-item${index === clamped ? " is-on" : ""}`}
+                title={path}
+                onMouseEnter={() => setPickIdx(index)}
+                onClick={() => pickTarget(path)}
+              >
+                {slash >= 0 && (
+                  <span className="cm-target-item-dir">{path.slice(0, slash + 1)}</span>
+                )}
+                <span className="cm-target-item-name">{path.slice(slash + 1)}</span>
+              </button>
+            );
+          })}
+          {list.length === 0 && <div className="cm-pop-empty">没有匹配的笔记</div>}
+        </div>
+        <div className="cm-target-foot">↑↓ 选择 · Enter 确认 · Esc 关闭</div>
+      </div>
+    );
+  };
 
   // ------------------------------------------------------------- 渲染
 
@@ -801,8 +950,12 @@ export default function CaptureManager({
           <p className="cm-subtitle">快速整理刚刚记录的内容</p>
         </div>
         <span className="cm-spacer" />
-        <span className="cm-head-stats" title={`今日新增 ${stats.todayNew} · 今日已整理 ${stats.todayArchived}`}>
+        <span
+          className="cm-head-stats"
+          title={`今日新增 ${stats.todayNew} · 今日已整理 ${stats.todayArchived}${lastArchiveAt ? ` · 最近整理 ${fmtWhen(lastArchiveAt)}` : ""}`}
+        >
           未归档 {stats.active} · 今日新增 {stats.todayNew} · 今日已整理 {stats.todayArchived}
+          {lastArchiveAt ? ` · 最近整理 ${fmtWhen(lastArchiveAt)}` : ""}
         </span>
         <input
           type="text"
@@ -899,8 +1052,21 @@ export default function CaptureManager({
           <>
             <span className="cm-batch-count">已选择 {sel.size} 条</span>
             <span className="cm-batch-sep" />
-            {vaultSelect("cm-batch-select", targetVault, setTargetVault, "目标仓库（可跨仓库归档）")}
-            {noteSelect("cm-batch-select", targetNote, setTargetNote, "目标笔记（速记将追加到它的末尾）")}
+            <div className="cm-tool">
+              <button
+                type="button"
+                className="cm-btn cm-batch-target"
+                disabled={busy}
+                title={targetNote ? `归档目标：${targetNote}` : "选择归档目标笔记"}
+                onClick={() => (popover === "target" ? setPopover(null) : openTargetPicker())}
+              >
+                <IconFolder size={12} />
+                {targetNote
+                  ? `移动到 ${targetNote.slice(targetNote.lastIndexOf("/") + 1)}`
+                  : "移动到…"}
+              </button>
+              {popover === "target" && targetPicker("")}
+            </div>
             {batchTagOpen ? (
               <input
                 autoFocus
@@ -1301,6 +1467,50 @@ export default function CaptureManager({
                     <div className="cm-tool cm-row-tool" onClick={(event) => event.stopPropagation()}>
                       <button
                         type="button"
+                        className="cm-row-quick"
+                        title="编辑"
+                        onClick={() => {
+                          setEditDraft(entry.text);
+                          setEditKey(key);
+                        }}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="cm-row-quick"
+                        title="添加标签"
+                        disabled={busy}
+                        onClick={() => {
+                          const tag = window.prompt("标签名（不含 #）");
+                          if (tag) void addTagToEntries([entry], tag);
+                        }}
+                      >
+                        标签
+                      </button>
+                      {entry.archived ? (
+                        <button
+                          type="button"
+                          className="cm-row-quick"
+                          title="撤销归档（去掉 ^archived 标记）"
+                          disabled={busy}
+                          onClick={() => void unarchiveEntries([entry])}
+                        >
+                          撤销
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="cm-row-quick"
+                          title={targetNote ? `归档到 ${targetNote}` : "先在批量栏选归档目标"}
+                          disabled={busy || !targetVault || !targetNote}
+                          onClick={() => void archiveEntries([entry])}
+                        >
+                          归档
+                        </button>
+                      )}
+                      <button
+                        type="button"
                         className={`cm-icon-btn cm-row-more${rowMenu === key ? " is-on" : ""}`}
                         title="更多操作"
                         onClick={() => setRowMenu(rowMenu === key ? null : key)}
@@ -1313,52 +1523,15 @@ export default function CaptureManager({
                             type="button"
                             className="cm-pop-item"
                             onClick={() => {
-                              setEditDraft(entry.text);
-                              setEditKey(key);
+                              void navigator.clipboard.writeText(entry.text).then(
+                                () => notice("已复制速记文本"),
+                                () => notice("复制失败：剪贴板不可用", "error"),
+                              );
                               setRowMenu(null);
                             }}
                           >
-                            编辑
+                            复制文本
                           </button>
-                          <button
-                            type="button"
-                            className="cm-pop-item"
-                            disabled={busy}
-                            onClick={() => {
-                              setRowMenu(null);
-                              const tag = window.prompt("标签名（不含 #）");
-                              if (tag) void addTagToEntries([entry], tag);
-                            }}
-                          >
-                            添加标签
-                          </button>
-                          {entry.archived ? (
-                            <button
-                              type="button"
-                              className="cm-pop-item"
-                              disabled={busy}
-                              title="撤销归档（去掉 ^archived 标记）"
-                              onClick={() => {
-                                setRowMenu(null);
-                                void unarchiveEntries([entry]);
-                              }}
-                            >
-                              撤销归档
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              className="cm-pop-item"
-                              disabled={busy || !targetVault || !targetNote}
-                              title={targetNote ? `归档到 ${targetNote}` : "先在批量栏选目标笔记"}
-                              onClick={() => {
-                                setRowMenu(null);
-                                void archiveEntries([entry]);
-                              }}
-                            >
-                              归档
-                            </button>
-                          )}
                           <div className="cm-pop-sep" />
                           <button
                             type="button"
@@ -1385,13 +1558,13 @@ export default function CaptureManager({
       {/* -------------------------------------------------------- 快捷操作提示 */}
       <div className="cm-hints">
         <span>
-          <kbd>Ctrl</kbd> <kbd>Enter</kbd> 新建速记
+          <kbd>{IS_MAC ? "⌘" : "Ctrl"}</kbd> <kbd>Enter</kbd> 新建
         </span>
         <span>
-          <kbd>A</kbd> 归档选中
+          <kbd>A</kbd> 归档
         </span>
         <span>
-          <kbd>Esc</kbd> 取消选择 / 返回
+          <kbd>Esc</kbd> 返回
         </span>
       </div>
 
@@ -1456,8 +1629,20 @@ export default function CaptureManager({
               <div className="cm-field">
                 <div className="cm-field-label">归档目标</div>
                 <div className="cm-drawer-target">
-                  {vaultSelect("cm-drawer-select", targetVault, setTargetVault, "目标仓库")}
-                  {noteSelect("cm-drawer-select", targetNote, setTargetNote, "目标笔记")}
+                  <div className="cm-tool">
+                    <button
+                      type="button"
+                      className="cm-btn cm-batch-target"
+                      title={targetNote ? `归档目标：${targetNote}` : "选择归档目标笔记"}
+                      onClick={() => (popover === "target" ? setPopover(null) : openTargetPicker())}
+                    >
+                      <IconFolder size={12} />
+                      {targetNote
+                        ? `移动到 ${targetNote.slice(targetNote.lastIndexOf("/") + 1)}`
+                        : "移动到…"}
+                    </button>
+                    {popover === "target" && targetPicker("cm-pop-right")}
+                  </div>
                 </div>
               </div>
             </div>
