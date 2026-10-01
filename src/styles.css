@@ -3813,11 +3813,6 @@ html.qn-alt-held .cm-line {
 }
 
 /* 已修改：轻量文字徽标 */
-.hotkey-modified {
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
 /* 录入态：主题色高亮 + 实时键帽回显 + 冲突就地警告 */
 .hotkey-capture {
   display: flex;

@@ -281,7 +281,7 @@ export default function HotkeysPane() {
                   <button
                     type="button"
                     className="hotkey-remove"
-                    title="移除这个快捷键"
+                    title="移除这个快捷键（清空后可用 ↺ 恢复默认）"
                     aria-label={`移除 ${formatKey(combo)}`}
                     onClick={() => setBinding(command.id, command.keys.filter((_, i) => i !== index))}
                   >
@@ -289,7 +289,6 @@ export default function HotkeysPane() {
                   </button>
                 </span>
               ))}
-              {!isDefault && <span className="hotkey-modified">已修改</span>}
               <button
                 type="button"
                 className="hotkey-plus"

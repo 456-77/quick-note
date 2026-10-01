@@ -94,11 +94,14 @@ export function allBindings(): CommandKeys[] {
   return COMMAND_KEYS.map((cmd) => ({ ...cmd, keys: bindingFor(cmd.id) }));
 }
 
-/** 写入一条覆盖；传 null/空数组恢复默认。没有覆盖时清掉存储键。 */
+/** 写入一条覆盖；null 恢复默认，空数组 = 明确清空（「未设置」）。与默认相同的写入不占存储。没有覆盖时清掉存储键。 */
 export function setBinding(id: string, keys: string[] | null): void {
   const def = COMMAND_KEYS.find((cmd) => cmd.id === id);
   if (!def) return;
-  if (!keys || keys.length === 0 || keys.join(",") === def.keys.join(",")) {
+  // 区分两种「不是自定义值」：null（或恰好等于默认）= 回到默认；[] = 用户明确
+  // 清空。此前把空数组也当恢复默认，导致删掉最后一个键位时键帽“弹回”默认
+  // 键——删除看起来像失效。
+  if (keys === null || keys.join(",") === def.keys.join(",")) {
     delete overrides[id];
   } else {
     overrides[id] = keys;
@@ -214,7 +217,9 @@ export function resetAllBindings(): void {
 
 /** 导出当前自定义键位为 JSON 文本（只含用户改动；恢复默认的键不占条目）。 */
 export function exportBindings(): string {
-  return JSON.stringify({ version: 1, bindings: loadOverrides() }, null, 2);
+  // 导出内存态（setBinding 对内存与 localStorage 同步写入；重读存储在无
+  // localStorage 的环境如 Node 测试里会拿到空表）
+  return JSON.stringify({ version: 1, bindings: overrides }, null, 2);
 }
 
 /**
