@@ -375,6 +375,25 @@ quick-daily-note 插件共用同一个仓库并同步。
   tab 会被误拆）；只有剪贴板带 HTML `<table>`（Excel/WPS/网页复制）才转表格，
   其余按纯文本原样粘贴
 
+**0.6–0.15 快速导览**（逐项变更见 git log 与 GitHub Release 页）
+
+- **仓库与窗口**：多窗口（新窗口打开其他仓库，打开方式可弹窗询问/记住）、最近
+  仓库下拉、仓库内打开方式选择、复制路径菜单
+- **编辑与渲染**：Live Preview 全语法（标题/列表/表格/代码块/嵌入/callout/KaTeX/
+  mermaid/pdf 预览）、代码块语义色（报错红/配置青）、成对符号自动闭合、列表
+  续行与跳出、表格就地编辑、速记行 `^archived` 等行级标记
+- **日记与待办**：日历/周记/模板/统计、待办墓碑与条目级同步合并、顺延提醒回看
+  全部往日待办、跨天自动跟随、未来待办（日期前缀语法）
+- **标签**：标签仪表盘（左侧第 4 视图）、新笔记自动打「待整理」标签、标签浮层
+  管理与词表联想
+- **速记**：快速笔记弹窗（Ctrl+Alt+N，带标签输入与来源记录）、**速记管理视图**
+  （Ctrl+Alt+M 或命令面板：收件仓库扫描、标签聚合多选筛选、全部/未归档/已归档、
+  Shift 范围多选、批量加标签、跨仓库选目标笔记批量归档、单条归档/撤销归档；
+  归档=行尾 `^archived` 标记不删除）
+- **云同步**：条目级合并、冲突二选一裁决、切仓库默认停用自动同步
+- **其他**：跳到笔记末尾（Ctrl+End）、全局搜索、命令面板（Ctrl+K）、周回顾、
+  天气插入、图片裁剪、应用内更新
+
 尚未开始：M5 打包与体验（自动更新、托盘、自启、内存回归的常态化）；阅读视图也未实现。
 
 ## 开发
@@ -507,9 +526,12 @@ src/                     前端（React + TypeScript）
   lib/reminders.ts       定时提醒的触发判定与初始化语义（纯函数）
   lib/weather.ts         Open-Meteo 的 URL/解析/文案与正文插入（纯函数 + 动态 import）
   lib/imageOps.ts        图片引用清理与 MIME 判定（纯函数）
+  lib/capture.ts         速记行格式：解析（新/旧格式）、行级归档与加标签（纯函数）
   lib/background.ts      全局背景的 DOM 应用
   components/ImageCropDialog.tsx  图片裁剪弹窗（拖拽选区 → 覆写原文件）
   components/WeekReviewDialog.tsx 周回顾的 12 周选择弹窗
+  components/QuickCaptureDialog.tsx 快速笔记弹窗（正文 + 标签，来源记录）
+  components/CaptureManager.tsx   速记管理视图（扫描/筛选/归档/批量）
   components/OutlinePanel.tsx   目录面板
   components/FileTree.tsx
   components/CalendarPanel.tsx   日历、统计、待办
@@ -533,6 +555,10 @@ scripts/
   gui-daily.mjs          日历面板、当天日记、日记/周记创建、待办与顺延、配置写回
   gui-tabs.mjs           多标签页与目录面板
   gui-sync.mjs           云同步端到端（自带桩后端，跑完即关）
+  gui-openmode.mjs       仓库打开方式弹窗（点最近仓库）
+  gui-capture-and-tags.mjs  顺延提醒 / 代码块语义色 / 快速笔记 / 标签仪表盘
+  gui-capture-manager.mjs   速记管理（标签筛选 / 批量归档 / 快速笔记弹窗）
+  verify-capture.mjs     速记行格式的纯逻辑（组装/解析/行级编辑）
   make-test-vault.sh     生成覆盖各类边界的测试仓库
   measure-rss.ps1        内存测量（三个口径）
   dump-markdown-tree.mjs 打印 GFM 语法树，写装饰层时用来确认节点名
