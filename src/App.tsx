@@ -10,6 +10,7 @@ import FileTree from "./components/FileTree";
 import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
 import QuickCaptureDialog from "./components/QuickCaptureDialog";
+import CaptureManager from "./components/CaptureManager";
 import SettingsDialog from "./components/SettingsDialog";
 import StatsPanel from "./components/StatsPanel";
 import TagDashboard from "./components/TagDashboard";
@@ -47,6 +48,7 @@ import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
 import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit } from "./lib/tags";
+import { buildCaptureLine, detectEol } from "./lib/capture";
 import { toBase64 } from "./lib/paste";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache, splitEmbedTarget } from "./lib/embed";
@@ -831,9 +833,11 @@ export default function App() {
   // 「# 文件名」建头，与新建笔记的标题规则一致。
 
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+  /** 速记管理视图（占据编辑区；命令面板 / Ctrl+Alt+M 打开，Esc 退出）。 */
+  const [captureManagerOpen, setCaptureManagerOpen] = useState(false);
 
   const submitQuickCapture = useCallback(
-    async (text: string): Promise<boolean> => {
+    async (text: string, tags: string[]): Promise<boolean> => {
       const cfg = getSettings();
       const inboxVault = cfg.quickCaptureVault.trim();
       if (!inboxVault) {
@@ -847,8 +851,18 @@ export default function App() {
       const name = raw.toLowerCase().endsWith(".md") ? raw : `${raw}.md`;
       try {
         const note = await readNoteOptional(inboxVault, name);
-        const eol = note?.content.includes("\r\n") ? "\r\n" : "\n";
-        const line = `- ${moment().format("YYYY-MM-DD HH:mm")} ${text}`;
+        const eol = note ? detectEol(note.content) : "\n";
+        // 来源追溯：速记时所在的仓库（+ 当前打开的笔记），速记管理里展示
+        const openPath = currentRef.current?.path;
+        const source = vault
+          ? `${vaultDisplayName(vault)}${openPath ? `/${openPath.slice(openPath.lastIndexOf("/") + 1)}` : ""}`
+          : null;
+        const line = buildCaptureLine({
+          timestamp: moment().format("YYYY-MM-DD HH:mm"),
+          source,
+          tags,
+          text,
+        });
         let next: string;
         if (!note) {
           const title = name.replace(/\.md$/i, "");
@@ -865,7 +879,7 @@ export default function App() {
         return false;
       }
     },
-    [notice],
+    [notice, vault],
   );
 
   // ---------------------------------------------------------------- 标签仪表盘
@@ -2880,6 +2894,7 @@ export default function App() {
       insertTime: () => insertAtCursor(moment().format("HH:mm")),
       gotoEnd: gotoDocEnd,
       quickCapture: () => setQuickCaptureOpen(true),
+      captureManager: () => setCaptureManagerOpen((value) => !value),
       toggleTags: () => {
         if (!currentRef.current || !isMarkdownPath(currentRef.current.path)) {
           notice("请先打开一篇笔记再打标签", "error");
@@ -2932,6 +2947,10 @@ export default function App() {
         setMenu(null);
         return;
       }
+      if (captureManagerOpen) {
+        setCaptureManagerOpen(false);
+        return;
+      }
       if (renaming) {
         cancelRename();
         return;
@@ -2940,7 +2959,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [renaming, creating, menu, vaultMenu, tabMenu, cancelRename, cancelCreate]);
+  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, cancelRename, cancelCreate]);
 
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
@@ -2988,6 +3007,7 @@ export default function App() {
       { id: "save", title: "保存当前笔记", hint: keyHint("save"), icon: "💾", run: shortcuts.save },
       { id: "goto-end", title: "跳到笔记末尾", hint: keyHint("gotoEnd"), icon: "⏬", run: shortcuts.gotoEnd },
       { id: "quick-capture", title: "快速笔记（收件箱）", hint: keyHint("quickCapture"), icon: "📥", run: shortcuts.quickCapture },
+      { id: "capture-manager", title: "速记管理（收件箱整理）", hint: keyHint("captureManager"), icon: "🗂️", run: shortcuts.captureManager },
       { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: keyHint("toggleMode"), icon: "🔀", run: shortcuts.toggleMode },
       { id: "left", title: leftCollapsed ? "展开文件栏" : "收起文件栏", hint: keyHint("toggleLeft"), icon: "◧", run: shortcuts.toggleLeft },
       { id: "right", title: rightCollapsed ? "展开右侧面板" : "收起右侧面板", hint: keyHint("toggleRight"), icon: "◨", run: shortcuts.toggleRight },
@@ -3003,6 +3023,23 @@ export default function App() {
     ],
     [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf, exportPdfFile, vault],
   );
+
+  /** 速记管理的仓库候选：当前仓库 + 最近仓库 + 已配置的收件仓库（去重）。 */
+  const captureVaultOptions = useMemo(() => {
+    const options: { value: string; label: string }[] = [];
+    const seen = new Set<string>();
+    const push = (value: string | null) => {
+      if (!value) return;
+      const clean = value.replace(/[\\/]+$/, "");
+      if (!clean || seen.has(clean)) return;
+      seen.add(clean);
+      options.push({ value: clean, label: vaultDisplayName(clean) });
+    };
+    push(vault);
+    for (const dir of vaultRecents) push(dir);
+    push(settings.quickCaptureVault);
+    return options;
+  }, [vault, vaultRecents, settings]);
 
   return (
     <div className={`app${zen ? " zen" : ""}`}>
@@ -3176,6 +3213,7 @@ export default function App() {
               : ""
           }
           onSubmit={submitQuickCapture}
+          tagSuggestions={tagVocab}
           onClose={() => setQuickCaptureOpen(false)}
           onOpenSettings={() => {
             setQuickCaptureOpen(false);
@@ -3818,6 +3856,17 @@ export default function App() {
           )}
         </aside>
         <main className="editor-pane">
+          {captureManagerOpen ? (
+            <CaptureManager
+              inboxVault={settings.quickCaptureVault}
+              onInboxVaultChange={(value) => applySettings({ quickCaptureVault: value })}
+              vaultOptions={captureVaultOptions}
+              currentVault={vault}
+              onClose={() => setCaptureManagerOpen(false)}
+              notice={notice}
+            />
+          ) : (
+            <>
           {openTabs.length > 0 && (
             <div
               className="tabbar"
@@ -3958,6 +4007,8 @@ export default function App() {
             >
               «
             </button>
+          )}
+            </>
           )}
         </main>
         <aside className="sidebar sidebar-right">

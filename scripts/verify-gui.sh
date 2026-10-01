@@ -173,14 +173,19 @@ bash scripts/make-test-vault.sh "$VAULT" > /dev/null
 node scripts/gui-uifixes.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 15/16 仓库打开方式（点最近仓库弹窗） ==="
+echo "=== 15/17 仓库打开方式（点最近仓库弹窗） ==="
 # 自己种子第二仓库并断言弹窗与切换，结束前切回原仓库（临时目录自清理）。
 node scripts/gui-openmode.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 16/16 顺延提醒 / 代码块语义色 / 快速笔记 / 标签仪表盘 ==="
+echo "=== 16/17 顺延提醒 / 代码块语义色 / 快速笔记 / 标签仪表盘 ==="
 # 自种往日待办与收件仓库，结束自清理（配置、设置、临时文件全部还原）。
 node scripts/gui-capture-and-tags.mjs "$VAULT" "$PORT"
+
+echo
+echo "=== 17/17 速记管理：标签筛选 / 批量归档 / 快速笔记弹窗 ==="
+# 自种临时收件仓库（新旧格式混合），结束自清理（设置、features.md、临时目录还原）。
+node scripts/gui-capture-manager.mjs "$VAULT" "$PORT"
 
 echo
 echo "关闭应用（必须先关：应用还开着的话，排队中的自动保存会把内容又写回文件）…"

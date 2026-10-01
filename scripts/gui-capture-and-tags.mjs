@@ -248,7 +248,7 @@ try {
   const inboxFile = join(inbox, "Inbox.md");
   const inboxContent = existsSync(inboxFile) ? readFileSync(inboxFile, "utf8") : "";
   check(inboxContent.includes("快速笔记验证条目"), "速记写入收件文件", JSON.stringify(inboxContent));
-  check(/^- \d{4}-\d{2}-\d{2} \d{2}:\d{2} 快速笔记验证条目$/m.test(inboxContent), "速记带日期时间前缀");
+  check(/^- \d{4}-\d{2}-\d{2} \d{2}:\d{2}( \[[^\]]+\])? 快速笔记验证条目$/m.test(inboxContent), "速记带日期时间前缀（可选来源段）");
   check(inboxContent.startsWith("# Inbox"), "收件文件自动建「# Inbox」头");
   check(!(await evaluate(ws, `!!document.querySelector('.quick-capture')`)), "写入成功后弹窗关闭");
 

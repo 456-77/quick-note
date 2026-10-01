@@ -38,6 +38,7 @@ export const COMMAND_KEYS: CommandKeys[] = [
   { id: "save", label: "保存当前笔记", desc: "立即落盘一次（平时自动保存）", group: "edit", keys: ["Mod-S"] },
   { id: "newNote", label: "新建笔记", desc: "可写 子目录/名称", group: "edit", keys: ["Mod-N"] },
   { id: "quickCapture", label: "快速笔记（收件箱）", desc: "速记追加到收件仓库，不切当前仓库（Ctrl+Shift+I/J 是 DevTools 保留键，勿绑）", group: "edit", keys: ["Mod-Alt-N"] },
+  { id: "captureManager", label: "速记管理（收件箱）", desc: "标签筛选、按目标笔记归档、批量整理收件仓库的速记", group: "edit", keys: ["Mod-Alt-M"] },
   { id: "newDiary", label: "新建今日日记", desc: "按日期命名，落到日记目录", group: "edit", keys: [] },
   { id: "newFolder", label: "新建文件夹", group: "edit", keys: [] },
   { id: "toggleInlineCode", label: "切换行内代码", desc: "选中则包裹，再按取消", group: "edit", keys: ["Mod-`"] },

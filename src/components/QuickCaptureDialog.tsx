@@ -4,27 +4,34 @@
  * 场景：正在别的仓库里干活，突然想记一条电脑操作技巧——按快捷键（默认
  * Ctrl+Alt-N，可在设置 → 快捷键 里改）唤起这里，Enter 写入收件箱继续干活。
  *
- * Enter = 记下来，Shift+Enter = 换行，Esc / 点遮罩 = 取消。提交由父组件做 IO，
- * 返回是否成功：失败（仓库没配、写盘出错）弹窗保持展开便于重试。
+ * Enter = 记下来，Shift+Enter = 换行（提交时折叠成 " / "，速记一行一条），
+ * Esc / 点遮罩 = 取消。可顺手打标签（空格分隔，速记管理里聚合筛选）。
+ * 提交由父组件做 IO，返回是否成功：失败（仓库没配、写盘出错）弹窗保持展开便于重试。
  */
 
 import { useEffect, useRef, useState } from "react";
+import { normalizeTagName } from "../lib/tags";
 import { IconX } from "./icons";
 
 export default function QuickCaptureDialog({
   /** 落点提示，如「Inbox.md · 00-Inbox」；空串表示还没配置收件仓库。 */
   target,
+  /** 标签联想词表（当前仓库 + 收件仓库出现过的标签，App 侧合并）。 */
+  tagSuggestions,
   onSubmit,
   onClose,
   onOpenSettings,
 }: {
   target: string;
-  onSubmit: (text: string) => Promise<boolean>;
+  tagSuggestions: string[];
+  /** text 已折成一行（换行变 " / "），tags 已规范去重。返回是否成功（成功关窗）。 */
+  onSubmit: (text: string, tags: string[]) => Promise<boolean>;
   onClose: () => void;
   /** 未配置收件仓库时提示里给一个直达设置的入口。 */
   onOpenSettings: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [tagDraft, setTagDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -34,12 +41,27 @@ export default function QuickCaptureDialog({
   }, []);
 
   const submit = async () => {
-    const text = draft.trim();
-    if (!text || busy) return;
+    if (busy) return;
+    // 速记一行一条：多行输入折成一行（用 " / " 分隔），不拆散行格式
+    const text = draft
+      .split(/\r?\n/)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .join(" / ");
+    if (!text) return;
+    const seen = new Set<string>();
+    const tags: string[] = [];
+    for (const piece of tagDraft.split(/[\s,，、]+/)) {
+      const name = normalizeTagName(piece);
+      if (name && !seen.has(name)) {
+        seen.add(name);
+        tags.push(name);
+      }
+    }
     setBusy(true);
     setError(null);
     try {
-      if (await onSubmit(text)) {
+      if (await onSubmit(text, tags)) {
         onClose();
         return;
       }
@@ -80,6 +102,30 @@ export default function QuickCaptureDialog({
             }
           }}
         />
+        <input
+          type="text"
+          className="quick-capture-tags"
+          list="quick-capture-tag-options"
+          value={tagDraft}
+          placeholder="标签，空格分隔（可选，如：想法 项目A）"
+          title="标签写进速记行，速记管理里聚合筛选"
+          onChange={(event) => setTagDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void submit();
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              onClose();
+            }
+          }}
+        />
+        <datalist id="quick-capture-tag-options">
+          {tagSuggestions.map((tag) => (
+            <option key={tag} value={tag} />
+          ))}
+        </datalist>
         <div className="quick-capture-foot">
           {target ? (
             <span className="quick-capture-target" title={target}>
