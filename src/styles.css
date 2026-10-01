@@ -6370,6 +6370,18 @@ button.cm-tag:hover {
   min-width: 700px;
 }
 
+/* 笔记内容常驻挂载（编辑器 DOM 不卸载）；Inbox 打开时仅隐藏 */
+.editor-pane-notes {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.editor-pane-notes.is-hidden {
+  display: none;
+}
+
 .app.inbox-open .sidebar-right {
   display: none;
 }

@@ -761,6 +761,7 @@ export default function App() {
     };
   }, []);
 
+
   // ---------------------------------------------------------------- 标签
   // 标签本体是正文里的 `#标签`（lib/tags.ts 负责增删的纯文本编辑）。
   // 入口在标题栏的标签按钮（浮层管理，不占编辑区空间）；补全词表按仓库
@@ -841,6 +842,11 @@ export default function App() {
     todayNew: number;
     recentTags: string[];
   } | null>(null);
+  // Inbox 视图用 display:none 隐藏笔记区（编辑器 DOM 常驻）；display 切换后
+  // CM6 的尺寸缓存是 0，回来必须重测量一次，否则行号/选区/滚动整体漂移
+  useEffect(() => {
+    if (!captureManagerOpen) viewRef.current?.requestMeasure();
+  }, [captureManagerOpen]);
 
   const submitQuickCapture = useCallback(
     async (text: string, tags: string[]): Promise<boolean> => {
@@ -3862,19 +3868,9 @@ export default function App() {
           )}
         </aside>
         <main className="editor-pane">
-          {captureManagerOpen ? (
-            <CaptureManager
-              inboxVault={settings.quickCaptureVault}
-              onInboxVaultChange={(value) => applySettings({ quickCaptureVault: value })}
-              vaultOptions={captureVaultOptions}
-              currentVault={vault}
-              onClose={() => setCaptureManagerOpen(false)}
-              notice={notice}
-              onNewCapture={() => setQuickCaptureOpen(true)}
-              onStats={setInboxStats}
-            />
-          ) : (
-            <>
+          {/* 笔记内容**常驻挂载**（Inbox 打开时仅 CSS 隐藏）：条件卸载会让一次性
+              创建的 EditorView 附着在已销毁的 host div 上，返回笔记后编辑器空白 */}
+          <div className={`editor-pane-notes${captureManagerOpen ? " is-hidden" : ""}`}>
           {openTabs.length > 0 && (
             <div
               className="tabbar"
@@ -4016,7 +4012,18 @@ export default function App() {
               «
             </button>
           )}
-            </>
+          </div>
+          {captureManagerOpen && (
+            <CaptureManager
+              inboxVault={settings.quickCaptureVault}
+              onInboxVaultChange={(value) => applySettings({ quickCaptureVault: value })}
+              vaultOptions={captureVaultOptions}
+              currentVault={vault}
+              onClose={() => setCaptureManagerOpen(false)}
+              notice={notice}
+              onNewCapture={() => setQuickCaptureOpen(true)}
+              onStats={setInboxStats}
+            />
           )}
         </main>
         {captureManagerOpen ? (
