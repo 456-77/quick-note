@@ -13,6 +13,7 @@ import {
   detectEol,
   lineAddTagEdit,
   lineArchiveEdit,
+  lineTextEditText,
   parseCaptureEntries,
 } from "../src/lib/capture.ts";
 import { parseCaptureEntries as reparsed } from "../src/lib/capture.ts";
@@ -110,6 +111,23 @@ check(
 check(
   lineAddTagEdit("- 2026-09-30 14:32 内容\r", "想法") === "- 2026-09-30 14:32 内容 #想法\r",
   "加标签保留 CRLF",
+);
+
+// 正文替换：保留前缀与归档标记
+check(
+  lineTextEditText("- 2026-09-30 14:32 [仓库] #想法 旧正文 ^archived", "旧正文", "新正文") ===
+    "- 2026-09-30 14:32 [仓库] #想法 新正文 ^archived",
+  "改正文保留时间戳/来源/标签/归档标记",
+);
+check(
+  lineTextEditText("- 2026-09-30 14:32 内容\r", "内容", "新内容") === "- 2026-09-30 14:32 新内容\r",
+  "改正文保留 CRLF",
+);
+check(lineTextEditText("- 2026-09-30 14:32 内容", "不存在", "x") === null, "找不到正文返回 null");
+check(lineTextEditText("- 2026-09-30 14:32 内容", "内容", "内容") === null, "相同正文返回 null");
+check(
+  lineTextEditText("- 2026-09-30 14:32 #想法 想法", "想法", "新") === "- 2026-09-30 14:32 #想法 新",
+  "标签撞名时替换最后一次出现（正文在行尾）",
 );
 
 // ---------------------------------------------------------------- 目标行与 EOL

@@ -3864,6 +3864,7 @@ export default function App() {
               currentVault={vault}
               onClose={() => setCaptureManagerOpen(false)}
               notice={notice}
+              onNewCapture={() => setQuickCaptureOpen(true)}
             />
           ) : (
             <>

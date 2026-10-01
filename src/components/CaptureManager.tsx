@@ -1,25 +1,27 @@
 /**
- * 速记管理（独立视图，占据编辑区；命令面板或 Ctrl+Alt+M 打开，Esc 退出）。
+ * Inbox（速记管理）：占据编辑区的「快速整理中心」。
  *
- * 面向「收件仓库」的整理工作台：
- * - 顶栏：收件仓库切换（最近仓库 + 选择其他目录）+ 全部/未归档/已归档 + 刷新；
- * - 左栏：标签聚合（收件仓库所有速记行里的 #tag 去重计数，多选=任一命中，
- *   另有「无标签」）+ 归档目标（仓库 + 笔记，可跨仓库）+ 批量加标签/批量归档；
- * - 右栏：速记按日期分组（新在前），行级 归档/撤销归档，勾选支持 Shift 范围多选。
+ * 打开方式：命令面板「速记管理」或 Ctrl+Alt+M；Esc 逐层退出（弹层 → 抽屉 →
+ * 编辑态 → 视图本身，Esc 由本组件在捕获阶段拦，逐层消费后放行给全局）。
  *
- * 归档 = 源行尾打 `^archived` 标记（不删，与待办墓碑同思路）+ 条目追加到目标
- * 笔记末尾（剥掉标记，作为普通列表项）。数据自己扫（listEntries + 逐篇读 .md，
- * 小并发），不经过 App 的 entries——收件仓库通常不是当前仓库，文件树里没有它。
+ * 视觉口径（与 Obsidian/Linear 一路的桌面应用对齐）：少边框、低阴影、行级
+ * hover 才出操作、选中态用主题色；筛选收进 [标签] [日期] [排序] [筛选] 四个
+ * 轻量 Popover，不把条件摊满页面。批量操作默认隐藏，勾选后才浮出工具条。
+ *
+ * 业务核心（扫描 / 行级重写 / 归档标记 / 目标笔记追加）与旧版一致：
+ * - 归档 = 源行尾打 `^archived`（不删除，可撤销）+ 条目按时间正序追加到目标笔记；
+ * - 删除 = 从收件文件里移除该行（速记行没有墓碑协议，删除即删除）；
+ * - 全部 IO 走 listEntries/readNoteOptional/writeNote，收件仓库独立于当前仓库。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listEntries, pickDirectory, readNoteOptional, writeNote } from "../lib/api";
 import {
-  ARCHIVE_MARK,
   archivedLineForTarget,
   detectEol,
   lineAddTagEdit,
   lineArchiveEdit,
+  lineTextEditText,
   parseCaptureEntries,
   type CaptureEntry,
 } from "../lib/capture";
@@ -34,6 +36,24 @@ export interface VaultOption {
   label: string;
 }
 
+type Scope = "active" | "archived" | "all";
+type SortKey = "newest" | "oldest" | "modified" | "tagCount";
+type Popover = "filter" | "tags" | "date" | "sort" | "more" | null;
+
+const SORT_LABELS: Record<SortKey, string> = {
+  newest: "最新优先",
+  oldest: "最早优先",
+  modified: "最近修改",
+  tagCount: "标签数量",
+};
+
+/** 本地日期串（YYYY-MM-DD，按本地时区；toISOString 是 UTC，不能用）。 */
+function localDate(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
+    date.getDate(),
+  ).padStart(2, "0")}`;
+}
+
 export default function CaptureManager({
   inboxVault,
   onInboxVaultChange,
@@ -41,6 +61,7 @@ export default function CaptureManager({
   currentVault,
   onClose,
   notice,
+  onNewCapture,
 }: {
   /** 收件仓库绝对路径（settings.quickCaptureVault）；空串 = 未配置。 */
   inboxVault: string;
@@ -50,6 +71,8 @@ export default function CaptureManager({
   currentVault: string | null;
   onClose: () => void;
   notice: (message: string, kind?: "info" | "error") => void;
+  /** 空状态的「新建速记」：唤起快速笔记弹窗（视图保持打开）。 */
+  onNewCapture: () => void;
 }) {
   // ---------------------------------------------------------------- 扫描
 
@@ -86,7 +109,15 @@ export default function CaptureManager({
             if (index >= files.length) break;
             try {
               const note = await readNoteOptional(inboxVault, files[index]);
-              if (note) entries.push(...parseCaptureEntries(files[index], note.content));
+              if (note) {
+                // 文件 mtime 挂到每条速记上（「最近修改」排序用；同文件各条相同）
+                entries.push(
+                  ...parseCaptureEntries(files[index], note.content).map((entry) => ({
+                    ...entry,
+                    modified: note.modified,
+                  })),
+                );
+              }
             } catch {
               // 单篇读失败不影响整体：它只是不进列表
             }
@@ -105,12 +136,20 @@ export default function CaptureManager({
     };
   }, [inboxVault, scanToken]);
 
-  // ------------------------------------------------------------- 筛选与聚合
+  // ------------------------------------------------------------- 筛选状态
 
-  const [scope, setScope] = useState<"active" | "archived" | "all">("active");
+  const [scope, setScope] = useState<Scope>("active");
+  const [query, setQuery] = useState("");
   const [tagSel, setTagSel] = useState<Set<string>>(new Set());
+  const [sourceSel, setSourceSel] = useState<Set<string>>(new Set());
+  const [dateRange, setDateRange] = useState<"any" | "today" | "yesterday" | "7d" | "30d" | "custom">("any");
+  const [customFrom, setCustomFrom] = useState("");
+  const [customTo, setCustomTo] = useState("");
+  const [sort, setSort] = useState<SortKey>("newest");
+  const [popover, setPopover] = useState<Popover>(null);
+  const [tagSearch, setTagSearch] = useState("");
 
-  /** 标签聚合：收件仓库所有速记行的 #tag → 条数；外加「无标签」条数。 */
+  /** 标签聚合（全量条目，不受筛选影响）：#tag → 条数；外加「无标签」。 */
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
     let untagged = 0;
@@ -124,33 +163,101 @@ export default function CaptureManager({
     return { tags, untagged };
   }, [scan.entries]);
 
-  const filtered = useMemo(
-    () =>
-      scan.entries.filter((entry) => {
-        if (scope === "active" && entry.archived) return false;
-        if (scope === "archived" && !entry.archived) return false;
-        if (tagSel.size > 0) {
-          const hit = [...tagSel].some((tag) =>
-            tag === NO_TAG ? entry.tags.length === 0 : entry.tags.includes(tag),
-          );
-          if (!hit) return false;
-        }
-        return true;
-      }),
-    [scan.entries, scope, tagSel],
-  );
-
-  /** 按日期分组（时间戳的日期部分；没有的归「未标注日期」）。条目已按时间倒序。 */
-  const groups = useMemo(() => {
-    const map = new Map<string, CaptureEntry[]>();
-    for (const entry of filtered) {
-      const key = entry.timestamp ? entry.timestamp.slice(0, 10) : "未标注日期";
-      const bucket = map.get(key);
-      if (bucket) bucket.push(entry);
-      else map.set(key, [entry]);
+  /** 来源聚合（速记时的仓库/笔记），「筛选」Popover 用。 */
+  const sourceCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const entry of scan.entries) {
+      if (!entry.source) continue;
+      counts.set(entry.source, (counts.get(entry.source) ?? 0) + 1);
     }
-    return [...map.entries()];
-  }, [filtered]);
+    return [...counts.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name, "zh"));
+  }, [scan.entries]);
+
+  // ------------------------------------------------------------- 派生筛选
+
+  const today = localDate(new Date());
+  const yesterday = localDate(new Date(Date.now() - 86400000));
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const now = Date.now();
+    return scan.entries.filter((entry) => {
+      if (scope === "active" && entry.archived) return false;
+      if (scope === "archived" && !entry.archived) return false;
+      if (q && !entry.text.toLowerCase().includes(q) && !entry.tags.some((tag) => tag.toLowerCase().includes(q))) {
+        return false;
+      }
+      if (tagSel.size > 0) {
+        const hit = [...tagSel].some((tag) =>
+          tag === NO_TAG ? entry.tags.length === 0 : entry.tags.includes(tag),
+        );
+        if (!hit) return false;
+      }
+      if (sourceSel.size > 0 && !(entry.source && sourceSel.has(entry.source))) return false;
+      if (dateRange !== "any") {
+        const day = entry.timestamp?.slice(0, 10) ?? "";
+        if (!day) return false;
+        if (dateRange === "today" && day !== today) return false;
+        if (dateRange === "yesterday" && day !== yesterday) return false;
+        if (dateRange === "7d" || dateRange === "30d") {
+          const days = dateRange === "7d" ? 7 : 30;
+          if (new Date(`${day}T00:00:00`).getTime() < now - days * 86400000) return false;
+        }
+        if (dateRange === "custom") {
+          if (customFrom && day < customFrom) return false;
+          if (customTo && day > customTo) return false;
+        }
+      }
+      return true;
+    });
+  }, [scan.entries, scope, query, tagSel, sourceSel, dateRange, customFrom, customTo, today, yesterday]);
+
+  const sorted = useMemo(() => {
+    const list = [...filtered];
+    if (sort === "newest") list.sort((a, b) => (b.timestamp ?? "").localeCompare(a.timestamp ?? ""));
+    if (sort === "oldest") list.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+    if (sort === "modified") list.sort((a, b) => (b.modified ?? 0) - (a.modified ?? 0));
+    if (sort === "tagCount") {
+      list.sort((a, b) => b.tags.length - a.tags.length || (b.timestamp ?? "").localeCompare(a.timestamp ?? ""));
+    }
+    return list;
+  }, [filtered, sort]);
+
+  /** 日期分组：今天 / 昨天 / 更早（条目保持当前排序）。 */
+  const groups = useMemo(() => {
+    const order: { key: string; label: string; entries: CaptureEntry[] }[] = [
+      { key: "today", label: "今天", entries: [] },
+      { key: "yesterday", label: "昨天", entries: [] },
+      { key: "earlier", label: "更早", entries: [] },
+    ];
+    const map = new Map(order.map((group) => [group.key, group]));
+    for (const entry of sorted) {
+      const day = entry.timestamp?.slice(0, 10) ?? "";
+      const bucket = day === today ? "today" : day === yesterday ? "yesterday" : "earlier";
+      map.get(bucket)!.entries.push(entry);
+    }
+    return order.filter((group) => group.entries.length > 0);
+  }, [sorted, today, yesterday]);
+
+  // ------------------------------------------------------------- 统计
+
+  const stats = useMemo(() => {
+    let active = 0;
+    let archived = 0;
+    let todayNew = 0;
+    let todayArchived = 0;
+    for (const entry of scan.entries) {
+      if (entry.archived) archived += 1;
+      else active += 1;
+      if (entry.timestamp?.slice(0, 10) === today) {
+        todayNew += 1;
+        if (entry.archived) todayArchived += 1;
+      }
+    }
+    return { active, archived, all: scan.entries.length, todayNew, todayArchived };
+  }, [scan.entries, today]);
 
   // ------------------------------------------------------------- 选择
 
@@ -164,8 +271,7 @@ export default function CaptureManager({
       const next = new Set(prev);
       const anchor = lastCheckedRef.current;
       if (range && anchor && anchor !== key) {
-        // Shift 范围多选：从上次勾选的条目到本次（按当前过滤列表的顺序）
-        const keys = filtered.map(keyOf);
+        const keys = sorted.map(keyOf);
         const from = keys.indexOf(anchor);
         const to = keys.indexOf(key);
         if (from >= 0 && to >= 0) {
@@ -186,15 +292,12 @@ export default function CaptureManager({
     lastCheckedRef.current = null;
   }, []);
 
-  // ------------------------------------------------------------- 归档目标
+  // ------------------------------------------------------------- 目标笔记
 
   const [targetVault, setTargetVault] = useState(currentVault ?? "");
   const [targetNotes, setTargetNotes] = useState<string[]>([]);
   const [targetNote, setTargetNote] = useState("");
-  /** 归档/加标签进行中（按钮禁用，防重复提交）。 */
   const [busy, setBusy] = useState(false);
-  /** 批量加标签的输入草稿。 */
-  const [newTag, setNewTag] = useState("");
 
   // currentVault 是异步加载的（启动参数 → IPC → setState）：视图可能在它到位前
   // 挂载，此时 targetVault 还是空串、目标笔记列表加载不出来。用户没手动选过
@@ -217,14 +320,10 @@ export default function CaptureManager({
           .filter((entry) => !entry.isDir && entry.name.toLowerCase().endsWith(".md"))
           .map((entry) => entry.path)
           .sort((a, b) => a.localeCompare(b, "zh"));
-        // TODO(调试): 定位「目标笔记列表为空」后移除
-        console.log("[capture-notes] loaded", notes.length, targetVault);
         setTargetNotes(notes);
         setTargetNote((prev) => (notes.includes(prev) ? prev : ""));
       })
-      .catch((e) => {
-        // TODO(调试): 定位「目标笔记列表为空」后移除
-        console.error("[capture-notes] failed", targetVault, e);
+      .catch(() => {
         if (!cancelled) {
           setTargetNotes([]);
           setTargetNote("");
@@ -233,12 +332,13 @@ export default function CaptureManager({
     return () => {
       cancelled = true;
     };
-  }, [targetVault]);
+    // 重扫后目标笔记列表也刷新一次（收件仓库文件可能刚被本视图改过）
+  }, [targetVault, scanToken]);
 
-  // ------------------------------------------------------------- 落盘操作
+  // ------------------------------------------------------------- 落盘核心
 
   /**
-   * 按行重写一批速记文件：plan = 文件 → (行号 → 行变换)。
+   * 按行重写一批收件文件：plan = 文件 → (行号 → 行变换)。
    * 每个文件读一次、改完一次写回；换行风格按文件现状拼接。
    * 返回实际改动的文件数。
    */
@@ -267,66 +367,231 @@ export default function CaptureManager({
     [],
   );
 
-  /** 批量归档：源行打 ^archived 标记；条目按时间正序追加到目标笔记末尾。 */
-  const archiveSelected = useCallback(async () => {
-    if (!inboxVault) return;
-    if (!targetVault || !targetNote) {
-      notice("先在左栏选择归档目标笔记", "error");
-      return;
-    }
-    const chosen = filtered.filter((entry) => sel.has(keyOf(entry)) && !entry.archived);
-    if (chosen.length === 0) return;
-    setBusy(true);
-    try {
-      const plan = new Map<string, Map<number, (line: string) => string | null>>();
-      for (const entry of chosen) {
-        let bucket = plan.get(entry.file);
-        if (!bucket) {
-          bucket = new Map();
-          plan.set(entry.file, bucket);
-        }
-        bucket.set(entry.line, (line) => lineArchiveEdit(line, true));
+  /** 从收件文件里移除若干行（删除速记）。按文件分组，行号倒序 splice。 */
+  const removeLines = useCallback(
+    async (vault: string, entries: CaptureEntry[]) => {
+      const byFile = new Map<string, number[]>();
+      for (const entry of entries) {
+        const bucket = byFile.get(entry.file);
+        if (bucket) bucket.push(entry.line);
+        else byFile.set(entry.file, [entry.line]);
       }
-      await rewriteLines(inboxVault, plan);
+      let changed = 0;
+      for (const [file, lineIdxs] of byFile) {
+        const note = await readNoteOptional(vault, file);
+        if (!note) continue;
+        const eol = detectEol(note.content);
+        const lines = note.content.split(/\r?\n/);
+        for (const index of [...lineIdxs].sort((a, b) => b - a)) {
+          if (index < lines.length) lines.splice(index, 1);
+        }
+        await writeNote(vault, file, lines.join(eol), note.hasBom);
+        changed += 1;
+      }
+      return changed;
+    },
+    [],
+  );
 
-      // 目标笔记：时间正序追加（读起来是顺序），缺文件就按「# 文件名」建头
-      const ordered = [...chosen].sort((a, b) =>
-        (a.timestamp ?? "").localeCompare(b.timestamp ?? ""),
-      );
-      const target = await readNoteOptional(targetVault, targetNote);
-      const eol = target ? detectEol(target.content) : "\n";
-      const block = ordered.map((entry) => archivedLineForTarget(entry)).join(eol);
-      const title = targetNote.replace(/^.*\//, "").replace(/\.md$/i, "");
-      const nextContent = target
-        ? `${target.content}${target.content.endsWith("\n") ? "" : eol}${eol}${block}${eol}`
-        : `# ${title}${eol}${eol}${block}${eol}`;
-      await writeNote(targetVault, targetNote, nextContent, target?.hasBom ?? false);
-      notice(`已归档 ${chosen.length} 条到 ${targetNote.replace(/^.*\//, "")}`);
-      clearSel();
-      setScanToken((value) => value + 1);
-    } catch (e) {
-      notice(`归档失败：${e}`, "error");
-    } finally {
-      setBusy(false);
-    }
-  }, [inboxVault, targetVault, targetNote, filtered, sel, rewriteLines, notice, clearSel]);
+  // ------------------------------------------------------------- 动效状态
 
-  /** 撤销归档：剥掉源行的 ^archived 标记。 */
-  const unarchiveEntry = useCallback(
-    async (entry: CaptureEntry) => {
-      if (!inboxVault) return;
+  /** 正在淡出的行（归档/删除后先播 220ms 动画再重扫）。 */
+  const [leaving, setLeaving] = useState<Set<string>>(new Set());
+  const [toast, setToast] = useState<{ text: string; undo?: () => void } | null>(null);
+  const toastTimer = useRef<number | null>(null);
+
+  const showToast = useCallback((text: string, undo?: () => void) => {
+    setToast({ text, undo });
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 4000);
+  }, []);
+
+  const leaveAndRescan = useCallback(
+    (keys: string[]) => {
+      setLeaving((prev) => new Set([...prev, ...keys]));
+      window.setTimeout(() => {
+        setLeaving((prev) => {
+          const next = new Set(prev);
+          for (const key of keys) next.delete(key);
+          return next;
+        });
+        setScanToken((value) => value + 1);
+      }, 240);
+    },
+    [],
+  );
+
+  // ------------------------------------------------------------- 动作
+
+  /** 归档一批：源行打 ^archived + 按时间正序追加到目标笔记。返回是否成功。 */
+  const archiveEntries = useCallback(
+    async (entries: CaptureEntry[]): Promise<boolean> => {
+      if (!inboxVault) return false;
+      const chosen = entries.filter((entry) => !entry.archived);
+      if (chosen.length === 0) return false;
+      if (!targetVault || !targetNote) {
+        notice("先选择归档目标笔记（批量栏或详情抽屉里可选）", "error");
+        return false;
+      }
+      setBusy(true);
+      try {
+        const plan = new Map<string, Map<number, (line: string) => string | null>>();
+        for (const entry of chosen) {
+          let bucket = plan.get(entry.file);
+          if (!bucket) {
+            bucket = new Map();
+            plan.set(entry.file, bucket);
+          }
+          bucket.set(entry.line, (line) => lineArchiveEdit(line, true));
+        }
+        await rewriteLines(inboxVault, plan);
+
+        const ordered = [...chosen].sort((a, b) =>
+          (a.timestamp ?? "").localeCompare(b.timestamp ?? ""),
+        );
+        const target = await readNoteOptional(targetVault, targetNote);
+        const eol = target ? detectEol(target.content) : "\n";
+        const block = ordered.map((entry) => archivedLineForTarget(entry)).join(eol);
+        const title = targetNote.replace(/^.*\//, "").replace(/\.md$/i, "");
+        const nextContent = target
+          ? `${target.content}${target.content.endsWith("\n") ? "" : eol}${eol}${block}${eol}`
+          : `# ${title}${eol}${eol}${block}${eol}`;
+        await writeNote(targetVault, targetNote, nextContent, target?.hasBom ?? false);
+        const keys = chosen.map(keyOf);
+        clearSel();
+        leaveAndRescan(keys);
+        showToast(
+          `已归档 ${chosen.length} 条到「${targetNote.replace(/^.*\//, "")}」`,
+          // 撤销走 unarchiveEntries，它按 entry.archived 过滤——这里捕获的还是
+          // 归档前的对象（archived:false），必须带上归档后的状态，否则撤销为空操作
+          () => void unarchiveEntries(chosen.map((entry) => ({ ...entry, archived: true }))),
+        );
+        return true;
+      } catch (e) {
+        notice(`归档失败：${e}`, "error");
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    // unarchiveEntries 在下方声明（互相引用，用 ref 兜住时序）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [inboxVault, targetVault, targetNote, rewriteLines, notice, clearSel, leaveAndRescan, showToast],
+  );
+
+  /** 撤销归档一批：剥掉源行的 ^archived 标记。 */
+  const unarchiveEntries = useCallback(
+    async (entries: CaptureEntry[]): Promise<boolean> => {
+      if (!inboxVault) return false;
+      const chosen = entries.filter((entry) => entry.archived);
+      if (chosen.length === 0) return false;
+      setBusy(true);
+      try {
+        const plan = new Map<string, Map<number, (line: string) => string | null>>();
+        for (const entry of chosen) {
+          let bucket = plan.get(entry.file);
+          if (!bucket) {
+            bucket = new Map();
+            plan.set(entry.file, bucket);
+          }
+          bucket.set(entry.line, (line) => lineArchiveEdit(line, false));
+        }
+        const files = await rewriteLines(inboxVault, plan);
+        if (files > 0) {
+          clearSel();
+          setScanToken((value) => value + 1);
+          showToast(`已撤销归档 ${chosen.length} 条`);
+        }
+        return files > 0;
+      } catch (e) {
+        notice(`撤销归档失败：${e}`, "error");
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [inboxVault, rewriteLines, notice, clearSel, showToast],
+  );
+
+  /** 给一批条目加标签。 */
+  const addTagToEntries = useCallback(
+    async (entries: CaptureEntry[], rawTag: string): Promise<boolean> => {
+      const tag = normalizeTagName(rawTag);
+      if (!tag) {
+        notice("标签名不合法（不能含空格）", "error");
+        return false;
+      }
+      if (!inboxVault || entries.length === 0) return false;
+      setBusy(true);
+      try {
+        const plan = new Map<string, Map<number, (line: string) => string | null>>();
+        for (const entry of entries) {
+          let bucket = plan.get(entry.file);
+          if (!bucket) {
+            bucket = new Map();
+            plan.set(entry.file, bucket);
+          }
+          bucket.set(entry.line, (line) => lineAddTagEdit(line, tag));
+        }
+        const files = await rewriteLines(inboxVault, plan);
+        if (files > 0) {
+          clearSel();
+          setScanToken((value) => value + 1);
+          showToast(`已给 ${entries.length} 条加上 #${tag}`);
+        } else {
+          notice("选中的条目都已带这个标签");
+        }
+        return files > 0;
+      } catch (e) {
+        notice(`加标签失败：${e}`, "error");
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [inboxVault, rewriteLines, notice, clearSel, showToast],
+  );
+
+  /** 删除一批速记行（收件行没有墓碑协议，删除即删除）。 */
+  const deleteEntries = useCallback(
+    async (entries: CaptureEntry[]): Promise<boolean> => {
+      if (!inboxVault || entries.length === 0) return false;
+      setBusy(true);
+      try {
+        const files = await removeLines(inboxVault, entries);
+        if (files > 0) {
+          const keys = entries.map(keyOf);
+          clearSel();
+          leaveAndRescan(keys);
+          showToast(`已删除 ${entries.length} 条速记`);
+        }
+        return files > 0;
+      } catch (e) {
+        notice(`删除失败：${e}`, "error");
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [inboxVault, removeLines, notice, clearSel, leaveAndRescan, showToast],
+  );
+
+  /** 保存行内编辑（只改正文，时间戳/来源/标签/标记原样保留）。 */
+  const saveEdit = useCallback(
+    async (entry: CaptureEntry, nextText: string): Promise<boolean> => {
+      const text = nextText.trim();
+      if (!inboxVault || !text || text === entry.text) return false;
       setBusy(true);
       try {
         const plan = new Map<string, Map<number, (line: string) => string | null>>([
-          [entry.file, new Map([[entry.line, (line) => lineArchiveEdit(line, false)]])],
+          [entry.file, new Map([[entry.line, (line) => lineTextEditText(line, entry.text, text)]])],
         ]);
-        const changed = await rewriteLines(inboxVault, plan);
-        if (changed > 0) {
-          notice(`已撤销归档：${entry.text.slice(0, 24)}…`);
-          setScanToken((value) => value + 1);
-        }
+        const files = await rewriteLines(inboxVault, plan);
+        if (files > 0) setScanToken((value) => value + 1);
+        return files > 0;
       } catch (e) {
-        notice(`撤销归档失败：${e}`, "error");
+        notice(`保存失败：${e}`, "error");
+        return false;
       } finally {
         setBusy(false);
       }
@@ -334,342 +599,824 @@ export default function CaptureManager({
     [inboxVault, rewriteLines, notice],
   );
 
-  /** 给勾选的条目批量加标签。 */
-  const addTagToSelected = useCallback(async () => {
-    const tag = normalizeTagName(newTag);
-    if (!tag) {
-      notice("标签名不合法（不能含空格）", "error");
-      return;
-    }
-    const chosen = filtered.filter((entry) => sel.has(keyOf(entry)));
-    if (chosen.length === 0) return;
-    setBusy(true);
-    try {
-      const plan = new Map<string, Map<number, (line: string) => string | null>>();
-      for (const entry of chosen) {
-        let bucket = plan.get(entry.file);
-        if (!bucket) {
-          bucket = new Map();
-          plan.set(entry.file, bucket);
-        }
-        bucket.set(entry.line, (line) => lineAddTagEdit(line, tag));
+  // ------------------------------------------------------------- 抽屉与编辑
+
+  const [drawerKey, setDrawerKey] = useState<string | null>(null);
+  const [editKey, setEditKey] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [batchTagOpen, setBatchTagOpen] = useState(false);
+  const [newTag, setNewTag] = useState("");
+
+  const drawerEntry = useMemo(
+    () => (drawerKey ? scan.entries.find((entry) => keyOf(entry) === drawerKey) ?? null : null),
+    [drawerKey, scan.entries],
+  );
+
+  // ------------------------------------------------------------- Esc 逐层退出
+
+  useEffect(() => {
+    // 捕获阶段拦 Esc：先吃掉本视图内的浮层（弹层 → 抽屉 → 行内编辑），
+    // 都没有时放行给全局兜底（关整个视图）。用 stopImmediatePropagation：
+    // 全局兜底与本处理器都挂在 window 上，普通 stopPropagation 拦不住
+    // 同节点的后续监听（target 就在 window 时两者必同节点）。
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (popover) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setPopover(null);
+        return;
       }
-      const files = await rewriteLines(inboxVault, plan);
-      notice(files > 0 ? `已给选中条目加上 #${tag}（更新 ${files} 个文件）` : "选中的条目都已带这个标签");
-      setNewTag("");
-      clearSel();
-      setScanToken((value) => value + 1);
-    } catch (e) {
-      notice(`加标签失败：${e}`, "error");
-    } finally {
-      setBusy(false);
-    }
-  }, [newTag, inboxVault, filtered, sel, rewriteLines, notice, clearSel]);
+      if (drawerKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setDrawerKey(null);
+        return;
+      }
+      if (editKey) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        setEditKey(null);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [popover, drawerKey, editKey]);
+
+  // ------------------------------------------------------------- 小组件
+
+  const selectedEntries = useMemo(
+    () => sorted.filter((entry) => sel.has(keyOf(entry))),
+    [sorted, sel],
+  );
+
+  const vaultSelect = (className: string, value: string, onChange: (value: string) => void, title: string) => (
+    <select className={className} value={value} title={title} onChange={(event) => onChange(event.target.value)}>
+      {!vaultOptions.some((option) => option.value === value) && value && (
+        <option value={value}>{value.replace(/^.*[\\/]/, "")}（当前仓库）</option>
+      )}
+      {vaultOptions.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </select>
+  );
+
+  const noteSelect = (className: string, value: string, onChange: (value: string) => void, title: string) => (
+    <select className={className} value={value} title={title} onChange={(event) => onChange(event.target.value)}>
+      <option value="">{targetNotes.length === 0 ? "（该仓库没有笔记）" : "选择笔记…"}</option>
+      {targetNotes.map((path) => (
+        <option key={path} value={path}>
+          {path}
+        </option>
+      ))}
+    </select>
+  );
 
   // ------------------------------------------------------------- 渲染
 
-  const scopeTabs: { value: typeof scope; label: string }[] = [
-    { value: "active", label: "未归档" },
-    { value: "archived", label: "已归档" },
-    { value: "all", label: "全部" },
+  const activeFilterChips: { label: string; clear: () => void }[] = [];
+  if (query.trim()) activeFilterChips.push({ label: `“${query.trim()}”`, clear: () => setQuery("") });
+  for (const tag of tagSel) {
+    activeFilterChips.push({
+      label: tag === NO_TAG ? "无标签" : `#${tag}`,
+      clear: () =>
+        setTagSel((prev) => {
+          const next = new Set(prev);
+          next.delete(tag);
+          return next;
+        }),
+    });
+  }
+  for (const source of sourceSel) {
+    activeFilterChips.push({
+      label: `来源 ${source}`,
+      clear: () =>
+        setSourceSel((prev) => {
+          const next = new Set(prev);
+          next.delete(source);
+          return next;
+        }),
+    });
+  }
+  if (dateRange !== "any") {
+    activeFilterChips.push({
+      label: dateRange === "custom" ? `${customFrom || "…"} ~ ${customTo || "…"}` : { today: "今天", yesterday: "昨天", "7d": "最近 7 天", "30d": "最近 30 天" }[dateRange] ?? dateRange,
+      clear: () => setDateRange("any"),
+    });
+  }
+  if (sort !== "newest") {
+    activeFilterChips.push({ label: SORT_LABELS[sort], clear: () => setSort("newest") });
+  }
+
+  const scopeTabs: { value: Scope; label: string; count: number }[] = [
+    { value: "active", label: "未归档", count: stats.active },
+    { value: "archived", label: "已归档", count: stats.archived },
+    { value: "all", label: "全部", count: stats.all },
   ];
 
   if (!inboxVault) {
     return (
-      <div className="capture-manager">
-        <div className="capture-manager-head">
-          <span className="capture-manager-title">速记管理</span>
-          <span className="spacer" />
-          <button type="button" className="icon-btn" title="返回笔记 (Esc)" onClick={onClose}>
-            <IconX size={14} />
+      <div className="cm-root">
+        <div className="cm-head">
+          <div className="cm-head-titles">
+            <h2 className="cm-title">Inbox</h2>
+            <p className="cm-subtitle">快速整理刚刚记录的内容</p>
+          </div>
+          <span className="cm-spacer" />
+          <button type="button" className="cm-icon-btn" title="返回笔记 (Esc)" onClick={onClose}>
+            <IconX size={15} />
           </button>
         </div>
-        <div className="capture-manager-empty">
-          还没有配置收件仓库。在 设置 → 通用 → 快速笔记 里选择一个仓库作为收件仓库，
-          之后 Ctrl+Alt+N 的速记都会落到那里，再回到这里集中整理。
+        <div className="cm-empty">
+          <div className="cm-empty-icon">📥</div>
+          <p className="cm-empty-title">还没有配置收件仓库</p>
+          <p className="cm-empty-hint">
+            在 设置 → 通用 → 快速笔记 里选择一个仓库作为收件仓库，
+            之后 Ctrl+Alt+N 的速记都会落到这里。
+          </p>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="capture-manager">
-      <div className="capture-manager-head">
-        <span className="capture-manager-title">速记管理</span>
-        <select
-          className="capture-vault-select"
-          value={inboxVault}
-          title="收件仓库（速记落点）"
-          onChange={(event) => {
-            if (event.target.value === "__pick__") {
-              void pickDirectory("选择速记收件仓库").then((picked) => {
-                if (picked) onInboxVaultChange(picked);
-              });
-              return;
-            }
-            onInboxVaultChange(event.target.value);
-          }}
-        >
-          {!vaultOptions.some((option) => option.value === inboxVault) && (
-            <option value={inboxVault}>
-              {inboxVault.replace(/^.*[\\/]/, "")}（当前配置）
-            </option>
-          )}
-          {vaultOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-          <option value="__pick__">选择其他目录…</option>
-        </select>
-        <div className="capture-scope" role="tablist" aria-label="归档范围">
-          {scopeTabs.map((tab) => (
-            <button
-              key={tab.value}
-              type="button"
-              role="tab"
-              aria-selected={scope === tab.value}
-              className={`capture-scope-tab${scope === tab.value ? " is-on" : ""}`}
-              onClick={() => setScope(tab.value)}
-            >
-              {tab.label}
-            </button>
-          ))}
+    <div className="cm-root">
+      {/* ------------------------------------------------------------ 顶栏 */}
+      <div className="cm-head">
+        <div className="cm-head-titles">
+          <h2 className="cm-title">Inbox</h2>
+          <p className="cm-subtitle">快速整理刚刚记录的内容</p>
         </div>
+        <span className="cm-spacer" />
+        <span className="cm-head-stats" title={`今日新增 ${stats.todayNew} · 今日已整理 ${stats.todayArchived}`}>
+          未归档 {stats.active} · 今日新增 {stats.todayNew} · 今日已整理 {stats.todayArchived}
+        </span>
+        <input
+          type="text"
+          className="cm-search"
+          value={query}
+          placeholder="搜索速记…"
+          onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              event.preventDefault();
+              event.stopPropagation();
+              setQuery("");
+            }
+          }}
+        />
         <button
           type="button"
-          className="icon-btn"
+          className="cm-icon-btn"
           title="重新扫描收件仓库"
           onClick={() => setScanToken((value) => value + 1)}
         >
           <IconRefresh size={14} />
         </button>
-        <span className="spacer" />
-        <span className="capture-scan-meta">
-          {scan.loading ? "扫描中…" : `${scan.files} 个文件 · ${scan.entries.length} 条速记`}
-        </span>
-        <button type="button" className="icon-btn" title="返回笔记 (Esc)" onClick={onClose}>
-          <IconX size={14} />
+        <div className="cm-tool">
+          <button
+            type="button"
+            className={`cm-icon-btn${popover === "more" ? " is-on" : ""}`}
+            title="更多操作"
+            onClick={() => setPopover(popover === "more" ? null : "more")}
+          >
+            ⋯
+          </button>
+          {popover === "more" && (
+            <div className="cm-pop cm-pop-right">
+              <button type="button" className="cm-pop-item" onClick={() => {
+                setSel(new Set(sorted.map(keyOf)));
+                setPopover(null);
+              }}>
+                全选当前视图（{sorted.length}）
+              </button>
+              <button type="button" className="cm-pop-item" disabled={sel.size === 0} onClick={() => {
+                clearSel();
+                setPopover(null);
+              }}>
+                取消全选
+              </button>
+              <div className="cm-pop-sep" />
+              <button type="button" className="cm-pop-item" onClick={() => {
+                setScanToken((value) => value + 1);
+                setPopover(null);
+              }}>
+                重新扫描
+              </button>
+              <button
+                type="button"
+                className="cm-pop-item"
+                onClick={() => {
+                  setPopover(null);
+                  void pickDirectory("选择速记收件仓库").then((picked) => {
+                    if (picked) onInboxVaultChange(picked);
+                  });
+                }}
+              >
+                更换收件仓库…
+              </button>
+            </div>
+          )}
+        </div>
+        <button type="button" className="cm-icon-btn" title="返回笔记 (Esc)" onClick={onClose}>
+          <IconX size={15} />
         </button>
       </div>
 
-      <div className="capture-manager-body">
-        <aside className="capture-side">
-          <div className="capture-side-title">标签筛选</div>
-          {tagCounts.tags.length === 0 && tagCounts.untagged === 0 && (
-            <div className="capture-side-empty">还没有带标签的速记</div>
-          )}
-          {tagCounts.tags.map((tag) => (
-            <label key={tag.name} className="capture-tag-row">
-              <input
-                type="checkbox"
-                checked={tagSel.has(tag.name)}
-                onChange={() =>
-                  setTagSel((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(tag.name)) next.delete(tag.name);
-                    else next.add(tag.name);
-                    return next;
-                  })
-                }
-              />
-              <span className="capture-tag-name">#{tag.name}</span>
-              <span className="spacer" />
-              <span className="capture-tag-count">{tag.count}</span>
-            </label>
-          ))}
-          {tagCounts.untagged > 0 && (
-            <label className="capture-tag-row">
-              <input
-                type="checkbox"
-                checked={tagSel.has(NO_TAG)}
-                onChange={() =>
-                  setTagSel((prev) => {
-                    const next = new Set(prev);
-                    if (next.has(NO_TAG)) next.delete(NO_TAG);
-                    else next.add(NO_TAG);
-                    return next;
-                  })
-                }
-              />
-              <span className="capture-tag-name">无标签</span>
-              <span className="spacer" />
-              <span className="capture-tag-count">{tagCounts.untagged}</span>
-            </label>
-          )}
-          {tagSel.size > 0 && (
-            <button type="button" className="capture-clear" onClick={() => setTagSel(new Set())}>
-              清除筛选
-            </button>
-          )}
-
-          <div className="capture-side-title">归档目标</div>
-          <select
-            className="capture-target-select"
-            value={targetVault}
-            title="目标仓库（默认当前仓库，可跨仓库归档）"
-            onChange={(event) => setTargetVault(event.target.value)}
+      {/* -------------------------------------------------------- 分段切换 */}
+      <div className="cm-seg" role="tablist" aria-label="归档状态">
+        {scopeTabs.map((tab) => (
+          <button
+            key={tab.value}
+            type="button"
+            role="tab"
+            aria-selected={scope === tab.value}
+            className={`cm-seg-btn${scope === tab.value ? " is-on" : ""}`}
+            onClick={() => setScope(tab.value)}
           >
-            {!vaultOptions.some((option) => option.value === targetVault) && targetVault && (
-              <option value={targetVault}>{targetVault.replace(/^.*[\\/]/, "")}（当前仓库）</option>
-            )}
-            {vaultOptions.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <select
-            className="capture-target-select"
-            value={targetNote}
-            title="目标笔记（速记将追加到它的末尾）"
-            onChange={(event) => setTargetNote(event.target.value)}
-          >
-            <option value="">{targetNotes.length === 0 ? "（该仓库没有笔记）" : "选择笔记…"}</option>
-            {targetNotes.map((path) => (
-              <option key={path} value={path}>
-                {path}
-              </option>
-            ))}
-          </select>
+            {tab.label}
+            <span className="cm-seg-count">{tab.count}</span>
+          </button>
+        ))}
+      </div>
 
-          <div className="capture-side-title">批量操作</div>
-          <div className="capture-batch">
-            <input
-              type="text"
-              className="capture-tag-input"
-              value={newTag}
-              placeholder="给选中加标签…"
-              onChange={(event) => setNewTag(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void addTagToSelected();
-              }}
-            />
-            <button
-              type="button"
-              className="btn btn-mini"
-              disabled={busy || sel.size === 0 || !newTag.trim()}
-              onClick={() => void addTagToSelected()}
-              title={`给选中的 ${sel.size} 条速记追加标签`}
-            >
-              加标签
-            </button>
-          </div>
+      {/* -------------------------------------------------------- 筛选工具栏 */}
+      <div className="cm-toolbar">
+        <div className="cm-tool">
           <button
             type="button"
-            className="btn btn-primary capture-archive-btn"
-            disabled={busy || sel.size === 0 || !targetVault || !targetNote}
-            onClick={() => void archiveSelected()}
-            title={`把选中的 ${sel.size} 条速记追加到目标笔记，并在源行打 ${ARCHIVE_MARK} 标记`}
+            className={`cm-tool-btn${sourceSel.size > 0 ? " is-on" : ""}`}
+            onClick={() => setPopover(popover === "filter" ? null : "filter")}
           >
-            批量归档{sel.size > 0 ? ` (${sel.size})` : ""}
+            筛选
           </button>
-          <div className="capture-side-hint">
-            归档不删除：源速记打 {ARCHIVE_MARK} 标记（可撤销），内容追加到目标笔记末尾。
-          </div>
-        </aside>
-
-        <div className="capture-list">
-          {scan.error && <div className="capture-list-error">{scan.error}</div>}
-          {scan.loading && <div className="capture-list-empty">正在扫描收件仓库…</div>}
-          {!scan.loading && !scan.error && groups.length === 0 && (
-            <div className="capture-list-empty">
-              {scope === "active" ? "没有未归档的速记。" : "这里还没有速记。"}
-              {` 用 Ctrl+Alt+N 或命令面板的「快速笔记」随手记，记录会出现在这里。`}
+          {popover === "filter" && (
+            <div className="cm-pop">
+              <div className="cm-pop-title">按来源筛选</div>
+              {sourceCounts.length === 0 && <div className="cm-pop-empty">速记还没有来源记录</div>}
+              {sourceCounts.map((source) => (
+                <label key={source.name} className="cm-pop-row">
+                  <input
+                    type="checkbox"
+                    checked={sourceSel.has(source.name)}
+                    onChange={() =>
+                      setSourceSel((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(source.name)) next.delete(source.name);
+                        else next.add(source.name);
+                        return next;
+                      })
+                    }
+                  />
+                  <span className="cm-pop-row-name" title={source.name}>
+                    {source.name}
+                  </span>
+                  <span className="cm-spacer" />
+                  <span className="cm-pop-row-count">{source.count}</span>
+                </label>
+              ))}
+              {activeFilterChips.length > 0 && (
+                <button
+                  type="button"
+                  className="cm-pop-clear"
+                  onClick={() => {
+                    setQuery("");
+                    setTagSel(new Set());
+                    setSourceSel(new Set());
+                    setDateRange("any");
+                    setSort("newest");
+                  }}
+                >
+                  清除全部筛选
+                </button>
+              )}
             </div>
           )}
-          {groups.map(([date, entries]) => (
-            <div key={date} className="capture-group">
-              <div className="capture-group-head">
-                <span>{date}</span>
-                <span className="spacer" />
-                <span className="capture-group-count">{entries.length} 条</span>
-              </div>
-              {entries.map((entry) => {
-                const key = keyOf(entry);
-                return (
-                  <div key={key} className={`capture-row${entry.archived ? " is-archived" : ""}`}>
+        </div>
+        <div className="cm-tool">
+          <button
+            type="button"
+            className={`cm-tool-btn${tagSel.size > 0 ? " is-on" : ""}`}
+            onClick={() => {
+              setTagSearch("");
+              setPopover(popover === "tags" ? null : "tags");
+            }}
+          >
+            标签
+          </button>
+          {popover === "tags" && (
+            <div className="cm-pop">
+              <input
+                type="text"
+                className="cm-pop-search"
+                value={tagSearch}
+                placeholder="搜索标签…"
+                onChange={(event) => setTagSearch(event.target.value)}
+              />
+              <div className="cm-pop-list">
+                {tagCounts.tags
+                  .filter((tag) => !tagSearch.trim() || tag.name.toLowerCase().includes(tagSearch.trim().toLowerCase()))
+                  .map((tag) => (
+                    <label key={tag.name} className="cm-pop-row">
+                      <input
+                        type="checkbox"
+                        checked={tagSel.has(tag.name)}
+                        onChange={() =>
+                          setTagSel((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(tag.name)) next.delete(tag.name);
+                            else next.add(tag.name);
+                            return next;
+                          })
+                        }
+                      />
+                      <span className="cm-pop-row-name">#{tag.name}</span>
+                      <span className="cm-spacer" />
+                      <span className="cm-pop-row-count">{tag.count}</span>
+                    </label>
+                  ))}
+                {tagCounts.untagged > 0 && (
+                  <label className="cm-pop-row">
                     <input
                       type="checkbox"
-                      className="capture-row-check"
-                      checked={sel.has(key)}
-                      // 普通勾选走 onChange（与标签筛选同一模式，受控更新）；
-                      // onClick 只在 Shift+点选时接手：preventDefault 挡掉浏览器
-                      // 自己的切换（否则 onChange 再翻一次），然后做范围多选
-                      onChange={() => toggleSelect(entry, false)}
-                      onClick={(event) => {
-                        if (event.shiftKey && lastCheckedRef.current) {
-                          event.preventDefault();
-                          toggleSelect(entry, true);
-                        }
-                      }}
-                      title="勾选（Shift+点选范围多选）"
+                      checked={tagSel.has(NO_TAG)}
+                      onChange={() =>
+                        setTagSel((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(NO_TAG)) next.delete(NO_TAG);
+                          else next.add(NO_TAG);
+                          return next;
+                        })
+                      }
                     />
-                    <span className="capture-row-time">
-                      {entry.timestamp ? entry.timestamp.slice(11) : "--:--"}
-                    </span>
-                    {entry.tags.length > 0 && (
-                      <span className="capture-row-tags">
-                        {entry.tags.map((tag) => (
-                          <button
-                            key={tag}
-                            type="button"
-                            className="capture-row-tag"
-                            title={`筛选 #${tag}`}
-                            onClick={() =>
-                              setTagSel((prev) => {
-                                const next = new Set(prev);
-                                if (next.has(tag)) next.delete(tag);
-                                else next.add(tag);
-                                return next;
-                              })
-                            }
-                          >
-                            #{tag}
-                          </button>
-                        ))}
-                      </span>
-                    )}
-                    <span className="capture-row-text" title={entry.text}>
-                      {entry.text}
-                    </span>
-                    {entry.source && (
-                      <span className="capture-row-src" title={`来自 ${entry.source}`}>
-                        @{entry.source}
-                      </span>
-                    )}
-                    {entry.archived ? (
-                      <button
-                        type="button"
-                        className="capture-row-act"
-                        disabled={busy}
-                        onClick={() => void unarchiveEntry(entry)}
-                        title="撤销归档（去掉源行的 ^archived 标记）"
-                      >
-                        撤销归档
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="capture-row-act"
-                        disabled={busy || !targetVault || !targetNote}
-                        onClick={() => {
-                          setSel(new Set([key]));
-                          lastCheckedRef.current = key;
-                          window.setTimeout(() => void archiveSelected(), 0);
-                        }}
-                        title="追加到目标笔记并标记已归档"
-                      >
-                        归档
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
+                    <span className="cm-pop-row-name">无标签</span>
+                    <span className="cm-spacer" />
+                    <span className="cm-pop-row-count">{tagCounts.untagged}</span>
+                  </label>
+                )}
+                {tagCounts.tags.length === 0 && tagCounts.untagged === 0 && (
+                  <div className="cm-pop-empty">还没有带标签的速记</div>
+                )}
+              </div>
             </div>
-          ))}
+          )}
         </div>
+        <div className="cm-tool">
+          <button
+            type="button"
+            className={`cm-tool-btn${dateRange !== "any" ? " is-on" : ""}`}
+            onClick={() => setPopover(popover === "date" ? null : "date")}
+          >
+            日期
+          </button>
+          {popover === "date" && (
+            <div className="cm-pop">
+              {([
+                ["any", "全部日期"],
+                ["today", "今天"],
+                ["yesterday", "昨天"],
+                ["7d", "最近 7 天"],
+                ["30d", "最近 30 天"],
+                ["custom", "自定义"],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  className={`cm-pop-item${dateRange === value ? " is-on" : ""}`}
+                  onClick={() => setDateRange(value)}
+                >
+                  {label}
+                </button>
+              ))}
+              {dateRange === "custom" && (
+                <div className="cm-pop-custom">
+                  <input
+                    type="date"
+                    className="cm-pop-date"
+                    value={customFrom}
+                    onChange={(event) => setCustomFrom(event.target.value)}
+                  />
+                  <span className="cm-pop-date-sep">~</span>
+                  <input
+                    type="date"
+                    className="cm-pop-date"
+                    value={customTo}
+                    onChange={(event) => setCustomTo(event.target.value)}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="cm-tool">
+          <button
+            type="button"
+            className={`cm-tool-btn${sort !== "newest" ? " is-on" : ""}`}
+            onClick={() => setPopover(popover === "sort" ? null : "sort")}
+          >
+            排序
+          </button>
+          {popover === "sort" && (
+            <div className="cm-pop">
+              {(Object.keys(SORT_LABELS) as SortKey[]).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  className={`cm-pop-item${sort === key ? " is-on" : ""}`}
+                  onClick={() => setSort(key)}
+                >
+                  {SORT_LABELS[key]}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        {activeFilterChips.map((chip) => (
+          <button key={chip.label} type="button" className="cm-chip" title="移除这个筛选" onClick={chip.clear}>
+            {chip.label}
+            <IconX size={10} />
+          </button>
+        ))}
+        <span className="cm-spacer" />
+        {scan.loading && <span className="cm-scan-meta">扫描中…</span>}
+        {!scan.loading && !scan.error && (
+          <span className="cm-scan-meta">
+            {sorted.length} / {scan.entries.length} 条
+          </span>
+        )}
       </div>
+      {popover && <div className="cm-pop-backdrop" onClick={() => setPopover(null)} />}
+
+      {/* -------------------------------------------------------- 列表 */}
+      <div className="cm-list">
+        {scan.error && <div className="cm-list-error">{scan.error}</div>}
+        {scan.loading && <div className="cm-list-note">正在扫描收件仓库…</div>}
+        {!scan.loading && !scan.error && groups.length === 0 && (
+          <div className="cm-empty">
+            {scope === "active" && scan.entries.length > 0 ? (
+              <>
+                <div className="cm-empty-icon">✓</div>
+                <p className="cm-empty-title">Inbox 已清空</p>
+                <p className="cm-empty-hint">所有速记都已经整理完成。</p>
+                <button type="button" className="cm-btn cm-btn-primary" onClick={onNewCapture}>
+                  新建速记
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="cm-empty-icon">📥</div>
+                <p className="cm-empty-title">{scope === "archived" ? "还没有已归档的速记" : "还没有速记"}</p>
+                <p className="cm-empty-hint">用 Ctrl+Alt+N 或命令面板的「快速笔记」随手记，记录会出现在这里。</p>
+                <button type="button" className="cm-btn cm-btn-primary" onClick={onNewCapture}>
+                  新建速记
+                </button>
+              </>
+            )}
+          </div>
+        )}
+        {groups.map((group) => (
+          <div key={group.key} className="cm-group">
+            <div className="cm-group-head">{group.label}</div>
+            {group.entries.map((entry) => {
+              const key = keyOf(entry);
+              const editing = editKey === key;
+              return (
+                <div
+                  key={key}
+                  className={`cm-row${entry.archived ? " is-archived" : ""}${sel.has(key) ? " is-sel" : ""}${
+                    leaving.has(key) ? " is-leaving" : ""
+                  }`}
+                  onClick={() => {
+                    if (!editing) setDrawerKey(key);
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    className="cm-check"
+                    checked={sel.has(key)}
+                    // 普通勾选走 onChange（受控更新）；onClick 只在 Shift+点选时
+                    // 接手做范围多选，preventDefault 挡掉浏览器自己的切换。
+                    // stopPropagation 挡掉冒泡到行上的 onClick——否则勾一下顺手
+                    // 把详情抽屉打开了，抽屉遮罩（z-40）还会盖住批量栏（z-20）。
+                    onChange={() => toggleSelect(entry, false)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      if (event.shiftKey && lastCheckedRef.current) {
+                        event.preventDefault();
+                        toggleSelect(entry, true);
+                      }
+                    }}
+                    title="勾选（Shift+点选范围多选）"
+                  />
+                  <div className="cm-row-main">
+                    {editing ? (
+                      <textarea
+                        autoFocus
+                        className="cm-row-edit"
+                        rows={2}
+                        value={editDraft}
+                        onClick={(event) => event.stopPropagation()}
+                        onChange={(event) => setEditDraft(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && !event.shiftKey) {
+                            event.preventDefault();
+                            void saveEdit(entry, editDraft).then((saved) => {
+                              if (saved) setEditKey(null);
+                            });
+                          }
+                          if (event.key === "Escape") {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setEditKey(null);
+                          }
+                        }}
+                      />
+                    ) : (
+                      <div className="cm-row-text">{entry.text}</div>
+                    )}
+                    <div className="cm-row-meta">
+                      <span className="cm-row-time">
+                        {entry.timestamp
+                          ? group.key === "earlier"
+                            ? entry.timestamp.slice(0, 16)
+                            : entry.timestamp.slice(11)
+                          : "--:--"}
+                      </span>
+                      {entry.tags.map((tag) => (
+                        <button
+                          key={tag}
+                          type="button"
+                          className="cm-tag"
+                          title={`筛选 #${tag}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setTagSel((prev) => new Set(prev).add(tag));
+                          }}
+                        >
+                          #{tag}
+                        </button>
+                      ))}
+                      <span className={`cm-row-state${entry.archived ? " is-archived" : ""}`}>
+                        {entry.archived ? "已归档" : "未归档"}
+                      </span>
+                      {entry.source && (
+                        <span className="cm-row-src" title={entry.source}>
+                          {entry.source}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  {!editing && (
+                    <div className="cm-row-acts" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        type="button"
+                        className="cm-row-act"
+                        title="编辑"
+                        onClick={() => {
+                          setEditDraft(entry.text);
+                          setEditKey(key);
+                        }}
+                      >
+                        编辑
+                      </button>
+                      <button
+                        type="button"
+                        className="cm-row-act"
+                        title="添加标签"
+                        disabled={busy}
+                        onClick={() => {
+                          const tag = window.prompt("标签名（不含 #）");
+                          if (tag) void addTagToEntries([entry], tag);
+                        }}
+                      >
+                        标签
+                      </button>
+                      {entry.archived ? (
+                        <button
+                          type="button"
+                          className="cm-row-act"
+                          title="撤销归档"
+                          disabled={busy}
+                          onClick={() => void unarchiveEntries([entry])}
+                        >
+                          撤销
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="cm-row-act"
+                          title={`归档到 ${targetNote || "（未选目标笔记）"}`}
+                          disabled={busy || !targetVault || !targetNote}
+                          onClick={() => void archiveEntries([entry])}
+                        >
+                          归档
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="cm-row-act cm-row-act-danger"
+                        title="删除该行"
+                        disabled={busy}
+                        onClick={() => void deleteEntries([entry])}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {/* -------------------------------------------------------- 批量操作栏 */}
+      {sel.size > 0 && (
+        <div className="cm-batch">
+          <span className="cm-batch-count">已选择 {sel.size} 条</span>
+          <span className="cm-batch-sep" />
+          {vaultSelect("cm-batch-select", targetVault, setTargetVault, "目标仓库（可跨仓库归档）")}
+          {noteSelect("cm-batch-select", targetNote, setTargetNote, "目标笔记（速记将追加到它的末尾）")}
+          {batchTagOpen ? (
+            <input
+              autoFocus
+              type="text"
+              className="cm-batch-tag-input"
+              value={newTag}
+              placeholder="标签名（不含 #）"
+              onChange={(event) => setNewTag(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void addTagToEntries(selectedEntries, newTag).then((done) => {
+                    if (done) setBatchTagOpen(false);
+                  });
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setBatchTagOpen(false);
+                }
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              className="cm-btn"
+              disabled={busy}
+              onClick={() => {
+                setNewTag("");
+                setBatchTagOpen(true);
+              }}
+            >
+              添加标签
+            </button>
+          )}
+          <button
+            type="button"
+            className="cm-btn cm-btn-primary"
+            disabled={busy || !targetVault || !targetNote}
+            title={targetNote ? `归档到 ${targetNote}` : "先选择目标笔记"}
+            onClick={() => void archiveEntries(selectedEntries)}
+          >
+            归档
+          </button>
+          <button type="button" className="cm-btn cm-btn-danger" disabled={busy} onClick={() => void deleteEntries(selectedEntries)}>
+            删除
+          </button>
+          <button type="button" className="cm-btn cm-btn-ghost" onClick={clearSel}>
+            取消选择
+          </button>
+        </div>
+      )}
+
+      {/* -------------------------------------------------------- 详情抽屉 */}
+      {drawerEntry && (
+        <>
+          <div className="cm-drawer-backdrop" onClick={() => setDrawerKey(null)} />
+          <aside className="cm-drawer">
+            <div className="cm-drawer-head">
+              <span className="cm-drawer-title">速记详情</span>
+              <span className="cm-spacer" />
+              <button type="button" className="cm-icon-btn" title="关闭 (Esc)" onClick={() => setDrawerKey(null)}>
+                <IconX size={14} />
+              </button>
+            </div>
+            <div className="cm-drawer-body">
+              <div className="cm-field">
+                <div className="cm-field-label">时间</div>
+                <div className="cm-field-value">{drawerEntry.timestamp ?? "未标注时间"}</div>
+              </div>
+              <div className="cm-field">
+                <div className="cm-field-label">内容</div>
+                {editKey === keyOf(drawerEntry) ? (
+                  <textarea
+                    autoFocus
+                    className="cm-drawer-edit"
+                    rows={4}
+                    value={editDraft}
+                    onChange={(event) => setEditDraft(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                        event.preventDefault();
+                        void saveEdit(drawerEntry, editDraft).then((saved) => {
+                          if (saved) setEditKey(null);
+                        });
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        setEditKey(null);
+                      }
+                    }}
+                  />
+                ) : (
+                  <div className="cm-field-value cm-drawer-text">{drawerEntry.text}</div>
+                )}
+              </div>
+              <div className="cm-field">
+                <div className="cm-field-label">标签</div>
+                <div className="cm-drawer-tags">
+                  {drawerEntry.tags.map((tag) => (
+                    <span key={tag} className="cm-tag">
+                      #{tag}
+                    </span>
+                  ))}
+                  {drawerEntry.tags.length === 0 && <span className="cm-field-dim">无标签</span>}
+                </div>
+              </div>
+              <div className="cm-field">
+                <div className="cm-field-label">来源</div>
+                <div className="cm-field-value cm-field-dim">{drawerEntry.source ?? "未记录来源"}</div>
+              </div>
+              <div className="cm-field">
+                <div className="cm-field-label">归档目标</div>
+                <div className="cm-drawer-target">
+                  {vaultSelect("cm-drawer-select", targetVault, setTargetVault, "目标仓库")}
+                  {noteSelect("cm-drawer-select", targetNote, setTargetNote, "目标笔记")}
+                </div>
+              </div>
+            </div>
+            <div className="cm-drawer-foot">
+              <button
+                type="button"
+                className="cm-btn cm-btn-danger"
+                disabled={busy}
+                onClick={() => {
+                  const entry = drawerEntry;
+                  setDrawerKey(null);
+                  void deleteEntries([entry]);
+                }}
+              >
+                删除
+              </button>
+              <span className="cm-spacer" />
+              {drawerEntry.archived ? (
+                <button
+                  type="button"
+                  className="cm-btn"
+                  disabled={busy}
+                  onClick={() => {
+                    const entry = drawerEntry;
+                    setDrawerKey(null);
+                    void unarchiveEntries([entry]);
+                  }}
+                >
+                  撤销归档
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="cm-btn cm-btn-primary"
+                  disabled={busy || !targetVault || !targetNote}
+                  onClick={() => {
+                    const entry = drawerEntry;
+                    setDrawerKey(null);
+                    void archiveEntries([entry]);
+                  }}
+                >
+                  归档
+                </button>
+              )}
+            </div>
+          </aside>
+        </>
+      )}
+
+      {/* -------------------------------------------------------- Toast */}
+      {toast && (
+        <div className="cm-toast">
+          <span>{toast.text}</span>
+          {toast.undo && (
+            <button type="button" className="cm-toast-undo" onClick={() => {
+              toast.undo?.();
+              setToast(null);
+            }}>
+              撤销
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

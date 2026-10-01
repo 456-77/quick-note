@@ -31,6 +31,8 @@ export interface CaptureEntry {
   /** 正文（剥掉时间戳/来源/前导标签/归档标记后的剩余部分）。 */
   text: string;
   archived: boolean;
+  /** 所在文件最后修改时间（epoch ms）。「最近修改」排序用；解析器不填，扫描侧补。 */
+  modified?: number;
 }
 
 /** `^archived` 行尾标记：归档 = 打上，撤销归档 = 剥掉。 */
@@ -108,6 +110,19 @@ export function lineArchiveEdit(line: string, archived: boolean): string | null 
   if (has === archived) return null;
   if (archived) return `${body} ${ARCHIVE_MARK}${cr}`;
   return `${body.replace(new RegExp(`\\s+${ARCHIVE_MARK.replace("^", "\\^")}$`), "")}${cr}`;
+}
+
+/**
+ * 替换一行的正文（保留时间戳/来源/标签/归档标记与行尾 \r）。
+ * 正文在行尾，取 oldText 的**最后一次**出现（前面标签里撞同名前缀也不会误伤）；
+ * 找不到（正文被空行/trim 差异挪走）返回 null，调用方按无变化处理。
+ */
+export function lineTextEditText(line: string, oldText: string, newText: string): string | null {
+  const cr = line.endsWith("\r") ? "\r" : "";
+  const body = cr ? line.slice(0, -1) : line;
+  if (!oldText || oldText === newText || !body.includes(oldText)) return null;
+  const index = body.lastIndexOf(oldText);
+  return `${body.slice(0, index)}${newText}${body.slice(index + oldText.length)}${cr}`;
 }
 
 /** 给某一行追加标签（已有同名标签则不动）。返回新行；无变化返回 null。 */
