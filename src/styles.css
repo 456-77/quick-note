@@ -3653,12 +3653,17 @@ html.qn-alt-held .cm-line {
 
 .settings-row.hotkey-row > .hotkey-labelbox,
 .settings-row.hotkey-row > .hotkey-row-side {
+  /* 等分占位 + 内容左对齐：键帽组与「未设置」都从同一列起点排，行间对齐 */
   width: auto;
-  flex: none;
+  flex: 1 1 0;
+  justify-content: flex-start;
+  min-width: 0;
 }
 
 .settings-row.hotkey-row > .hotkey-labelbox {
-  flex: 1 1 auto;
+  /* 与右侧等分（1 1 0）：两列各占一半，键帽/「未设置」的起点行间对齐 */
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .settings-row.hotkey-row:hover,

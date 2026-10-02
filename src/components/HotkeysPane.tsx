@@ -108,6 +108,12 @@ export default function HotkeysPane() {
         }
         return;
       }
+      // 纯修饰键按下（Ctrl/Alt/Shift/Meta 本身）：modifier 已计入组合前缀，
+      // 再把键名拼进去会出现「Ctrl + Control」双键帽——等待主键即可
+      if (event.key === "Control" || event.key === "Shift" || event.key === "Alt" || event.key === "Meta") {
+        setPending({ combo: null, hint: "已按下修饰键，再按主键完成组合", conflict: null });
+        return;
+      }
       const combo = comboOfCode(event) ?? comboOf(event);
       const bare = !event.ctrlKey && !event.metaKey && !event.altKey && !/^F\d+$/.test(event.key);
       if (bare) {
