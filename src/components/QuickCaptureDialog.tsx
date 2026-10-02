@@ -4,8 +4,9 @@
  * 场景：正在别的仓库里干活，突然想记一条电脑操作技巧——按快捷键（默认
  * Ctrl+Alt-N，可在设置 → 快捷键 里改）唤起这里，Enter 写入收件箱继续干活。
  *
- * Enter = 记下来，Shift+Enter = 换行（提交时折叠成 " / "，速记一行一条），
- * Esc / 点遮罩 = 取消。可顺手打标签（空格分隔，速记管理里聚合筛选）。
+ * 交互：Enter = 记下来，Shift+Enter = 换行（提交时折叠成 " / "，速记一行一条），
+ * Ctrl/Cmd+Enter 任意焦点都可提交，Esc / 点遮罩 = 关闭。标签是 chip 输入组件——
+ * 输入后 Enter 生成标签、Backspace 删最后一个，速记管理里聚合筛选。
  * 提交由父组件做 IO，返回是否成功：失败（仓库没配、写盘出错）弹窗保持展开便于重试。
  */
 
@@ -31,14 +32,28 @@ export default function QuickCaptureDialog({
   onOpenSettings: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [tags, setTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const tagRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  /** 把输入框里的文字落成一个标签 chip。 */
+  const commitTag = (): boolean => {
+    const name = normalizeTagName(tagDraft);
+    if (!name) {
+      setTagDraft("");
+      return false;
+    }
+    setTags((prev) => (prev.includes(name) ? prev : [...prev, name]));
+    setTagDraft("");
+    return true;
+  };
 
   const submit = async () => {
     if (busy) return;
@@ -49,15 +64,6 @@ export default function QuickCaptureDialog({
       .filter(Boolean)
       .join(" / ");
     if (!text) return;
-    const seen = new Set<string>();
-    const tags: string[] = [];
-    for (const piece of tagDraft.split(/[\s,，、]+/)) {
-      const name = normalizeTagName(piece);
-      if (name && !seen.has(name)) {
-        seen.add(name);
-        tags.push(name);
-      }
-    }
     setBusy(true);
     setError(null);
     try {
@@ -74,6 +80,24 @@ export default function QuickCaptureDialog({
     // onSubmit 返回 false：父组件已给出原因（未配置等），这里不重复弹错
   };
 
+  /** 标签输入框里的 Enter：有内容 = 生成标签；已空 = 直接提交整条速记。 */
+  const tagInputEnter = () => {
+    if (tagDraft.trim()) {
+      commitTag();
+      return;
+    }
+    void submit();
+  };
+
+  // 保存位置展示：文件里的 {{date}} 就地展开（与 App 侧写入口径一致）
+  const [fileHint, vaultHint] = target ? target.split(" · ") : ["", ""];
+  const displayFile = (fileHint || "").replace(
+    /\{\{date\}\}/g,
+    `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, "0")}-${String(
+      new Date().getDate(),
+    ).padStart(2, "0")}`,
+  );
+
   return (
     <>
       <div className="menu-backdrop" onClick={onClose} />
@@ -81,37 +105,23 @@ export default function QuickCaptureDialog({
         <div className="quick-capture-head">
           <span className="quick-capture-title">快速笔记</span>
           <span className="spacer" />
-          <button type="button" className="icon-btn" title="取消 (Esc)" onClick={onClose}>
-            <IconX size={13} />
+          <button type="button" className="quick-capture-esc" title="关闭 (Esc)" onClick={onClose}>
+            <kbd>Esc</kbd> 关闭
           </button>
         </div>
+
         <textarea
           ref={inputRef}
-          rows={3}
+          rows={5}
           value={draft}
-          placeholder="记点什么…（Enter 记下来，Shift+Enter 换行）"
+          placeholder="记录想法..."
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               void submit();
             }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onClose();
-            }
-          }}
-        />
-        <input
-          type="text"
-          className="quick-capture-tags"
-          list="quick-capture-tag-options"
-          value={tagDraft}
-          placeholder="标签，空格分隔（可选，如：想法 项目A）"
-          title="标签写进速记行，速记管理里聚合筛选"
-          onChange={(event) => setTagDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
               event.preventDefault();
               void submit();
             }
@@ -121,15 +131,67 @@ export default function QuickCaptureDialog({
             }
           }}
         />
-        <datalist id="quick-capture-tag-options">
-          {tagSuggestions.map((tag) => (
-            <option key={tag} value={tag} />
+        <div className="quick-capture-help">
+          <span>
+            <kbd>Enter</kbd> 保存 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 换行
+          </span>
+          <span className="spacer" />
+          <span>
+            <kbd>{navigator.platform.toLowerCase().includes("mac") ? "⌘" : "Ctrl"}</kbd>+
+            <kbd>Enter</kbd> 保存
+          </span>
+        </div>
+
+        <div className="quick-capture-tags">
+          {tags.map((tag) => (
+            <span key={tag} className="quick-capture-tag">
+              #{tag}
+              <button
+                type="button"
+                className="quick-capture-tag-x"
+                title={`移除 #${tag}`}
+                onClick={() => setTags((prev) => prev.filter((item) => item !== tag))}
+              >
+                <IconX size={9} />
+              </button>
+            </span>
           ))}
-        </datalist>
+          <input
+            ref={tagRef}
+            type="text"
+            className="quick-capture-tags-input"
+            list="quick-capture-tag-options"
+            value={tagDraft}
+            placeholder={tags.length > 0 ? "加标签…" : "标签（Enter 生成，可留空）"}
+            title="标签写进速记行，速记管理里聚合筛选"
+            onChange={(event) => setTagDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                tagInputEnter();
+              }
+              if (event.key === "Backspace" && !tagDraft && tags.length > 0) {
+                event.preventDefault();
+                setTags((prev) => prev.slice(0, -1));
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+              }
+            }}
+          />
+          <datalist id="quick-capture-tag-options">
+            {tagSuggestions.map((tag) => (
+              <option key={tag} value={tag} />
+            ))}
+          </datalist>
+        </div>
+
         <div className="quick-capture-foot">
           {target ? (
             <span className="quick-capture-target" title={target}>
-              记到 {target}
+              <span className="quick-capture-target-file">{displayFile}</span>
+              {vaultHint && <span className="quick-capture-target-vault">· {vaultHint}</span>}
             </span>
           ) : (
             <button type="button" className="quick-capture-setup" onClick={onOpenSettings}>
@@ -139,7 +201,7 @@ export default function QuickCaptureDialog({
           <span className="spacer" />
           <button
             type="button"
-            className="btn btn-primary"
+            className="btn btn-primary quick-capture-save"
             disabled={!draft.trim() || busy}
             onClick={() => void submit()}
           >

@@ -163,20 +163,25 @@ try {
     ws,
     `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', ctrlKey: true, bubbles: true }))`,
   );
-  await sleep(700);
-  const after = await evaluate(
-    ws,
-    `(() => {
-      const scroller = document.querySelector('.cm-scroller');
-      if (!scroller) return null;
-      const lines = scroller.querySelectorAll('.cm-line');
-      const last = lines[lines.length - 1];
-      if (!last) return null;
-      // 判据是「最后一行进入可视区」：scroller 底部有留白，scrollTop 到不了 max
-      const visible = last.getBoundingClientRect().bottom <= scroller.getBoundingClientRect().bottom + 2;
-      return { visible, top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight };
-    })()`,
-  );
+  // 轮询等滚动与装饰布局稳定（滚动后上方装饰高度仍会微调，最多等 3s）
+  let after = null;
+  for (let i = 0; i < 15; i += 1) {
+    await sleep(300);
+    after = await evaluate(
+      ws,
+      `(() => {
+        const scroller = document.querySelector('.cm-scroller');
+        if (!scroller) return null;
+        const lines = scroller.querySelectorAll('.cm-line');
+        const last = lines[lines.length - 1];
+        if (!last) return null;
+        // 判据是「最后一行进入可视区」：scroller 底部有留白，scrollTop 到不了 max
+        const visible = last.getBoundingClientRect().bottom <= scroller.getBoundingClientRect().bottom + 2;
+        return { visible, top: scroller.scrollTop, max: scroller.scrollHeight - scroller.clientHeight };
+      })()`,
+    );
+    if (after && after.visible) break;
+  }
   check(
     scroll && after && scroll.before < 40 && after.visible,
     "Ctrl+End 滚动到笔记末尾（最后一行可见）",
@@ -240,15 +245,28 @@ try {
     ws,
     `(() => { const el = document.querySelector('.quick-capture textarea'); (${nativeSet})(el, '快速笔记验证条目'); return true; })()`,
   );
+  // Tag 输入组件：输入 + Enter 生成 chip
   await evaluate(
     ws,
-    `document.querySelector('.quick-capture textarea').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`,
+    `(() => { const el = document.querySelector('.quick-capture-tags-input'); (${nativeSet})(el, '整理'); return true; })()`,
+  );
+  await evaluate(
+    ws,
+    `document.querySelector('.quick-capture-tags-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`,
+  );
+  await sleep(300);
+  check(await evaluate(ws, `!!document.querySelector('.quick-capture-tag')`), "Tag 输入 Enter 生成 chip");
+  // Ctrl+Enter 任意焦点提交（此焦点在标签输入框里）
+  await evaluate(
+    ws,
+    `document.querySelector('.quick-capture-tags-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`,
   );
   await sleep(1500);
   const inboxFile = join(inbox, "Inbox.md");
   const inboxContent = existsSync(inboxFile) ? readFileSync(inboxFile, "utf8") : "";
   check(inboxContent.includes("快速笔记验证条目"), "速记写入收件文件", JSON.stringify(inboxContent));
-  check(/^- \d{4}-\d{2}-\d{2} \d{2}:\d{2}( \[[^\]]+\])? 快速笔记验证条目$/m.test(inboxContent), "速记带日期时间前缀（可选来源段）");
+  check(/^- \d{4}-\d{2}-\d{2} \d{2}:\d{2}.*快速笔记验证条目$/m.test(inboxContent), "速记带日期时间前缀（可选来源/标签段）");
+  check(/^- \d{4}-\d{2}-\d{2} \d{2}:\d{2}( \[[^\]]+\])? #整理 快速笔记验证条目/m.test(inboxContent), "Tag chip 写入速记行", JSON.stringify(inboxContent));
   check(inboxContent.startsWith("# Inbox"), "收件文件自动建「# Inbox」头");
   check(!(await evaluate(ws, `!!document.querySelector('.quick-capture')`)), "写入成功后弹窗关闭");
 

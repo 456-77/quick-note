@@ -211,3 +211,9 @@ export const IconTag = ({ size, className }: IconProps) => (
     <circle cx="7.5" cy="7.5" r="1" fill="currentColor" stroke="none" />
   </svg>
 );
+
+export const IconFilter = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+  </svg>
+);

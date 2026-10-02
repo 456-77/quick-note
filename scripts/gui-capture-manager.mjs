@@ -148,8 +148,8 @@ try {
   );
   const stats = (await evaluate(ws, `document.querySelector('.cm-head-stats')?.textContent ?? ''`)) ?? "";
   check(
-    stats.includes("未归档 3") && stats.includes("今日新增 2") && stats.includes("今日已整理 0"),
-    "轻量统计：未归档 3 · 今日新增 2 · 今日已整理 0",
+    stats.includes("3 未归档") && stats.includes("2 今日新增") && stats.includes("0 今日已整理"),
+    "轻量统计：3 未归档 · 2 今日新增 · 0 今日已整理（数字重色层级）",
     stats,
   );
   const segTexts = await evaluate(

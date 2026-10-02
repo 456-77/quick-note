@@ -26,7 +26,7 @@ import {
   type CaptureEntry,
 } from "../lib/capture";
 import { normalizeTagName } from "../lib/tags";
-import { IconCalendar, IconFolder, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
+import { IconCalendar, IconFilter, IconFolder, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
 
 /** 「无标签」筛选项的内部键（不是真标签名）。 */
 const NO_TAG = "__none__";
@@ -954,8 +954,16 @@ export default function CaptureManager({
           className="cm-head-stats"
           title={`今日新增 ${stats.todayNew} · 今日已整理 ${stats.todayArchived}${lastArchiveAt ? ` · 最近整理 ${fmtWhen(lastArchiveAt)}` : ""}`}
         >
-          未归档 {stats.active} · 今日新增 {stats.todayNew} · 今日已整理 {stats.todayArchived}
-          {lastArchiveAt ? ` · 最近整理 ${fmtWhen(lastArchiveAt)}` : ""}
+          <b>{stats.active}</b> 未归档
+          <i>·</i>
+          <b>{stats.todayNew}</b> 今日新增
+          <i>·</i>
+          <b>{stats.todayArchived}</b> 今日已整理
+          {lastArchiveAt && (
+            <>
+              <i>·</i>最近整理 {fmtWhen(lastArchiveAt)}
+            </>
+          )}
         </span>
         <input
           type="text"
@@ -1130,6 +1138,7 @@ export default function CaptureManager({
             className={`cm-tool-btn${sourceSel.size > 0 ? " is-on" : ""}`}
             onClick={() => setPopover(popover === "filter" ? null : "filter")}
           >
+            <IconFilter size={12} />
             筛选
           </button>
           {popover === "filter" && (

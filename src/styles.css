@@ -5362,20 +5362,33 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 }
 
 /* ------------------------------------------------- 快速笔记（收件箱）弹窗 */
+/* Quick Capture：600px、淡入缩放、chip 标签输入（Obsidian/Linear 弹窗质感） */
 
 .quick-capture {
   position: fixed;
-  top: 120px;
+  top: 108px;
   left: 50%;
   transform: translateX(-50%);
   z-index: 950;
-  width: 460px;
+  width: 600px;
   max-width: calc(100vw - 48px);
-  padding: 14px 16px;
-  border-radius: 12px;
+  padding: 14px 16px 12px;
+  border-radius: 14px;
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: var(--shadow-2);
+  animation: qcPop 0.18s ease;
+}
+
+@keyframes qcPop {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
 }
 
 .quick-capture-head {
@@ -5385,46 +5398,185 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 }
 
 .quick-capture-title {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 13.5px;
+  font-weight: 650;
   color: var(--text);
+}
+
+.quick-capture-esc {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 0;
+  background: none;
+  padding: 2px 4px;
+  color: var(--text-faint);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  border-radius: 6px;
+  transition: color 0.15s ease;
+}
+
+.quick-capture-esc:hover {
+  color: var(--text);
+}
+
+.quick-capture-esc kbd {
+  font-size: 10px;
 }
 
 .quick-capture textarea {
   display: block;
   width: 100%;
-  margin-top: 10px;
-  padding: 9px 11px;
-  border-radius: 8px;
+  margin-top: 11px;
+  padding: 11px 13px;
+  border-radius: 10px;
   border: 1px solid var(--border);
   background: var(--surface-2);
   color: var(--text);
   font: inherit;
-  font-size: 13.5px;
-  line-height: 1.55;
-  resize: vertical;
-  min-height: 72px;
+  font-size: 14px;
+  line-height: 1.6;
+  resize: none;
+  min-height: 118px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.quick-capture textarea::placeholder {
+  color: var(--text-faint);
 }
 
 .quick-capture textarea:focus {
   outline: none;
   border-color: var(--accent);
+  background: var(--surface-3);
+}
+
+.quick-capture-help {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
+.quick-capture-help kbd {
+  font-size: 10px;
+}
+
+.quick-capture-help .spacer {
+  flex: 1;
+}
+
+/* 标签 chip 输入：Enter 生成、Backspace 删尾、× 移除 */
+.quick-capture-tags {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-2);
+  transition: border-color 0.15s ease;
+}
+
+.quick-capture-tags:focus-within {
+  border-color: var(--accent);
+}
+
+.quick-capture-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11.5px;
+  animation: qcTagIn 0.14s ease;
+}
+
+@keyframes qcTagIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.quick-capture-tag-x {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  padding: 1px;
+  color: inherit;
+  opacity: 0.65;
+  cursor: pointer;
+}
+
+.quick-capture-tag-x:hover {
+  opacity: 1;
+}
+
+.quick-capture-tags-input {
+  flex: 1;
+  min-width: 120px;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 2px 0;
+}
+
+.quick-capture-tags-input::placeholder {
+  color: var(--text-faint);
+}
+
+.quick-capture-tags-input:focus {
+  outline: none;
 }
 
 .quick-capture-foot {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 11px;
   font-size: 12px;
   color: var(--text-dim);
   min-width: 0;
 }
 
 .quick-capture-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.quick-capture-target-file {
+  color: var(--text);
+  font-weight: 550;
+}
+
+.quick-capture-target-vault {
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.quick-capture-save {
+  flex-shrink: 0;
 }
 
 .quick-capture-setup {
@@ -6686,4 +6838,87 @@ button.cm-tag:hover {
 .cm-row-quick:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* ---------------- Inbox 四轮打磨：统计层级 / seg 质感 / 自绘 checkbox / 动效 ---------------- */
+
+.cm-head-stats {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.cm-head-stats b {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.cm-head-stats i {
+  font-style: normal;
+  color: var(--text-faint);
+  opacity: 0.7;
+  margin: 0 2px;
+}
+
+/* segmented control：激活项 = 抬起的中性面板 + 主题色文字（Linear 观感） */
+.cm-seg {
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+}
+
+.cm-seg-btn.is-on {
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+}
+
+.cm-seg-btn:active,
+.cm-tool-btn:active,
+.cm-row-quick:active,
+.cm-chip:active {
+  transform: scale(0.96);
+}
+
+/* 自绘 checkbox：圆角、品牌色勾选、勾入动画（替代原生外观） */
+.cm-check {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 3px 0 0;
+  border: 1.5px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+  cursor: pointer;
+  display: inline-grid;
+  place-content: center;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cm-check:hover {
+  border-color: var(--accent);
+}
+
+.cm-check:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.cm-check:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.cm-check::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  background: var(--accent-contrast);
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+  transform: scale(0);
+  transition: transform 0.15s ease;
+}
+
+.cm-check:checked::before {
+  transform: scale(1);
 }
