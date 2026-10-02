@@ -351,12 +351,12 @@ class CodeHeaderWidget extends WidgetType {
       event.stopPropagation();
       void navigator.clipboard.writeText(this.code).then(
         () => {
-          copy.textContent = "已复制";
+          copy.textContent = "✓ 已复制";
           copy.classList.add("is-done");
           window.setTimeout(() => {
             copy.textContent = "复制";
             copy.classList.remove("is-done");
-          }, 1200);
+          }, 1500);
         },
         () => {
           // 剪贴板不可用（权限等）静默失败，不打断阅读
@@ -442,9 +442,9 @@ function loadMermaid(): Promise<MermaidApi> {
 
 /** 已渲染 SVG 的缓存，避免同一张图反复解析渲染。简单的先进先出淘汰。
  *  上限刻意保守：复杂图表的 SVG 标记串每张可达数百 KB，缓存是纯内存开销；
- *  12 张足够覆盖来回翻页的可见范围。 */
+ *  4 张足够覆盖来回翻页的可见范围，多出的图重渲染一次也就几百毫秒。 */
 const svgCache = new Map<string, string>();
-const SVG_CACHE_LIMIT = 12;
+const SVG_CACHE_LIMIT = 4;
 
 /** 取会话内已渲染的 mermaid SVG（PDF 导出打印视图复用；没有则 null）。 */
 export function cachedMermaidSvg(code: string): string | null {
@@ -2536,10 +2536,15 @@ export function buildLivePreviewDecorations(
           const variant = codeBlockVariantOf(infoText);
           const blockClass = `cm-lp-codeblock${variant ? ` cm-lp-codeblock-${variant}` : ""}`;
           // 整块加底色，包含被隐藏的围栏行，视觉上才连续。
+          // 圆角只挂首尾行（行级圆角会把多行块拆成一摞小格子），CSS 见
+          // .cm-lp-codeblock-first/-last；单行块两者叠加。
           const firstLine = doc.lineAt(node.from).number;
           const lastLine = doc.lineAt(node.to).number;
           for (let n = firstLine; n <= lastLine; n += 1) {
-            marks.push(Decoration.line({ class: blockClass }).range(doc.line(n).from));
+            let cls = blockClass;
+            if (n === firstLine) cls += " cm-lp-codeblock-first";
+            if (n === lastLine) cls += " cm-lp-codeblock-last";
+            marks.push(Decoration.line({ class: cls }).range(doc.line(n).from));
           }
           if (!active) {
             let closing: { from: number; to: number } | null = null;

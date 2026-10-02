@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.15.0"
+version = "0.16.0"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
@@ -19,6 +19,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
+# 直接访问 WebView2 COM 接口（ICoreWebView2_16 内存占用目标，最小化时自动释放缓存）
+webview2-com = "0.38.2"
+# 必须与 webview2-com-sys 0.38 所用的 windows-core 同版本，Interface::cast 才是同一个 trait
+windows-core = "=0.61.2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 # 定时提醒的系统通知（M4）。Windows 上走系统通知中心

@@ -70,17 +70,22 @@
 
   /* 代码语法高亮（由 lib/syntaxTheme.ts 引用；切主题不必重建编辑器状态） */
   --syn-keyword: #8250df;
-  --syn-atom: #0550ae;
+  --syn-atom: #953800;
   --syn-string: #0a7c42;
-  --syn-regexp: #c2410c;
+  --syn-regexp: #1b7c83;
   --syn-def: #0550ae;
-  --syn-local: #6f42c1;
-  --syn-type: #0a7c42;
-  --syn-class: #0a7c42;
+  --syn-local: #57606a;
+  --syn-type: #9a6a12;
+  --syn-class: #9a6a12;
   --syn-special: #0a5b7c;
   --syn-comment: #6e7781;
   --syn-invalid: #b91c1c;
   --syn-meta: #57606a;
+
+  /* 代码块（逐行装饰）：浅灰蓝底，不用纯白、与白底正文拉开层次；语言签配色 */
+  --code-bg: #e9edf4;
+  --code-chip-bg: #d8dfec;
+  --code-chip-text: #4d5872;
 
   color-scheme: light;
   font-family: var(--font-ui);
@@ -139,17 +144,23 @@
   --callout-gray-bg: rgba(154, 168, 178, 0.1);
 
   --syn-keyword: #c792ea;
-  --syn-atom: #79c0ff;
+  --syn-atom: #f0a878;
   --syn-string: #7ee787;
-  --syn-regexp: #ffa657;
+  --syn-regexp: #56b6c2;
   --syn-def: #79c0ff;
-  --syn-local: #d2a8ff;
-  --syn-type: #7ee787;
-  --syn-class: #7ee787;
-  --syn-special: #79c0ff;
+  --syn-local: #c0c6e0;
+  --syn-type: #e5c07b;
+  --syn-class: #e5c07b;
+  --syn-special: #56b6c2;
   --syn-comment: #8b949e;
   --syn-invalid: #f87171;
   --syn-meta: #8b949e;
+
+  /* 代码块：比编辑器主体（--surface）略亮的克制深灰，压住蓝相；
+     语言签低饱和，靠头部分隔与边框衬托层次 */
+  --code-bg: #212127;
+  --code-chip-bg: #2d2d36;
+  --code-chip-text: #a8acbf;
 }
 
 * {
@@ -1586,6 +1597,13 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   container-type: inline-size;
 }
 
+/* 硬禁页面级横向滚动：所有内容（代码/表格/图/mermaid）都应折行或在自己的
+   内层滚动容器里滚动，任何漏网的超宽内容直接裁掉——窄窗口下编辑区必须
+   始终铺满、绝不左右滑动。特异性压过 CM 运行时注入的 overflow:auto。 */
+.editor-host .cm-scroller {
+  overflow-x: hidden;
+}
+
 .editor-host .cm-scroller > .cm-content {
   /* 阅读宽度 900px 水平居中（Obsidian 的 readable line length 思路）：
      文档窄、编辑区全宽。
@@ -1694,15 +1712,35 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
    不提级这里的 padding 会被它整体吃掉。 */
 .editor-host .cm-lp-codeblock {
   /* 左缘强调色条画在背景里（逐行装饰禁止动布局），让代码块与正文有一个
-     不占宽度的"边界"，不再是浮在页面上的一块灰色补丁。 */
+     不占宽度的"边界"，不再是浮在页面上的一块灰色补丁。
+     底色用 --code-bg：比编辑器主体略亮一档的克制深灰/浅灰蓝，与正文拉开层次。 */
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--accent) 45%, transparent) 0 3px, transparent 3px),
-    var(--surface-2);
+    var(--code-bg);
   /* 代码框与正文同宽（Obsidian 式，0.5 起撤销 0.4.2 的「全出血」设计：
      宽窗格里背景带铺满编辑区、代码却缩在左边的观感很怪）。
      左右 14px 内边距让代码与圆角正文留一点呼吸空间。 */
   padding-left: 14px;
   padding-right: 14px;
+  /* 代码正文：等宽 + 比正文小一档（0.85 × 16px ≈ 13.6px）+ 紧行高——
+     开发者阅读密度。逐行装饰允许每行相同的字体属性，CM 按实际 DOM 测高
+     （标题行同样带自己的字号/内边距）。 */
+  font-family: var(--mono);
+  font-size: 0.85em;
+  line-height: 1.65;
+}
+
+/* 圆角只挂首尾行（行级圆角会把多行块拆成一摞小格子）；单行块两者叠加 */
+.editor-host .cm-lp-codeblock-first {
+  border-radius: 8px 8px 0 0;
+}
+
+.editor-host .cm-lp-codeblock-last {
+  border-radius: 0 0 8px 8px;
+}
+
+.editor-host .cm-lp-codeblock-first.cm-lp-codeblock-last {
+  border-radius: 8px;
 }
 
 /* 语义变体（判定见 livePreview 的 codeBlockVariantOf，按围栏 info 串）：
@@ -1711,13 +1749,13 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
 .editor-host .cm-lp-codeblock-log {
   background:
     linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
-    color-mix(in srgb, var(--danger) 7%, var(--surface-2));
+    color-mix(in srgb, var(--danger) 7%, var(--code-bg));
 }
 
 .editor-host .cm-lp-codeblock-config {
   background:
     linear-gradient(90deg, var(--callout-green) 0 3px, transparent 3px),
-    color-mix(in srgb, var(--callout-green) 7%, var(--surface-2));
+    color-mix(in srgb, var(--callout-green) 7%, var(--code-bg));
 }
 
 .cm-lp-fence {
@@ -1778,11 +1816,15 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   color: var(--text-faint);
 }
 
+/* 语言签：小尺寸圆角胶囊、低饱和底色；字号定死（px）不随代码行字号缩放 */
 .cm-lp-codeinfo {
   font-family: var(--mono);
-  font-size: 0.72em;
-  color: var(--text-dim);
-  background: var(--surface-3);
+  font-size: 11px;
+  line-height: 1.5;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--code-chip-text);
+  background: var(--code-chip-bg);
   border-radius: 999px;
   padding: 1px 9px;
   user-select: none;
@@ -1798,17 +1840,18 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
 }
 
 .cm-lp-codecopy {
-  font: inherit;
-  font-size: 0.72em;
-  padding: 1px 9px;
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 2px 9px;
   border: 0;
   border-radius: 999px;
-  background: var(--surface-3);
-  color: var(--text-dim);
+  background: var(--code-chip-bg);
+  color: var(--code-chip-text);
   cursor: pointer;
   user-select: none;
-  opacity: 0.75;
-  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+  opacity: 0.72;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
 }
 
 .cm-lp-codecopy:hover {
@@ -4663,20 +4706,20 @@ html.qn-style-bluetopaz .editor-host .cm-lp-rule {
    外边距都会把多行代码拆成一摞独立小格子（行间缝 + 每行圆角缺口，实测踩过）。
    统一一块底色，行与行自然拼接。 */
 html.qn-style-bluetopaz .editor-host .cm-lp-codeblock {
-  background: color-mix(in srgb, var(--bt-blue) 8%, var(--surface-2));
+  background: color-mix(in srgb, var(--bt-blue) 8%, var(--code-bg));
 }
 
 /* 蓝顶鸭的代码块底色优先级更高，语义变体与日志逐行级别色要在它之后再声明一次 */
 html.qn-style-bluetopaz .editor-host .cm-lp-codeblock-log {
   background:
     linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
-    color-mix(in srgb, var(--danger) 9%, var(--surface-2));
+    color-mix(in srgb, var(--danger) 9%, var(--code-bg));
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-codeblock-config {
   background:
     linear-gradient(90deg, var(--callout-green) 0 3px, transparent 3px),
-    color-mix(in srgb, var(--callout-green) 9%, var(--surface-2));
+    color-mix(in srgb, var(--callout-green) 9%, var(--code-bg));
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-log-error {

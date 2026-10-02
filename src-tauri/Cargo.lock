@@ -3023,7 +3023,7 @@ dependencies = [
 
 [[package]]
 name = "quick-note"
-version = "0.15.0"
+version = "0.16.0"
 dependencies = [
  "base64 0.22.1",
  "notify",
@@ -3038,6 +3038,8 @@ dependencies = [
  "tauri-plugin-process",
  "tauri-plugin-updater",
  "ureq",
+ "webview2-com",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
