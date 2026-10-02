@@ -6,8 +6,9 @@
  *
  * 交互：Enter = 记下来，Shift+Enter = 换行（正文支持多行，写进收件文件的是
  * 缩进续行），Ctrl/Cmd+Enter 任意焦点都可提交，Esc / 点遮罩 = 关闭。
- * 图片：工具条选图或直接往输入框粘贴截图，随正文一起写入收件仓库的附件目录，
- * 正文里以 `![[图.png]]` 嵌入（归档到目标笔记时跟着走）。
+ * 图片：工具条选图或直接往输入框（正文/标签框都行）粘贴截图，缩略图条里点开
+ * 可预览（Esc 关、←/→ 切），随正文一起写入收件仓库的附件目录，正文里以
+ * `![[图.png]]` 嵌入（归档到目标笔记时跟着走）。
  * 标签是 chip 输入组件——输入后 Enter 生成标签、Backspace 删最后一个。
  * 提交由父组件做 IO，返回是否成功：失败（仓库没配、写盘出错）弹窗保持展开便于重试。
  */
@@ -45,6 +46,8 @@ export default function QuickCaptureDialog({
   const [images, setImages] = useState<CaptureImage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 正在预览的图片下标（null = 预览没开）。 */
+  const [preview, setPreview] = useState<number | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const tagRef = useRef<HTMLInputElement | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -52,6 +55,31 @@ export default function QuickCaptureDialog({
   useEffect(() => {
     inputRef.current?.focus();
   }, []);
+
+  // 预览浮层开着时：Esc 关预览（不关弹窗）、←/→ 切图。捕获阶段拦下，
+  // 别让textarea/标签框的 Esc 兜底把整个弹窗带走
+  useEffect(() => {
+    if (preview === null) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setPreview(null);
+        return;
+      }
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        event.stopPropagation();
+        setPreview((prev) => {
+          if (prev === null) return prev;
+          const step = event.key === "ArrowLeft" ? -1 : 1;
+          return (prev + step + images.length) % images.length;
+        });
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [preview, images.length]);
 
   /** 把输入框里的文字落成一个标签 chip。 */
   const commitTag = (): boolean => {
@@ -176,24 +204,33 @@ export default function QuickCaptureDialog({
           </span>
         </div>
 
+        {images.length > 0 && (
+          <div className="quick-capture-imgs">
+            {images.map((image, index) => (
+              <figure key={`${image.name}-${index}`} className="quick-capture-imgs-item">
+                <img
+                  src={`data:${image.type};base64,${image.base64}`}
+                  alt={image.name}
+                  title={`点击预览 ${image.name}`}
+                  onClick={() => setPreview(index)}
+                />
+                <button
+                  type="button"
+                  className="quick-capture-imgs-x"
+                  title={`移除 ${image.name}`}
+                  onClick={() => {
+                    setImages((prev) => prev.filter((_, i) => i !== index));
+                    setPreview((prev) => (prev === null || prev < index ? prev : prev - 1));
+                  }}
+                >
+                  <IconX size={10} />
+                </button>
+              </figure>
+            ))}
+          </div>
+        )}
+
         <div className="quick-capture-tags">
-          {images.map((image, index) => (
-            <span
-              key={`${image.name}-${index}`}
-              className="quick-capture-tag quick-capture-img"
-              title={image.name}
-            >
-              🖼 {image.name.replace(/\.[a-z0-9]+$/i, "")}
-              <button
-                type="button"
-                className="quick-capture-tag-x"
-                title={`移除 ${image.name}`}
-                onClick={() => setImages((prev) => prev.filter((_, i) => i !== index))}
-              >
-                <IconX size={9} />
-              </button>
-            </span>
-          ))}
           {tags.map((tag) => (
             <span key={tag} className="quick-capture-tag">
               #{tag}
@@ -216,6 +253,16 @@ export default function QuickCaptureDialog({
             placeholder={tags.length > 0 ? "加标签…" : "标签（Enter 生成，可留空）"}
             title="标签写进速记行，速记管理里聚合筛选"
             onChange={(event) => setTagDraft(event.target.value)}
+            onPaste={(event) => {
+              // 焦点在标签框时粘贴的截图也归入正文图片，别让粘贴默默无操作
+              const files = Array.from(event.clipboardData.files).filter((file) =>
+                file.type.startsWith("image/"),
+              );
+              if (files.length > 0) {
+                event.preventDefault();
+                void addImages(files);
+              }
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
                 event.preventDefault();
@@ -281,6 +328,25 @@ export default function QuickCaptureDialog({
         </div>
         {error && <div className="quick-capture-error">{error}</div>}
       </div>
+
+      {preview !== null && images[preview] && (
+        <div
+          className="quick-capture-imgview"
+          role="dialog"
+          aria-label="图片预览"
+          onClick={() => setPreview(null)}
+        >
+          <img
+            src={`data:${images[preview].type};base64,${images[preview].base64}`}
+            alt={images[preview].name}
+            title="点击图片外的任意位置关闭（←/→ 切换）"
+            onClick={(event) => event.stopPropagation()}
+          />
+          <div className="quick-capture-imgview-cap">
+            {images[preview].name} · <kbd>Esc</kbd> 关闭 · <kbd>←</kbd>/<kbd>→</kbd> 切换
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -77,6 +77,7 @@ export default function CaptureManager({
   notice,
   onNewCapture,
   onStats,
+  carryAttachments,
 }: {
   /** 收件仓库绝对路径（settings.quickCaptureVault）；空串 = 未配置。 */
   inboxVault: string;
@@ -90,6 +91,15 @@ export default function CaptureManager({
   onNewCapture: () => void;
   /** 统计上报：右侧「今日整理」面板渲染用（App 侧持 state）。 */
   onStats?: (stats: { pending: number; todayNew: number; recentTags: string[] }) => void;
+  /**
+   * 归档携带附件：入参是要归档的正文行与目标仓库，返回 嵌入名 → 实际落盘
+   * 文件名 的改写表（跨仓库时把 `![[ ]]` 引用的文件复制进目标仓库）。缺省 =
+   * 不携带（旧测试桩可省）。
+   */
+  carryAttachments?: (
+    texts: string[],
+    targetVault: string,
+  ) => Promise<Map<string, string>>;
 }) {
   // ---------------------------------------------------------------- 扫描
 
@@ -469,6 +479,32 @@ export default function CaptureManager({
       }
       setBusy(true);
       try {
+        // 先做携带附件这类远距离 IO，再动收件文件：万一中途挂掉，别把源行
+        // 标记成已归档而内容还没落到目标笔记（那条速记就从面板里"消失"了）
+        const ordered = [...chosen].sort((a, b) =>
+          (a.timestamp ?? "").localeCompare(b.timestamp ?? ""),
+        );
+        const lines = ordered.flatMap((entry) => archivedLinesForTarget(entry));
+        let carried: Map<string, string> | null = null;
+        if (carryAttachments) {
+          try {
+            carried = await carryAttachments(lines, targetVault);
+          } catch {
+            carried = null; // 携带失败不阻塞归档，链接原样保留
+          }
+        }
+        // 目标仓库里重名加过序号的附件，同步改写嵌入链接（wiki 按文件名解析）
+        const block = (
+          carried && carried.size > 0
+            ? lines.map((line) => {
+                let out = line;
+                for (const [from, to] of carried!) {
+                  if (from !== to) out = out.split(`![[${from}]]`).join(`![[${to}]]`);
+                }
+                return out;
+              })
+            : lines
+        ).join("\n");
         const plan = new Map<string, Map<number, (line: string) => string | null>>();
         for (const entry of chosen) {
           let bucket = plan.get(entry.file);
@@ -480,16 +516,13 @@ export default function CaptureManager({
         }
         await rewriteLines(inboxVault, plan);
 
-        const ordered = [...chosen].sort((a, b) =>
-          (a.timestamp ?? "").localeCompare(b.timestamp ?? ""),
-        );
         const target = await readNoteOptional(targetVault, targetNote);
         const eol = target ? detectEol(target.content) : "\n";
-        const block = ordered.flatMap((entry) => archivedLinesForTarget(entry)).join(eol);
+        const normalized = block.replace(/\n/g, eol);
         const title = targetNote.replace(/^.*\//, "").replace(/\.md$/i, "");
         const nextContent = target
-          ? `${target.content}${target.content.endsWith("\n") ? "" : eol}${eol}${block}${eol}`
-          : `# ${title}${eol}${eol}${block}${eol}`;
+          ? `${target.content}${target.content.endsWith("\n") ? "" : eol}${eol}${normalized}${eol}`
+          : `# ${title}${eol}${eol}${normalized}${eol}`;
         await writeNote(targetVault, targetNote, nextContent, target?.hasBom ?? false);
         // 记录最近整理时间（顶栏「最近整理」；本机偏好不进仓库）
         const archivedAt = Date.now();
@@ -507,6 +540,8 @@ export default function CaptureManager({
         const crossVault = targetVault !== currentVault;
         showToast(
           `已归档 ${chosen.length} 条到「${targetNote.replace(/^.*\//, "")}」${
+            carried && carried.size > 0 ? `，随迁 ${carried.size} 个附件` : ""
+          }${
             crossVault ? `（${targetVault.replace(/^.*[\\/]/, "")} 的云同步将在打开它时进行）` : ""
           }`,
           // 撤销走 unarchiveEntries，它按 entry.archived 过滤——这里捕获的还是
@@ -529,6 +564,7 @@ export default function CaptureManager({
       targetNote,
       currentVault,
       rewriteLines,
+      carryAttachments,
       notice,
       clearSel,
       leaveAndRescan,

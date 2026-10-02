@@ -491,7 +491,7 @@ export default function App() {
     }
   }, [appVersion]);
 
-  /** 应用内更新：下载（带进度）→ 静默安装 → 重启。 */
+  /** 应用内更新：下载（带进度）→ 静默安装 → 重启。失败后按钮变「重试更新」，原地再下。 */
   const installUpdate = useCallback(async () => {
     const update = updateRef.current;
     if (!update) return;
@@ -500,7 +500,14 @@ export default function App() {
         setUpdateCheck({ state: "downloading", message: `正在下载更新… ${pct}%`, available: true });
       });
     } catch (e) {
-      setUpdateCheck({ state: "error", message: `更新失败：${e}` });
+      // 保留 available/notes/url：错误提示归位后「立即更新」（此时显示为
+      // 「重试更新」）和更新弹窗仍在，用户可以直接再试，不必去发布页
+      setUpdateCheck((prev) => ({
+        ...prev,
+        state: "error",
+        message: `更新下载失败：${e}`,
+        available: true,
+      }));
     }
   }, []);
 
@@ -918,6 +925,60 @@ export default function App() {
       }
     },
     [notice, vault],
+  );
+
+  /**
+   * 归档携带附件：速记正文里的 `![[图.png]]` 按文件名解析在**收件仓库**，归档到
+   * 别的仓库时嵌入会失效——这里把引用到的文件复制进目标仓库的附件目录（重名自动
+   * 加序号），返回 嵌入名 → 实际落盘文件名 的映射（没改名时键值相同），调用方
+   * 据此改写链接。收件仓库没配置、与目标同库、正文没有嵌入时返回空表；单个文件
+   * 找不到或复制失败只跳过该文件，不阻塞归档。
+   */
+  const carryAttachmentsForArchive = useCallback(
+    async (texts: string[], targetVault: string): Promise<Map<string, string>> => {
+      const carried = new Map<string, string>();
+      const inboxVault = getSettings().quickCaptureVault.trim();
+      if (!inboxVault || inboxVault === targetVault) return carried;
+      const names = new Set<string>();
+      for (const text of texts) {
+        for (const match of text.matchAll(/!\[\[([^\]|]+?)\]\]/g)) {
+          const name = match[1].trim();
+          if (name) names.add(name);
+        }
+      }
+      if (names.size === 0) return carried;
+      // wiki 语法按文件名全库解析：拿收件仓库的 文件名 → 相对路径 索引定位附件
+      let index: Map<string, string>;
+      try {
+        index = new Map(
+          (await listEntries(inboxVault))
+            .filter((entry) => !entry.isDir)
+            .map((entry) => [entry.name, entry.path]),
+        );
+      } catch {
+        return carried;
+      }
+      const folder = dailyRef.current.settings.pastedImageFolder;
+      for (const name of names) {
+        if (carried.has(name)) continue; // 一批里多条速记引同一张图只带一份
+        const source = index.get(name);
+        if (!source) continue;
+        try {
+          const binary = await readBinary(inboxVault, source);
+          const written = await writeAttachment(
+            targetVault,
+            folder,
+            name.slice(name.lastIndexOf("/") + 1),
+            binary.base64,
+          );
+          carried.set(name, written.slice(written.lastIndexOf("/") + 1));
+        } catch {
+          // 找不到或复制失败：链接原样保留
+        }
+      }
+      return carried;
+    },
+    [],
   );
 
   // ---------------------------------------------------------------- 标签仪表盘
@@ -3370,7 +3431,7 @@ export default function App() {
             )}
             <div className="update-dialog-actions">
               <button type="button" className="btn" onClick={() => void installUpdate()}>
-                立即更新
+                {updateCheck.state === "error" ? "重试更新" : "立即更新"}
               </button>
               {updateCheck.url && (
                 <button type="button" className="btn btn-ghost" onClick={() => void openReleasePage(updateCheck.url!)}>
@@ -4049,6 +4110,7 @@ export default function App() {
               notice={notice}
               onNewCapture={() => setQuickCaptureOpen(true)}
               onStats={setInboxStats}
+              carryAttachments={carryAttachmentsForArchive}
             />
           )}
         </main>

@@ -5569,12 +5569,92 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   opacity: 1;
 }
 
-/* 待写入的图片 chip：名字截断，悬停看全名 */
-.quick-capture-img {
-  max-width: 180px;
+/* 图片缩略图条：独立的视觉行（不在标签行里，避免被当成"插进了标签框"） */
+.quick-capture-imgs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.quick-capture-imgs-item {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  margin: 0;
+  border-radius: 8px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.quick-capture-imgs-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  cursor: zoom-in;
+}
+
+.quick-capture-imgs-x {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.quick-capture-imgs-item:hover .quick-capture-imgs-x {
+  opacity: 1;
+}
+
+.quick-capture-imgs-x:hover {
+  background: rgba(0, 0, 0, 0.8);
+}
+
+/* 预览浮层：盖住整个视口，点空白处或 Esc 关闭 */
+.quick-capture-imgview {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px;
+  background: rgba(0, 0, 0, 0.72);
+  cursor: zoom-out;
+}
+
+.quick-capture-imgview img {
+  max-width: min(92vw, 1100px);
+  max-height: calc(100vh - 96px);
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.quick-capture-imgview-cap {
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 12px;
+}
+
+.quick-capture-imgview-cap kbd {
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
 }
 
 .quick-capture-img-btn {

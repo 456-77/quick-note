@@ -885,7 +885,11 @@ export default function SettingsDialog({
                 disabled={updateCheck.state === "downloading"}
                 onClick={() => void installUpdate()}
               >
-                {updateCheck.state === "downloading" ? "下载中…" : "立即更新"}
+                {updateCheck.state === "downloading"
+                  ? "下载中…"
+                  : updateCheck.state === "error"
+                    ? "重试更新"
+                    : "立即更新"}
               </button>
             )}
             <button
