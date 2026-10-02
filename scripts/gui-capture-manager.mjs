@@ -303,9 +303,10 @@ try {
     ws,
     `(() => { const el = document.querySelector('.cm-row-edit'); (${nativeSet})(el, '给快速笔记添加一个页面（改）'); return true; })()`,
   );
+  // 0.16 起行内编辑 Enter 是换行（多行正文），保存改 Ctrl+Enter（或失焦）
   await evaluate(
     ws,
-    `document.querySelector('.cm-row-edit').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`,
+    `document.querySelector('.cm-row-edit').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`,
   );
   await sleep(1400);
   const inboxAfterEdit = readFileSync(INBOX_FILE, "utf8");

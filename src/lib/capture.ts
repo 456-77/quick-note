@@ -10,6 +10,8 @@
  * 规则：
  * - 只有匹配「- 日期 时间」开头的行才算结构化速记；旧格式（没有来源/标签）与
  *   手写行都按同一套回退解析，不丢内容。
+ * - **多行正文**：头行下面紧随的缩进行并入同一条速记（Markdown 列表项续行，
+ *   Obsidian 渲染友好）；空行只有其后仍是缩进行时才并入。
  * - 归档**不删除**：在行尾打 `^archived` 标记（与待办的墓碑同思路，物理删除会让
  *   「已经归档过」这件事丢失，重复归档就没有防线了）。
  * - 时间戳/标签写进行内而不是 frontmatter：速记要的是「追加一行」这种无结构的写法。
@@ -20,15 +22,17 @@ import { noteTags } from "./tags.ts";
 export interface CaptureEntry {
   /** 所在文件（收件仓库内相对路径）。 */
   file: string;
-  /** 行号（0 基）。操作都是整文件按行重写，这里主要给 UI 当 key 的一部分。 */
+  /** 头行行号（0 基）。操作都是整文件按行重写，这里主要给 UI 当 key 的一部分。 */
   line: number;
+  /** 条目占用的物理行数（≥1）：多行正文会带缩进续行，编辑/删除要整段替换。 */
+  span: number;
   /** `YYYY-MM-DD HH:mm`；手写行可能没有（null → 归入「未标注日期」组）。 */
   timestamp: string | null;
   /** 来源显示名（速记时所在仓库/笔记）。 */
   source: string | null;
   /** 标签（时间戳后显式写的 + 正文里出现的，去重）。 */
   tags: string[];
-  /** 正文（剥掉时间戳/来源/前导标签/归档标记后的剩余部分）。 */
+  /** 正文（剥掉时间戳/来源/前导标签/归档标记后的剩余部分；多行以 \n 连接）。 */
   text: string;
   archived: boolean;
   /** 所在文件最后修改时间（epoch ms）。「最近修改」排序用；解析器不填，扫描侧补。 */
@@ -78,28 +82,60 @@ export function parseCaptureEntries(file: string, content: string): CaptureEntry
       if (!tags.includes(tag[1])) tags.push(tag[1]);
       rest = rest.slice(tag[0].length);
     }
-    const text = rest.trim();
+    const headText = rest.trim();
+    // 多行正文：紧随头行的**缩进续行**并入同一条速记（Markdown 列表项续行的写法，
+    // Obsidian 渲染时仍属于同一个列表项）。空行只有当其后仍是缩进行时才并入
+    // （松散列表项），否则停止——空行留给后面的正文。
+    const extra: string[] = [];
+    let j = i + 1;
+    while (j < lines.length) {
+      const cont = lines[j];
+      if (cont.trim() && /^[ \t]/.test(cont)) {
+        extra.push(cont.trim());
+        j += 1;
+        continue;
+      }
+      if (!cont.trim()) {
+        let k = j;
+        while (k < lines.length && !lines[k].trim()) k += 1;
+        if (k < lines.length && /^[ \t]/.test(lines[k])) {
+          for (let b = j; b < k; b += 1) extra.push("");
+          j = k;
+          continue;
+        }
+      }
+      break;
+    }
+    const text = extra.length > 0 ? `${headText}\n${extra.join("\n")}` : headText;
     // 正文里出现的标签也算数（速记正文里手写 #标签 是合法用法）
     for (const tag of noteTags(text)) {
       if (!tags.includes(tag)) tags.push(tag);
     }
-    out.push({ file, line: i, timestamp, source, tags, text, archived });
+    out.push({ file, line: i, span: j - i, timestamp, source, tags, text, archived });
+    i = j - 1;
   }
   return out;
 }
 
-/** 组装一条速记行（不带换行符）。tags 已由调用方规范过。 */
-export function buildCaptureLine(parts: {
+/**
+ * 组装一条速记的**物理行数组**（不含换行符；tags 已由调用方规范过）。
+ * 正文含 \n 时，第二行起输出为缩进续行（与解析侧约定互逆）。
+ */
+export function buildCaptureLines(parts: {
   timestamp: string;
   source?: string | null;
   tags?: string[];
   text: string;
   archived?: boolean;
-}): string {
+}): string[] {
   const tags = (parts.tags ?? []).filter(Boolean);
   const tagStr = tags.length > 0 ? ` ${tags.map((t) => `#${t}`).join(" ")}` : "";
   const src = parts.source ? ` [${parts.source}]` : "";
-  return `- ${parts.timestamp}${src}${tagStr} ${parts.text}${parts.archived ? ` ${ARCHIVE_MARK}` : ""}`;
+  const textLines = parts.text.split("\n");
+  const head = `- ${parts.timestamp}${src}${tagStr} ${textLines[0] ?? ""}${
+    parts.archived ? ` ${ARCHIVE_MARK}` : ""
+  }`;
+  return [head, ...textLines.slice(1).map((l) => (l ? `  ${l}` : ""))];
 }
 
 /** 给某一行行尾打/撤归档标记（保留行尾的 \r）。返回新行；无变化返回 null。 */
@@ -125,6 +161,40 @@ export function lineTextEditText(line: string, oldText: string, newText: string)
   return `${body.slice(0, index)}${newText}${body.slice(index + oldText.length)}${cr}`;
 }
 
+/**
+ * 多行文本编辑：把条目（头行 + span-1 条续行）的正文换成 newText（可含 \n）。
+ * 返回替换后的**物理行数组**（头行保留时间戳/来源/标签/归档标记；新增的行按
+ * 两条空格缩进为续行，与解析侧约定互逆）；oldText 首行在头行里找不到时返回 null。
+ *
+ * 只拿 oldText 的**首行**做锚点：多行正文的重写由调用方按 span 整段 splice，
+ * 旧续行随之被替换，锚不到时宁可不动也不猜。span 本身不进本函数（替换行数由
+ * newText 决定），只是与调用方的 splice 参数共用同一份条目信息。
+ */
+export function lineTextEditLines(
+  line: string,
+  _span: number,
+  oldText: string,
+  newText: string,
+): string[] | null {
+  const cr = line.endsWith("\r") ? "\r" : "";
+  const body = cr ? line.slice(0, -1) : line;
+  if (oldText === newText) return null;
+  const newLines = newText.split("\n");
+  if (!oldText) {
+    // 空正文条目（只有时间戳/来源/标签）：新正文插到归档标记之前（或行尾）
+    const markRe = new RegExp(`(\\s+${ARCHIVE_MARK.replace("^", "\\^")})$`);
+    const marked = markRe.exec(body);
+    const at = marked ? marked.index : body.replace(/\s+$/, "").length;
+    const head = `${body.slice(0, at).replace(/\s+$/, "")} ${newLines[0] ?? ""}${body.slice(at)}${cr}`;
+    return [head, ...newLines.slice(1).map((l) => (l ? `  ${l}` : ""))];
+  }
+  const oldFirst = oldText.split("\n")[0] ?? "";
+  const index = body.lastIndexOf(oldFirst);
+  if (index < 0) return null;
+  const head = `${body.slice(0, index)}${newLines[0] ?? ""}${body.slice(index + oldFirst.length)}${cr}`;
+  return [head, ...newLines.slice(1).map((l) => (l ? `  ${l}` : ""))];
+}
+
 /** 给某一行追加标签（已有同名标签则不动）。返回新行；无变化返回 null。 */
 export function lineAddTagEdit(line: string, tag: string): string | null {
   const cr = line.endsWith("\r") ? "\r" : "";
@@ -140,14 +210,16 @@ export function lineAddTagEdit(line: string, tag: string): string | null {
 }
 
 /**
- * 归档时要追加到目标笔记的行：与速记行同格式，但剥掉归档标记
- * （目标笔记里它是一条普通记录，不再是「待整理」状态）。
+ * 归档时要追加到目标笔记的**物理行数组**：与速记行同格式，但剥掉归档标记
+ * （目标笔记里它是一条普通记录，不再是「待整理」状态）；多行正文带缩进续行。
  */
-export function archivedLineForTarget(entry: CaptureEntry): string {
+export function archivedLinesForTarget(entry: CaptureEntry): string[] {
   const ts = entry.timestamp ?? "";
   const src = entry.source ? ` [${entry.source}]` : "";
   const tags = entry.tags.length > 0 ? ` ${entry.tags.map((t) => `#${t}`).join(" ")}` : "";
-  return `- ${ts}${src}${tags} ${entry.text}`.replace(/\s+$/, "");
+  const lines = entry.text.split("\n");
+  const head = `- ${ts}${src}${tags} ${lines[0] ?? ""}`.replace(/\s+$/, "");
+  return [head, ...lines.slice(1).map((l) => (l ? `  ${l}` : ""))];
 }
 
 /** 文件的换行风格（读出来的原样内容判定）；写回时按它拼接。 */

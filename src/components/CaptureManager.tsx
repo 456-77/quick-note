@@ -17,11 +17,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listEntries, pickDirectory, readNoteOptional, writeNote } from "../lib/api";
 import {
-  archivedLineForTarget,
+  archivedLinesForTarget,
   detectEol,
   lineAddTagEdit,
   lineArchiveEdit,
-  lineTextEditText,
+  lineTextEditLines,
   parseCaptureEntries,
   type CaptureEntry,
 } from "../lib/capture";
@@ -152,6 +152,14 @@ export default function CaptureManager({
       cancelled = true;
     };
   }, [inboxVault, scanToken]);
+
+  // 快速笔记弹窗写入成功后 App 会派发 qn-capture-written：面板开着时立即重扫，
+  // 不用再手动点刷新（收件文件也可能被外部改动，watcher 刷新只顾当前仓库）
+  useEffect(() => {
+    const bump = () => setScanToken((value) => value + 1);
+    window.addEventListener("qn-capture-written", bump);
+    return () => window.removeEventListener("qn-capture-written", bump);
+  }, []);
 
   // ------------------------------------------------------------- 筛选状态
 
@@ -477,7 +485,7 @@ export default function CaptureManager({
         );
         const target = await readNoteOptional(targetVault, targetNote);
         const eol = target ? detectEol(target.content) : "\n";
-        const block = ordered.map((entry) => archivedLineForTarget(entry)).join(eol);
+        const block = ordered.flatMap((entry) => archivedLinesForTarget(entry)).join(eol);
         const title = targetNote.replace(/^.*\//, "").replace(/\.md$/i, "");
         const nextContent = target
           ? `${target.content}${target.content.endsWith("\n") ? "" : eol}${eol}${block}${eol}`
@@ -494,8 +502,13 @@ export default function CaptureManager({
         const keys = chosen.map(keyOf);
         clearSel();
         leaveAndRescan(keys);
+        // 目标笔记在当前仓库里时，写入的 watcher 事件会自动驱动云同步推送；
+        // 跨仓库归档时那个仓库不在本实例监听范围内，它的同步在下次打开时补做
+        const crossVault = targetVault !== currentVault;
         showToast(
-          `已归档 ${chosen.length} 条到「${targetNote.replace(/^.*\//, "")}」`,
+          `已归档 ${chosen.length} 条到「${targetNote.replace(/^.*\//, "")}」${
+            crossVault ? `（${targetVault.replace(/^.*[\\/]/, "")} 的云同步将在打开它时进行）` : ""
+          }`,
           // 撤销走 unarchiveEntries，它按 entry.archived 过滤——这里捕获的还是
           // 归档前的对象（archived:false），必须带上归档后的状态，否则撤销为空操作
           () => void unarchiveEntries(chosen.map((entry) => ({ ...entry, archived: true }))),
@@ -510,7 +523,17 @@ export default function CaptureManager({
     },
     // unarchiveEntries 在下方声明（互相引用，用 ref 兜住时序）
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [inboxVault, targetVault, targetNote, rewriteLines, notice, clearSel, leaveAndRescan, showToast],
+    [
+      inboxVault,
+      targetVault,
+      targetNote,
+      currentVault,
+      rewriteLines,
+      notice,
+      clearSel,
+      leaveAndRescan,
+      showToast,
+    ],
   );
 
   /** 撤销归档一批：剥掉源行的 ^archived 标记。 */
@@ -611,18 +634,29 @@ export default function CaptureManager({
   );
 
   /** 保存行内编辑（只改正文，时间戳/来源/标签/标记原样保留）。 */
+  /** 保存条目正文编辑（支持多行：换行写成缩进续行，整段替换不再丢内容）。 */
   const saveEdit = useCallback(
     async (entry: CaptureEntry, nextText: string): Promise<boolean> => {
-      const text = nextText.trim();
-      if (!inboxVault || !text || text === entry.text) return false;
+      const text = nextText.replace(/\r\n/g, "\n").replace(/^\n+|\n+$/g, "").trimEnd();
+      if (!inboxVault || !text.trim() || text === entry.text) return false;
       setBusy(true);
       try {
-        const plan = new Map<string, Map<number, (line: string) => string | null>>([
-          [entry.file, new Map([[entry.line, (line) => lineTextEditText(line, entry.text, text)]])],
-        ]);
-        const files = await rewriteLines(inboxVault, plan);
-        if (files > 0) setScanToken((value) => value + 1);
-        return files > 0;
+        const note = await readNoteOptional(inboxVault, entry.file);
+        if (!note) return false;
+        const eol = detectEol(note.content);
+        const lines = note.content.split(/\r?\n/);
+        // 自上次扫描后文件可能被外部改过：锚不到旧正文就整段不动，宁可不动也不猜
+        const replacement = lineTextEditLines(
+          lines[entry.line] ?? "",
+          entry.span,
+          entry.text,
+          text,
+        );
+        if (!replacement) return false;
+        lines.splice(entry.line, entry.span, ...replacement);
+        await writeNote(inboxVault, entry.file, lines.join(eol), note.hasBom);
+        setScanToken((value) => value + 1);
+        return true;
       } catch (e) {
         notice(`保存失败：${e}`, "error");
         return false;
@@ -630,7 +664,7 @@ export default function CaptureManager({
         setBusy(false);
       }
     },
-    [inboxVault, rewriteLines, notice],
+    [inboxVault, notice],
   );
 
   // ------------------------------------------------------------- 抽屉与编辑
@@ -680,6 +714,31 @@ export default function CaptureManager({
   }, [popover, pickVault]);
   const [editKey, setEditKey] = useState<string | null>(null);
   const [editDraft, setEditDraft] = useState("");
+  // Esc 取消编辑时置位：随后的 blur 不再触发保存（textarea 卸载不触发 blur，
+  // 但 Esc 后点击别处会先 blur 再卸载——必须挡住，否则「取消」变「保存」）
+  const editCancelRef = useRef(false);
+
+  // 行内加标签：正在输入标签的行（key）。替代原生 window.prompt——原生弹窗与
+  // 应用风格割裂。输入框走非受控（ref 直读 DOM 值）：受控值在每次重渲染时回写，
+  // 程序化设值（CDP 测试）与快速键入都会被回写吞掉。
+  const [tagEditKey, setTagEditKey] = useState<string | null>(null);
+  const tagInputRef = useRef<HTMLInputElement | null>(null);
+
+  /** 结束行内编辑：save=true 走保存（结果如何都收起输入框）。
+   *  收起时只关「自己这条」——保存是异步的，期间用户可能已点开另一条的编辑。 */
+  const finishEdit = useCallback(
+    (entry: CaptureEntry, draft: string, save: boolean) => {
+      const key = keyOf(entry);
+      if (!save) {
+        setEditKey(null);
+        return;
+      }
+      void saveEdit(entry, draft).then(() => {
+        setEditKey((current) => (current === key ? null : current));
+      });
+    },
+    [saveEdit],
+  );
   const [batchTagOpen, setBatchTagOpen] = useState(false);
   const [newTag, setNewTag] = useState("");
 
@@ -1419,18 +1478,24 @@ export default function CaptureManager({
                         className="cm-row-edit"
                         rows={2}
                         value={editDraft}
+                        title="Enter 换行 · Ctrl+Enter 或点击外部 保存 · Esc 取消"
                         onClick={(event) => event.stopPropagation()}
+                        onMouseDown={(event) => event.stopPropagation()}
                         onChange={(event) => setEditDraft(event.target.value)}
+                        onBlur={() => {
+                          if (editCancelRef.current) return;
+                          finishEdit(entry, editDraft, true);
+                        }}
                         onKeyDown={(event) => {
-                          if (event.key === "Enter" && !event.shiftKey) {
+                          // Enter 直接换行（多行正文是合法内容），保存走 Ctrl+Enter 或失焦
+                          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                             event.preventDefault();
-                            void saveEdit(entry, editDraft).then((saved) => {
-                              if (saved) setEditKey(null);
-                            });
+                            finishEdit(entry, editDraft, true);
                           }
                           if (event.key === "Escape") {
                             event.preventDefault();
                             event.stopPropagation();
+                            editCancelRef.current = true;
                             setEditKey(null);
                           }
                         }}
@@ -1479,24 +1544,56 @@ export default function CaptureManager({
                         className="cm-row-quick"
                         title="编辑"
                         onClick={() => {
+                          editCancelRef.current = false;
                           setEditDraft(entry.text);
                           setEditKey(key);
                         }}
                       >
                         编辑
                       </button>
-                      <button
-                        type="button"
-                        className="cm-row-quick"
-                        title="添加标签"
-                        disabled={busy}
-                        onClick={() => {
-                          const tag = window.prompt("标签名（不含 #）");
-                          if (tag) void addTagToEntries([entry], tag);
-                        }}
-                      >
-                        标签
-                      </button>
+                      {tagEditKey === key ? (
+                        <input
+                          autoFocus
+                          ref={tagInputRef}
+                          type="text"
+                          className="cm-row-tag-input"
+                          placeholder="标签名（Enter 加）"
+                          title="Enter 添加并关闭 · Esc 取消"
+                          onClick={(event) => event.stopPropagation()}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") {
+                              event.preventDefault();
+                              const name = normalizeTagName(tagInputRef.current?.value ?? "");
+                              if (name) void addTagToEntries([entry], name);
+                              setTagEditKey(null);
+                            }
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setTagEditKey(null);
+                            }
+                          }}
+                          onBlur={() => {
+                            const name = normalizeTagName(tagInputRef.current?.value ?? "");
+                            if (name) void addTagToEntries([entry], name);
+                            setTagEditKey(null);
+                          }}
+                        />
+                      ) : (
+                        <button
+                          type="button"
+                          className="cm-row-quick"
+                          title="添加标签"
+                          disabled={busy}
+                          onClick={(event) => {
+                            // 别冒泡到行上——否则顺手打开详情抽屉，抢走行内输入的焦点
+                            event.stopPropagation();
+                            setTagEditKey(key);
+                          }}
+                        >
+                          标签
+                        </button>
+                      )}
                       {entry.archived ? (
                         <button
                           type="button"
@@ -1602,16 +1699,22 @@ export default function CaptureManager({
                     className="cm-drawer-edit"
                     rows={4}
                     value={editDraft}
+                    title="Enter 换行 · Ctrl+Enter 或点击外部 保存 · Esc 取消"
                     onChange={(event) => setEditDraft(event.target.value)}
+                    onBlur={() => {
+                      if (editCancelRef.current) return;
+                      finishEdit(drawerEntry, editDraft, true);
+                    }}
                     onKeyDown={(event) => {
+                      // Enter 直接换行（多行正文是合法内容），保存走 Ctrl+Enter 或失焦
                       if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
                         event.preventDefault();
-                        void saveEdit(drawerEntry, editDraft).then((saved) => {
-                          if (saved) setEditKey(null);
-                        });
+                        finishEdit(drawerEntry, editDraft, true);
                       }
                       if (event.key === "Escape") {
                         event.preventDefault();
+                        event.stopPropagation();
+                        editCancelRef.current = true;
                         setEditKey(null);
                       }
                     }}

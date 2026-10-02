@@ -5569,6 +5569,36 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   opacity: 1;
 }
 
+/* 待写入的图片 chip：名字截断，悬停看全名 */
+.quick-capture-img {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-capture-img-btn {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.quick-capture-img-btn:hover {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.quick-capture-img-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
 .quick-capture-tags-input {
   flex: 1;
   min-width: 120px;
@@ -6881,6 +6911,27 @@ button.cm-tag:hover {
 .cm-row-quick:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* 行内加标签的小输入框（替代原生 window.prompt）：与行内按钮同高、低饱和描边 */
+.cm-row-tag-input {
+  width: 130px;
+  padding: 2.5px 8px;
+  border: 1px solid var(--accent-soft);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.cm-row-tag-input:focus {
+  outline: none;
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+.cm-row-tag-input::placeholder {
+  color: var(--text-faint);
 }
 
 /* ---------------- Inbox 四轮打磨：统计层级 / seg 质感 / 自绘 checkbox / 动效 ---------------- */

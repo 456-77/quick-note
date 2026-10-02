@@ -48,7 +48,8 @@ import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
 import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit } from "./lib/tags";
-import { buildCaptureLine, detectEol } from "./lib/capture";
+import { buildCaptureLines, detectEol } from "./lib/capture";
+import { attachmentNameFor, linkTextFor } from "./lib/attachments";
 import { toBase64 } from "./lib/paste";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache, splitEmbedTarget } from "./lib/embed";
@@ -849,7 +850,11 @@ export default function App() {
   }, [captureManagerOpen]);
 
   const submitQuickCapture = useCallback(
-    async (text: string, tags: string[]): Promise<boolean> => {
+    async (
+      text: string,
+      tags: string[],
+      images: { name: string; type: string; base64: string }[] = [],
+    ): Promise<boolean> => {
       const cfg = getSettings();
       const inboxVault = cfg.quickCaptureVault.trim();
       if (!inboxVault) {
@@ -862,6 +867,25 @@ export default function App() {
       );
       const name = raw.toLowerCase().endsWith(".md") ? raw : `${raw}.md`;
       try {
+        // 图片先落盘到收件仓库的附件目录（与编辑器粘贴同一份库内配置），再以
+        // wiki 嵌入写进速记行——归档到目标笔记时嵌入跟着正文走
+        let content = text;
+        if (images.length > 0) {
+          const folder = dailyRef.current.settings.pastedImageFolder;
+          const date = new Date();
+          const links: string[] = [];
+          for (let index = 0; index < images.length; index += 1) {
+            const image = images[index];
+            const filename = attachmentNameFor(
+              { name: image.name, type: image.type },
+              date,
+              index,
+            );
+            const relative = await writeAttachment(inboxVault, folder, filename, image.base64);
+            links.push(linkTextFor(relative, "wiki"));
+          }
+          content = content ? `${content} ${links.join(" ")}` : links.join(" ");
+        }
         const note = await readNoteOptional(inboxVault, name);
         const eol = note ? detectEol(note.content) : "\n";
         // 来源追溯：速记时所在的仓库（+ 当前打开的笔记），速记管理里展示
@@ -869,21 +893,23 @@ export default function App() {
         const source = vault
           ? `${vaultDisplayName(vault)}${openPath ? `/${openPath.slice(openPath.lastIndexOf("/") + 1)}` : ""}`
           : null;
-        const line = buildCaptureLine({
+        const lines = buildCaptureLines({
           timestamp: moment().format("YYYY-MM-DD HH:mm"),
           source,
           tags,
-          text,
+          text: content,
         });
         let next: string;
         if (!note) {
           const title = name.replace(/\.md$/i, "");
-          next = `# ${title}${eol}${eol}${line}${eol}`;
+          next = `# ${title}${eol}${eol}${lines.join(eol)}${eol}`;
         } else {
           const sep = note.content.endsWith("\n") ? "" : eol;
-          next = `${note.content}${sep}${line}${eol}`;
+          next = `${note.content}${sep}${lines.join(eol)}${eol}`;
         }
         await writeNote(inboxVault, name, next, note?.hasBom ?? false);
+        // 速记管理面板开着时立即重扫（面板监听这个事件）
+        window.dispatchEvent(new CustomEvent("qn-capture-written"));
         notice(`已记到 ${name}（${vaultDisplayName(inboxVault)}）`);
         return true;
       } catch (e) {
