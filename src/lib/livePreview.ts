@@ -26,6 +26,7 @@ import type { Extension } from "@codemirror/state";
 import type { EditorState, Range } from "@codemirror/state";
 import { StateEffect, StateField } from "@codemirror/state";
 import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { startCompletion } from "@codemirror/autocomplete";
 import type { SyntaxNode } from "@lezer/common";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import {
@@ -315,28 +316,41 @@ class RuleWidget extends WidgetType {
  * 挂在起始围栏行（```ts 那一行）上，与语言标签同一位置。复制按钮在 mousedown
  * 就 preventDefault + stopPropagation——CM 若收到这个按下事件会把光标放进围栏块，
  * 该行随即退回源码、按钮在 click 触发前就没了（正是要防的竞态）。
+ * 点语言签：用 toDOM 传入的 view 把光标送到语言名末尾进编辑态，并立即弹出
+ * 语言联想（startCompletion）。位置进 eq——块前的文字改动会让位置漂移，
+ * 必须随重建刷新。
  */
 class CodeHeaderWidget extends WidgetType {
   readonly info: string;
   readonly code: string;
+  readonly infoTo: number;
 
-  constructor(info: string, code: string) {
+  constructor(info: string, code: string, infoTo: number) {
     super();
     this.info = info;
     this.code = code;
+    this.infoTo = infoTo;
   }
 
   eq(other: CodeHeaderWidget) {
-    return other.info === this.info && other.code === this.code;
+    return other.info === this.info && other.code === this.code && other.infoTo === this.infoTo;
   }
 
-  toDOM() {
+  toDOM(view: EditorView) {
     const box = document.createElement("span");
     box.className = "cm-lp-codehead";
 
     const chip = document.createElement("span");
     chip.className = "cm-lp-codeinfo";
     chip.textContent = this.info || "代码";
+    chip.title = "点击修改语言（输入时可联想）";
+    chip.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      view.dispatch({ selection: { anchor: this.infoTo }, scrollIntoView: true });
+      view.focus();
+      startCompletion(view);
+    });
 
     const copy = document.createElement("button");
     copy.type = "button";
@@ -371,10 +385,11 @@ class CodeHeaderWidget extends WidgetType {
 
 /**
  * 日志行 → 级别（log 块阅读优化用）。栈帧跟随行归入 error 语境：
- * `at com.foo.Bar(...)`、`Caused by:` 总是跟在 ERROR 行后面。
+ * `at com.foo.Bar(...)`、`Caused by:` 总是跟在 ERROR 行后面。行首允许
+ * `3512133:` 这样的 grep -n 行号前缀（终端记录里栈帧多半是 grep 输出）。
  */
 function logLevelOf(text: string): "error" | "warn" | "info" | "debug" | null {
-  if (/^\s*(?:at\s+[\w$./]+\(|Caused by:|\.\.\.\s*\d+\s+more)/.test(text)) return "error";
+  if (/^\s*(?:\d{1,8}:)?\s*(?:at\s+[\w$./]+\(|Caused by:|\.\.\.\s*\d+\s+more)/.test(text)) return "error";
   if (/\b(?:ERROR|SEVERE|FATAL|CRITICAL)\b/.test(text)) return "error";
   if (/\b(?:WARN|WARNING)\b/.test(text)) return "warn";
   if (/\bINFO\b/.test(text)) return "info";
@@ -2563,7 +2578,7 @@ export function buildLivePreviewDecorations(
               child = child.nextSibling;
             }
             if (codeInfo) {
-              replaceWith(codeInfo.from, codeInfo.to, new CodeHeaderWidget(codeInfo.text, codeText));
+              replaceWith(codeInfo.from, codeInfo.to, new CodeHeaderWidget(codeInfo.text, codeText, codeInfo.to));
             }
             // 收尾围栏被藏掉后，那一行就空了。若它只剩围栏本身，就把行高压掉，
             // 否则每个代码块底部都会多出一条空行。
@@ -2574,39 +2589,38 @@ export function buildLivePreviewDecorations(
                 marks.push(Decoration.line({ class: "cm-lp-fence" }).range(line.from));
               }
             }
-            // log 块的阅读优化：按行识别级别整行着色（左侧色条 + 淡底），
-            // 行内的时间戳与级别词再单独上 mark——读服务器日志时 ERROR/WARN
-            // 一眼可辨，长行折行后仍能靠左缘色条认出级别。
-            if (codeInfo && /^log\b/i.test(codeInfo.text.trim())) {
+          }
+          // log 块的行级级别条：只加左缘色条（box-shadow），不改背景，且
+          // **编辑态同样生效**——token 级着色（时间戳/级别词/提示符/线程括号）
+          // 由 logLang.ts 的 StreamLanguage 负责，本来就随编辑态保留；行级也
+          // 不退场，光标在块内外观感完全一致。
+          // 终端提示符行（[user@host dir]$）与裸命令行（grep/awk 等开头，手抄
+          // 终端记录时提示符经常丢）跳过级别判定：`grep -n "ERROR" x.log`
+          // 这类命令行不该被当成错误行染红。
+          {
+            let infoText = "";
+            for (let child = node.node.firstChild; child; child = child.nextSibling) {
+              if (child.name === "CodeInfo") {
+                infoText = doc.sliceString(child.from, child.to);
+                break;
+              }
+            }
+            if (/^log\b/i.test(infoText.trim())) {
               for (let n = firstLine + 1; n < lastLine; n += 1) {
                 const line = doc.line(n);
                 const text = line.text;
+                if (/^\s*\[[^\]]+\][#$]/.test(text)) continue;
+                if (
+                  /^\s*(?:grep|awk|sed|cat|tail|head|less|more|vim?|nano|cd|ls|ll|curl|wget|find|chmod|chown|tar|unzip|systemctl|journalctl|docker|kubectl|echo|export)\b/.test(
+                    text,
+                  )
+                ) {
+                  continue;
+                }
                 const level = logLevelOf(text);
                 if (level) {
                   marks.push(
                     Decoration.line({ class: `cm-lp-log cm-lp-log-${level}` }).range(line.from),
-                  );
-                }
-                const ts = /(?:\d{4}-\d{2}-\d{2}[T ][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?|\d{2}:\d{2}:\d{2}(?:[.,]\d+)?)/.exec(
-                  text,
-                );
-                if (ts && ts.index >= 0) {
-                  marks.push(
-                    Decoration.mark({ class: "cm-lp-log-ts" }).range(
-                      line.from + ts.index,
-                      line.from + ts.index + ts[0].length,
-                    ),
-                  );
-                }
-                const lv = /\b(?:TRACE|DEBUG|INFO|NOTICE|WARNING?|SEVERE|ERROR|FATAL|CRITICAL)\b/.exec(
-                  text,
-                );
-                if (lv && lv.index >= 0) {
-                  marks.push(
-                    Decoration.mark({ class: "cm-lp-log-lv" }).range(
-                      line.from + lv.index,
-                      line.from + lv.index + lv[0].length,
-                    ),
                   );
                 }
               }

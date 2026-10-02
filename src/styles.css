@@ -81,6 +81,16 @@
   --syn-comment: #6e7781;
   --syn-invalid: #b91c1c;
   --syn-meta: #57606a;
+  /* log 块专属（logLang.ts 的自定义 tag）：引用语义变量，明暗主题自动跟随 */
+  --syn-log-time: var(--text-faint);
+  --syn-log-thread: var(--text-faint);
+  --syn-log-dim: var(--text-faint);
+  --syn-log-error: var(--danger);
+  --syn-log-warn: var(--warn);
+  --syn-log-info: var(--ok);
+  --syn-log-debug: var(--text-dim);
+  --syn-log-prompt: var(--accent);
+  --syn-log-key: var(--syn-regexp);
 
   /* 代码块（逐行装饰）：浅灰蓝底，不用纯白、与白底正文拉开层次；语言签配色 */
   --code-bg: #e9edf4;
@@ -1744,8 +1754,8 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
 }
 
 /* 语义变体（判定见 livePreview 的 codeBlockVariantOf，按围栏 info 串）：
-   报错栈块偏暗红、配置参数块偏青。层级必须低于下面的逐行 log 级别色——
-   log 块里 ERROR/WARN 行仍按行着色，块底只兜住没有级别色的行。 */
+   报错栈块偏暗红、配置参数块偏青。全块统一底色；log 块的逐行级别只用
+   box-shadow 左缘色条标出（见 .cm-lp-log-*），不改各行的背景。 */
 .editor-host .cm-lp-codeblock-log {
   background:
     linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
@@ -1771,52 +1781,30 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
  */
 /* 逐行级别色：必须带 .editor-host 提到与 .cm-lp-codeblock 同级（0,2,0）——
    0.13 起漏了这个前缀，级别色一直被代码块底色（同为背景 shorthand）压掉没生效。 */
+/* log 块的行级级别条：只加左缘 3px 色条（叠在块级色条同位置，等于给该行
+   "换色条"），不改背景——块底色全块统一，光标进块（行装饰仍在）与编辑态
+   观感一致。 */
 .editor-host .cm-lp-log-error {
-  background:
-    linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
-    var(--danger-soft);
+  box-shadow: inset 3px 0 0 0 var(--danger);
 }
 
 .editor-host .cm-lp-log-warn {
-  background:
-    linear-gradient(90deg, var(--warn) 0 3px, transparent 3px),
-    var(--warn-soft);
+  box-shadow: inset 3px 0 0 0 var(--warn);
 }
 
 .editor-host .cm-lp-log-info {
-  background: linear-gradient(90deg, var(--text-dim) 0 3px, transparent 3px), var(--surface-2);
+  box-shadow: inset 3px 0 0 0 var(--ok);
 }
 
 .editor-host .cm-lp-log-debug {
-  background: linear-gradient(90deg, var(--text-faint) 0 3px, transparent 3px), var(--surface-2);
+  box-shadow: inset 3px 0 0 0 var(--text-faint);
 }
 
-/* 时间戳与级别词：时间戳淡化、级别词加粗着色，扫读时先看到级别 */
-.cm-lp-log-ts {
-  color: var(--text-faint);
-}
+/* 时间戳与级别词的着色已移交 logLang.ts 的语法高亮（光标进块也不掉色），
+   这里只保留行级色条。 */
 
-.cm-lp-log-lv {
-  font-weight: 700;
-}
-
-.cm-lp-log-error .cm-lp-log-lv {
-  color: var(--danger);
-}
-
-.cm-lp-log-warn .cm-lp-log-lv {
-  color: var(--warn);
-}
-
-.cm-lp-log-info .cm-lp-log-lv {
-  color: var(--text-dim);
-}
-
-.cm-lp-log-debug .cm-lp-log-lv {
-  color: var(--text-faint);
-}
-
-/* 语言签：小尺寸圆角胶囊、低饱和底色；字号定死（px）不随代码行字号缩放 */
+/* 语言签：小尺寸圆角胶囊、低饱和底色；字号定死（px）不随代码行字号缩放。
+   点击它 = 跳到语言名编辑位置并弹出联想（editor.ts 的 qn-edit-fence-info） */
 .cm-lp-codeinfo {
   font-family: var(--mono);
   font-size: 11px;
@@ -1828,6 +1816,46 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   border-radius: 999px;
   padding: 1px 9px;
   user-select: none;
+  cursor: pointer;
+}
+
+.cm-lp-codeinfo:hover {
+  filter: brightness(0.95);
+}
+
+/* 围栏语言联想弹层（@codemirror/autocomplete 的 tooltip，编辑 ``` 后的语言名时弹出） */
+.editor-host .cm-tooltip.cm-tooltip-autocomplete {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+  padding: 4px;
+}
+
+.editor-host .cm-tooltip-autocomplete > ul {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  max-height: 240px;
+}
+
+.editor-host .cm-tooltip-autocomplete > ul > li {
+  border-radius: 6px;
+  padding: 2px 10px;
+  color: var(--text);
+}
+
+.editor-host .cm-tooltip-autocomplete > ul > li[aria-selected] {
+  background: var(--surface-3);
+  color: var(--text);
+}
+
+.editor-host .cm-completionDetail {
+  color: var(--text-faint);
+  font-style: normal;
+  margin-left: 10px;
+  font-size: 11px;
 }
 
 /* 代码块头部条（语言名 + 复制）：浮到代码块右上角（Obsidian 式）。
@@ -4720,26 +4748,6 @@ html.qn-style-bluetopaz .editor-host .cm-lp-codeblock-config {
   background:
     linear-gradient(90deg, var(--callout-green) 0 3px, transparent 3px),
     color-mix(in srgb, var(--callout-green) 9%, var(--code-bg));
-}
-
-html.qn-style-bluetopaz .editor-host .cm-lp-log-error {
-  background:
-    linear-gradient(90deg, var(--danger) 0 3px, transparent 3px),
-    var(--danger-soft);
-}
-
-html.qn-style-bluetopaz .editor-host .cm-lp-log-warn {
-  background:
-    linear-gradient(90deg, var(--warn) 0 3px, transparent 3px),
-    var(--warn-soft);
-}
-
-html.qn-style-bluetopaz .editor-host .cm-lp-log-info {
-  background: linear-gradient(90deg, var(--text-dim) 0 3px, transparent 3px), var(--surface-2);
-}
-
-html.qn-style-bluetopaz .editor-host .cm-lp-log-debug {
-  background: linear-gradient(90deg, var(--text-faint) 0 3px, transparent 3px), var(--surface-2);
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-codeinfo,

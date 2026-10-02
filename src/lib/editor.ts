@@ -2,7 +2,8 @@ import { basicSetup, EditorView } from "codemirror";
 import { Compartment, EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
 import type { SyntaxNode } from "@lezer/common";
 import { keymap } from "@codemirror/view";
-import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree, type LanguageDescription } from "@codemirror/language";
+import { autocompletion, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { json } from "@codemirror/lang-json";
 import { sql } from "@codemirror/lang-sql";
@@ -18,17 +19,46 @@ import { toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHea
 import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
+import { logLanguageDescription } from "./logLang";
 import { isCursorInTable, tableShiftTab, tableTab } from "./tableEdit";
 import type { EditorLanguage } from "./fileTypes";
 
 /** 视图模式：Live Preview（渲染语法）或源码。 */
 export type ViewMode = "live" | "source";
 
+/** 围栏语言候选：语言包全量 + 自带的 log（```log 块高亮见 logLang.ts）。 */
+const fenceLanguages: readonly LanguageDescription[] = [logLanguageDescription, ...languages];
+
+const fenceLangOptions: readonly Completion[] = fenceLanguages.map((language) => ({
+  label: language.name,
+  alias: language.alias,
+  type: "language",
+}));
+
+/** 语言名之外的信息（`bash 参数`、`js title=x`）不联想。 */
+const FENCE_INFO_RE = /^[\w+#.\-]*$/;
+
+/**
+ * 围栏语言联想：光标在 ``` 后面的语言名（CodeInfo）里时，给出全部支持的
+ * 语言；选中直接补全（大写输入的 "Log" 会以规范小写 "log" 落盘）。
+ * 其他位置返回 null——basicSetup 的 autocompletion 全局兜底，别处不出弹层。
+ */
+function fenceLangSource(context: CompletionContext): CompletionResult | null {
+  const { state, pos } = context;
+  ensureSyntaxTree(state, pos, 75);
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1);
+  if (node.name !== "CodeInfo") node = syntaxTree(state).resolveInner(pos, 1);
+  if (node.name !== "CodeInfo" || node.parent?.name !== "FencedCode") return null;
+  const before = state.sliceDoc(node.from, pos);
+  if (!FENCE_INFO_RE.test(before)) return null;
+  return { from: node.from, to: pos, options: fenceLangOptions, validFor: FENCE_INFO_RE };
+}
+
 /** 按扩展名选语法：Markdown 笔记走 GFM，json/sql/yaml 走各自语言，其余纯文本。 */
 function languageExtension(language: EditorLanguage): Extension {
   switch (language) {
     case "markdown":
-      return markdown({ base: markdownLanguage, codeLanguages: languages });
+      return markdown({ base: markdownLanguage, codeLanguages: fenceLanguages });
     case "json":
       return json();
     case "sql":
@@ -142,6 +172,9 @@ export function createEditorState(
       // GFM（表格、任务列表）+ 围栏代码块语法高亮。
       // 语言包由 @codemirror/language-data 动态按需加载，不进入主包。
       languageExtension(language),
+      // 围栏语言联想（```log 输入时弹支持列表，选中补全）。override 全局只此
+      // 一源：本编辑器没有别的补全需求，顺带压掉 basicSetup 的空配置
+      autocompletion({ override: [fenceLangSource] }),
       // Markdown 成对符号自动闭合（仅 markdown 语言；判定核心在 autoPairs.ts）
       autoPairExtension(language),
       EditorView.lineWrapping,
@@ -161,10 +194,10 @@ export function createEditorState(
       altClickHandler(),
       // 重设计的搜索面板（Ctrl+F）：替代 CM 默认 Find Bar
       customSearchPanel(),
-      // 表格里的 Tab 是"下一格"，必须压过 basicSetup 的缩进键位。
-      // 光标不在表格里时处理函数返回 false，缩进照常。
-      // 裸 Tab / Shift+Tab 是 Obsidian 式缩进：此前没有绑定，按键会按浏览器
-      // 默认行为把焦点移出编辑器。
+      // // 表格里的 Tab 是"下一格"，必须压过 basicSetup 的缩进键位。
+      // // 光标不在表格里时处理函数返回 false，缩进照常。
+      // // 裸 Tab / Shift+Tab 是 Obsidian 式缩进：此前没有绑定，按键会按浏览器
+      // // 默认行为把焦点移出编辑器。
       Prec.high(
         keymap.of([
           { key: "Tab", run: tableTab },
@@ -183,8 +216,8 @@ export function createEditorState(
         }
       }),
       onSave ? modSKeymap(onSave) : [],
-      // 行内代码 / 代码块切换（Mod-` 等，键位在「设置 → 快捷键」里可改）。
-      // 编辑器内分发：焦点不在编辑器时不接管，全局命令也不受影响。
+      // // 行内代码 / 代码块切换（Mod-` 等，键位在「设置 → 快捷键」里可改）。
+      // // 编辑器内分发：焦点不在编辑器时不接管，全局命令也不受影响。
       editorToggleKeymap(),
       // 行号对到每行第一个文本行（标题行的 padding 补偿）；源码模式下自愈为无补丁
       gutterNumberAlign(),

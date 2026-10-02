@@ -9,6 +9,17 @@
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import type { Extension } from "@codemirror/state";
+import {
+  logDimTag,
+  logKeyTag,
+  logLevelDebugTag,
+  logLevelErrorTag,
+  logLevelInfoTag,
+  logLevelWarnTag,
+  logPromptTag,
+  logThreadTag,
+  logTimeTag,
+} from "./logLang";
 
 const highlightStyle = HighlightStyle.define([
   { tag: [t.keyword, t.operatorKeyword, t.modifier, t.controlKeyword], color: "var(--syn-keyword)" },
@@ -23,6 +34,18 @@ const highlightStyle = HighlightStyle.define([
   { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: "var(--syn-comment)", fontStyle: "italic" },
   { tag: [t.meta, t.annotation], color: "var(--syn-meta)" },
   { tag: t.invalid, color: "var(--syn-invalid)" },
+  // log 块（```log，StreamLanguage 见 logLang.ts）：时间戳/线程/样板信息淡化、
+  // 级别词按严重度着色加粗、终端提示符用强调色、key=/字符串细分——颜色全走
+  // 变量，主题切换跟着变。logString 映射到标准 t.string，走上面的字符串绿。
+  { tag: logTimeTag, color: "var(--syn-log-time)" },
+  { tag: logLevelErrorTag, color: "var(--syn-log-error)", fontWeight: "700" },
+  { tag: logLevelWarnTag, color: "var(--syn-log-warn)", fontWeight: "700" },
+  { tag: logLevelInfoTag, color: "var(--syn-log-info)", fontWeight: "600" },
+  { tag: logLevelDebugTag, color: "var(--syn-log-debug)", fontWeight: "600" },
+  { tag: logPromptTag, color: "var(--syn-log-prompt)", fontWeight: "600" },
+  { tag: logThreadTag, color: "var(--syn-log-thread)" },
+  { tag: logDimTag, color: "var(--syn-log-dim)" },
+  { tag: logKeyTag, color: "var(--syn-log-key)" },
   // 文档结构类不加颜色：字号与字重由 Live Preview 的行装饰控制，这里只管颜色继承
   { tag: [t.heading, t.strong], fontWeight: "600" },
   { tag: t.emphasis, fontStyle: "italic" },
