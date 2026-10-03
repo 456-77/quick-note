@@ -7440,3 +7440,41 @@ button.cm-tag:hover {
     animation: none;
   }
 }
+
+/* ==================== A2 第三批：Inbox 与设置面板的移动修复 ==================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* Inbox（速记管理）桌面上强制 min-width:700 保列表不压——手机上它把整个
+     app 撑到屏外：返回钮在屏幕外、空状态文字被裁、命令面板跟着错位。
+     移动端放开，让 cm-root 在视口内排布。 */
+  .app.inbox-open .editor-pane {
+    min-width: 0;
+  }
+
+  /* 设置面板导航：竖列 220px 在手机上挤掉内容区，改为顶部横排（可滚动） */
+  .settings-panel {
+    flex-direction: column;
+  }
+  .settings-nav {
+    flex-direction: row;
+    width: auto;
+    align-items: center;
+    gap: 4px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex: none;
+    border-bottom: 1px solid var(--border-soft);
+  }
+  .settings-nav-head {
+    display: none;
+  }
+  .settings-nav-item {
+    flex: none;
+    padding: 6px 12px;
+    white-space: nowrap;
+  }
+  .settings-body {
+    flex: 1;
+    min-height: 0;
+  }
+}
