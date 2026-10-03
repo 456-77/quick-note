@@ -4412,21 +4412,33 @@ export default function App() {
         )}
       </div>
 
-      {/* 移动端底部导航：文件树 / 快速笔记 / 面板（桌面无此元素） */}
+      {/* 移动端底部导航：文件树 / 快速笔记 / 面板（桌面无此元素）。
+          三键互斥：点任何一键先收掉全部抽屉与弹层（设置/命令面板/速记弹窗），
+          再打开目标——抽屉与浮层并存时浮层会被抽屉压住（真机反馈），而且
+          这种全屏叠全屏的状态本身就不该存在。 */}
       {isMobile() && (
         <nav className="mobile-nav">
           <button
             type="button"
             className={leftCollapsed ? "" : "is-on"}
             onClick={() => {
-              setLeftCollapsed(!leftCollapsed);
-              if (!leftCollapsed) setRightCollapsed(true);
+              setShowSettings(false);
+              setPaletteOpen(false);
+              setQuickCaptureOpen(false);
+              setRightCollapsed(true);
+              setLeftCollapsed(leftCollapsed ? false : leftCollapsed);
             }}
           >
             <IconPanelLeft size={18} />
             文件
           </button>
-          <button type="button" onClick={() => setQuickCaptureOpen(true)}>
+          <button type="button" onClick={() => {
+            setShowSettings(false);
+            setPaletteOpen(false);
+            setRightCollapsed(true);
+            setLeftCollapsed(true);
+            setQuickCaptureOpen(true);
+          }}>
             <IconPlus size={18} />
             速记
           </button>
@@ -4434,8 +4446,11 @@ export default function App() {
             type="button"
             className={rightCollapsed ? "" : "is-on"}
             onClick={() => {
-              setRightCollapsed(!rightCollapsed);
-              if (!rightCollapsed) setLeftCollapsed(true);
+              setShowSettings(false);
+              setPaletteOpen(false);
+              setQuickCaptureOpen(false);
+              setLeftCollapsed(true);
+              setRightCollapsed(rightCollapsed ? false : rightCollapsed);
             }}
           >
             <IconPanelRight size={18} />
