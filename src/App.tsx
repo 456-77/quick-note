@@ -52,10 +52,10 @@ import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
 import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit } from "./lib/tags";
 import { buildCaptureLines, detectEol } from "./lib/capture";
 import { attachmentNameFor, linkTextFor } from "./lib/attachments";
-import { toBase64 } from "./lib/paste";
+import { saveAndLink, toBase64 } from "./lib/paste";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache, splitEmbedTarget } from "./lib/embed";
-import { requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
+import { clearMermaidCache, requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
 import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
@@ -656,6 +656,14 @@ export default function App() {
     (window as unknown as Record<string, unknown>).__qnConsumeBack = () => backConsumeRef.current();
   }, []);
 
+  // Android 系统分享接收（MainActivity 轮询派发）：打开快速笔记弹窗并预填。
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__qnShareReceive = (text: string) => {
+      setShareDraft(text);
+      setQuickCaptureOpen(true);
+    };
+  }, []);
+
   useEffect(() => {
     syncRef.current = sync;
   }, [sync]);
@@ -898,6 +906,10 @@ export default function App() {
   // 「# 文件名」建头，与新建笔记的标题规则一致。
 
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+  /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
+  const [shareDraft, setShareDraft] = useState("");
+  /** 移动端相册/文件选图的隐藏 input（wry onShowFileChooser 桥接 SAF）。 */
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
   /** 速记管理视图（占据编辑区；命令面板 / Ctrl+Alt+M 打开，Esc 退出）。 */
   const [captureManagerOpen, setCaptureManagerOpen] = useState(false);
   /** Inbox 的扫描统计（CaptureManager 上报；右侧「今日整理」面板渲染用）。 */
@@ -1207,14 +1219,30 @@ export default function App() {
   // 不完全可靠，回前台时整目录刷新一次是最稳的兜底（桌面有监听，不需要）。
   useEffect(() => {
     if (!isMobile()) return;
+    // 回前台重扫（共享存储有外部改动源）+ 回后台超时清理（内存治理，对齐
+    // 桌面「失焦 3 分钟降档」的思路：mermaid SVG 缓存是纯内存开销，下次
+    // 渲染按需重建）
+    let hideTimer: number | null = null;
     const onVisible = () => {
       const dir = vaultRef.current;
-      if (document.visibilityState === "visible" && dir) {
-        refresh(dir).catch(() => {});
+      if (document.visibilityState === "visible") {
+        if (hideTimer !== null) {
+          window.clearTimeout(hideTimer);
+          hideTimer = null;
+        }
+        if (dir) refresh(dir).catch(() => {});
+      } else if (dir) {
+        hideTimer = window.setTimeout(() => {
+          clearMermaidCache();
+          hideTimer = null;
+        }, 3 * 60 * 1000);
       }
     };
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      if (hideTimer !== null) window.clearTimeout(hideTimer);
+    };
   }, [refresh]);
 
   /** 用磁盘上的内容替换**激活标签**，尽量保住光标位置。 */
@@ -3426,6 +3454,7 @@ export default function App() {
 
       {quickCaptureOpen && (
         <QuickCaptureDialog
+          initialDraft={shareDraft}
           target={
             settings.quickCaptureVault
               ? `${settings.quickCaptureFile.trim() || "Inbox.md"} · ${vaultDisplayName(settings.quickCaptureVault)}`
@@ -3433,7 +3462,10 @@ export default function App() {
           }
           onSubmit={submitQuickCapture}
           tagSuggestions={tagVocab}
-          onClose={() => setQuickCaptureOpen(false)}
+          onClose={() => {
+            setQuickCaptureOpen(false);
+            setShareDraft("");
+          }}
           onOpenSettings={() => {
             setQuickCaptureOpen(false);
             setShowSettings(true);
@@ -4210,6 +4242,22 @@ export default function App() {
             className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
             ref={hostRef}
           />
+          {isMobile() && (
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              style={{ display: "none" }}
+              onChange={(event) => {
+                const files = [...(event.target.files ?? [])];
+                event.target.value = "";
+                const view = viewRef.current;
+                if (files.length === 0 || !view) return;
+                void saveAndLink(view, files, attachmentOptions);
+              }}
+            />
+          )}
           {isMobile() && current && (
             <div className="mobile-md-toolbar" aria-label="Markdown 工具栏">
               {(
@@ -4235,6 +4283,18 @@ export default function App() {
                   {item.label}
                 </button>
               ))}
+              {/* 相册/文件选图：wry 的 onShowFileChooser 原生桥接 SAF 选择器，
+                  File 对象走与桌面粘贴同一条附件管线 */}
+              <button
+                type="button"
+                title="插入图片（相册/文件）"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  imageInputRef.current?.click();
+                }}
+              >
+                📷
+              </button>
             </div>
           )}
           {previewPath && vault && (

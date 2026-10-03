@@ -215,7 +215,8 @@ function insertBlock(view: EditorView, text: string): void {
   view.focus();
 }
 
-async function saveAndLink(
+/** 供移动端工具栏的「＋图」复用：相册选图走同一条保存+插链管线。 */
+export async function saveAndLink(
   view: EditorView,
   files: File[],
   options: AttachmentOptions,

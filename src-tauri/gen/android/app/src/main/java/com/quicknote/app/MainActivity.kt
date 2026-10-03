@@ -1,6 +1,9 @@
 package com.quicknote.app
 
+import android.content.Intent
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.util.TypedValue
 import android.view.ViewGroup
 import android.webkit.WebView
@@ -11,12 +14,17 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 
 class MainActivity : TauriActivity() {
+  /** 待派发的分享文本（冷启动时 WebView 尚未就绪，先存 here）。 */
+  private var pendingShareText: String? = null
+  private var webViewRef: WebView? = null
+  private val mainHandler = Handler(Looper.getMainLooper())
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
-    // edge-to-edge 下系统栏透明，透出的是 window 背景——不给的话是白色，
-    // 与应用的深色主题割裂（系统栏区域一条白）。跟随当前主题的窗口背景。
+    captureShare(intent)
+    // window 背景取主题的 windowBackground——edge-to-edge 下系统栏透明，
+    // 透出应用配色而不是刺眼白色
     val bg = TypedValue()
     theme.resolveAttribute(android.R.attr.windowBackground, bg, true)
     if (bg.resourceId != 0) {
@@ -24,17 +32,54 @@ class MainActivity : TauriActivity() {
     }
   }
 
+  /** 应用已在运行时的二次分享（singleTask：走 onNewIntent）。 */
+  override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    captureShare(intent)
+    dispatchPendingShare()
+  }
+
+  private fun captureShare(intent: Intent?) {
+    if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+      val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+      if (!text.isNullOrBlank()) pendingShareText = text
+    }
+  }
+
   /**
-   * 把系统栏 insets 转成 WebView 的 padding：应用内容从状态栏下方开始、到手势条
-   * 上方结束，不再与系统状态栏重叠。不用 CSS env(safe-area-inset-*)——Android
-   * WebView 里它们经常恒为 0，原生 insets 才是可靠通道。
-   *
-   * onWebViewCreate 晚于 super.onCreate 的视图创建，在这里拿 WebView 挂监听。
+   * 分享派发：WebView 就绪 ≠ 前端已注册接收器（React 挂载要几秒），
+   * 轮询直到 __qnShareReceive 存在（300ms × 50 次 = 15s 上限），派发后清 pending。
    */
+  private fun dispatchPendingShare() {
+    val webView = webViewRef ?: return
+    mainHandler.postDelayed(object : Runnable {
+      private var attempts = 0
+      override fun run() {
+        val text = pendingShareText
+        if (text == null) return
+        if (attempts >= 50) {
+          pendingShareText = null
+          return
+        }
+        attempts += 1
+        webView.evaluateJavascript("(typeof window.__qnShareReceive === 'function') ? 'ready' : 'no'") { r ->
+          if (r == "\"ready\"") {
+            val json = text
+              .replace("\\", "\\\\").replace("\"", "\\\"")
+              .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            webView.evaluateJavascript("window.__qnShareReceive(\"$json\")", null)
+            pendingShareText = null
+          } else {
+            mainHandler.postDelayed(this, 300)
+          }
+        }
+      }
+    }, 300)
+  }
+
+
   override fun onWebViewCreate(webView: WebView) {
-    // 挂在 decorView 根上（dispatch 链源头必经）：挂 WebView 本身实测收不到
-    // insets（中间某层已消费/拦截）。用 **margin** 而不是 padding——
-    // WebView 忽略自身 padding（网页内容不收缩），margin 才真正把视图挪出系统栏。
+    webViewRef = webView
     ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
       // 键盘（ime）不参与：viewport 的 interactive-widget=resizes-content
       // 已经处理键盘避让，加进去会双重收缩。只取系统栏与挖孔。
@@ -48,6 +93,32 @@ class MainActivity : TauriActivity() {
       }
       insets
     }
+
+    // 分享派发：WebView 就绪 ≠ 前端已注册接收器（React 挂载要几秒），
+    // 轮询直到 __qnShareReceive 存在（300ms × 50 次 = 15s 上限），派发后清 pending。
+    mainHandler.postDelayed(object : Runnable {
+      private var attempts = 0
+      override fun run() {
+        val text = pendingShareText
+        if (text == null) return
+        if (attempts >= 50) {
+          pendingShareText = null
+          return
+        }
+        attempts += 1
+        webView.evaluateJavascript("(typeof window.__qnShareReceive === 'function') ? 'ready' : 'no'") { r ->
+          if (r == "\"ready\"") {
+            val json = text
+              .replace("\\", "\\\\").replace("\"", "\\\"")
+              .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+            webView.evaluateJavascript("window.__qnShareReceive(\"$json\")", null)
+            pendingShareText = null
+          } else {
+            mainHandler.postDelayed(this, 300)
+          }
+        }
+      }
+    }, 500)
 
     onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
       override fun handleOnBackPressed() {

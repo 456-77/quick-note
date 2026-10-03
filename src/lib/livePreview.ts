@@ -461,6 +461,11 @@ function loadMermaid(): Promise<MermaidApi> {
 const svgCache = new Map<string, string>();
 const SVG_CACHE_LIMIT = 4;
 
+/** 清空 mermaid SVG 缓存（移动端回后台超时的内存治理入口；下次渲染按需重建）。 */
+export function clearMermaidCache(): void {
+  svgCache.clear();
+}
+
 /** 取会话内已渲染的 mermaid SVG（PDF 导出打印视图复用；没有则 null）。 */
 export function cachedMermaidSvg(code: string): string | null {
   return svgCache.get(code) ?? null;
