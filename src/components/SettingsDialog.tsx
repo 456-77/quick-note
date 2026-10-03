@@ -55,6 +55,9 @@ interface Props {
   dataPaths: AppDataPaths | null;
   onPickDataDir: () => void;
   onClearDataDir: () => void;
+  /** 移动端仓库基础目录（null = 未设置/桌面端）；onOpenVaultPage 弹出仓库列表页。 */
+  vaultHome: string | null;
+  onOpenVaultPage: () => void;
   customCssDraft: string;
   onCustomCssChange: (value: string) => void;
   appVersion: string;
@@ -87,6 +90,8 @@ export default function SettingsDialog({
   dataPaths,
   onPickDataDir,
   onClearDataDir,
+  vaultHome,
+  onOpenVaultPage,
   customCssDraft,
   onCustomCssChange,
   appVersion,
@@ -822,6 +827,24 @@ export default function SettingsDialog({
         </section>
 
         <section className="settings-sec" data-sec="storage" style={{ display: searching || active === "storage" ? undefined : "none" }}>
+          {vaultHome !== null && (
+            <>
+              <div className="settings-group">仓库基础目录</div>
+              <div className="settings-row storage-row">
+                <span>仓库基础目录</span>
+                <span className="settings-value storage-path">{vaultHome}</span>
+              </div>
+              <div className="settings-actions">
+                <button type="button" className="btn" onClick={onOpenVaultPage}>
+                  打开仓库列表…
+                </button>
+              </div>
+              <Hint>
+                它里面的每个子文件夹都是一个独立仓库，与电脑端共用同一份文件。
+                换基础目录在仓库列表页的「更改基础目录」里操作。
+              </Hint>
+            </>
+          )}
           <div className="settings-group">数据与缓存位置</div>
           <div className="settings-row storage-row">
             <span>数据目录（当前生效）</span>

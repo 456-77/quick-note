@@ -111,6 +111,8 @@ const AUTOSAVE_DELAY = 1200;
 
 export default function App() {
   const [vault, setVault] = useState<string | null>(null);
+  // 最新仓库路径的 ref：事件回调（如回前台重扫）闭包捕获不到最新 state 时读它
+  const vaultRef = useRef<string | null>(null);
   /** 仓库条目（含目录与非 md 文件）。一份数据供文件树、wiki 索引、计数共用。 */
   const [entries, setEntries] = useState<EntryMeta[]>([]);
   /**
@@ -601,6 +603,10 @@ export default function App() {
   useEffect(() => {
     dailyRef.current = daily;
   }, [daily]);
+
+  useEffect(() => {
+    vaultRef.current = vault;
+  }, [vault]);
 
   useEffect(() => {
     syncRef.current = sync;
@@ -1148,6 +1154,21 @@ export default function App() {
     watchVault(dir).catch((e) => setError(`启动文件监听失败：${e}`));
   }, []);
 
+  // 移动端「回前台重扫」：仓库在共享存储（基础目录模型）后，外部改动源存在
+  // （电脑 USB 拷贝、网盘/Syncthing 同步）；Android 上 notify 的 inotify 对 FUSE
+  // 不完全可靠，回前台时整目录刷新一次是最稳的兜底（桌面有监听，不需要）。
+  useEffect(() => {
+    if (!isMobile()) return;
+    const onVisible = () => {
+      const dir = vaultRef.current;
+      if (document.visibilityState === "visible" && dir) {
+        refresh(dir).catch(() => {});
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refresh]);
+
   /** 用磁盘上的内容替换**激活标签**，尽量保住光标位置。 */
   const adoptFromDisk = useCallback(
     (note: NoteContent) => {
@@ -1634,6 +1655,8 @@ export default function App() {
 
   // ------------------------------------------------------------------ 数据目录
 
+  const [vaultHome, setVaultHome] = useState<string | null>(null);
+
   // 设置面板要展示数据目录；启动时查一次，改动后由回调就地更新。
   useEffect(() => {
     appDataPaths()
@@ -1641,6 +1664,11 @@ export default function App() {
       .catch(() => {
         // 查不到就显示"…"，不影响其他功能
       });
+    // 移动端同时取仓库基础目录（存储分区展示；桌面端该命令虽存在但语义不同，
+    // 这里统一查询、桌面返回 null 不展示）
+    vaultHomeGet()
+      .then(setVaultHome)
+      .catch(() => {});
   }, []);
 
   const pickDataDir = useCallback(async () => {
@@ -3433,6 +3461,11 @@ export default function App() {
         daily={daily}
         sync={sync}
         dataPaths={dataPaths}
+        vaultHome={vaultHome}
+        onOpenVaultPage={() => {
+          setShowSettings(false);
+          setVaultGateOpen(true);
+        }}
         onPickDataDir={() => void pickDataDir()}
         onClearDataDir={() => void clearDataDir()}
         customCssDraft={customCssDraft}
