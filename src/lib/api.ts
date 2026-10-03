@@ -272,6 +272,9 @@ export const setCustomDataDir = (path: string | null) =>
   invoke<AppDataPaths>("set_custom_data_dir", { path });
 
 /** 读取用户经系统对话框选择的文本文件（UTF-8）。快捷键配置导入用。 */
+/** 读取任意二进制文件（base64；分享图片经 Kotlin 落缓存目录后用）。上限 10MB。 */
+export const readBinaryFile = (path: string) => invoke<string>("read_binary_file", { path });
+
 export const readTextFile = (path: string) => invoke<string>("read_text_file", { path });
 
 /** 写入文本文件（UTF-8，覆盖）。路径来自系统保存对话框。快捷键配置导出用。 */

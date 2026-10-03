@@ -92,6 +92,22 @@ fn write_text_file(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents.as_bytes()).map_err(|e| format!("写入文件失败: {e}"))
 }
 
+/// 读取任意二进制文件（base64 回传）。
+///
+/// 用途：Android 系统分享的图片由 Kotlin 层落进应用缓存目录（与本命令同沙箱），
+/// 前端据此转成附件——信任级别与 read_text_file 相同：路径来自系统级入口而非
+/// 网页内容。上限 10MB（与同步附件一致），防止误读超大文件撑爆 IPC。
+#[tauri::command]
+fn read_binary_file(path: String) -> Result<String, String> {
+    let meta = std::fs::metadata(&path).map_err(|e| format!("读取文件失败: {e}"))?;
+    if meta.len() > 10 * 1024 * 1024 {
+        return Err("文件超过 10MB 上限".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|e| format!("读取文件失败: {e}"))?;
+    use base64::Engine as _;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
 /// 返回候选路径里第一个存在的（用于探测 Edge/Chrome 的安装位置）。
 #[tauri::command]
 fn first_existing_path(paths: Vec<String>) -> Option<String> {
@@ -287,6 +303,7 @@ pub fn run() {
             open_new_window,
             read_text_file,
             write_text_file,
+            read_binary_file,
             first_existing_path,
             export_pdf_via_browser,
             default_vault_dir,

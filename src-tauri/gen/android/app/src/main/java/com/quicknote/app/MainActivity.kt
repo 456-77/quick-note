@@ -23,6 +23,9 @@ import java.net.URL
 class MainActivity : TauriActivity() {
   /** 待派发的分享文本（冷启动时 WebView 尚未就绪，先存 here）。 */
   private var pendingShareText: String? = null
+  /** 待派发的分享图片：Kotlin 已从 content:// 拷进应用缓存（前端经 Rust 读同沙箱文件）。 */
+  private var pendingShareImagePath: String? = null
+  private var pendingShareImageMime: String? = null
   private var webViewRef: WebView? = null
   private val mainHandler = Handler(Looper.getMainLooper())
 
@@ -47,9 +50,32 @@ class MainActivity : TauriActivity() {
   }
 
   private fun captureShare(intent: Intent?) {
-    if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
-      val text = intent.getStringExtra(Intent.EXTRA_TEXT)
-      if (!text.isNullOrBlank()) pendingShareText = text
+    if (intent?.action != Intent.ACTION_SEND) return
+    val mime = intent.type ?: return
+    when (mime) {
+      "text/plain" -> {
+        val text = intent.getStringExtra(Intent.EXTRA_TEXT)
+        if (!text.isNullOrBlank()) pendingShareText = text
+      }
+      "image/png", "image/jpeg", "image/webp" -> captureShareImage(intent, mime)
+    }
+  }
+
+  /** 分享图片：content:// 流拷进 cacheDir（与 Rust/前端同沙箱，前端可读）。 */
+  private fun captureShareImage(intent: Intent, mime: String) {
+    val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM) ?: return
+    try {
+      val ext = if (mime == "image/jpeg") "jpg" else if (mime == "image/webp") "webp" else "png"
+      val dest = File(cacheDir, "shared-image-${System.currentTimeMillis()}.$ext")
+      contentResolver.openInputStream(uri)?.use { input ->
+        dest.outputStream().use { output -> input.copyTo(output, 64 * 1024) }
+      } ?: return
+      if (dest.exists() && dest.length() > 0) {
+        pendingShareImagePath = dest.absolutePath
+        pendingShareImageMime = mime
+      }
+    } catch (e: Exception) {
+      // 分享图片失败不阻塞文本分享；前端不会有图片参数
     }
   }
 

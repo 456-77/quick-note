@@ -53,6 +53,8 @@ import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit } from "./lib/tag
 import { buildCaptureLines, detectEol } from "./lib/capture";
 import { attachmentNameFor, linkTextFor } from "./lib/attachments";
 import { saveAndLink, toBase64 } from "./lib/paste";
+import { readBinaryFile } from "./lib/api";
+import type { CaptureImage } from "./components/QuickCaptureDialog";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache, splitEmbedTarget } from "./lib/embed";
 import { clearMermaidCache, requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
@@ -688,10 +690,21 @@ export default function App() {
     (window as unknown as Record<string, unknown>).__qnConsumeBack = () => backConsumeRef.current();
   }, []);
 
-  // Android 系统分享接收（MainActivity 轮询派发）：打开快速笔记弹窗并预填。
+  // Android 系统分享接收（MainActivity 轮询派发）：文本预填 + 可选图片
+  // （Kotlin 落缓存目录，经 read_binary_file 读同沙箱路径转附件）。
   useEffect(() => {
-    (window as unknown as Record<string, unknown>).__qnShareReceive = (text: string) => {
+    (window as unknown as Record<string, unknown>).__qnShareReceive = (text: string, imagePath?: string, imageMime?: string) => {
       setShareDraft(text);
+      if (imagePath) {
+        const ext = imagePath.split(".").pop()?.toLowerCase() ?? "png";
+        void readBinaryFile(imagePath)
+          .then((base64: string) => {
+            setShareImages([{ name: `shared-image-${Date.now()}.${ext}`, type: imageMime || "image/png", base64 }]);
+          })
+          .catch((e: unknown) => setError(`读取分享图片失败：${e}`));
+      } else {
+        setShareImages([]);
+      }
       setQuickCaptureOpen(true);
     };
   }, []);
@@ -940,6 +953,8 @@ export default function App() {
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
   const [shareDraft, setShareDraft] = useState("");
+  /** 系统分享带入的图片（base64，随弹窗提交一并落附件目录）。 */
+  const [shareImages, setShareImages] = useState<CaptureImage[]>([]);
   /** 移动端相册/文件选图的隐藏 input（wry onShowFileChooser 桥接 SAF）。 */
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   /** 速记管理视图（占据编辑区；命令面板 / Ctrl+Alt+M 打开，Esc 退出）。 */
@@ -3487,6 +3502,7 @@ export default function App() {
       {quickCaptureOpen && (
         <QuickCaptureDialog
           initialDraft={shareDraft}
+          initialImages={shareImages}
           target={
             settings.quickCaptureVault
               ? `${settings.quickCaptureFile.trim() || "Inbox.md"} · ${vaultDisplayName(settings.quickCaptureVault)}`
@@ -3497,6 +3513,7 @@ export default function App() {
           onClose={() => {
             setQuickCaptureOpen(false);
             setShareDraft("");
+            setShareImages([]);
           }}
           onOpenSettings={() => {
             setQuickCaptureOpen(false);

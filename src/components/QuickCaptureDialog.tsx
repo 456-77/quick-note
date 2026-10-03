@@ -32,6 +32,7 @@ export default function QuickCaptureDialog({
   onClose,
   onOpenSettings,
   initialDraft = "",
+  initialImages = [],
 }: {
   target: string;
   tagSuggestions: string[];
@@ -42,11 +43,13 @@ export default function QuickCaptureDialog({
   onOpenSettings: () => void;
   /** 系统分享带入的预填文本（A3：分享到 Quick Note）。 */
   initialDraft?: string;
+  /** 系统分享带入的图片。 */
+  initialImages?: CaptureImage[];
 }) {
   const [draft, setDraft] = useState(initialDraft);
   const [tags, setTags] = useState<string[]>([]);
   const [tagDraft, setTagDraft] = useState("");
-  const [images, setImages] = useState<CaptureImage[]>([]);
+  const [images, setImages] = useState<CaptureImage[]>(initialImages);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** 正在预览的图片下标（null = 预览没开）。 */
