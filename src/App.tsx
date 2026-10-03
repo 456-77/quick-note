@@ -95,6 +95,7 @@ import {
   insertRowBelow,
   isCursorInTable,
 } from "./lib/tableEdit";
+import { toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleTaskList } from "./lib/codeEdit";
 import { useDaily } from "./lib/useDaily";
 import { useSync, type SyncController } from "./lib/useSync";
 import "./styles.css";
@@ -639,6 +640,12 @@ export default function App() {
     }
     if (!rightCollapsed) {
       setRightCollapsed(true);
+      return true;
+    }
+    // 都没开着：有未保存改动时先落盘（消费这次 back；再按一次才真正退出——
+    // 落盘是异步的，evaluateJavascript 的同步判定等不了它）
+    if (dirtyRef.current) {
+      saveRef.current?.();
       return true;
     }
     return false;
@@ -4189,6 +4196,33 @@ export default function App() {
             className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
             ref={hostRef}
           />
+          {isMobile() && current && (
+            <div className="mobile-md-toolbar" aria-label="Markdown 工具栏">
+              {(
+                [
+                  { label: "H", title: "标题", run: () => viewRef.current && toggleHeading(viewRef.current, 1) },
+                  { label: "B", title: "粗体", run: () => viewRef.current && toggleBold(viewRef.current) },
+                  { label: "</>", title: "行内代码", run: () => viewRef.current && toggleInlineCode(viewRef.current) },
+                  { label: "•", title: "无序列表", run: () => viewRef.current && toggleBulletList(viewRef.current) },
+                  { label: "☑", title: "待办", run: () => viewRef.current && toggleTaskList(viewRef.current) },
+                  { label: "{}", title: "代码块", run: () => viewRef.current && toggleCodeBlock(viewRef.current) },
+                ] as const
+              ).map((item) => (
+                <button
+                  key={item.label}
+                  type="button"
+                  title={item.title}
+                  onMouseDown={(event) => {
+                    // 阻止焦点离开编辑器（工具栏点击不打断输入法组合）
+                    event.preventDefault();
+                    item.run();
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
           {previewPath && vault && (
             <FilePreview vault={vault} path={previewPath} onClose={() => setPreviewPath(null)} />
           )}

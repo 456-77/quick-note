@@ -419,3 +419,116 @@ export function editorTab(view: EditorView): boolean {
 export function editorShiftTab(view: EditorView): boolean {
   return indentLess(view);
 }
+
+// ---------------------------------------------------------------- 任务列表 / 粗体（移动端工具栏）
+
+/**
+ * 对一行应用「切换任务列表」的变换（纯函数，独立于 listToggleLine——任务框的
+ * 语义差异足够大：bullet 带框算任务行、去框连 `-` 一起去、add 时框跟 `-` 一体）。
+ * 返回 null 表示无变换可做。
+ */
+export function taskToggleLine(
+  lineText: string,
+  mode: "add" | "remove",
+): { text: string; delta: number } | null {
+  const item = listMarkerOf(lineText);
+  if (mode === "remove") {
+    if (!item) return null;
+    if (item.kind === "ordered") return null;
+    const box = TASK_BOX_RE.exec(item.content);
+    if (!box) return null; // 普通 bullet 不动（那是无序列表命令的领地）
+    const text = item.indent + item.content.slice(box[0].length);
+    return { text, delta: text.length - lineText.length };
+  }
+  const indent = item?.indent ?? "";
+  const body = item?.content ?? lineText.trim();
+  // 已是任务行：无变换（调用方的 all-task 判定会走 remove）
+  if (item && item.kind === "bullet" && TASK_BOX_RE.exec(item.content)) return null;
+  if (body.trim() === "") return null; // 空行不插标记（与列表命令同一取舍）
+  const text = `${indent}- [ ] ${body}`;
+  return { text, delta: text.length - lineText.length };
+}
+
+/** 切换任务列表（`- [ ] `）的编辑器入口：选区全部是任务行时移除，否则添加。 */
+export function toggleTaskList(view: EditorView): boolean {
+  const { state } = view;
+  const range = state.selection.main;
+  const fromLine = state.doc.lineAt(range.from);
+  const toLine = state.doc.lineAt(range.to);
+  const lines = state.doc.toString().split("\n");
+  if (isInsideFence(lines, fromLine.number - 1) || isInsideFence(lines, toLine.number - 1)) {
+    return false;
+  }
+  const targets: { line: ReturnType<typeof state.doc.line>; text: string }[] = [];
+  for (let number = fromLine.number; number <= toLine.number; number += 1) {
+    const line = state.doc.line(number);
+    targets.push({ line, text: line.text });
+  }
+  const nonEmpty = targets.filter(({ text }) => text.trim() !== "");
+  const target = state.doc.lineAt(range.head);
+  const scope =
+    nonEmpty.length > 0
+      ? nonEmpty
+      : [targets.find(({ line }) => line === target) ?? targets[0]];
+  const isTaskLine = (text: string) => {
+    const item = listMarkerOf(text);
+    return item?.kind === "bullet" && TASK_BOX_RE.exec(item.content) !== null;
+  };
+  const mode = scope.length > 0 && scope.every(({ text }) => isTaskLine(text)) ? "remove" : "add";
+
+  const changes: Array<{ from: number; to: number; insert: string }> = [];
+  let headAnchor: number | null = null;
+  for (const { line, text } of scope) {
+    const result = taskToggleLine(text, mode);
+    if (!result) continue;
+    changes.push({ from: line.from, to: line.to, insert: result.text });
+    if (line === target) {
+      const headCol = Math.min(Math.max(range.head - line.from, 0), text.length);
+      headAnchor = line.from + Math.min(Math.max(headCol + result.delta, 0), result.text.length);
+    }
+  }
+  if (changes.length === 0) return false;
+  view.dispatch({
+    changes,
+    selection: { anchor: headAnchor ?? range.head },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
+/**
+ * 包裹/取消选区的成对标记（`**粗体**` 等）。行为对齐 autoPairs 的选中包裹语义：
+ * 有选区时包裹，选区恰被同款标记包裹时取消包裹；无选区时在光标处插入一对并居中。
+ */
+export function wrapSelection(view: EditorView, marker: string): boolean {
+  const { state } = view;
+  const range = state.selection.main;
+  const selected = state.sliceDoc(range.from, range.to);
+  const len = marker.length;
+  if (selected.length >= len * 2 && selected.startsWith(marker) && selected.endsWith(marker)) {
+    const inner = selected.slice(len, -len);
+    view.dispatch({
+      changes: { from: range.from, to: range.to, insert: inner },
+      selection: { anchor: range.from, head: range.from + inner.length },
+      scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+  }
+  const text = `${marker}${selected}${marker}`;
+  view.dispatch({
+    changes: { from: range.from, to: range.to, insert: text },
+    selection: range.empty
+      ? { anchor: range.from + len }
+      : { anchor: range.from + len, head: range.from + len + selected.length },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
+}
+
+/** 切换粗体（`**`）。 */
+export function toggleBold(view: EditorView): boolean {
+  return wrapSelection(view, "**");
+}

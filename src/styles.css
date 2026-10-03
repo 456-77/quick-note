@@ -7277,6 +7277,11 @@ button.cm-tag:hover {
   .tree-item .tree-more {
     display: inline-flex;
   }
+  /* 长按 = contextmenu（右键菜单），防止系统文本选择手柄抢交互 */
+  .tree-item, .tree-dir, .tabbar, .cm-row {
+    -webkit-user-select: none;
+    user-select: none;
+  }
   /* 键盘提示（Ctrl K 等）在无物理键盘的设备上没有意义 */
   .editor-empty-keys {
     display: none;
@@ -7387,5 +7392,51 @@ button.cm-tag:hover {
   }
   .mobile-nav button.is-on {
     color: var(--accent, #8ea6ff);
+  }
+}
+
+/* ==================== A2 后续：Markdown 工具栏 + 设置全屏化 ==================== */
+
+/* 移动端 Markdown 工具栏：编辑区底部浮动（底栏上方），点击不打焦点 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .mobile-md-toolbar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    height: 42px;
+    display: flex;
+    align-items: stretch;
+    background: var(--panel);
+    box-shadow: 0 -1px 0 var(--border-soft);
+    z-index: 55;
+  }
+  .mobile-md-toolbar button {
+    flex: 1;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 14px;
+    font-weight: 600;
+    font-family: ui-monospace, monospace;
+    cursor: pointer;
+  }
+  .mobile-md-toolbar button:active {
+    background: var(--hover);
+    color: var(--text);
+  }
+}
+
+/* 设置面板全屏化：桌面尺寸固定 860px，移动端占满视口（顶部安全区留白） */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .settings-panel {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100% !important;
+    height: 100% !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    padding-top: env(safe-area-inset-top, 0px);
+    animation: none;
   }
 }
