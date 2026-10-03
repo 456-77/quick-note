@@ -7465,9 +7465,6 @@ button.cm-tag:hover {
     flex: none;
     border-bottom: 1px solid var(--border-soft);
   }
-  .settings-nav-head {
-    display: none;
-  }
   .settings-nav-item {
     flex: none;
     padding: 6px 12px;
@@ -7508,5 +7505,53 @@ button.cm-tag:hover {
   .settings-nav {
     -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
     mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
+  }
+}
+
+/* ==================== A2 第五批：设置页真机复测修复 ==================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* 分类导航改换行平铺：横滚在真机上表现为「最后一个 tab 被切一半」，
+     两行平铺让全部分类可见、彻底消除切割感。head（标题+关闭钮）恢复显示——
+     移动端唯一的关闭入口在里面，不能跟着横排化一起藏掉。 */
+  .settings-nav {
+    flex-wrap: wrap;
+    overflow-x: hidden;
+    -webkit-mask-image: none;
+    mask-image: none;
+    row-gap: 2px;
+  }
+  .settings-nav-head {
+    width: 100%;
+  }
+  .settings-nav-item {
+    padding: 7px 12px;
+  }
+
+  /* 行布局：桌面是 label 118px 固定列 + 控件同行；手机放不下，长说明文字
+     会在 118px 列里溢出并与右列控件交错重叠（真机截图的「文字分割」）。
+     改为 label 独占一行、控件第二行。 */
+  .settings-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+  .settings-row > span {
+    width: 100%;
+  }
+  .settings-row > input:not([type="checkbox"]),
+  .settings-row > select {
+    width: 100%;
+    flex: 1 1 100%;
+  }
+}
+
+/* hint 的 flex 是为桌面「折叠钮 + 文本」准备的；手机上 children 的每个内联
+   片段（文本/加粗/文本）会被拆成并列 item，视觉上是「两列文字交错」——
+   移动端回归正常文本流 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .settings-hint {
+    display: block;
+  }
+  .settings-hint .hint-toggle {
+    display: none;
   }
 }

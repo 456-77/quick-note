@@ -16,7 +16,8 @@
         android:label="@string/app_name"
         android:theme="@style/Theme.quick_note"
         android:usesCleartextTraffic="${usesCleartextTraffic}"
-        android:requestLegacyExternalStorage="true">
+        android:requestLegacyExternalStorage="true"
+        android:enableOnBackInvokedCallback="false">
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"
