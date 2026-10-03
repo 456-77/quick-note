@@ -7267,3 +7267,125 @@ button.cm-tag:hover {
   max-width: 460px;
   margin: 6px 0 0;
 }
+
+/* ==================== A2：移动端布局（触屏 + 窄屏） ==================== */
+/* 判定口径：hover:none + pointer:coarse（触摸设备）。与 isMobile()（UA）配合，
+   CSS 管呈现形态，React 管交互入口。 */
+
+/* 触屏没有 hover：⋯ 按钮常驻（文件树行、待办行、代码块复制等同理 */
+@media (hover: none) and (pointer: coarse) {
+  .tree-item .tree-more {
+    display: inline-flex;
+  }
+  /* 键盘提示（Ctrl K 等）在无物理键盘的设备上没有意义 */
+  .editor-empty-keys {
+    display: none;
+  }
+}
+
+/* 移动端骨架：侧栏抽屉化 + 底部导航。900px 以下且触屏生效；
+   桌面窄窗口（有鼠标）保持现有挤压布局不变。 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .app {
+    /* 底部导航占位（含手势条安全区） */
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  }
+
+  /* 桌面窗口概念全部退场；顶栏的左右栏开关与底栏重复，也退场 */
+  .window-controls,
+  .topbar .icon-btn[title^="窗口置顶"],
+  .topbar .icon-btn[title^="专注模式"],
+  .topbar .icon-btn[title^="文件栏"],
+  .topbar .icon-btn[title^="侧栏"],
+  .topbar .brand,
+  .topbar-search,
+  .searchbox,
+  .statusbar,
+  .editor-empty-actions .btn-ghost:last-child {
+    display: none;
+  }
+
+  /* 侧栏 → 抽屉：浮在内容上，不再挤压编辑区 */
+  .sidebar-left,
+  .sidebar-right {
+    position: fixed;
+    top: 48px;
+    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    width: min(80vw, 330px) !important;
+    min-width: 0 !important;
+    z-index: 70;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    opacity: 1;
+  }
+  .sidebar-left {
+    left: 0;
+    border-right: 1px solid var(--border-soft);
+  }
+  .sidebar-right {
+    right: 0;
+    border-left: 1px solid var(--border-soft);
+  }
+  /* 收起时整体移出屏幕（保留现有 left-collapsed 类语义），过渡跟随展开 */
+  .body.left-collapsed > .sidebar-left {
+    transform: translateX(-105%);
+    width: min(80vw, 330px) !important;
+    opacity: 1;
+    pointer-events: none;
+  }
+  .body.right-collapsed > .sidebar-right {
+    transform: translateX(105%);
+    width: min(80vw, 330px) !important;
+    opacity: 1;
+    pointer-events: none;
+  }
+  .sidebar-left,
+  .sidebar-right,
+  .body.left-collapsed > .sidebar-left,
+  .body.right-collapsed > .sidebar-right {
+    transition: transform 0.2s ease;
+  }
+
+  /* 抽屉背后的遮罩 */
+  .drawer-backdrop {
+    position: fixed;
+    inset: 48px 0 0 0;
+    z-index: 65;
+    background: rgba(0, 0, 0, 0.42);
+  }
+
+  /* 边缘的 » 恢复钮在抽屉模型下多余（顶栏有汉堡、底栏有入口） */
+  .sidebar-restore {
+    display: none;
+  }
+
+  /* 底部导航 */
+  .mobile-nav {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: calc(52px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    display: flex;
+    align-items: stretch;
+    background: var(--panel);
+    box-shadow: 0 -1px 0 var(--border-soft);
+    z-index: 80;
+  }
+  .mobile-nav button {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border: 0;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 10.5px;
+    cursor: pointer;
+  }
+  .mobile-nav button.is-on {
+    color: var(--accent, #8ea6ff);
+  }
+}

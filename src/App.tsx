@@ -215,12 +215,17 @@ export default function App() {
   /** 光标所在行（0 基；目录面板高亮当前标题）。 */
   const [cursorLine, setCursorLine] = useState(0);
   /** 左右栏收起状态（Obsidian 式；持久化）。 */
-  const [leftCollapsed, setLeftCollapsed] = useState(
-    () => localStorage.getItem("quicknote.ui.leftCollapsed") === "1",
-  );
-  const [rightCollapsed, setRightCollapsed] = useState(
-    () => localStorage.getItem("quicknote.ui.rightCollapsed") === "1",
-  );
+  const [leftCollapsed, setLeftCollapsed] = useState(() => {
+    // 移动端抽屉形态：冷启动**总是**从收起开始（会话内打开，不跨会话记忆展开态）
+    if (isMobile()) return true;
+    const saved = localStorage.getItem("quicknote.ui.leftCollapsed");
+    return saved === null ? false : saved === "1";
+  });
+  const [rightCollapsed, setRightCollapsed] = useState(() => {
+    if (isMobile()) return true;
+    const saved = localStorage.getItem("quicknote.ui.rightCollapsed");
+    return saved === null ? false : saved === "1";
+  });
   /** 自定义样式内容（设置面板 textarea 的值）。 */
   const [customCssDraft, setCustomCssDraft] = useState(() => getCustomCss());
   /** 周回顾的选周弹窗（M4）。 */
@@ -607,6 +612,40 @@ export default function App() {
   useEffect(() => {
     vaultRef.current = vault;
   }, [vault]);
+
+  // Android 返回键的消费链（MainActivity.onBackPressed 会先问这里）：
+  // 设置/命令面板/仓库页/速记弹窗/抽屉，谁开着关谁；都没有则放行退出。
+  const backConsumeRef = useRef<() => boolean>(() => false);
+  backConsumeRef.current = () => {
+    if (showSettings) {
+      setShowSettings(false);
+      return true;
+    }
+    if (paletteOpen) {
+      setPaletteOpen(false);
+      return true;
+    }
+    if (vaultGateOpen) {
+      setVaultGateOpen(false);
+      return true;
+    }
+    if (quickCaptureOpen) {
+      setQuickCaptureOpen(false);
+      return true;
+    }
+    if (!leftCollapsed) {
+      setLeftCollapsed(true);
+      return true;
+    }
+    if (!rightCollapsed) {
+      setRightCollapsed(true);
+      return true;
+    }
+    return false;
+  };
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__qnConsumeBack = () => backConsumeRef.current();
+  }, []);
 
   useEffect(() => {
     syncRef.current = sync;
@@ -3232,6 +3271,16 @@ export default function App() {
         </button>
 
         <div className="topbar-side topbar-end">
+          {isMobile() && (
+            <button
+              type="button"
+              className="icon-btn"
+              onClick={shortcuts.palette}
+              title="全局搜索笔记与内容，或执行命令（Ctrl+K）"
+            >
+              <IconSearch size={16} />
+            </button>
+          )}
           <div className="mode-switch" role="group" aria-label="视图模式">
             <button
               type="button"
@@ -3864,7 +3913,27 @@ export default function App() {
         })()}
 
       <div className={`body${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}`}>
-        <aside className="sidebar sidebar-left" ref={sidebarLeftRef}>
+        {/* 移动端抽屉遮罩：任一侧栏打开时盖住内容，点击收起（桌面渲染了也被 CSS 隐藏？不——
+            只在移动端渲染，桌面 DOM 不出现） */}
+        {isMobile() && (!leftCollapsed || !rightCollapsed) && (
+          <div
+            className="drawer-backdrop"
+            onClick={() => {
+              setLeftCollapsed(true);
+              setRightCollapsed(true);
+            }}
+          />
+        )}
+        <aside
+          className="sidebar sidebar-left"
+          ref={sidebarLeftRef}
+          onClick={(event) => {
+            // 移动端：点中笔记/目录行后自动收抽屉（事件委托，不逐行改回调）
+            if (!isMobile()) return;
+            const target = event.target as HTMLElement;
+            if (target.closest(".tree-item, .tree-dir")) setLeftCollapsed(true);
+          }}
+        >
           <div className="panel-head">
             <span className="panel-title">知识库</span>
             <span className="panel-count" title="仓库内笔记数">{noteCount}</span>
@@ -4294,6 +4363,38 @@ export default function App() {
         </aside>
         )}
       </div>
+
+      {/* 移动端底部导航：文件树 / 快速笔记 / 面板（桌面无此元素） */}
+      {isMobile() && (
+        <nav className="mobile-nav">
+          <button
+            type="button"
+            className={leftCollapsed ? "" : "is-on"}
+            onClick={() => {
+              setLeftCollapsed(!leftCollapsed);
+              if (!leftCollapsed) setRightCollapsed(true);
+            }}
+          >
+            <IconPanelLeft size={18} />
+            文件
+          </button>
+          <button type="button" onClick={() => setQuickCaptureOpen(true)}>
+            <IconPlus size={18} />
+            速记
+          </button>
+          <button
+            type="button"
+            className={rightCollapsed ? "" : "is-on"}
+            onClick={() => {
+              setRightCollapsed(!rightCollapsed);
+              if (!rightCollapsed) setLeftCollapsed(true);
+            }}
+          >
+            <IconPanelRight size={18} />
+            面板
+          </button>
+        </nav>
+      )}
 
       <footer className="statusbar">
         <span className="status-cell">{current?.path ?? "未打开文件"}</span>
