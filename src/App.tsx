@@ -43,7 +43,8 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { isMobile } from "./lib/platform";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
@@ -1457,6 +1458,8 @@ export default function App() {
 
     startupVault()
       .catch(() => null) // 拿不到启动参数不影响使用，用户手动选目录即可
+      // 移动端没有「自选目录」语义：固定 app 私有仓库，优先于 localStorage（防陈旧路径）
+      .then((dir) => dir ?? (isMobile() ? defaultVaultDir().catch(() => null) : null))
       .then((dir) => dir ?? localStorage.getItem(VAULT_KEY))
       .then((dir) => {
         if (!dir) return;

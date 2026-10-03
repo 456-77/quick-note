@@ -19,17 +19,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
-# 直接访问 WebView2 COM 接口（ICoreWebView2_16 内存占用目标，最小化时自动释放缓存）
-webview2-com = "0.38.2"
-# 必须与 webview2-com-sys 0.38 所用的 windows-core 同版本，Interface::cast 才是同一个 trait
-windows-core = "=0.61.2"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-# 定时提醒的系统通知（M4）。Windows 上走系统通知中心
+# 定时提醒的系统通知（M4）。Windows 上走系统通知中心，Android 走系统通知（需权限）
 tauri-plugin-notification = "2"
-# 应用内更新：检查/下载/安装 + 重启。签名密钥在 %USERPROFILE%.tauriquick-note.key
-# （构建时需 TAURI_SIGNING_PRIVATE_KEY_PATH 指向私钥；发版流程见记忆/发布文档）
-tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -37,9 +30,33 @@ sha2 = "0.10"
 notify = "8"
 # 附件是二进制（图片等），走 base64 比 JSON 数字数组小三倍左右、也快得多
 base64 = "0.22"
-# 同步用的 HTTP 客户端。阻塞式（不需要 async 运行时），TLS 走系统实现
-# （Windows 上是 SChannel），因此不引入 ring 之类的 C 依赖，也不用装 OpenSSL。
+# 同步用的 HTTP 客户端。阻塞式（不需要 async 运行时）。
+
+# ---- 桌面专属依赖 --------------------------------------------------------
+# 注意：Cargo.toml 的 target 段不认识 tauri-build 注入的自定义 cfg(desktop)/cfg(mobile)，
+# 必须用 target_os 布尔表达式；源码内部（net.rs/lib.rs）才可以用 cfg(desktop)/cfg(mobile)。
+
+# 应用内更新：检查/下载/安装 + 重启。updater 插件不支持移动端（Android 由商店/侧载机制管）。
+# 签名密钥在 %USERPROFILE%.tauriquick-note.key
+# （构建时需 TAURI_SIGNING_PRIVATE_KEY_PATH 指向私钥；发版流程见记忆/发布文档）
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater = "2"
+# TLS 走系统实现（Windows 上是 SChannel），因此不引入 ring 之类的 C 依赖，也不用装 OpenSSL。
+# native-tls 没有 Android 后端，这里必须与移动端的 rustls 依赖互斥分层。
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
+
+# ---- 移动端依赖 ----------------------------------------------------------
+# Android 上走纯 Rust 的 rustls + 捆绑的 Mozilla 根证书（WebPki）：Android 系统信任库
+# 没有暴露在 rustls-native-certs 期望的标准路径上，WebPki 对 Let's Encrypt 等主流 CA 足够。
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+# ---- Windows 专属依赖 ----------------------------------------------------
+# 直接访问 WebView2 COM 接口（内存占用目标，最小化时自动释放缓存）
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
+# 必须与 webview2-com-sys 0.38 所用的 windows-core 同版本，Interface::cast 才是同一个 trait
+windows-core = "=0.61.2"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

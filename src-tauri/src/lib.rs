@@ -36,9 +36,7 @@ fn configure_webview2() {
 /// 时取其父目录为仓库；文件本身经 {@link startup_file} 传给前端打开。
 #[tauri::command]
 fn startup_vault() -> Option<String> {
-    let arg = std::env::args()
-        .skip(1)
-        .find(|arg| !arg.starts_with('-'))?;
+    let arg = std::env::args().skip(1).find(|arg| !arg.starts_with('-'))?;
     let path = std::path::Path::new(&arg);
     if path.is_dir() {
         return Some(arg);
@@ -53,9 +51,7 @@ fn startup_vault() -> Option<String> {
 /// 前端进入参数里的仓库后自动打开这一篇。
 #[tauri::command]
 fn startup_file() -> Option<String> {
-    let arg = std::env::args()
-        .skip(1)
-        .find(|arg| !arg.starts_with('-'))?;
+    let arg = std::env::args().skip(1).find(|arg| !arg.starts_with('-'))?;
     let path = std::path::Path::new(&arg);
     if path.is_file() {
         return Some(arg);
@@ -101,6 +97,27 @@ fn first_existing_path(paths: Vec<String>) -> Option<String> {
     paths
         .into_iter()
         .find(|p| std::path::Path::new(p).is_file())
+}
+
+/// 移动端默认仓库目录：app 私有数据目录下的 `vault`（不存在则创建）。
+///
+/// Android 的分区存储（Scoped Storage）下没有稳定的「用户自选目录」语义，仓库固定
+/// 放在沙箱内，跨设备互通交给云同步。桌面端永远返回 None——仓库始终由用户选择，
+/// 绝不能悄悄落进应用数据目录。
+#[tauri::command]
+fn default_vault_dir(app: tauri::AppHandle) -> Option<String> {
+    #[cfg(mobile)]
+    {
+        use tauri::Manager;
+        let dir = app.path().app_local_data_dir().ok()?.join("vault");
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.to_string_lossy().into_owned())
+    }
+    #[cfg(desktop)]
+    {
+        let _ = app;
+        None
+    }
 }
 
 /// 用无头浏览器把本地 HTML 打印成 PDF 文件。
@@ -150,10 +167,11 @@ fn export_pdf_via_browser(
 /// 内存节省程序一样主动清掉图片解码缓存、光栅缓存与可回收堆——对不可见的
 /// 窗口是纯收益；切回 NORMAL 后缓存按需重建，不影响前台体验。
 /// 该接口需要 WebView2 Runtime 121+：cast 失败（旧 Runtime）静默跳过，行为不变。
+#[cfg(desktop)]
 fn set_memory_usage_target(window: &tauri::WebviewWindow, low: bool) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
-        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
-        ICoreWebView2_19,
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
     };
     use windows_core::Interface;
     let _ = window.with_webview(move |webview| unsafe {
@@ -174,78 +192,93 @@ fn set_memory_usage_target(window: &tauri::WebviewWindow, low: bool) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    configure_webview2();
-    // 自定义数据目录（若有）：在 WebView 创建**之前**读取指针并迁移旧数据。
-    data_dir::configure_webview_data_dir();
+    // WebView2 启动参数与自定义数据目录都是桌面概念；移动端 WebView 由系统管理。
+    #[cfg(desktop)]
+    {
+        configure_webview2();
+        // 自定义数据目录（若有）：在 WebView 创建**之前**读取指针并迁移旧数据。
+        data_dir::configure_webview_data_dir();
+    }
 
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // updater 插件不支持移动端（依赖也要按平台编译），注册随依赖一起走桌面。
+    #[cfg(desktop)]
+    {
+        // 应用内更新（检查/下载/安装）与更新后的重启；密钥与端点见 tauri.conf.json
+        builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    }
+    builder
         .manage(watch::WatcherState::default())
         .setup(|app| {
-            // 「不用时自动释放内存」主通道：WebView2 内存占用目标档位。
-            //  - 最小化 → 立即降 LOW（不可见，纯收益）；
-            //  - 失焦 3 分钟 → 降 LOW（用户在别的应用里工作时，缓存没必要占着）；
-            //  - 聚焦/还原 → 回 NORMAL，缓存按需重建，不牺牲前台体验。
-            // LOW 档由 WebView2 主动清图片解码/光栅/可回收缓存，实测挂机数十分钟后
-            // 整棵进程树私有内存可从 ~194MB 降到 ~148MB。
-            use std::sync::atomic::{AtomicBool, Ordering};
-            use std::sync::Arc;
-            use tauri::Manager;
-            if let Some(window) = app.get_webview_window("main") {
-                let watched = window.clone();
-                let focused = Arc::new(AtomicBool::new(true));
-                let low = Arc::new(AtomicBool::new(false));
-                window.on_window_event(move |event| {
-                    let set_target = |want_low: bool| {
-                        if want_low != low.load(Ordering::Relaxed) {
-                            low.store(want_low, Ordering::Relaxed);
-                            set_memory_usage_target(&watched, want_low);
-                        }
-                    };
-                    match event {
-                        tauri::WindowEvent::Focused(true) => {
-                            focused.store(true, Ordering::Relaxed);
-                            set_target(false);
-                        }
-                        tauri::WindowEvent::Focused(false) => {
-                            focused.store(false, Ordering::Relaxed);
-                            if watched.is_minimized().unwrap_or(false) {
-                                set_target(true);
-                            } else {
-                                // 短暂切走不降档（避免回切时缓存重建的卡顿），挂机才降
-                                let flag = focused.clone();
-                                let w = watched.clone();
-                                let low_flag = low.clone();
-                                std::thread::spawn(move || {
-                                    std::thread::sleep(std::time::Duration::from_secs(180));
-                                    if !flag.load(Ordering::Relaxed) && !low_flag.swap(true, Ordering::Relaxed) {
-                                        set_memory_usage_target(&w, true);
+            let _ = app; // 移动端 setup 暂无逻辑，桌面分支使用它
+            #[cfg(desktop)]
+            {
+                // 「不用时自动释放内存」主通道：WebView2 内存占用目标档位。
+                //  - 最小化 → 立即降 LOW（不可见，纯收益）；
+                //  - 失焦 3 分钟 → 降 LOW（用户在别的应用里工作时，缓存没必要占着）；
+                //  - 聚焦/还原 → 回 NORMAL，缓存按需重建，不牺牲前台体验。
+                // LOW 档由 WebView2 主动清图片解码/光栅/可回收缓存，实测挂机数十分钟后
+                // 整棵进程树私有内存可从 ~194MB 降到 ~148MB。
+                use std::sync::atomic::{AtomicBool, Ordering};
+                use std::sync::Arc;
+                use tauri::Manager;
+                if let Some(window) = app.get_webview_window("main") {
+                    let watched = window.clone();
+                    let focused = Arc::new(AtomicBool::new(true));
+                    let low = Arc::new(AtomicBool::new(false));
+                    window.on_window_event(move |event| {
+                        let set_target = |want_low: bool| {
+                            if want_low != low.load(Ordering::Relaxed) {
+                                low.store(want_low, Ordering::Relaxed);
+                                set_memory_usage_target(&watched, want_low);
+                            }
+                        };
+                        match event {
+                            tauri::WindowEvent::Focused(true) => {
+                                focused.store(true, Ordering::Relaxed);
+                                set_target(false);
+                            }
+                            tauri::WindowEvent::Focused(false) => {
+                                focused.store(false, Ordering::Relaxed);
+                                if watched.is_minimized().unwrap_or(false) {
+                                    set_target(true);
+                                } else {
+                                    // 短暂切走不降档（避免回切时缓存重建的卡顿），挂机才降
+                                    let flag = focused.clone();
+                                    let w = watched.clone();
+                                    let low_flag = low.clone();
+                                    std::thread::spawn(move || {
+                                        std::thread::sleep(std::time::Duration::from_secs(180));
+                                        if !flag.load(Ordering::Relaxed)
+                                            && !low_flag.swap(true, Ordering::Relaxed)
+                                        {
+                                            set_memory_usage_target(&w, true);
+                                        }
+                                    });
+                                }
+                            }
+                            tauri::WindowEvent::Resized(_) => {
+                                // 最小化可能不伴随失焦事件，这里兜底；还原且聚焦时回 NORMAL
+                                if watched.is_minimized().unwrap_or(false) {
+                                    if !low.swap(true, Ordering::Relaxed) {
+                                        set_memory_usage_target(&watched, true);
                                     }
-                                });
-                            }
-                        }
-                        tauri::WindowEvent::Resized(_) => {
-                            // 最小化可能不伴随失焦事件，这里兜底；还原且聚焦时回 NORMAL
-                            if watched.is_minimized().unwrap_or(false) {
-                                if !low.swap(true, Ordering::Relaxed) {
-                                    set_memory_usage_target(&watched, true);
-                                }
-                            } else if focused.load(Ordering::Relaxed) {
-                                if low.swap(false, Ordering::Relaxed) {
-                                    set_memory_usage_target(&watched, false);
+                                } else if focused.load(Ordering::Relaxed) {
+                                    if low.swap(false, Ordering::Relaxed) {
+                                        set_memory_usage_target(&watched, false);
+                                    }
                                 }
                             }
+                            _ => {}
                         }
-                        _ => {}
-                    }
-                });
+                    });
+                }
             }
             Ok(())
         })
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
-        // 应用内更新（检查/下载/安装）与更新后的重启；密钥与端点见 tauri.conf.json
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             startup_vault,
@@ -255,6 +288,7 @@ pub fn run() {
             write_text_file,
             first_existing_path,
             export_pdf_via_browser,
+            default_vault_dir,
             data_dir::app_data_paths,
             data_dir::set_custom_data_dir,
             vault::list_entries,

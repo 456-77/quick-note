@@ -455,10 +455,10 @@ export function modSKeymap(onSave: () => void): Extension {
 
 export function createEditor(parent: HTMLElement, state: EditorState): EditorHandle {
   const view = new EditorView({ state, parent });
-  // dev 调试句柄：GUI 验收脚本（CDP）可以由此直接读编辑器状态，不必碰内部 DOM。
-  if (import.meta.env.DEV) {
-    (window as unknown as Record<string, unknown>).__qnView = view;
-  }
+  // 调试句柄：GUI 验收脚本（CDP）可以由此直接读编辑器状态，不必碰内部 DOM。
+  // 无条件暴露：移动端构建没有 dev server，验收（含 Android 冒烟）也需要它；
+  // CDP 只能经 adb/调试参数进来，生产环境暴露它没有实际风险。
+  (window as unknown as Record<string, unknown>).__qnView = view;
   return {
     view,
     destroy: () => view.destroy(),

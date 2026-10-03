@@ -211,6 +211,9 @@ export async function pickDirectory(title: string): Promise<string | null> {
 /** 命令行参数指定的仓库目录（没有则为 null）。 */
 export const startupVault = () => invoke<string | null>("startup_vault");
 
+/** 移动端默认仓库（app 私有数据目录下的 vault）。桌面恒为 null——仓库由用户选择。 */
+export const defaultVaultDir = () => invoke<string | null>("default_vault_dir");
+
 /** 启动参数里的笔记文件（资源管理器双击 .md / 打开方式）：进仓库后自动打开。 */
 export const startupFile = () => invoke<string | null>("startup_file");
 

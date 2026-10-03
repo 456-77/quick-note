@@ -19,6 +19,8 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use ureq::http::{Request, Response};
+#[cfg(mobile)]
+use ureq::tls::RootCerts;
 use ureq::tls::{TlsConfig, TlsProvider};
 use ureq::{Agent, Body};
 
@@ -45,18 +47,25 @@ pub struct HttpResponse {
 
 fn build_agent(timeout_ms: Option<u64>) -> Agent {
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
+    // TLS provider 按平台显式指认（ureq 默认是 Rustls，而桌面只编译了 native-tls——
+    // 不指认的话第一个 https 请求就会 panic，见下方测试守护）。
+    //   - 桌面：native-tls（Windows 上 = SChannel，不引入 C 依赖）；
+    //   - 移动：rustls + WebPki 捆绑根证书（Android 系统信任库不在
+    //     rustls-native-certs 期望的标准路径上；对 Let's Encrypt 等主流 CA 足够）。
+    #[cfg(desktop)]
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::NativeTls)
+        .build();
+    #[cfg(mobile)]
+    let tls = TlsConfig::builder()
+        .provider(TlsProvider::Rustls)
+        .root_certs(RootCerts::WebPki)
+        .build();
     ureq::Agent::config_builder()
         // 4xx/5xx 不当异常：调用方要看的正是状态码本身
         .http_status_as_error(false)
         .timeout_global(Some(timeout))
-        // ureq 的 TlsConfig 默认 provider 是 rustls，而我们只编译了 native-tls
-        // （Windows 上走 SChannel，不引入 C 依赖）——不显式指认的话，第一个 https
-        // 请求就会 panic（"provider is Rustls but feature is not enabled: rustls"）。
-        .tls_config(
-            TlsConfig::builder()
-                .provider(TlsProvider::NativeTls)
-                .build(),
-        )
+        .tls_config(tls)
         .build()
         .new_agent()
 }
@@ -169,7 +178,10 @@ mod tests {
         let result = send_once(
             "GET",
             "https://api.github.com/repos/456-77/quick-note/releases/latest",
-            vec![HttpHeader { name: "User-Agent".into(), value: "quick-note".into() }],
+            vec![HttpHeader {
+                name: "User-Agent".into(),
+                value: "quick-note".into(),
+            }],
             None,
             None,
             Some(15_000),

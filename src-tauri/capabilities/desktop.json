@@ -1,14 +1,13 @@
 {
-  "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Capability for the main window (desktop only)",
+  "platforms": ["windows", "macOS", "linux"],
   "windows": [
     "main"
   ],
   "permissions": [
     "core:default",
     "opener:default",
-    "opener:allow-reveal-item-in-dir",
     "opener:allow-reveal-item-in-dir",
     "dialog:default",
     "notification:default",

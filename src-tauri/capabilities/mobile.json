@@ -1,0 +1,14 @@
+{
+  "identifier": "mobile-default",
+  "description": "Capability for the main webview on mobile platforms",
+  "platforms": ["android", "iOS"],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:default",
+    "notification:default"
+  ]
+}
