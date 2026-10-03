@@ -2,6 +2,7 @@ pub mod data_dir;
 pub mod net;
 pub mod sync_store;
 pub mod vault;
+pub mod vault_home;
 mod watch;
 
 /// WebView2 启动参数。
@@ -289,6 +290,12 @@ pub fn run() {
             first_existing_path,
             export_pdf_via_browser,
             default_vault_dir,
+            vault_home::vault_home_get,
+            vault_home::vault_home_set_from_uri,
+            vault_home::vault_home_clear,
+            vault_home::list_vaults,
+            vault_home::create_vault,
+            vault_home::storage_writable,
             data_dir::app_data_paths,
             data_dir::set_custom_data_dir,
             vault::list_entries,

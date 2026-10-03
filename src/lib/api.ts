@@ -214,6 +214,39 @@ export const startupVault = () => invoke<string | null>("startup_vault");
 /** 移动端默认仓库（app 私有数据目录下的 vault）。桌面恒为 null——仓库由用户选择。 */
 export const defaultVaultDir = () => invoke<string | null>("default_vault_dir");
 
+/** 移动端仓库列表里的一项（基础目录下的一级子目录）。 */
+export interface VaultInfo {
+  /** 仓库绝对路径（真实路径，可直接当 vault 参数用）。 */
+  path: string;
+  /** 目录名（= 默认云端仓库名）。 */
+  name: string;
+  /** 深度限定的 .md 数量。 */
+  noteCount: number;
+  /** 最新一篇 .md 的修改时间（毫秒），空仓库为 0。 */
+  lastModified: number;
+  /** 有 quick-daily-note.json 或 .obsidian（强仓库特征）。 */
+  hasVaultMarker: boolean;
+}
+
+/** 移动端仓库基础目录（未设置返回 null）。 */
+export const vaultHomeGet = () => invoke<string | null>("vault_home_get");
+
+/** 用 SAF 目录选择器返回的 URI 设置基础目录（换算真实路径 + 建目录 + 可写探测）。 */
+export const vaultHomeSetFromUri = (uri: string) =>
+  invoke<string>("vault_home_set_from_uri", { uri });
+
+/** 清除基础目录设置（回引导页；仓库文件不动）。 */
+export const vaultHomeClear = () => invoke<void>("vault_home_clear");
+
+/** 列出基础目录下的仓库（未设置基础目录时为空列表）。 */
+export const listVaults = () => invoke<VaultInfo[]>("list_vaults");
+
+/** 在基础目录下新建仓库，返回其路径。 */
+export const createVault = (name: string) => invoke<string>("create_vault", { name });
+
+/** 存储/基础目录可写性探测（「所有文件访问」授权后回查用）。 */
+export const storageWritable = () => invoke<boolean>("storage_writable");
+
 /** 启动参数里的笔记文件（资源管理器双击 .md / 打开方式）：进仓库后自动打开。 */
 export const startupFile = () => invoke<string | null>("startup_file");
 

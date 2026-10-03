@@ -43,8 +43,9 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
 import { isMobile } from "./lib/platform";
+import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
@@ -1456,11 +1457,23 @@ export default function App() {
       if (legacy) dailyRef.current.updateSettings({ pastedImageFolder: legacy });
     };
 
-    startupVault()
-      .catch(() => null) // 拿不到启动参数不影响使用，用户手动选目录即可
-      // 移动端没有「自选目录」语义：固定 app 私有仓库，优先于 localStorage（防陈旧路径）
-      .then((dir) => dir ?? (isMobile() ? defaultVaultDir().catch(() => null) : null))
-      .then((dir) => dir ?? localStorage.getItem(VAULT_KEY))
+    /** 启动时确定打开哪个仓库。移动端：基础目录 → 上次仓库（须在基础目录下）；
+        未设基础目录且没跳过过 → 返回 null（空状态里出引导页）。桌面链路不变。 */
+    const bootVault = async (): Promise<string | null> => {
+      const explicit = await startupVault().catch(() => null);
+      if (explicit) return explicit;
+      if (isMobile()) {
+        const home = await vaultHomeGet().catch(() => null);
+        if (!home) {
+          return vaultHomeSkipped() ? defaultVaultDir().catch(() => null) : null;
+        }
+        const last = localStorage.getItem(VAULT_KEY);
+        return last && last.startsWith(home) ? last : null;
+      }
+      return localStorage.getItem(VAULT_KEY);
+    };
+
+    bootVault()
       .then((dir) => {
         if (!dir) return;
         useVault(dir);
@@ -1529,7 +1542,13 @@ export default function App() {
     [refresh, activateVault, recordVault],
   );
 
+  const [vaultGateOpen, setVaultGateOpen] = useState(false);
   const openVault = useCallback(async () => {
+    // 移动端不走 SAF 选取：仓库来自基础目录的发现列表，弹出仓库页
+    if (isMobile()) {
+      setVaultGateOpen(true);
+      return;
+    }
     const picked = await pickVault();
     if (!picked) return;
     if (picked === vault) return;
@@ -3389,6 +3408,22 @@ export default function App() {
         </>
       )}
 
+      {/* 移动端仓库页（浮层）：从仓库下拉/命令面板进入 */}
+      {vaultGateOpen && (
+        <div className="mv-overlay" onClick={(e) => { if (e.target === e.currentTarget) setVaultGateOpen(false); }}>
+          <div className="mv-overlay-card">
+            <MobileVaultGate
+              onOpen={(p) => {
+                setVaultGateOpen(false);
+                void switchVault(p);
+              }}
+              onClose={() => setVaultGateOpen(false)}
+              syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
+            />
+          </div>
+        </div>
+      )}
+
       <SettingsDialog
         open={showSettings}
         onClose={() => setShowSettings(false)}
@@ -4058,6 +4093,14 @@ export default function App() {
           {/* 空状态只在**确实没有任何标签**时渲染：曾经 activeTab 与 openTabs
               短暂错位时（替换式打开的中间帧），这层会叠在上一篇内容上透出 */}
           {!current && openTabs.length === 0 && (
+            isMobile() && !vault ? (
+              <div className="editor-empty">
+                <MobileVaultGate
+                  onOpen={(p) => void switchVault(p)}
+                  syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
+                />
+              </div>
+            ) : (
             <div className="editor-empty">
               <div className="editor-empty-logo">
                 <IconSparkles size={26} />
@@ -4081,6 +4124,7 @@ export default function App() {
                 <span><kbd>Ctrl E</kbd> 切换实时 / 源码</span>
               </div>
             </div>
+            )
           )}
           {leftCollapsed && (
             <button
