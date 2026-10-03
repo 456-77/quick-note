@@ -28,6 +28,8 @@ export interface UpdateInfo {
   newer: boolean;
   /** 新版本介绍（release body / latest.json 的 notes），更新弹窗展示。 */
   body: string;
+  /** 最新 release 里的 .apk 直链（移动端应用内安装用；桌面/无资产时 undefined）。 */
+  apkUrl?: string;
 }
 
 /** 比较两个点分版本号；解析不出的段按 0 处理，相等返回 false。 */
@@ -62,7 +64,14 @@ export async function checkForUpdate(current: string): Promise<UpdateInfo> {
   if (response.status !== 200) {
     throw new Error(`GitHub 返回 HTTP ${response.status}`);
   }
-  let data: { tag_name?: string; html_url?: string; body?: string; draft?: boolean; prerelease?: boolean };
+  let data: {
+    tag_name?: string;
+    html_url?: string;
+    body?: string;
+    draft?: boolean;
+    prerelease?: boolean;
+    assets?: { name?: string; browser_download_url?: string }[];
+  };
   try {
     data = JSON.parse(responseBodyText(response));
   } catch {
@@ -73,11 +82,14 @@ export async function checkForUpdate(current: string): Promise<UpdateInfo> {
     throw new Error("响应缺少版本信息");
   }
   const latest = data.tag_name.replace(/^v/i, "");
+  // 移动端应用内安装用的 APK 直链（universal/aarch64 优先，任取一个 .apk 资产）
+  const apkUrl = data.assets?.find((a) => a.browser_download_url?.endsWith(".apk"))?.browser_download_url;
   return {
     latest,
     url: data.html_url,
     newer: isNewer(current, latest),
     body: data.body ?? "",
+    apkUrl,
   };
 }
 

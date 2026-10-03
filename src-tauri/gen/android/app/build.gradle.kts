@@ -13,6 +13,15 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// 发布签名（keystore.properties 在 .gitignore 里，密钥本体在仓库外的
+// H:\develop\keystore\）：无该文件时 release 回退 debug 签名，开发机缺配置也能出包。
+val keystoreProperties = Properties().apply {
+    val propFile = file("keystore.properties")
+    if (propFile.exists()) {
+        propFile.inputStream().use { load(it) }
+    }
+}
+
 android {
     compileSdk = 36
     namespace = "com.quicknote.app"
@@ -43,6 +52,17 @@ android {
                     .plus(getDefaultProguardFile("proguard-android-optimize.txt"))
                     .toList().toTypedArray()
             )
+            signingConfig = if (keystoreProperties.containsKey("storeFile")) {
+                signingConfigs.create("release") {
+                    storeFile = file(keystoreProperties.getProperty("storeFile"))
+                    storePassword = keystoreProperties.getProperty("storePassword")
+                    keyAlias = keystoreProperties.getProperty("keyAlias")
+                    keyPassword = keystoreProperties.getProperty("keyPassword")
+                }
+            } else {
+                // 未配置签名：回退 debug（仅本机构验证用，发布必须配置 keystore.properties）
+                signingConfigs.getByName("debug")
+            }
         }
     }
     kotlinOptions {

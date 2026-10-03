@@ -442,6 +442,8 @@ export default function App() {
     notes?: string;
     /** 更新提示条是否被用户关掉（关掉后本次启动不再弹）。 */
     dismissed?: boolean;
+    /** 最新 release 的 .apk 直链（移动端应用内安装用，GitHub 回退路径才解析）。 */
+    apkUrl?: string;
   }>({ state: "idle", message: "" });
   /** updater 插件的 Update 对象：下载安装必须用它。 */
   const updateRef = useRef<Update | null>(null);
@@ -493,7 +495,7 @@ export default function App() {
       const info = await checkForUpdate(appVersion || "0.0.0");
       setUpdateCheck(
         info.newer
-          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可到发布页下载`, url: info.url, notes: info.body }
+          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可到发布页下载`, url: info.url, notes: info.body, apkUrl: info.apkUrl }
           : { state: "done", message: `已是最新版本（最新发布 v${info.latest}）` },
       );
     } catch (e) {
@@ -520,6 +522,36 @@ export default function App() {
       }));
     }
   }, []);
+
+  /**
+   * 移动端应用内更新：qnAndroid 桥下载 APK → 拉起系统安装器。
+   * 未授权「安装未知应用」时先跳授权页，回来再点一次。
+   */
+  const installUpdateMobile = useCallback(() => {
+    const bridge = (window as unknown as Record<string, unknown>).qnAndroid as
+      | { canRequestInstall: () => boolean; requestInstallPermission: () => void; installUpdate: (url: string) => void }
+      | undefined;
+    const url = updateCheck.apkUrl;
+    if (!bridge || !url) {
+      // 桥不在（非 Android 或旧包）或缺 APK 资产：退回发布页
+      void openReleasePage(updateCheck.url);
+      return;
+    }
+    if (!bridge.canRequestInstall()) {
+      bridge.requestInstallPermission();
+      setStatus("请在系统设置中允许 Quick Note「安装未知应用」，回来后再点一次「下载并安装」");
+      return;
+    }
+    (window as unknown as Record<string, unknown>).__qnUpdateDone = (ok: boolean, msg: string) => {
+      setUpdateCheck((prev) =>
+        ok
+          ? { ...prev, state: "done", message: `更新包已下载：${msg}，按系统提示完成安装`, available: true }
+          : { ...prev, state: "error", message: `更新失败：${msg}`, available: true },
+      );
+    };
+    setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新包…" }));
+    bridge.installUpdate(url);
+  }, [updateCheck.apkUrl, updateCheck.url]);
 
   // 启动后延迟几秒自动检查一次更新（静默；发现新版本时弹提示条）
   useEffect(() => {
@@ -3579,7 +3611,7 @@ export default function App() {
         appVersion={appVersion}
         updateCheck={updateCheck}
         checkUpdate={checkUpdate}
-        installUpdate={() => void installUpdate()}
+        installUpdate={() => (isMobile() ? installUpdateMobile() : void installUpdate())}
         openReleasePage={(url) => void openReleasePage(url)}
       />
 
@@ -3603,8 +3635,12 @@ export default function App() {
               <div className="update-dialog-notes">{updateCheck.notes}</div>
             )}
             <div className="update-dialog-actions">
-              <button type="button" className="btn" onClick={() => void installUpdate()}>
-                {updateCheck.state === "error" ? "重试更新" : "立即更新"}
+              <button
+                type="button"
+                className="btn"
+                onClick={() => (isMobile() ? installUpdateMobile() : void installUpdate())}
+              >
+                {updateCheck.state === "error" ? "重试更新" : isMobile() ? "下载并安装" : "立即更新"}
               </button>
               {updateCheck.url && (
                 <button type="button" className="btn btn-ghost" onClick={() => void openReleasePage(updateCheck.url!)}>

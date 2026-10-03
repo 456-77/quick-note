@@ -6,6 +6,8 @@
          MANAGE_EXTERNAL_STORAGE 需要用户在系统设置里授予（引导页指路）；
          requestLegacyExternalStorage 覆盖 Android 10（API 29），11+ 靠前者。 -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- 应用内更新：下载 APK 后拉起系统安装器（需用户在系统设置里授权一次） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
 
     <!-- AndroidTV support -->
