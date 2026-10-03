@@ -614,12 +614,14 @@ export default function App() {
     vaultRef.current = vault;
   }, [vault]);
 
-  // Android 返回键的消费链（MainActivity.onBackPressed 会先问这里）：
-  // 设置/命令面板/仓库页/速记弹窗/抽屉，谁开着关谁；都没有则放行退出。
+  // Android 返回键的消费链（MainActivity.onBackPressed 会先问这里）。
+  // **视觉在最上层的先关**：快速笔记弹窗（z 950）> 命令面板 > 仓库页 > 设置，
+  // 然后才是抽屉——按固定优先级的话，设置开着时按返回会先关设置而用户看到
+  // 的是弹窗还开着（用户实测反馈过）。
   const backConsumeRef = useRef<() => boolean>(() => false);
   backConsumeRef.current = () => {
-    if (showSettings) {
-      setShowSettings(false);
+    if (quickCaptureOpen) {
+      setQuickCaptureOpen(false);
       return true;
     }
     if (paletteOpen) {
@@ -630,8 +632,8 @@ export default function App() {
       setVaultGateOpen(false);
       return true;
     }
-    if (quickCaptureOpen) {
-      setQuickCaptureOpen(false);
+    if (showSettings) {
+      setShowSettings(false);
       return true;
     }
     if (!leftCollapsed) {

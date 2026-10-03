@@ -7478,3 +7478,35 @@ button.cm-tag:hover {
     min-height: 0;
   }
 }
+
+/* ==================== A2 第四批：状态栏避让、设置导航收尾、快速笔记可关 ==================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* 快速笔记的拦截层加上可见遮罩（:has 选兄弟——backdrop 与弹窗是兄弟节点），
+     否则设置面板开着时弹窗背后毫无「浮层」感，也没有明确的「点外面关闭」区域 */
+  .menu-backdrop:has(+ .quick-capture) {
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 940;
+  }
+
+  /* 「Esc 关闭」在手机上没有意义，强化成明确的关闭按钮（点击本来就生效） */
+  .quick-capture-esc {
+    padding: 6px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-2);
+  }
+  .quick-capture-esc kbd {
+    display: none;
+  }
+
+  /* 设置导航：搜索框（桌面 Ctrl+F 场景）在横排里占掉近半宽度且被切，藏起；
+     tab 行右缘做渐隐提示「还能往右滑」 */
+  .settings-nav .settings-search,
+  .settings-nav input[type="text"] {
+    display: none;
+  }
+  .settings-nav {
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
+    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
+  }
+}
