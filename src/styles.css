@@ -7555,3 +7555,24 @@ button.cm-tag:hover {
     display: none;
   }
 }
+
+/* ==================== A2 第六批：顶栏精简、树行右对齐、编辑区留白 ==================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* 文件行 ⋯ 右对齐：桌面上靠 .tree-size 的 margin-left:auto 推到行尾，而它
+     hover 才显示——触屏常驻的 ⋯ 自己带上这个推力 */
+  .tree-item .tree-more {
+    margin-left: auto;
+  }
+
+  /* 保存胶囊在移动端退场（自动保存 + 空间紧张；保存钮在 dirty 时仍出现） */
+  .save-chip {
+    display: none;
+  }
+
+  /* 编辑区留白：桌面 8px/24px/34vh 是「大屏呼吸感」，手机上顶部太空、
+     底部 34vh 足足一屏的三分之一。压缩为固定值（120px ≈ 工具栏+底栏+余量，
+     用固定 px 而不是 vh——键盘弹出时 vh 会缩，留白跟着跳）。 */
+  .editor-host .cm-scroller {
+    padding: 10px 14px 120px;
+  }
+}

@@ -3290,26 +3290,38 @@ export default function App() {
               <IconSearch size={16} />
             </button>
           )}
-          <div className="mode-switch" role="group" aria-label="视图模式">
+          {isMobile() ? (
+            /* 移动端：两个文字段合成一个互切图标钮，省下一半顶栏宽度 */
             <button
               type="button"
-              className={`seg${mode === "live" ? " is-on" : ""}`}
-              onClick={() => changeMode("live")}
-              title="渲染语法标记，光标所在行显示源码（Ctrl+E 切换）"
+              className="seg mode-toggle"
+              onClick={() => changeMode(mode === "live" ? "source" : "live")}
+              title={mode === "live" ? "切换到源码（Ctrl+E）" : "切换到实时预览（Ctrl+E）"}
             >
-              <IconEye size={13} />
-              实时
+              {mode === "live" ? <IconEye size={14} /> : <IconCode size={14} />}
             </button>
-            <button
-              type="button"
-              className={`seg${mode === "source" ? " is-on" : ""}`}
-              onClick={() => changeMode("source")}
-              title="显示 Markdown 原文（Ctrl+E 切换）"
-            >
-              <IconCode size={13} />
-              源码
-            </button>
-          </div>
+          ) : (
+            <div className="mode-switch" role="group" aria-label="视图模式">
+              <button
+                type="button"
+                className={`seg${mode === "live" ? " is-on" : ""}`}
+                onClick={() => changeMode("live")}
+                title="渲染语法标记，光标所在行显示源码（Ctrl+E 切换）"
+              >
+                <IconEye size={13} />
+                实时
+              </button>
+              <button
+                type="button"
+                className={`seg${mode === "source" ? " is-on" : ""}`}
+                onClick={() => changeMode("source")}
+                title="显示 Markdown 原文（Ctrl+E 切换）"
+              >
+                <IconCode size={13} />
+                源码
+              </button>
+            </div>
+          )}
           <span
             className={`save-chip${dirty ? " is-dirty" : ""}`}
             title={dirty ? "有未保存改动，1 秒左右自动保存（Ctrl+S 立即保存）" : "所有改动已保存"}
