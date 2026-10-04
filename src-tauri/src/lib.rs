@@ -340,6 +340,8 @@ pub fn run() {
             net::http_request,
             sync_store::sync_state_load,
             sync_store::sync_state_save,
+            sync_store::sync_state_load_for,
+            sync_store::sync_state_save_for,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

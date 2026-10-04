@@ -7640,3 +7640,22 @@ button.cm-tag:hover {
     font-size: 13.5px;
   }
 }
+
+/* 批量同步：多选态与操作条 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .mv-multi-toggle {
+    align-self: flex-end;
+    padding: 4px 10px;
+    font-size: 12.5px;
+  }
+  .mv-card.is-picked {
+    border-color: var(--accent, #8ea6ff);
+    background: rgba(108, 140, 255, 0.08);
+  }
+  .mv-batch-bar {
+    display: flex;
+    gap: 8px;
+    width: 100%;
+    max-width: 560px;
+  }
+}

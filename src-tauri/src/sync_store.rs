@@ -92,3 +92,43 @@ mod tests {
         assert!(!path.with_extension("json.tmp").exists());
     }
 }
+
+// ---------------------------------------------------------------- 多仓库批量同步
+
+/// 批量同步的 per-vault 状态文件名（`sync-state-<name>.json`）。
+///
+/// 仓库名会做温和清洗（路径分隔符换下划线）；同名冲突的概率与后果都可接受——
+/// 最坏是两个同目录名仓库共享一份批量游标，内容比对仍保证正确，只是多拉几轮。
+fn state_path_for(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("无法定位配置目录: {e}"))?;
+    let safe: String = name
+        .chars()
+        .map(|c| if c == '/' || c == '\\' { '_' } else { c })
+        .collect();
+    Ok(dir.join(format!("sync-state-{safe}.json")))
+}
+
+/// 读取某个仓库的批量同步状态（不存在返回 `None`）。
+#[tauri::command]
+pub fn sync_state_load_for(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    let path = state_path_for(&app, &name)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    fs::read_to_string(&path).map(Some).map_err(|e| format!("读取同步状态失败: {e}"))
+}
+
+/// 写某个仓库的批量同步状态（原子写：临时文件 + 改名）。
+#[tauri::command]
+pub fn sync_state_save_for(app: AppHandle, name: String, text: String) -> Result<(), String> {
+    let path = state_path_for(&app, &name)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    }
+    let tmp = path.with_extension("json.tmp");
+    fs::write(&tmp, text).map_err(|e| format!("写入同步状态失败: {e}"))?;
+    fs::rename(&tmp, &path).map_err(|e| format!("落盘同步状态失败: {e}"))
+}

@@ -333,6 +333,13 @@ export const httpRequest = (options: HttpRequestOptions) =>
 export const syncStateLoad = () => invoke<string | null>("sync_state_load");
 
 /** 写入本机同步状态。 */
+/** 批量同步：读取某个仓库的独立同步状态（不存在返回 null）。 */
+export const syncStateLoadFor = (name: string) => invoke<string | null>("sync_state_load_for", { name });
+
+/** 批量同步：写某个仓库的独立同步状态（原子写）。 */
+export const syncStateSaveFor = (name: string, state: string) =>
+  invoke<void>("sync_state_save_for", { name, state: state });
+
 export const syncStateSave = (text: string) => invoke<void>("sync_state_save", { text });
 
 /** 被范围内笔记引用到、且本地存在的附件（已解析出路径）。 */

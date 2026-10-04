@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { syncStateLoad, syncStateSave } from "./api.ts";
+import { syncStateLoad, syncStateLoadFor, syncStateSave, syncStateSaveFor } from "./api.ts";
 import {
   DEFAULT_SYNC_STATE,
   adaptStateToVault,
@@ -57,6 +57,8 @@ export interface SyncController {
   /** 关掉落盘失败的警告。 */
   dismissSaveError: () => void;
   updateConfig: (patch: Partial<SyncConfig>) => void;
+  /** 批量同步一轮：为指定仓库临时建独立引擎跑一轮（不切 UI，per-vault 状态）。 */
+  syncVaultOnce: (vaultPath: string) => Promise<void>;
   /** 立即同步一次（设置里改完、或用户点状态栏）。 */
   syncNow: () => void;
   /** 重置游标并全量拉取（自愈入口）。 */
@@ -273,6 +275,45 @@ export function useSync(options: {
     [persist],
   );
 
+  /**
+   * 批量同步一轮：为指定仓库临时建一个独立引擎跑「拉取+推送」，**不切 UI、
+   * 不动全局状态**。状态持久化到 per-vault 文件（sync-state-<仓库名>.json），
+   * 与当前 UI 仓库的 sync-state.json 互不干扰。folder/待办快照不参与批量轮
+   * （各仓库库内配置不同，v1 按整库推送；打开仓库后的常规同步仍完整）。
+   * 冲突由引擎的 conflictHold 扣住：本轮跳过推送，用户打开仓库重新同步时
+   * 会再次弹出裁决。
+   */
+  const syncVaultOnce = useCallback((vaultPath: string): Promise<void> => {
+    const name = vaultPath.replace(/[\/]+$/, "").split(/[\/]/).pop() ?? vaultPath;
+    const configuredBase = stateRef.current;
+    return syncStateLoadFor(name)
+      .then((saved) => {
+        const base = saved ? (normalizeSyncState(JSON.parse(saved)) as SyncDeviceState) : configuredBase;
+        const adapted = adaptStateToVault(base, vaultPath);
+        const engine = new SyncEngine(vaultPath, adapted, {
+          getFolder: () => "",
+          getVaultName: () => name,
+          excludedSyncPaths: () => [],
+          getVirtualFiles: () => ({}),
+          mergeVirtualFile: () => false,
+          onStatus: () => {},
+          onNotice: (message, kind) => noticeRef.current(message, kind),
+          onConflicts: () => {
+            // 冲突文件被 conflictHold 扣住（哈希不更新），打开仓库的常规同步
+            // 会再次弹出裁决
+          },
+          persist: (next) =>
+            syncStateSaveFor(name, JSON.stringify(next, null, 2)).then(
+              () => {},
+              (e) => noticeRef.current(`保存同步状态失败：${e}`, "error"),
+            ),
+        });
+        return engine
+          .syncNow("manual")
+          .finally(() => engine.destroy());
+      });
+  }, []);
+
   const syncNow = useCallback(() => {
     const engine = engineRef.current;
     if (!engine) {
@@ -352,6 +393,7 @@ export function useSync(options: {
     stateError,
     saveError,
     updateConfig,
+    syncVaultOnce,
     syncNow,
     resetCursorAndSync,
     resetState,

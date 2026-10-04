@@ -1688,6 +1688,32 @@ export default function App() {
 
   const [vaultGateOpen, setVaultGateOpen] = useState(false);
 
+  const [syncBatchLabel, setSyncBatchLabel] = useState("");
+  /** 仓库列表多选同步：逐仓库跑独立引擎（不切 UI），进度实时更新到列表。 */
+  const syncSelectedVaults = useCallback(
+    async (paths: string[]) => {
+      for (let i = 0; i < paths.length; i += 1) {
+        const name = paths[i].replace(/[\/]+$/, "").split(/[\/]/).pop() ?? paths[i];
+        setSyncBatchLabel(`正在同步 ${name}（${i + 1}/${paths.length}）…`);
+        try {
+          // 每仓上限 90s：连不上的仓库不能拖死整批（模拟器 NAT 会静默丢
+          // RST，TCP 超时要等满 120s；超时跳过，下轮再来）
+          await Promise.race([
+            sync.syncVaultOnce(paths[i]),
+            new Promise((_, reject) =>
+              window.setTimeout(() => reject(new Error("超时（90 秒）")), 90_000),
+            ),
+          ]);
+        } catch (e) {
+          setError(`同步 ${name} 失败：${e}`);
+        }
+      }
+      setSyncBatchLabel("");
+      setStatus(`批量同步完成（${paths.length} 个仓库）`);
+    },
+    [sync],
+  );
+
   /** 仓库列表页的「开启同步」：切到该仓库（同步状态跟仓库走）→ 启用自动同步 →
       立即同步一轮 → 回到列表页。 */
   const enableVaultSync = useCallback(
@@ -3347,6 +3373,11 @@ export default function App() {
             type="button"
             className={`vault-pill${vaultMenu ? " is-open" : ""}`}
             onClick={(event) => {
+              if (isMobile()) {
+                // 移动端：仓库 pill 直达仓库列表页（桌面才是下拉菜单）
+                setVaultGateOpen(true);
+                return;
+              }
               const rect = event.currentTarget.getBoundingClientRect();
               setVaultMenu({ x: rect.left, y: rect.bottom + 6 });
             }}
@@ -3615,6 +3646,8 @@ export default function App() {
               onConfigureSync={(server, username, password) =>
                 sync.updateConfig({ serverUrl: server, username, password })
               }
+              onSyncSelected={(paths) => syncSelectedVaults(paths)}
+              syncBatchLabel={syncBatchLabel}
             />
           </div>
         </div>
@@ -4383,6 +4416,8 @@ export default function App() {
                   onConfigureSync={(server, username, password) =>
                     sync.updateConfig({ serverUrl: server, username, password })
                   }
+                  onSyncSelected={(paths) => syncSelectedVaults(paths)}
+                  syncBatchLabel={syncBatchLabel}
                 />
               </div>
             ) : (

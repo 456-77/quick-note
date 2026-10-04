@@ -52,6 +52,10 @@ export interface MobileVaultGateProps {
   syncConfigured: boolean;
   /** 引导第三步：保存同步账号信息（server/username/password）。跳过则不调。 */
   onConfigureSync: (serverUrl: string, username: string, password: string) => void;
+  /** 批量同步选中的仓库（App 侧串行跑独立引擎，返回完成）。 */
+  onSyncSelected: (paths: string[]) => Promise<void>;
+  /** 批量同步进行中的描述（空串 = 空闲）；非空时列表禁交互。 */
+  syncBatchLabel: string;
 }
 
 export function MobileVaultGate({
@@ -61,6 +65,8 @@ export function MobileVaultGate({
   onEnableSync,
   syncConfigured,
   onConfigureSync,
+  onSyncSelected,
+  syncBatchLabel,
 }: MobileVaultGateProps) {
   const [home, setHome] = useState<string | null | undefined>(undefined); // undefined = 查询中
   const [vaults, setVaults] = useState<VaultInfo[]>([]);
@@ -73,6 +79,9 @@ export function MobileVaultGate({
   const [granted, setGranted] = useState<boolean | null>(null); // null = 查询中
   /** 建议目录输入（默认 Documents/QuickNote）。 */
   const [homeDraft, setHomeDraft] = useState("/storage/emulated/0/Documents/QuickNote");
+  /** 多选模式（批量同步）：选中的仓库路径集合。 */
+  const [multiMode, setMultiMode] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   /** 引导子步骤：2=目录（授权通过后）；3=云同步（可选，保存/跳过后进列表）。 */
   const [onboardStep, setOnboardStep] = useState<2 | 3>(2);
   const [serverDraft, setServerDraft] = useState("");
@@ -296,14 +305,38 @@ export function MobileVaultGate({
         )}
       </div>
       {error && <p className="mv-error">{error}</p>}
+      {syncConfigured && vaults.length > 0 && (
+        <button
+          type="button"
+          className="btn btn-ghost mv-multi-toggle"
+          onClick={() => {
+            setMultiMode((v) => !v);
+            setSelected(new Set());
+          }}
+        >
+          {multiMode ? "取消多选" : "多选同步"}
+        </button>
+      )}
+      {syncBatchLabel && <p className="mv-hint">{syncBatchLabel}</p>}
       <div className="mv-list">
         {vaults.length === 0 && <p className="mv-lede">基础目录下还没有仓库。新建一个，或把电脑端的仓库文件夹放进来（USB / 网盘同步均可）。</p>}
         {vaults.map((v) => (
           <button
             type="button"
             key={v.path}
-            className={`mv-card${syncActiveVaultName && syncActiveVaultName === v.name ? " is-syncing" : ""}`}
-            onClick={() => onOpen(v.path)}
+            className={`mv-card${syncActiveVaultName && syncActiveVaultName === v.name ? " is-syncing" : ""}${multiMode && selected.has(v.path) ? " is-picked" : ""}`}
+            onClick={() => {
+              if (multiMode) {
+                setSelected((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(v.path)) next.delete(v.path);
+                  else next.add(v.path);
+                  return next;
+                });
+                return;
+              }
+              onOpen(v.path);
+            }}
           >
             <span className="mv-card-name">
               <IconFolder size={15} /> {v.name}
@@ -336,6 +369,26 @@ export function MobileVaultGate({
           </button>
         ))}
       </div>
+      {multiMode && (
+        <div className="mv-batch-bar">
+          <button
+            type="button"
+            className="btn"
+            disabled={selected.size === 0 || Boolean(syncBatchLabel)}
+            onClick={() => {
+              const paths = [...selected];
+              setSelected(new Set());
+              setMultiMode(false);
+              void onSyncSelected(paths);
+            }}
+          >
+            ⟳ 同步选中（{selected.size}）
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={() => { setMultiMode(false); setSelected(new Set()); }}>
+            取消
+          </button>
+        </div>
+      )}
       {creating ? (
         <div className="mv-create">
           <input
