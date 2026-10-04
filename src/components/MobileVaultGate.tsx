@@ -60,6 +60,8 @@ export interface MobileVaultGateProps {
   syncFailedPaths: string[];
   /** 重试失败的仓库。 */
   onRetrySyncFailed: () => void;
+  /** 枚举云端当前用户的全部仓库（账号已配置时调用）。 */
+  listCloudVaults: () => Promise<Array<{ name: string; version: number }>>;
 }
 
 export function MobileVaultGate({
@@ -73,6 +75,7 @@ export function MobileVaultGate({
   syncBatchLabel,
   syncFailedPaths,
   onRetrySyncFailed,
+  listCloudVaults,
 }: MobileVaultGateProps) {
   const [home, setHome] = useState<string | null | undefined>(undefined); // undefined = 查询中
   const [vaults, setVaults] = useState<VaultInfo[]>([]);
@@ -90,9 +93,10 @@ export function MobileVaultGate({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** 引导子步骤：2=目录（授权通过后）；3=云同步（可选，保存/跳过后进列表）。 */
   const [onboardStep, setOnboardStep] = useState<2 | 3>(2);
-  /** 「从云端拉取仓库」的名字输入（服务器上有、本地还没有的仓库）。 */
-  const [pullName, setPullName] = useState("");
-  const [pulling, setPulling] = useState(false);
+  /** 云端仓库列表（账号配置后自动拉取；本地已有 → 标记）。 */
+  const [cloudVaults, setCloudVaults] = useState<Array<{ name: string; version: number }> | null>(null);
+  const [cloudError, setCloudError] = useState<string | null>(null);
+  const [pullingName, setPullingName] = useState<string | null>(null);
   const [serverDraft, setServerDraft] = useState("");
   const [userDraft, setUserDraft] = useState("");
   const [passDraft, setPassDraft] = useState("");
@@ -178,32 +182,36 @@ export function MobileVaultGate({
     void reload();
   }, [reload]);
 
-  const skipToPrivate = async () => {
-    setBusy(true);
-    try {
-      const dir = await defaultVaultDir();
-      if (!dir) throw new Error("拿不到私有仓库目录");
-      localStorage.setItem(SKIP_KEY, "1");
-      onOpen(dir);
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  /** 从云端拉取仓库：本地建同名目录（已存在则直接用），跑一轮同步把云端
-      内容拉下来。服务器没有枚举仓库的接口，「输入名字拉取」是现有协议下
-      最短路径；仓库名 = 云端仓库名（与电脑端/Obsidian 一致）。 */
-  const pullCloudVault = async () => {
-    const name = pullName.trim();
-    if (!name || busy || pulling) return;
-    if (name.includes("/") || name.includes("\\")) {
-      setError("仓库名不能含路径分隔符");
+  // 云端仓库枚举：账号已配置时自动拉取（列表页与拉取区共用）
+  useEffect(() => {
+    if (!syncConfigured) {
+      setCloudVaults(null);
       return;
     }
+    let cancelled = false;
+    listCloudVaults()
+      .then((list: Array<{ name: string; version: number }>) => {
+        if (!cancelled) {
+          setCloudVaults(list);
+          setCloudError(null);
+        }
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setCloudVaults([]);
+          setCloudError(String(e));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [syncConfigured, listCloudVaults]);
+
+  /** 拉取一个云端仓库到本地（目录已存在直接同步）。 */
+  const pullVault = async (name: string) => {
+    if (!name || pullingName || !home) return;
     setError(null);
-    setPulling(true);
+    setPullingName(name);
     try {
       let path: string;
       try {
@@ -216,12 +224,25 @@ export function MobileVaultGate({
         }
       }
       await onSyncSelected([path]);
-      setPullName("");
       await reload();
     } catch (e) {
       setError(String(e));
     } finally {
-      setPulling(false);
+      setPullingName(null);
+    }
+  };
+
+  const skipToPrivate = async () => {
+    setBusy(true);
+    try {
+      const dir = await defaultVaultDir();
+      if (!dir) throw new Error("拿不到私有仓库目录");
+      localStorage.setItem(SKIP_KEY, "1");
+      onOpen(dir);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -475,21 +496,32 @@ export function MobileVaultGate({
       )}
       {syncConfigured && (
         <div className="mv-pull">
-          <p className="mv-pull-title">云端已有这个仓库？输入名字直接拉取到本地（含全部笔记）：</p>
-          <div className="mv-home-input">
-            <input
-              type="text"
-              value={pullName}
-              onChange={(e) => setPullName(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") void pullCloudVault();
-              }}
-              placeholder="云端仓库名（如 运维）"
-            />
-            <button type="button" className="btn" disabled={pulling || !pullName.trim()} onClick={() => void pullCloudVault()}>
-              {pulling ? "拉取中…" : "拉取"}
-            </button>
-          </div>
+          <p className="mv-pull-title">云端仓库（点击拉取到本地，含全部笔记）：</p>
+          {cloudError && <p className="mv-hint">云端列表获取失败：{cloudError}</p>}
+          {cloudVaults === null && !cloudError && <p className="mv-hint">正在获取云端仓库列表…</p>}
+          {cloudVaults?.length === 0 && <p className="mv-hint">云端还没有仓库：先在某个仓库上开启同步，它就会出现在这里。</p>}
+          {cloudVaults?.map((cv) => {
+            const local = vaults.find((v) => v.name === cv.name);
+            return (
+              <button
+                key={cv.name}
+                type="button"
+                className="mv-card mv-card-cloud"
+                disabled={pullingName !== null}
+                onClick={() => (local ? onOpen(local.path) : void pullVault(cv.name))}
+              >
+                <span className="mv-card-name">
+                  <IconFolder size={15} /> {cv.name}
+                </span>
+                <span className="mv-card-meta">
+                  {local ? `已在本地 · ${local.noteCount} 篇（点按打开）` : `云端版本 ${cv.version} · 点按拉取`}
+                </span>
+                {!local && (
+                  <span className="mv-sync-toggle">{pullingName === cv.name ? "拉取中…" : "拉取到本地"}</span>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
       <p className="mv-foot">

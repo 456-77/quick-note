@@ -7293,7 +7293,7 @@ button.cm-tag:hover {
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
   .app {
     /* 底部导航占位（含手势条安全区） */
-    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(46px + env(safe-area-inset-bottom, 0px));
   }
 
   /* 桌面窗口概念全部退场；顶栏的左右栏开关与底栏重复，也退场 */
@@ -7315,7 +7315,7 @@ button.cm-tag:hover {
   .sidebar-right {
     position: fixed;
     top: 48px;
-    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(46px + env(safe-area-inset-bottom, 0px));
     width: min(80vw, 330px) !important;
     min-width: 0 !important;
     z-index: 70;
@@ -7369,7 +7369,7 @@ button.cm-tag:hover {
     left: 0;
     right: 0;
     bottom: 0;
-    height: calc(52px + env(safe-area-inset-bottom, 0px));
+    height: calc(46px + env(safe-area-inset-bottom, 0px));
     padding-bottom: env(safe-area-inset-bottom, 0px);
     display: flex;
     align-items: stretch;
@@ -7403,7 +7403,7 @@ button.cm-tag:hover {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(46px + env(safe-area-inset-bottom, 0px));
     height: 42px;
     display: flex;
     align-items: stretch;

@@ -13,11 +13,12 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
-import { pickDirectory } from "../lib/api";
+import { pickDirectory, listVaults } from "../lib/api";
 import type { AppDataPaths } from "../lib/api";
 import type { Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import type { SyncController } from "../lib/useSync";
+import { isMobile } from "../lib/platform";
 import HotkeysPane from "./HotkeysPane";
 import {
   IconCalendarPlus,
@@ -107,6 +108,8 @@ export default function SettingsDialog({
    * 桌面端此状态无效（CSS 只在移动断点消费 is-detail）。
    */
   const [mobileDetail, setMobileDetail] = useState(false);
+  /** 移动端收件仓库候选（基础目录下发现的仓库）。 */
+  const [inboxVaultOptions, setInboxVaultOptions] = useState<Array<{ path: string; name: string }> | null>(null);
   const [query, setQuery] = useState("");
   /** 改动落盘后的轻反馈：「已保存」闪现 1.6s */
   const [savedFlash, setSavedFlash] = useState(false);
@@ -179,9 +182,19 @@ export default function SettingsDialog({
     });
   }, [query, active, open]);
 
+  // 移动端（触屏）：目录选择器不可用，收件仓库等改用列表选择。
+  const mobilePick = isMobile();
   useEffect(() => {
     if (!open) setMobileDetail(false);
   }, [open]);
+
+  // 移动端打开面板时取收件仓库候选（Android 目录选择器不可用）
+  useEffect(() => {
+    if (!open || !mobilePick) return;
+    void listVaults()
+      .then((list) => setInboxVaultOptions(list.map((v) => ({ path: v.path, name: v.name }))))
+      .catch(() => setInboxVaultOptions([]));
+  }, [open, mobilePick]);
 
   if (!open) return null;
 
@@ -422,16 +435,35 @@ export default function SettingsDialog({
                 readOnly
                 title={settings.quickCaptureVault || "尚未选择收件仓库"}
               />
-              <button
-                type="button"
-                className="btn btn-mini"
-                onClick={async () => {
-                  const picked = await pickDirectory("选择快速笔记的收件仓库");
-                  if (picked) saveWithFlash({ quickCaptureVault: picked });
-                }}
-              >
-                选择…
-              </button>
+              {mobilePick ? (
+                /* Android 没有可用的目录选择器：从基础目录发现的仓库里选 */
+                <select
+                  className="btn btn-mini"
+                  value=""
+                  onChange={async (event) => {
+                    const picked = event.target.value;
+                    if (picked) saveWithFlash({ quickCaptureVault: picked });
+                  }}
+                >
+                  <option value="">选择仓库…</option>
+                  {(inboxVaultOptions ?? []).map((v) => (
+                    <option key={v.path} value={v.path}>
+                      {v.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-mini"
+                  onClick={async () => {
+                    const picked = await pickDirectory("选择快速笔记的收件仓库");
+                    if (picked) saveWithFlash({ quickCaptureVault: picked });
+                  }}
+                >
+                  选择…
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-mini"

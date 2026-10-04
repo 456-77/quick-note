@@ -3705,6 +3705,7 @@ export default function App() {
               syncBatchLabel={syncBatchLabel}
               syncFailedPaths={syncFailedPaths}
               onRetrySyncFailed={() => void syncSelectedVaults(syncFailedPaths)}
+              listCloudVaults={sync.listCloudVaults}
             />
           </div>
         </div>
@@ -4144,7 +4145,7 @@ export default function App() {
             // 移动端：点中笔记/目录行后自动收抽屉（事件委托，不逐行改回调）
             if (!isMobile()) return;
             const target = event.target as HTMLElement;
-            if (target.closest(".tree-item, .tree-dir")) setLeftCollapsed(true);
+            if (target.closest(".tree-file")) setLeftCollapsed(true);
           }}
         >
           <div className="panel-head">
@@ -4486,6 +4487,7 @@ export default function App() {
                   syncBatchLabel={syncBatchLabel}
                   syncFailedPaths={syncFailedPaths}
                   onRetrySyncFailed={() => void syncSelectedVaults(syncFailedPaths)}
+                  listCloudVaults={sync.listCloudVaults}
                 />
               </div>
             ) : (

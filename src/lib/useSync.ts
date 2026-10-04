@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { syncStateLoad, syncStateLoadFor, syncStateSave, syncStateSaveFor } from "./api.ts";
+import { httpRequest, syncStateLoad, syncStateLoadFor, syncStateSave, syncStateSaveFor } from "./api.ts";
 import {
   DEFAULT_SYNC_STATE,
   adaptStateToVault,
@@ -59,6 +59,8 @@ export interface SyncController {
   updateConfig: (patch: Partial<SyncConfig>) => void;
   /** 批量同步一轮：为指定仓库临时建独立引擎跑一轮（不切 UI，per-vault 状态）。 */
   syncVaultOnce: (vaultPath: string) => Promise<void>;
+  /** 列出云端当前用户的全部仓库（引导/列表页枚举用）。 */
+  listCloudVaults: () => Promise<Array<{ name: string; version: number }>>;
   /** 立即同步一次（设置里改完、或用户点状态栏）。 */
   syncNow: () => void;
   /** 重置游标并全量拉取（自愈入口）。 */
@@ -314,6 +316,39 @@ export function useSync(options: {
       });
   }, []);
 
+  /**
+   * 列出云端当前用户的全部仓库（GET /api/v1/vaults，JWT）。
+   * 独立于引擎：用本机存储的账号直接登录换令牌——列表页/仓库引导在
+   * 未打开任何仓库时也要能枚举云端。返回 [{name, version}]。
+   */
+  const listCloudVaults = useCallback(async (): Promise<Array<{ name: string; version: number }>> => {
+    const state = stateRef.current;
+    if (!state.serverUrl || !state.username || !state.password) {
+      throw new Error("未配置同步账号");
+    }
+    const base = state.serverUrl.replace(/\/+$/, "");
+    const login = await httpRequest({
+      method: "POST",
+      url: `${base}/api/v1/auth/login`,
+      headers: [{ name: "Content-Type", value: "application/json" }],
+      bodyText: JSON.stringify({ username: state.username.trim(), password: state.password }),
+    });
+    if (login.status !== 200) {
+      throw new Error(`登录失败（HTTP ${login.status}），请检查账号密码`);
+    }
+    const token = (JSON.parse(atob(login.bodyBase64)).data?.accessToken) as string;
+    const res = await httpRequest({
+      method: "GET",
+      url: `${base}/api/v1/vaults`,
+      headers: [{ name: "Authorization", value: `Bearer ${token}` }],
+    });
+    if (res.status !== 200) {
+      throw new Error(`获取云端仓库列表失败（HTTP ${res.status}）`);
+    }
+    const parsed = JSON.parse(atob(res.bodyBase64));
+    return (parsed.data ?? []) as Array<{ name: string; version: number }>;
+  }, []);
+
   const syncNow = useCallback(() => {
     const engine = engineRef.current;
     if (!engine) {
@@ -394,6 +429,7 @@ export function useSync(options: {
     saveError,
     updateConfig,
     syncVaultOnce,
+    listCloudVaults,
     syncNow,
     resetCursorAndSync,
     resetState,
