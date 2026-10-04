@@ -7693,3 +7693,340 @@ button.cm-tag:hover {
     z-index: 86;
   }
 }
+
+/* ==================================================================== */
+/* ========= 移动端 UI 总收敛（九批：原生感 / 触控 / 层级 / 适配） ========= */
+/* 原则：不改功能与数据流，只调布局、层级、触控与视觉规范。               */
+/* ==================================================================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+
+  /* ---------- 一、视觉规范统一 ---------- */
+  /* 三层背景：页面 --bg / 卡片 --panel / 输入 --surface；圆角两档 10/14；
+     强调色只用于选中、主按钮、焦点。 */
+  .app {
+    --m-radius: 10px;
+    --m-radius-lg: 14px;
+    --m-accent: var(--accent);
+  }
+  .mobile-nav,
+  .mobile-md-toolbar,
+  .quick-capture,
+  .mv-overlay-card {
+    border-radius: 0;
+  }
+  .mv-overlay-card,
+  .quick-capture,
+  .settings-panel {
+    border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
+  }
+  .mv-card,
+  .settings-row > input:not([type="checkbox"]):not([type="search"]),
+  .settings-row > select,
+  .mv-create input,
+  .mv-sync-fields input,
+  .mv-home-input input {
+    border-radius: var(--m-radius);
+  }
+
+  /* ---------- 二、顶部栏：52px 高、44dp 触控、pill 即标题 ---------- */
+  .topbar {
+    height: 52px;
+    gap: 4px;
+  }
+  .topbar .icon-btn {
+    width: 42px;
+    height: 42px;
+    border-radius: 10px;
+  }
+  .vault-pill {
+    max-width: 40vw;
+    height: 40px;
+    padding: 0 14px;
+    font-size: 14px;
+    font-weight: 650;
+  }
+
+  /* ---------- 四、文件列表：52dp 行高、弱描边选中、文件名为主 ---------- */
+  .sidebar-left .tree-item {
+    padding: 15px 10px;
+    gap: 8px;
+    font-size: 14px;
+  }
+  .sidebar-left .tree-item .tree-icon {
+    width: 16px;
+    height: 16px;
+    flex: none;
+  }
+  .tree-label {
+    font-weight: 500;
+  }
+  /* 选中 = 淡紫背景 + 左侧强调线（替代描边） */
+  .tree-file.is-active {
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--text);
+    box-shadow: inset 3px 0 0 var(--accent);
+  }
+  .tree-file.is-active .tree-icon {
+    color: var(--accent);
+  }
+  .tree-more {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    font-size: 15px;
+  }
+  /* 分类 tab（知识库/收藏/最近/标签）触控加高 */
+  .sidebar-left .left-view-tab {
+    padding: 9px 10px;
+  }
+  .sidebar-left .sidebar-filter {
+    padding: 8px 10px;
+  }
+  .sidebar-left .sidebar-filter input {
+    padding: 9px 10px;
+  }
+
+  /* ---------- 五、快速笔记：Bottom Sheet ---------- */
+  .quick-capture {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    transform: none;
+    width: 100%;
+    max-width: none;
+    max-height: 86vh;
+    display: flex;
+    flex-direction: column;
+    padding: 14px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    animation: qcSheet 0.22s ease;
+    overflow-y: auto;
+  }
+  .quick-capture textarea {
+    flex: 1;
+    min-height: 160px;
+    font-size: 15px;
+    resize: none;
+  }
+  .quick-capture textarea:focus,
+  .quick-capture-tags:focus-within {
+    border-color: var(--accent);
+  }
+  /* 快捷键提示隐藏（无物理键盘）；输入区为主角 */
+  .quick-capture-help {
+    display: none;
+  }
+  /* 关闭 = 右上角图标（弱化） */
+  .quick-capture-esc {
+    padding: 8px;
+    border: 0;
+    background: transparent;
+    color: var(--text-faint);
+  }
+  /* 未配置收件仓库：简明引导块，不与 CTA 竞争 */
+  .quick-capture-setup {
+    font-size: 12px;
+    color: #e0b45a;
+    background: rgba(224, 180, 90, 0.1);
+    border-radius: 8px;
+    padding: 6px 10px;
+    text-align: left;
+  }
+  /* 记下来 = 唯一主 CTA（强调色、加高） */
+  .quick-capture-save {
+    min-width: 96px;
+    height: 40px;
+  }
+  @keyframes qcSheet {
+    from { transform: translateY(24px); opacity: 0; }
+    to { transform: translateY(0); opacity: 1; }
+  }
+
+  /* ---------- 六、设置：二级结构 + Switch + 行距 ---------- */
+  /* 列表模式：只显示分类列表（大行）；详情模式：只显示内容区 */
+  .settings-nav {
+    flex-direction: column;
+    width: 100%;
+    align-items: stretch;
+    gap: 2px;
+    padding: 8px 10px;
+    overflow: hidden;
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+  .settings-nav-head {
+    width: 100%;
+    height: 40px;
+  }
+  .settings-search {
+    display: none;
+  }
+  .settings-nav-item {
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 12px;
+    font-size: 14.5px;
+    border-radius: var(--m-radius);
+    white-space: normal;
+  }
+  /* 详情页头 + 分类项的「›」 */
+  .settings-mobile-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+    z-index: 3;
+  }
+  .settings-back {
+    border: 0;
+    background: transparent;
+    color: var(--accent);
+    font-size: 14.5px;
+    padding: 8px 6px;
+    cursor: pointer;
+  }
+  .settings-mobile-title {
+    flex: 1;
+    font-weight: 650;
+    font-size: 15px;
+    text-align: center;
+  }
+  .settings-mobile-head .settings-close {
+    width: 36px;
+    height: 36px;
+  }
+  .settings-nav-item::after {
+    content: "›";
+    margin-left: auto;
+    color: var(--text-faint);
+    font-size: 16px;
+  }
+  .settings-panel.is-detail .settings-nav {
+    display: none;
+  }
+  .settings-panel:not(.is-detail) .settings-body {
+    display: none;
+  }
+  .settings-panel:not(.is-detail) .settings-mobile-head {
+    display: none;
+  }
+  /* Switch 化的开关 */
+  .settings-row input[type="checkbox"] {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 44px;
+    height: 26px;
+    flex: none;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  .settings-row input[type="checkbox"]::before {
+    content: "";
+    position: absolute;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--text-faint);
+    top: 2px;
+    left: 2px;
+    transition: transform 0.15s ease, background 0.15s ease;
+  }
+  .settings-row input[type="checkbox"]:checked {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    border-color: var(--accent);
+  }
+  .settings-row input[type="checkbox"]:checked::before {
+    transform: translateX(18px);
+    background: var(--accent);
+  }
+  /* 行距与说明弱化 */
+  .settings-body {
+    padding: 10px 16px 40px;
+  }
+  .settings-row {
+    row-gap: 8px;
+    margin-bottom: 16px;
+  }
+  .settings-hint {
+    font-size: 11px;
+    line-height: 1.6;
+    opacity: 0.75;
+  }
+  .settings-group {
+    margin-top: 18px;
+  }
+  /* 长路径横向滚动不撑破 */
+  .settings-value.storage-path {
+    overflow-x: auto;
+    white-space: nowrap;
+    max-width: 100%;
+  }
+
+  /* ---------- 七、仓库卡片：紧凑 + 层级 ---------- */
+  .mv-card {
+    padding: 11px 14px;
+    gap: 2px;
+  }
+  .mv-card-name {
+    font-size: 15px;
+  }
+  .mv-card-meta {
+    font-size: 11.5px;
+  }
+  .mv-sync-toggle {
+    font-size: 12px;
+    padding: 5px 12px;
+  }
+  .mv-badge {
+    font-size: 11px;
+  }
+  /* 新建仓库退为次级 */
+  .mv-gate .editor-empty-actions .btn:not(.btn-ghost) {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+  }
+
+  /* ---------- 八、编辑器：工具栏横滚、正文留白微调 ---------- */
+  .mobile-md-toolbar {
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .mobile-md-toolbar::-webkit-scrollbar {
+    display: none;
+  }
+  .mobile-md-toolbar button {
+    flex: 0 0 auto;
+    min-width: 52px;
+    height: 42px;
+  }
+
+  /* ---------- 十、键盘避让：键盘弹出时隐藏底栏（工具栏贴键盘） ---------- */
+  body.kbd-open .mobile-nav {
+    display: none;
+  }
+  body.kbd-open .mobile-md-toolbar {
+    bottom: 0;
+  }
+  body.kbd-open .app {
+    padding-bottom: 0;
+  }
+  /* 触控目标下限：一切小图标钮 ≥40px */
+  .icon-btn {
+    min-width: 40px;
+    min-height: 40px;
+  }
+}

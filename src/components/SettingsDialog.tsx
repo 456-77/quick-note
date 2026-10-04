@@ -101,6 +101,12 @@ export default function SettingsDialog({
   openReleasePage,
 }: Props) {
   const [active, setActive] = useState<SectionId>("general");
+  /**
+   * 移动端二级结构：true = 分类列表页，false = 分类详情页。
+   * 打开面板时回到列表；点分类进详情；详情页头部「‹」返回。
+   * 桌面端此状态无效（CSS 只在移动断点消费 is-detail）。
+   */
+  const [mobileDetail, setMobileDetail] = useState(false);
   const [query, setQuery] = useState("");
   /** 改动落盘后的轻反馈：「已保存」闪现 1.6s */
   const [savedFlash, setSavedFlash] = useState(false);
@@ -173,12 +179,16 @@ export default function SettingsDialog({
     });
   }, [query, active, open]);
 
+  useEffect(() => {
+    if (!open) setMobileDetail(false);
+  }, [open]);
+
   if (!open) return null;
 
   const searching = query.trim() !== "";
 
   return (
-    <div className="settings-panel" role="dialog" aria-label="设置">
+    <div className={`settings-panel${mobileDetail ? " is-detail" : ""}`} role="dialog" aria-label="设置">
       <div className="settings-nav">
         <div className="settings-nav-head">
           <span className="settings-nav-title">设置{searching ? "" : ` / ${SECTIONS.find((s) => s.id === active)?.label ?? ""}`}</span>
@@ -214,6 +224,7 @@ export default function SettingsDialog({
             className={`settings-nav-item${!searching && active === section.id ? " is-on" : ""}`}
             onClick={() => {
               setActive(section.id);
+              setMobileDetail(true);
               setQuery("");
             }}
           >
@@ -224,6 +235,21 @@ export default function SettingsDialog({
       </div>
 
       <div className="settings-body" ref={bodyRef}>
+        {/* 移动端详情页头：返回分类列表 + 关闭（桌面 CSS 隐藏） */}
+        <div className="settings-mobile-head">
+          <button type="button" className="settings-back" onClick={() => setMobileDetail(false)}>
+            ‹ 设置
+          </button>
+          <span className="settings-mobile-title">{SECTIONS.find((sec) => sec.id === active)?.label}</span>
+          <button
+            type="button"
+            className="icon-btn settings-close"
+            onClick={onClose}
+            aria-label="关闭设置"
+          >
+            <IconX size={13} />
+          </button>
+        </div>
         {/* 顺序即 DOM 顺序：gui 验收依赖「第一个 checkbox 是粘贴开关、
             第一个 text input 是附件目录」，不要调整分区先后。 */}
         <section className="settings-sec" data-sec="general" style={{ display: searching || active === "general" ? undefined : "none" }}>

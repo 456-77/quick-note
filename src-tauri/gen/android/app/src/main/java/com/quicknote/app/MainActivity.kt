@@ -113,14 +113,21 @@ class MainActivity : TauriActivity() {
   override fun onWebViewCreate(webView: WebView) {
     webViewRef = webView
     ViewCompat.setOnApplyWindowInsetsListener(window.decorView) { _, insets ->
-      // 键盘（ime）不参与：viewport 的 interactive-widget=resizes-content
-      // 已经处理键盘避让，加进去会双重收缩。只取系统栏与挖孔。
+      // 键盘（ime）必须参与：API 35 edge-to-edge 下系统不再为 IME 缩放窗口，
+      // WebView 的 interactive-widget 也不生效——不把 ime 算进 margin 的话，
+      // 键盘会直接盖住输入区和底部工具栏。
       val bars: Insets = insets.getInsets(
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
       )
+      val ime: Insets = insets.getInsets(WindowInsetsCompat.Type.ime())
       val lp = webView.layoutParams
       if (lp is ViewGroup.MarginLayoutParams) {
-        lp.setMargins(bars.left, bars.top, bars.right, bars.bottom)
+        lp.setMargins(
+          bars.left,
+          bars.top,
+          bars.right,
+          maxOf(bars.bottom, ime.bottom),
+        )
         webView.layoutParams = lp
       }
       insets

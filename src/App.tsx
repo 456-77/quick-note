@@ -690,6 +690,22 @@ export default function App() {
     (window as unknown as Record<string, unknown>).__qnConsumeBack = () => backConsumeRef.current();
   }, []);
 
+  // 键盘避让：visualViewport 缩水超过 150px 视为键盘弹出，body.kbd-open
+  // 让 CSS 隐藏底栏（工具栏贴键盘），收起时恢复。
+  useEffect(() => {
+    if (!isMobile()) return;
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const onResize = () => {
+      document.body.classList.toggle("kbd-open", window.innerHeight - vv.height > 150);
+    };
+    vv.addEventListener("resize", onResize);
+    return () => {
+      vv.removeEventListener("resize", onResize);
+      document.body.classList.remove("kbd-open");
+    };
+  }, []);
+
   // Android 系统分享接收（MainActivity 轮询派发）：文本预填 + 可选图片
   // （Kotlin 落缓存目录，经 read_binary_file 读同沙箱路径转附件）。
   useEffect(() => {
