@@ -309,6 +309,7 @@ pub fn run() {
             default_vault_dir,
             vault_home::vault_home_get,
             vault_home::vault_home_set_from_uri,
+            vault_home::vault_home_set_from_path,
             vault_home::vault_home_clear,
             vault_home::list_vaults,
             vault_home::create_vault,

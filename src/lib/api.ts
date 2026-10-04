@@ -235,6 +235,10 @@ export const vaultHomeGet = () => invoke<string | null>("vault_home_get");
 export const vaultHomeSetFromUri = (uri: string) =>
   invoke<string>("vault_home_set_from_uri", { uri });
 
+/** 直接用真实路径设置基础目录（Android 引导页「建议目录」通道）。 */
+export const vaultHomeSetFromPath = (path: string) =>
+  invoke<string>("vault_home_set_from_path", { path });
+
 /** 清除基础目录设置（回引导页；仓库文件不动）。 */
 export const vaultHomeClear = () => invoke<void>("vault_home_clear");
 

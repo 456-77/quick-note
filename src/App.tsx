@@ -1687,6 +1687,19 @@ export default function App() {
   );
 
   const [vaultGateOpen, setVaultGateOpen] = useState(false);
+
+  /** 仓库列表页的「开启同步」：切到该仓库（同步状态跟仓库走）→ 启用自动同步 →
+      立即同步一轮 → 回到列表页。 */
+  const enableVaultSync = useCallback(
+    async (path: string) => {
+      await switchVault(path);
+      sync.updateConfig({ enabled: true });
+      void sync.syncNow();
+      setVaultGateOpen(true);
+    },
+    [switchVault, sync],
+  );
+
   const openVault = useCallback(async () => {
     // 移动端不走 SAF 选取：仓库来自基础目录的发现列表，弹出仓库页
     if (isMobile()) {
@@ -3596,7 +3609,8 @@ export default function App() {
                 setVaultGateOpen(false);
                 void switchVault(p);
               }}
-              onClose={() => setVaultGateOpen(false)}
+              onEnableSync={(p) => void enableVaultSync(p)}
+              syncConfigured={Boolean(sync.config.serverUrl)}
               syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
             />
           </div>
@@ -4360,6 +4374,8 @@ export default function App() {
               <div className="editor-empty">
                 <MobileVaultGate
                   onOpen={(p) => void switchVault(p)}
+                  onEnableSync={(p) => void enableVaultSync(p)}
+                  syncConfigured={Boolean(sync.config.serverUrl)}
                   syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
                 />
               </div>
@@ -4539,7 +4555,7 @@ export default function App() {
               setPaletteOpen(false);
               setQuickCaptureOpen(false);
               setRightCollapsed(true);
-              setLeftCollapsed(leftCollapsed ? false : leftCollapsed);
+              setLeftCollapsed(!leftCollapsed);
             }}
           >
             <IconPanelLeft size={18} />
@@ -4563,7 +4579,7 @@ export default function App() {
               setPaletteOpen(false);
               setQuickCaptureOpen(false);
               setLeftCollapsed(true);
-              setRightCollapsed(rightCollapsed ? false : rightCollapsed);
+              setRightCollapsed(!rightCollapsed);
             }}
           >
             <IconPanelRight size={18} />

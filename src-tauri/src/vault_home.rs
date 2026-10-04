@@ -231,19 +231,33 @@ pub fn vault_home_get(app: AppHandle) -> Result<Option<String>, String> {
     Ok(read_home(&app).map(|p| p.to_string_lossy().into_owned()))
 }
 
-/// 用 SAF 选择器返回的 URI 设置基础目录（换算真实路径 + 建目录 + 可写探测）。
+/// 用 SAF 选择器返回的 URI 设置基础目录（换算真实路径后走 set_from_path）。
 #[tauri::command]
 pub fn vault_home_set_from_uri(app: AppHandle, uri: String) -> Result<String, String> {
     let real = saf_uri_to_real_path(&uri)?;
-    let dir = PathBuf::from(&real);
+    vault_home_set_from_path(app, real)
+}
+
+/// 直接用真实路径设置基础目录（Android 引导页的「建议目录」通道——
+/// 「所有文件访问」授权后原生 fs 直达，不需要 SAF）。
+#[tauri::command]
+pub fn vault_home_set_from_path(app: AppHandle, path: String) -> Result<String, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("目录不能为空".into());
+    }
+    if !trimmed.starts_with('/') {
+        return Err(format!("目录必须是绝对路径: {trimmed}"));
+    }
+    let dir = PathBuf::from(trimmed);
     fs::create_dir_all(&dir).map_err(|e| format!("创建基础目录失败: {e}"))?;
     probe_writable(&dir)?;
     let pointer = pointer_path(&app)?;
     if let Some(parent) = pointer.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
     }
-    fs::write(&pointer, &real).map_err(|e| format!("写入基础目录指针失败: {e}"))?;
-    Ok(real)
+    fs::write(&pointer, trimmed).map_err(|e| format!("写入基础目录指针失败: {e}"))?;
+    Ok(trimmed.to_string())
 }
 
 /// 清除基础目录（回引导页）。仓库文件不动。

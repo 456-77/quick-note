@@ -176,6 +176,42 @@ class MainActivity : TauriActivity() {
    * 约定），网络 IO 直接做，回调 UI 用 mainHandler。
    */
   inner class UpdateBridge {
+    /** 是否已拥有「所有文件访问」授权（真值 = 主存储可写探测，与 Rust probe 同哲学）。 */
+    @JavascriptInterface
+    fun canAccessAllFiles(): Boolean {
+      return tryProbePrimaryStorage()
+    }
+
+    /** 跳到系统的「所有文件访问」授权页（引导页第一步）。 */
+    @JavascriptInterface
+    fun requestAllFilesAccess() {
+      mainHandler.post {
+        try {
+          startActivity(
+            Intent(
+              android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+              Uri.parse("package:$packageName")
+            )
+          )
+        } catch (e: Exception) {
+          // 个别 ROM 没有 per-app 页时退回总开关页
+          startActivity(Intent(android.provider.Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+        }
+      }
+    }
+
+    /** 主存储可写探测（真实建删一个临时文件）。 */
+    private fun tryProbePrimaryStorage(): Boolean {
+      return try {
+        val probe = File("/storage/emulated/0/.qn-probe-${hashCode()}")
+        probe.writeText("ok")
+        probe.delete()
+        true
+      } catch (e: Exception) {
+        false
+      }
+    }
+
     /** 是否已拥有「安装未知应用」授权（没有则 JS 先引导用户去开）。 */
     @JavascriptInterface
     fun canRequestInstall(): Boolean {

@@ -3,10 +3,9 @@ import {
   createVault,
   defaultVaultDir,
   listVaults,
-  pickDirectory,
   storageWritable,
   vaultHomeGet,
-  vaultHomeSetFromUri,
+  vaultHomeSetFromPath,
   type VaultInfo,
 } from "../lib/api";
 import { IconCalendarPlus, IconFolder, IconPlus, IconSparkles } from "./icons";
@@ -44,9 +43,16 @@ export interface MobileVaultGateProps {
   onClose?: () => void;
   /** 当前开启了同步的云端仓库名（列表里对应目录名的卡片显示徽标）；null = 没开。 */
   syncActiveVaultName: string | null;
+  /**
+   * 卡片上的「开启同步」：App 侧先 switchVault(该仓库) 再开同步再回列表——
+   * 同步状态是单仓库模型（游标/哈希跟仓库走），必须切过去才能正确启用。
+   */
+  onEnableSync: (path: string, name: string) => void;
+  /** 同步账号是否已配置（未配置时不显示同步开关，卡片只给引导文案）。 */
+  syncConfigured: boolean;
 }
 
-export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName }: MobileVaultGateProps) {
+export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName, onEnableSync, syncConfigured }: MobileVaultGateProps) {
   const [home, setHome] = useState<string | null | undefined>(undefined); // undefined = 查询中
   const [vaults, setVaults] = useState<VaultInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +60,58 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName }: Mobile
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
+  /** 「所有文件访问」授权状态（真值 = 主存储可写探测）。 */
+  const [granted, setGranted] = useState<boolean | null>(null); // null = 查询中
+  /** 建议目录输入（默认 Documents/QuickNote）。 */
+  const [homeDraft, setHomeDraft] = useState("/storage/emulated/0/Documents/QuickNote");
+
+  /** 桥（MainActivity 注入；桌面/旧包没有）。 */
+  const bridge = (): Record<string, CallableFunction> | null =>
+    (window as unknown as Record<string, unknown>).qnAndroid as
+      | Record<string, CallableFunction>
+      | undefined
+      ?? null;
+
+  const probeGranted = useCallback(async () => {
+    const b = bridge();
+    if (!b) {
+      // 无桥（理论上不在 Android 上）：探测命令兜底
+      setGranted(await storageWritable().catch(() => false));
+      return;
+    }
+    setGranted(Boolean(b.canAccessAllFiles()));
+  }, []);
+
+  useEffect(() => {
+    void probeGranted();
+    // 从系统授权页回来时（visibilitychange）自动重探
+    const onVis = () => {
+      if (document.visibilityState === "visible") void probeGranted();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [probeGranted]);
+
+  const requestAccess = () => {
+    const b = bridge();
+    if (b) b.requestAllFilesAccess();
+  };
+
+  /** 用建议目录（可改）设置基础目录：建目录 + 可写探测 + 写指针。 */
+  const useSuggestedHome = async () => {
+    setError(null);
+    setHint(null);
+    setBusy(true);
+    try {
+      await vaultHomeSetFromPath(homeDraft.trim());
+      localStorage.removeItem(SKIP_KEY);
+      await reload();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const reload = useCallback(async () => {
     setError(null);
@@ -76,32 +134,6 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName }: Mobile
   useEffect(() => {
     void reload();
   }, [reload]);
-
-  /** 选基础目录：SAF 选择器只取路径，Rust 侧换算真实路径并探测可写。 */
-  const chooseHome = async () => {
-    setError(null);
-    setHint(null);
-    const picked = await pickDirectory("选择仓库基础目录（其中的子文件夹各自是一个仓库）");
-    if (!picked) return;
-    setBusy(true);
-    try {
-      await vaultHomeSetFromUri(picked);
-      localStorage.removeItem(SKIP_KEY);
-      await reload();
-    } catch (e) {
-      const message = String(e);
-      if (message.includes("不可写")) {
-        // 授权需要去系统设置；回来后重探
-        setHint(message);
-        const ok = await storageWritable().catch(() => false);
-        setHint(ok ? null : message);
-      } else {
-        setError(message);
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const skipToPrivate = async () => {
     setBusy(true);
@@ -145,6 +177,10 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName }: Mobile
     );
   }
   if (home === null) {
+    // 两步引导：①「所有文件访问」授权（真值=主存储可写探测，从授权页回来自动重探）
+    // ②确认基础目录（默认建议 Documents/QuickNote，可改）——dialog 插件的目录
+    // 选择器在 Android 上不可用，故不走「选择目录」而走「授权 + 建议目录」。
+    const step = granted ? 2 : 1;
     return (
       <div className="mv-gate">
         <div className="editor-empty-logo"><IconSparkles size={26} /></div>
@@ -154,16 +190,36 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName }: Mobile
           （与电脑端、Obsidian 通用同一份 Markdown 文件）。
         </p>
         <ol className="mv-steps">
-          <li>首次使用需在系统设置中允许<strong>「所有文件访问」</strong>（下一步会提示）；</li>
-          <li>选择目录，如 <code>Documents/QuickNote</code>；</li>
-          <li>在列表中打开已有仓库，或新建一个。</li>
+          <li className={step > 1 ? "done" : "current"}>
+            {step > 1 ? "✓ " : ""}允许「所有文件访问」权限
+            {granted === false && (
+              <button type="button" className="btn mv-step-btn" disabled={busy} onClick={requestAccess}>
+                去授权
+              </button>
+            )}
+          </li>
+          <li className={step >= 2 ? "current" : ""}>
+            确认基础目录：
+            {step >= 2 && (
+              <div className="mv-home-input">
+                <input
+                  type="text"
+                  value={homeDraft}
+                  onChange={(e) => setHomeDraft(e.target.value)}
+                  placeholder="/storage/emulated/0/Documents/QuickNote"
+                />
+                <button type="button" className="btn" disabled={busy} onClick={() => void useSuggestedHome()}>
+                  <IconFolder size={14} /> 使用此目录
+                </button>
+              </div>
+            )}
+          </li>
+          <li>在仓库列表打开已有仓库，或新建一个。</li>
         </ol>
-        {hint && <p className="mv-hint">{hint}：请在 系统设置 → 应用 → Quick Note → 权限 中允许「文件与媒体/所有文件访问」后重试。</p>}
+        {granted === false && <p className="mv-hint">点击「去授权」后在系统设置中打开「允许访问所有文件」开关，再返回本页。</p>}
+        {hint && <p className="mv-hint">{hint}</p>}
         {error && <p className="mv-error">{error}</p>}
         <div className="editor-empty-actions">
-          <button type="button" className="btn" disabled={busy} onClick={() => void chooseHome()}>
-            <IconFolder size={14} /> 选择基础目录
-          </button>
           <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void skipToPrivate()}>
             跳过（仅用应用私有目录）
           </button>
@@ -203,6 +259,25 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName }: Mobile
             {syncActiveVaultName && syncActiveVaultName === v.name && (
               <span className="mv-badge">⟳ 同步开启</span>
             )}
+            {syncConfigured && syncActiveVaultName !== v.name && (
+              <span
+                className="mv-sync-toggle"
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEnableSync(v.path, v.name);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.stopPropagation();
+                    onEnableSync(v.path, v.name);
+                  }
+                }}
+              >
+                开启同步
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -227,7 +302,14 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName }: Mobile
           <button type="button" className="btn" onClick={() => setCreating(true)}>
             <IconPlus size={14} /> 新建仓库
           </button>
-          <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => void chooseHome()}>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            onClick={() => {
+              // 改基础目录 = 清指针回引导页（引导页有授权探测与建议目录输入）
+              void import("../lib/api").then((m) => m.vaultHomeClear()).then(() => reload());
+            }}
+          >
             更改基础目录
           </button>
         </div>
