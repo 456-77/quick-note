@@ -1689,27 +1689,48 @@ export default function App() {
   const [vaultGateOpen, setVaultGateOpen] = useState(false);
 
   const [syncBatchLabel, setSyncBatchLabel] = useState("");
-  /** 仓库列表多选同步：逐仓库跑独立引擎（不切 UI），进度实时更新到列表。 */
+  /** 批量同步中失败的仓库（列表页显示「重试失败仓库」入口）。 */
+  const [syncFailedPaths, setSyncFailedPaths] = useState<string[]>([]);
+  /** 仓库列表多选同步：逐仓库跑独立引擎（不切 UI），结果实时进标签；
+      每仓两轮——第二轮接住第一轮被下载额度（50MB/轮）推迟的附件；
+      每仓 90s 上限（连不上的仓库不拖死整批）。 */
   const syncSelectedVaults = useCallback(
     async (paths: string[]) => {
+      const results: string[] = [];
+      const failed: string[] = [];
       for (let i = 0; i < paths.length; i += 1) {
         const name = paths[i].replace(/[\/]+$/, "").split(/[\/]/).pop() ?? paths[i];
-        setSyncBatchLabel(`正在同步 ${name}（${i + 1}/${paths.length}）…`);
+        setSyncBatchLabel(
+          `正在同步 ${name}（${i + 1}/${paths.length}）… ${results.join(" · ")}`,
+        );
+        let ok = true;
+        let message = "";
         try {
-          // 每仓上限 90s：连不上的仓库不能拖死整批（模拟器 NAT 会静默丢
-          // RST，TCP 超时要等满 120s；超时跳过，下轮再来）
           await Promise.race([
-            sync.syncVaultOnce(paths[i]),
+            (async () => {
+              await sync.syncVaultOnce(paths[i]);
+              // 第二轮：附件下载每轮 50MB 上限，没下完的这轮接着下
+              await sync.syncVaultOnce(paths[i]);
+            })(),
             new Promise((_, reject) =>
               window.setTimeout(() => reject(new Error("超时（90 秒）")), 90_000),
             ),
           ]);
         } catch (e) {
-          setError(`同步 ${name} 失败：${e}`);
+          ok = false;
+          message = String(e);
+          setError(`同步 ${name} 失败：${message}`);
         }
+        results.push(ok ? `${name} ✓` : `${name} ✗`);
+        if (!ok) failed.push(paths[i]);
       }
-      setSyncBatchLabel("");
-      setStatus(`批量同步完成（${paths.length} 个仓库）`);
+      setSyncFailedPaths(failed);
+      setSyncBatchLabel(
+        failed.length === 0 ? "" : `完成，但有问题：${results.join(" · ")}`,
+      );
+      if (failed.length === 0) {
+        setStatus(`批量同步完成（${paths.length} 个仓库）`);
+      }
     },
     [sync],
   );
@@ -3374,7 +3395,13 @@ export default function App() {
             className={`vault-pill${vaultMenu ? " is-open" : ""}`}
             onClick={(event) => {
               if (isMobile()) {
-                // 移动端：仓库 pill 直达仓库列表页（桌面才是下拉菜单）
+                // 移动端：仓库 pill 直达仓库列表页，且先收掉一切浮层——
+                // 不给「设置上叠列表、列表上叠抽屉」这类堆叠状态机会
+                setShowSettings(false);
+                setPaletteOpen(false);
+                setQuickCaptureOpen(false);
+                setLeftCollapsed(true);
+                setRightCollapsed(true);
                 setVaultGateOpen(true);
                 return;
               }
@@ -3648,6 +3675,8 @@ export default function App() {
               }
               onSyncSelected={(paths) => syncSelectedVaults(paths)}
               syncBatchLabel={syncBatchLabel}
+              syncFailedPaths={syncFailedPaths}
+              onRetrySyncFailed={() => void syncSelectedVaults(syncFailedPaths)}
             />
           </div>
         </div>
@@ -4211,6 +4240,15 @@ export default function App() {
                   if (event.key === "Escape") (renaming ? cancelRename : cancelCreate)();
                 }}
               />
+              <button
+                type="button"
+                className="icon-btn create-cancel"
+                title="取消"
+                aria-label="取消"
+                onClick={() => (renaming ? cancelRename() : cancelCreate())}
+              >
+                <IconX size={13} />
+              </button>
               <div className="create-hint">
                 {renaming
                   ? `重命名 ${renaming.slice(renaming.lastIndexOf("/") + 1)} · Enter 确认 / Esc 取消`
@@ -4418,6 +4456,8 @@ export default function App() {
                   }
                   onSyncSelected={(paths) => syncSelectedVaults(paths)}
                   syncBatchLabel={syncBatchLabel}
+                  syncFailedPaths={syncFailedPaths}
+                  onRetrySyncFailed={() => void syncSelectedVaults(syncFailedPaths)}
                 />
               </div>
             ) : (
@@ -4602,13 +4642,17 @@ export default function App() {
             <IconPanelLeft size={18} />
             文件
           </button>
-          <button type="button" onClick={() => {
-            setShowSettings(false);
-            setPaletteOpen(false);
-            setRightCollapsed(true);
-            setLeftCollapsed(true);
-            setQuickCaptureOpen(true);
-          }}>
+          <button
+            type="button"
+            className={quickCaptureOpen ? "is-on" : ""}
+            onClick={() => {
+              setShowSettings(false);
+              setPaletteOpen(false);
+              setRightCollapsed(true);
+              setLeftCollapsed(true);
+              setQuickCaptureOpen((value) => !value);
+            }}
+          >
             <IconPlus size={18} />
             速记
           </button>

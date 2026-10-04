@@ -56,6 +56,10 @@ export interface MobileVaultGateProps {
   onSyncSelected: (paths: string[]) => Promise<void>;
   /** 批量同步进行中的描述（空串 = 空闲）；非空时列表禁交互。 */
   syncBatchLabel: string;
+  /** 上一批同步失败的仓库（非空显示「重试」入口）。 */
+  syncFailedPaths: string[];
+  /** 重试失败的仓库。 */
+  onRetrySyncFailed: () => void;
 }
 
 export function MobileVaultGate({
@@ -67,6 +71,8 @@ export function MobileVaultGate({
   onConfigureSync,
   onSyncSelected,
   syncBatchLabel,
+  syncFailedPaths,
+  onRetrySyncFailed,
 }: MobileVaultGateProps) {
   const [home, setHome] = useState<string | null | undefined>(undefined); // undefined = 查询中
   const [vaults, setVaults] = useState<VaultInfo[]>([]);
@@ -318,6 +324,15 @@ export function MobileVaultGate({
         </button>
       )}
       {syncBatchLabel && <p className="mv-hint">{syncBatchLabel}</p>}
+      {!syncBatchLabel && syncFailedPaths.length > 0 && (
+        <button
+          type="button"
+          className="btn mv-retry"
+          onClick={() => void onRetrySyncFailed()}
+        >
+          ⟳ 重试失败的仓库（{syncFailedPaths.length}）
+        </button>
+      )}
       <div className="mv-list">
         {vaults.length === 0 && <p className="mv-lede">基础目录下还没有仓库。新建一个，或把电脑端的仓库文件夹放进来（USB / 网盘同步均可）。</p>}
         {vaults.map((v) => (

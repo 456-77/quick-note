@@ -1029,12 +1029,12 @@ div.tree-item:focus-visible {
 .menu-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 30;
+  z-index: 88;
 }
 
 .context-menu {
   position: fixed;
-  z-index: 31;
+  z-index: 89;
   min-width: 160px;
   padding: 5px;
   background: var(--surface);
@@ -7657,5 +7657,17 @@ button.cm-tag:hover {
     gap: 8px;
     width: 100%;
     max-width: 560px;
+  }
+}
+
+/* 第七批：新建行取消钮（create-row 里 input 与 hint 之间）、重试入口 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .create-cancel {
+    flex: none;
+  }
+  .mv-retry {
+    align-self: flex-start;
+    padding: 6px 14px;
+    font-size: 13px;
   }
 }
