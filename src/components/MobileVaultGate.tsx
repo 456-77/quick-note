@@ -90,6 +90,9 @@ export function MobileVaultGate({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   /** 引导子步骤：2=目录（授权通过后）；3=云同步（可选，保存/跳过后进列表）。 */
   const [onboardStep, setOnboardStep] = useState<2 | 3>(2);
+  /** 「从云端拉取仓库」的名字输入（服务器上有、本地还没有的仓库）。 */
+  const [pullName, setPullName] = useState("");
+  const [pulling, setPulling] = useState(false);
   const [serverDraft, setServerDraft] = useState("");
   const [userDraft, setUserDraft] = useState("");
   const [passDraft, setPassDraft] = useState("");
@@ -186,6 +189,39 @@ export function MobileVaultGate({
       setError(String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  /** 从云端拉取仓库：本地建同名目录（已存在则直接用），跑一轮同步把云端
+      内容拉下来。服务器没有枚举仓库的接口，「输入名字拉取」是现有协议下
+      最短路径；仓库名 = 云端仓库名（与电脑端/Obsidian 一致）。 */
+  const pullCloudVault = async () => {
+    const name = pullName.trim();
+    if (!name || busy || pulling) return;
+    if (name.includes("/") || name.includes("\\")) {
+      setError("仓库名不能含路径分隔符");
+      return;
+    }
+    setError(null);
+    setPulling(true);
+    try {
+      let path: string;
+      try {
+        path = await createVault(name);
+      } catch (e) {
+        if (String(e).includes("已存在")) {
+          path = `${home}/${name}`;
+        } else {
+          throw e;
+        }
+      }
+      await onSyncSelected([path]);
+      setPullName("");
+      await reload();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setPulling(false);
     }
   };
 
@@ -435,6 +471,25 @@ export function MobileVaultGate({
           >
             更改基础目录
           </button>
+        </div>
+      )}
+      {syncConfigured && (
+        <div className="mv-pull">
+          <p className="mv-pull-title">云端已有这个仓库？输入名字直接拉取到本地（含全部笔记）：</p>
+          <div className="mv-home-input">
+            <input
+              type="text"
+              value={pullName}
+              onChange={(e) => setPullName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void pullCloudVault();
+              }}
+              placeholder="云端仓库名（如 运维）"
+            />
+            <button type="button" className="btn" disabled={pulling || !pullName.trim()} onClick={() => void pullCloudVault()}>
+              {pulling ? "拉取中…" : "拉取"}
+            </button>
+          </div>
         </div>
       )}
       <p className="mv-foot">

@@ -3430,7 +3430,12 @@ export default function App() {
             <button
               type="button"
               className="icon-btn"
-              onClick={shortcuts.palette}
+              onClick={() => {
+                // 弹层不与抽屉共存：先收抽屉再开命令面板
+                setLeftCollapsed(true);
+                setRightCollapsed(true);
+                shortcuts.palette();
+              }}
               title="全局搜索笔记与内容，或执行命令（Ctrl+K）"
             >
               <IconSearch size={16} />
@@ -3499,7 +3504,14 @@ export default function App() {
           <button
             type="button"
             className={`icon-btn${showSettings ? " is-on" : ""}`}
-            onClick={shortcuts.openSettings}
+            onClick={() => {
+              // 弹层不与抽屉共存（移动端）：先收抽屉再开设置
+              if (isMobile()) {
+                setLeftCollapsed(true);
+                setRightCollapsed(true);
+              }
+              shortcuts.openSettings();
+            }}
             title={keyHint("openSettings") ? `设置（${keyHint("openSettings")}）` : "设置"}
           >
             <IconSettings size={16} />
