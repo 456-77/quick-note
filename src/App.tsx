@@ -3612,6 +3612,9 @@ export default function App() {
               onEnableSync={(p) => void enableVaultSync(p)}
               syncConfigured={Boolean(sync.config.serverUrl)}
               syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
+              onConfigureSync={(server, username, password) =>
+                sync.updateConfig({ serverUrl: server, username, password })
+              }
             />
           </div>
         </div>
@@ -4377,6 +4380,9 @@ export default function App() {
                   onEnableSync={(p) => void enableVaultSync(p)}
                   syncConfigured={Boolean(sync.config.serverUrl)}
                   syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
+                  onConfigureSync={(server, username, password) =>
+                    sync.updateConfig({ serverUrl: server, username, password })
+                  }
                 />
               </div>
             ) : (

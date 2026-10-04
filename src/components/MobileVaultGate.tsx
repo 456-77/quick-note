@@ -50,9 +50,18 @@ export interface MobileVaultGateProps {
   onEnableSync: (path: string, name: string) => void;
   /** 同步账号是否已配置（未配置时不显示同步开关，卡片只给引导文案）。 */
   syncConfigured: boolean;
+  /** 引导第三步：保存同步账号信息（server/username/password）。跳过则不调。 */
+  onConfigureSync: (serverUrl: string, username: string, password: string) => void;
 }
 
-export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName, onEnableSync, syncConfigured }: MobileVaultGateProps) {
+export function MobileVaultGate({
+  onOpen,
+  onClose,
+  syncActiveVaultName,
+  onEnableSync,
+  syncConfigured,
+  onConfigureSync,
+}: MobileVaultGateProps) {
   const [home, setHome] = useState<string | null | undefined>(undefined); // undefined = 查询中
   const [vaults, setVaults] = useState<VaultInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -64,6 +73,11 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName, onEnable
   const [granted, setGranted] = useState<boolean | null>(null); // null = 查询中
   /** 建议目录输入（默认 Documents/QuickNote）。 */
   const [homeDraft, setHomeDraft] = useState("/storage/emulated/0/Documents/QuickNote");
+  /** 引导子步骤：2=目录（授权通过后）；3=云同步（可选，保存/跳过后进列表）。 */
+  const [onboardStep, setOnboardStep] = useState<2 | 3>(2);
+  const [serverDraft, setServerDraft] = useState("");
+  const [userDraft, setUserDraft] = useState("");
+  const [passDraft, setPassDraft] = useState("");
 
   /** 桥（MainActivity 注入；桌面/旧包没有）。 */
   const bridge = (): Record<string, CallableFunction> | null =>
@@ -97,20 +111,31 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName, onEnable
     if (b) b.requestAllFilesAccess();
   };
 
-  /** 用建议目录（可改）设置基础目录：建目录 + 可写探测 + 写指针。 */
+  /** 用建议目录（可改）设置基础目录：建目录 + 可写探测 + 写指针 → 进同步引导。 */
   const useSuggestedHome = async () => {
     setError(null);
     setHint(null);
     setBusy(true);
     try {
-      await vaultHomeSetFromPath(homeDraft.trim());
+      const real = await vaultHomeSetFromPath(homeDraft.trim());
       localStorage.removeItem(SKIP_KEY);
-      await reload();
+      setHome(real); // step3 的渲染条件依赖 home（否则落回引导页空白）
+      setOnboardStep(3);
     } catch (e) {
       setError(String(e));
     } finally {
       setBusy(false);
     }
+  };
+
+  /** 引导第三步：保存同步账号（enabled 留待在仓库上开启——切仓库会归零游标但保留账号）。 */
+  const saveSyncInfo = () => {
+    if (!serverDraft.trim() || !userDraft.trim() || !passDraft.trim()) {
+      setError("服务器地址、账号、密码都需要填写");
+      return;
+    }
+    onConfigureSync(serverDraft.trim(), userDraft.trim(), passDraft.trim());
+    void reload();
   };
 
   const reload = useCallback(async () => {
@@ -165,6 +190,36 @@ export function MobileVaultGate({ onOpen, onClose, syncActiveVaultName, onEnable
       setBusy(false);
     }
   };
+
+  // ---------------- 引导第三步：云同步（可选） ----------------
+  // home 已设但 onboardStep 停在 3：先于列表显示同步引导（跳过/保存都进列表）
+  if (home !== null && onboardStep === 3 && !syncConfigured) {
+    return (
+      <div className="mv-gate">
+        <div className="editor-empty-logo"><IconSparkles size={26} /></div>
+        <h2>可选：开启云同步</h2>
+        <p className="mv-lede">
+          配置同步账号后，仓库可以与电脑端、其他设备共用同一份笔记。
+          没有服务器也可以跳过，之后在 设置 → 云同步 里随时配置。
+        </p>
+        <div className="mv-sync-fields">
+          <input type="text" inputMode="url" value={serverDraft} onChange={(e) => setServerDraft(e.target.value)} placeholder="服务器地址（如 http://your-server:8080）" />
+          <input type="text" value={userDraft} onChange={(e) => setUserDraft(e.target.value)} placeholder="账号" />
+          <input type="password" value={passDraft} onChange={(e) => setPassDraft(e.target.value)} placeholder="密码" />
+        </div>
+        {error && <p className="mv-error">{error}</p>}
+        <div className="editor-empty-actions">
+          <button type="button" className="btn" onClick={saveSyncInfo}>
+            保存并继续
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={() => void reload()}>
+            跳过，暂不同步
+          </button>
+        </div>
+        <p className="mv-foot">保存后在仓库列表点仓库卡片上的「开启同步」即可让该仓库自动同步。</p>
+      </div>
+    );
+  }
 
   // ---------------- 引导页（基础目录未设置） ----------------
   if (home === undefined) {
