@@ -238,6 +238,62 @@ export function toggleHeading(view: EditorView, level: number): boolean {
   return true;
 }
 
+/**
+ * 「选区标题归一」的纯计算：给一行文本与目标级别，返回只替换井号串的编辑。
+ * 与 headingToggleAt 的标题识别口径一致（`#标签` 不算标题）。
+ */
+function headingRebaseAt(
+  lineText: string,
+  newLevel: number,
+): { from: number; to: number } | null {
+  const match = /^(\s*)(#{1,6})(\s|$)/.exec(lineText);
+  if (!match || match[2].length === newLevel) return null;
+  return { from: match[1].length, to: match[1].length + match[2].length };
+}
+
+/**
+ * 选区标题归一：把选区内**最高级**标题（# 最少）设为 N 级，其余标题按同一
+ * 差值平移——层级关系原样保留，只是整体抬升/压到目标级别（6 级封顶钳住）。
+ * 空选区时作用于全文；围栏代码块内的行不参与。没有标题或已是目标级别时不动。
+ */
+export function clampHeadings(view: EditorView, level: number): boolean {
+  const { state } = view;
+  const range = state.selection.main;
+  const lines = state.doc.toString().split("\n");
+  const fromNumber = range.empty ? 1 : state.doc.lineAt(range.from).number;
+  const toNumber = range.empty ? state.doc.lines : state.doc.lineAt(range.to).number;
+
+  const targets: { number: number; oldLevel: number }[] = [];
+  for (let number = fromNumber; number <= toNumber; number += 1) {
+    if (isInsideFence(lines, number - 1)) continue;
+    const match = /^(\s*)(#{1,6})(\s|$)/.exec(state.doc.line(number).text);
+    if (match) targets.push({ number, oldLevel: match[2].length });
+  }
+  if (targets.length === 0) return false;
+  const minLevel = Math.min(...targets.map((target) => target.oldLevel));
+  const delta = level - minLevel;
+  if (delta === 0) return false;
+
+  const changes: Array<{ from: number; to: number; insert: string }> = [];
+  for (const { number, oldLevel } of targets) {
+    // 平移后钳回 1..6：目标级别离两端太远时层级会并级，这是标题只有 6 级的物理上限
+    const newLevel = Math.min(6, Math.max(1, oldLevel + delta));
+    const line = state.doc.line(number);
+    const span = headingRebaseAt(line.text, newLevel);
+    if (!span) continue;
+    changes.push({
+      from: line.from + span.from,
+      to: line.from + span.to,
+      insert: "#".repeat(newLevel),
+    });
+  }
+  if (changes.length === 0) return false;
+
+  view.dispatch({ changes, scrollIntoView: true });
+  view.focus();
+  return true;
+}
+
 // ---------------------------------------------------------------- 列表
 
 /** 列表项行：缩进 + 标记（`-`/`*`/`+` 或 `1.`/`1)`）+ 空白 + 内容。 */

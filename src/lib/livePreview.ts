@@ -1142,11 +1142,15 @@ class TableWidget extends WidgetType {
 
     // 点击表格空白处保持渲染：不把光标放进源码。单元格内的按下事件已在
     // attachCellEvents 里 stopPropagation，不会走到这里。
+    // Alt+点击要放行：行内代码的「快捷复制」挂在 contentDOM 上（altClickHandler），
+    // 在这里吞掉就等于宣布表格里的行内代码永远复制不了。
     table.addEventListener("mousedown", (event) => {
+      if (event.altKey) return;
       event.preventDefault();
       event.stopPropagation();
     });
     wrap.addEventListener("mousedown", (event) => {
+      if (event.altKey) return;
       event.preventDefault();
       event.stopPropagation();
     });
@@ -1380,10 +1384,14 @@ const cellRuns = new WeakMap<HTMLElement, TextRun[]>();
  *
  * mousedown 只 stopPropagation 不 preventDefault——前者拦住 CodeMirror 的
  * 选区处理（否则选区落进被替换区间，整张表退回源码），后者保留浏览器
- * 自己放光标、拖选的能力。
+ * 自己放光标、拖选的能力。Alt+点击例外：要冒泡到 contentDOM 上的
+ * altClickHandler，单元格里的行内代码靠它做「快捷复制」。
  */
 function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement): void {
-  cell.addEventListener("mousedown", (event) => event.stopPropagation());
+  cell.addEventListener("mousedown", (event) => {
+    if (event.altKey) return;
+    event.stopPropagation();
+  });
 
   cell.addEventListener("focus", () => {
     // 新一轮编辑：清掉上一轮的提交标记，否则改过的内容在 blur 时不会写回

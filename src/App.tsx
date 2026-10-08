@@ -43,7 +43,7 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, listEntries, moveEntry, onVaultChanged, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, listEntries, moveEntry, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
 import { isMobile } from "./lib/platform";
 import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
@@ -62,7 +62,7 @@ import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
-import { allBindings, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
+import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
 import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
@@ -97,7 +97,7 @@ import {
   insertRowBelow,
   isCursorInTable,
 } from "./lib/tableEdit";
-import { toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleTaskList } from "./lib/codeEdit";
+import { clampHeadings, toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList } from "./lib/codeEdit";
 import { useDaily } from "./lib/useDaily";
 import { useSync, type SyncController } from "./lib/useSync";
 import "./styles.css";
@@ -1763,6 +1763,38 @@ export default function App() {
     [switchVault, sync],
   );
 
+  // ---------------------------------------------------------------- 已打开仓库
+
+  /** 仓库路径同判：正斜杠、结尾分隔符与大小写（Windows）不影响判定。 */
+  const sameVaultPath = (a: string, b: string): boolean =>
+    a.replace(/[\\/]+$/, "").toLowerCase() === b.replace(/[\\/]+$/, "").toLowerCase();
+
+  /**
+   * 目标仓库已在别的窗口打开时把它调到前台，返回是否接管了这次打开。
+   * 登记表由各窗口进程维护（Rust 侧 open_vaults），崩溃的窗口按 pid 清理。
+   * 聚焦失败（登记过期、平台限制）时返回 false，调用方走常规打开流程。
+   */
+  const revealOpenVault = useCallback(async (picked: string): Promise<boolean> => {
+    const others = await openedVaults();
+    if (!others.some((dir) => sameVaultPath(dir, picked))) return false;
+    const focused = await focusVaultWindow(picked);
+    if (!focused) return false;
+    setStatus(`仓库已在其他窗口打开，已切换过去：${vaultDisplayName(picked)}`);
+    return true;
+  }, []);
+
+  // 本窗口打开的仓库登记到跨进程登记表；换仓库（vault 状态变化）自动刷新，
+  // 退出时尽力注销——没来得及注销（强杀/崩溃）的条目由 Rust 读取时按 pid 兜底。
+  useEffect(() => {
+    if (!vault) return;
+    void registerOpenVault(vault);
+    const onUnload = () => {
+      void unregisterOpenVault();
+    };
+    window.addEventListener("beforeunload", onUnload);
+    return () => window.removeEventListener("beforeunload", onUnload);
+  }, [vault]);
+
   const openVault = useCallback(async () => {
     // 移动端不走 SAF 选取：仓库来自基础目录的发现列表，弹出仓库页
     if (isMobile()) {
@@ -1772,6 +1804,8 @@ export default function App() {
     const picked = await pickVault();
     if (!picked) return;
     if (picked === vault) return;
+    // 已在其他窗口打开：不再问「当前窗口还是新窗口」，直接切到那个窗口
+    if (await revealOpenVault(picked)) return;
     // 打开方式：设置里固定了就直接走；默认（ask）弹窗让用户选当前窗口/新窗口
     const mode = getSettings().vaultOpenMode;
     if (mode === "newWindow") {
@@ -1788,7 +1822,7 @@ export default function App() {
       return;
     }
     setVaultChoice({ picked, remember: false });
-  }, [pickVault, vault, switchVault]);
+  }, [pickVault, vault, switchVault, revealOpenVault]);
 
   /** 「打开其他仓库」的方式选择弹窗（vaultOpenMode = ask 时出现）。 */
   const [vaultChoice, setVaultChoice] = useState<{ picked: string; remember: boolean } | null>(null);
@@ -1833,6 +1867,8 @@ export default function App() {
     async (dir: string) => {
       setVaultMenu(null);
       if (dir === vault) return;
+      // 已在其他窗口打开：直接切过去，不弹「当前窗口/新窗口」
+      if (await revealOpenVault(dir)) return;
       const mode = getSettings().vaultOpenMode;
       if (mode === "newWindow") {
         try {
@@ -1849,7 +1885,7 @@ export default function App() {
       }
       setVaultChoice({ picked: dir, remember: false });
     },
-    [vault, switchVault],
+    [vault, switchVault, revealOpenVault],
   );
 
   // ------------------------------------------------------------------ 数据目录
@@ -3116,6 +3152,10 @@ export default function App() {
       const inEditor = !!active?.closest(".cm-editor");
       const key = event.key.toLowerCase();
       if (key === "c") {
+        // 有 DOM 文字选区（docx/PDF 文字层、HTML 预览等）→ 让原生复制走：
+        // 焦点在预览里时 activeElement 是 body，不放假行会把选中文字复制成文件路径
+        const domSelection = window.getSelection();
+        if (domSelection && domSelection.toString().trim() !== "") return;
         if (!selectedPathRef.current) return;
         // 编辑器里选中了文本 → 让编辑器自己复制；光标悬空（常见：点开笔记后焦点
         // 在编辑器里）→ 复制树选中项，省得用户必须再点一次文件树
@@ -3255,6 +3295,48 @@ export default function App() {
     [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice],
   );
 
+  /** 编辑器内命令的统一分发：命令面板搜到的快捷键命令（标题/列表/行内代码等）从这里走。 */
+  const runEditorCommand = useCallback(
+    (id: string) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const clampMatch = /^clampHeading([1-6])$/.exec(id);
+      if (clampMatch) {
+        clampHeadings(view, Number(clampMatch[1]));
+        return;
+      }
+      const headingMatch = /^heading([1-6])$/.exec(id);
+      if (headingMatch) {
+        toggleHeading(view, Number(headingMatch[1]));
+        return;
+      }
+      switch (id) {
+        case "toggleInlineCode":
+          toggleInlineCode(view);
+          return;
+        case "toggleCodeBlock":
+          toggleCodeBlock(view);
+          return;
+        case "toggleBulletList":
+          toggleBulletList(view);
+          return;
+        case "toggleNumberList":
+          toggleNumberList(view);
+          return;
+        case "insertDate":
+          insertAtCursor(daily.today);
+          return;
+        case "insertTime":
+          insertAtCursor(moment().format("HH:mm"));
+          return;
+        case "toggleTags":
+          shortcuts.toggleTags();
+          return;
+      }
+    },
+    [insertAtCursor, daily.today, shortcuts],
+  );
+
   // 快捷键绑定（Obsidian 式可重绑定）：设置面板改绑定后这里经版本号重算。
   const [hotkeysEpoch, setHotkeysEpoch] = useState(0);
   useEffect(() => onHotkeysChange(() => setHotkeysEpoch((n) => n + 1)), []);
@@ -3368,8 +3450,35 @@ export default function App() {
       { id: "export-pdf", title: "导出 PDF（打印对话框，选「另存为 PDF」）", icon: "🖨️", run: () => void exportPdf() },
       { id: "export-pdf-file", title: "导出 PDF 文件（选定位置，直接落盘）", icon: "📄", run: () => void exportPdfFile() },
       { id: "roundtrip", title: "校验字节往返（写后读比对）", icon: "🧪", run: () => void verifyRoundTrip() },
+      // 快捷键设置里的其余命令也进面板：Ctrl+K 应能搜到「设置 → 快捷键」里的
+      // 每个功能（标题/列表/行内代码、插入日期时间等编辑器内命令为主）。
+      // 上面已显式列出的与面板自身不再重复生成。
+      ...(() => {
+        const covered = new Set([
+          "newNote", "newDiary", "newFolder", "save", "gotoEnd", "quickCapture",
+          "captureManager", "toggleMode", "toggleLeft", "toggleRight", "zen",
+          "syncNow", "openVaultPicker", "openSettings", "palette",
+        ]);
+        const icons: Record<string, string> = {
+          heading1: "#", heading2: "#", heading3: "#", heading4: "#", heading5: "#", heading6: "#",
+          clampHeading1: "⇕", clampHeading2: "⇕", clampHeading3: "⇕",
+          clampHeading4: "⇕", clampHeading5: "⇕", clampHeading6: "⇕",
+          toggleInlineCode: "</>", toggleCodeBlock: "{}",
+          toggleBulletList: "•", toggleNumberList: "1.",
+          insertDate: "📅", insertTime: "🕐", toggleTags: "🏷️",
+        };
+        return COMMAND_KEYS.filter((cmd) => !covered.has(cmd.id)).map((cmd) => ({
+          id: `cmd-${cmd.id}`,
+          title: cmd.label,
+          keywords: [cmd.desc ?? "", cmd.id],
+          detail: cmd.desc,
+          hint: keyHint(cmd.id),
+          icon: icons[cmd.id] ?? "⌨️",
+          run: () => runEditorCommand(cmd.id),
+        }));
+      })(),
     ],
-    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf, exportPdfFile, vault],
+    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf, exportPdfFile, vault, runEditorCommand],
   );
 
   /** 速记管理的仓库候选：当前仓库 + 最近仓库 + 已配置的收件仓库（去重）。 */

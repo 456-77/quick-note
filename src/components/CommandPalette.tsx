@@ -16,6 +16,10 @@ import { searchVault, type EntryMeta, type SearchHit } from "../lib/api";
 export interface PaletteAction {
   id: string;
   title: string;
+  /** 参与搜索匹配的附加词（说明文字、命令 id 等）；标题始终参与匹配。 */
+  keywords?: string[];
+  /** 标题下方的弱化说明（命令 desc 等）。 */
+  detail?: string;
   /** 快捷键提示（右侧灰字）。 */
   hint?: string;
   icon: string;
@@ -136,7 +140,11 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
     const out: Item[] = [];
 
     const actionPool = terms.length
-      ? actions.filter((action) => action.title.toLowerCase().includes(query.trim().toLowerCase()))
+      ? actions.filter((action) => {
+          const q = query.trim().toLowerCase();
+          if (action.title.toLowerCase().includes(q)) return true;
+          return (action.keywords ?? []).some((keyword) => keyword.toLowerCase().includes(q));
+        })
       : actions;
     for (const action of actionPool) {
       out.push({
@@ -144,6 +152,7 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
         group: "快捷操作",
         icon: action.icon,
         title: action.title,
+        detail: action.detail,
         hint: action.hint,
         run: action.run,
       });

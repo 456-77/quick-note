@@ -257,6 +257,42 @@ export const startupFile = () => invoke<string | null>("startup_file");
 /** 另起一个应用窗口打开指定仓库（「在新窗口打开」）。 */
 export const openNewWindow = (vault: string) => invoke<void>("open_new_window", { vault });
 
+/** 登记本窗口正打开的仓库（跨进程登记表，识别「已在其他窗口打开」用）。 */
+export const registerOpenVault = async (vault: string): Promise<void> => {
+  try {
+    await invoke("open_vaults_register", { vault });
+  } catch {
+    // 登记失败只影响「跳过弹窗直接聚焦」这一处体验
+  }
+};
+
+/** 注销本窗口的仓库登记（退出时调用；崩溃条目由 Rust 侧按 pid 清理兜底）。 */
+export const unregisterOpenVault = async (): Promise<void> => {
+  try {
+    await invoke("open_vaults_unregister");
+  } catch {
+    // 尽力而为
+  }
+};
+
+/** 其他窗口正打开着的仓库列表。 */
+export const openedVaults = async (): Promise<string[]> => {
+  try {
+    return await invoke<string[]>("open_vaults_list");
+  } catch {
+    return [];
+  }
+};
+
+/** 把已在其他窗口打开的仓库调到前台；失败（平台不支持/登记过期）返回 false。 */
+export const focusVaultWindow = async (vault: string): Promise<boolean> => {
+  try {
+    return await invoke<boolean>("open_vaults_focus", { vault });
+  } catch {
+    return false;
+  }
+};
+
 /** 应用数据目录信息（设置面板「存储」分区用）。 */
 export interface AppDataPaths {
   /** 配置目录：同步状态与数据目录指针文件所在。 */

@@ -15,7 +15,7 @@ import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
-import { toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
+import { clampHeadings, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
 import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
@@ -432,6 +432,13 @@ function editorToggleKeymap(): Extension {
         if (bindingFor(`heading${level}`).includes(combo)) {
           event.preventDefault();
           return toggleHeading(view, level);
+        }
+      }
+      // 选区标题归一 1–6：默认无键位，设置面板里可绑
+      for (let level = 1; level <= 6; level += 1) {
+        if (bindingFor(`clampHeading${level}`).includes(combo)) {
+          event.preventDefault();
+          return clampHeadings(view, level);
         }
       }
       return false;

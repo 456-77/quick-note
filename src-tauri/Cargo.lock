@@ -3039,6 +3039,7 @@ dependencies = [
  "tauri-plugin-updater",
  "ureq",
  "webview2-com",
+ "windows",
  "windows-core 0.61.2",
 ]
 

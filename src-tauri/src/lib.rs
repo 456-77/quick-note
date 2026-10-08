@@ -1,5 +1,6 @@
 pub mod data_dir;
 pub mod net;
+pub mod open_vaults;
 pub mod sync_store;
 pub mod vault;
 pub mod vault_home;
@@ -301,6 +302,10 @@ pub fn run() {
             startup_vault,
             startup_file,
             open_new_window,
+            open_vaults::open_vaults_register,
+            open_vaults::open_vaults_unregister,
+            open_vaults::open_vaults_list,
+            open_vaults::open_vaults_focus,
             read_text_file,
             write_text_file,
             read_binary_file,

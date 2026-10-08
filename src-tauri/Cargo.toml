@@ -57,6 +57,13 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 webview2-com = "0.38.2"
 # 必须与 webview2-com-sys 0.38 所用的 windows-core 同版本，Interface::cast 才是同一个 trait
 windows-core = "=0.61.2"
+# 跨进程聚焦仓库窗口（open_vaults.rs）：枚举窗口、AttachThreadInput 前台切换、
+# OpenProcess 探测登记表里 pid 的存活。版本与上面的 windows-core 一致（同一棵树）。
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration

@@ -3,8 +3,8 @@
  *
  * 标签的存储格式就是正文里的 `#标签`（Obsidian 兼容）：不引入 frontmatter，
  * 文件保持纯 Markdown，同步/外部编辑器都不需要特殊理解。
- * 「笔记的标签行」约定为**最后一个非空行**且整行只由标签组成——添加标签
- * 优先并入这一行，没有才在文末新起一行。
+ * 「笔记的标签行」约定为**第 3 行**——第 1 行是标题、第 2 行可能是日记天气，
+ * 标签行紧跟其后，新建笔记的自动「待整理」标签也落在这条线上。
  */
 
 import { findTags } from "./inlineSyntax.ts";
@@ -46,27 +46,38 @@ export interface TagEdit {
 }
 
 /**
- * 计算添加标签的编辑：并入文末标签行，或新建一行。
+ * 计算添加标签的编辑：标签行固定放第 3 行（标题/天气之后），已是标签行就并入
+ * 行尾，否则在那一行新起一条；有 frontmatter 时顺延到闭合 `---` 之后。
  * 文本里已有同名标签时返回 null（不动文档）。
  */
 export function tagAddEdit(text: string, tag: string, lineBreak: string): TagEdit | null {
   if (noteTags(text).includes(tag)) return null;
   // 结构分析按 \n（doc.toString() 的口径）；lineBreak 只用于要插入的分隔符
   const lines = text.split("\n");
-  // 从后往前找最后一个非空行
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    if (!lines[i].trim()) continue;
-    if (isTagLine(lines[i])) {
-      const at = lines.slice(0, i + 1).join("\n").length;
-      return { at, insert: ` #${tag}`, to: at };
+  // 标签行落点：默认索引 2（第 3 行）；有 frontmatter 则挪到其闭合 --- 的下一行
+  let index = 2;
+  if (lines[0]?.trim() === "---") {
+    for (let i = 1; i < lines.length; i += 1) {
+      if (lines[i]?.trim() === "---") {
+        index = i + 1;
+        break;
+      }
     }
-    // 最后一个非空行不是标签行：其后可能还有空行（结尾换行），插到文档末尾
-    const at = text.length;
-    const prefix = text.endsWith("\n") || text.length === 0 ? "" : lineBreak;
-    return { at, insert: `${prefix}#${tag}`, to: at };
   }
-  // 空文档：直接就是标签行
-  return { at: 0, insert: `#${tag}`, to: 0 };
+  // 落点已是标签行：并入行尾
+  if (lines[index] !== undefined && isTagLine(lines[index])) {
+    const at = lines.slice(0, index + 1).join("\n").length;
+    return { at, insert: ` #${tag}`, to: at };
+  }
+  // 落点在文档内：在该行位置插入一条标签行（带尾随换行，把原行顶下去）；
+  // 落点越界（文档不满两行）：退化为追加文末，沿用旧的接续规则
+  if (index < lines.length) {
+    const at = lines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0);
+    return { at, insert: `#${tag}${lineBreak}`, to: at };
+  }
+  const at = text.length;
+  const prefix = text.endsWith("\n") || text.length === 0 ? "" : lineBreak;
+  return { at, insert: `${prefix}#${tag}`, to: at };
 }
 
 /**
