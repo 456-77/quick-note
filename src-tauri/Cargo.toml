@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.20.0"
+version = "0.21.0"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
@@ -41,6 +41,8 @@ base64 = "0.22"
 # （构建时需 TAURI_SIGNING_PRIVATE_KEY_PATH 指向私钥；发版流程见记忆/发布文档）
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-updater = "2"
+# 全局快捷键（OS 级，应用不在前台也响应）：截图识别入口（0.20）。仅桌面。
+tauri-plugin-global-shortcut = "2"
 # TLS 走系统实现（Windows 上是 SChannel），因此不引入 ring 之类的 C 依赖，也不用装 OpenSSL。
 # native-tls 没有 Android 后端，这里必须与移动端的 rustls 依赖互斥分层。
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
@@ -52,14 +54,15 @@ ureq = { version = "3", default-features = false, features = ["native-tls"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 # ---- Windows 专属依赖 ----------------------------------------------------
-# 直接访问 WebView2 COM 接口（内存占用目标，最小化时自动释放缓存）
+# 直接访问 WebView2 COM 接口（内存占用目标，最小化时自动释放缓存）。
+# 版本跟随 tauri 主依赖树（0.20 加全局快捷键插件后 tauri 2.12 → webview2-com 0.39），
+# 必须与 webview2-com-sys 所用的 windows-core 同版本，Interface::cast 才是同一个 trait。
 [target.'cfg(windows)'.dependencies]
-webview2-com = "0.38.2"
-# 必须与 webview2-com-sys 0.38 所用的 windows-core 同版本，Interface::cast 才是同一个 trait
-windows-core = "=0.61.2"
+webview2-com = "0.39"
+windows-core = "=0.62.2"
 # 跨进程聚焦仓库窗口（open_vaults.rs）：枚举窗口、AttachThreadInput 前台切换、
 # OpenProcess 探测登记表里 pid 的存活。版本与上面的 windows-core 一致（同一棵树）。
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",

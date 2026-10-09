@@ -48,6 +48,12 @@ export interface Settings {
   autoTagNewNote: boolean;
   autoTagName: string;
   /**
+   * 全局截图快捷键（OS 级，应用不在前台也响应；0.20 用户需求）。
+   * 格式 `Ctrl+Alt+G` 这类；空串 = 关闭。截图后在弹窗里框选区域、识别文字或存进笔记。
+   * 默认避开 Ctrl+Alt+A/Q（微信/QQ 截图的常见占用）。
+   */
+  screenshotHotkey: string;
+  /**
    * Markdown 渲染风格：
    * - `default`：内置的深色高级观感；
    * - `blueTopaz`：Blue Topaz 同源的渲染观感（彩色标题、tint 表头、重 callout）。
@@ -106,6 +112,7 @@ const DEFAULTS: Settings = {
   quickCaptureFile: "Inbox.md",
   autoTagNewNote: true,
   autoTagName: "待整理",
+  screenshotHotkey: "Ctrl+Alt+G",
   renderStyle: "default",
   exportFolder: "导出",
   vaultOpenMode: "ask",

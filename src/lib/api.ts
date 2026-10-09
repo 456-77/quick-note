@@ -335,6 +335,31 @@ export const watchVault = (vault: string) => invoke<void>("watch_vault", { vault
 /** 把仓库目录加入 asset 协议白名单，供加载库内图片。 */
 export const allowAssetDir = (vault: string) => invoke<void>("allow_asset_dir", { vault });
 
+// ---------------- 全局截图 + OCR（仅桌面，0.20） ----------------
+
+export interface ScreenCapture {
+  /** PNG 内容的 base64（无 data: 前缀）。 */
+  imageBase64: string;
+  width: number;
+  height: number;
+}
+
+/** 抓取整个虚拟屏幕为 PNG（base64）。 */
+export const screenshotCapture = () => invoke<ScreenCapture>("screenshot_capture");
+
+/** 对一段 PNG（base64）做 OCR，返回识别出的纯文本。 */
+export const screenshotOcr = (imageBase64: string) =>
+  invoke<string>("screenshot_ocr", { imageBase64 });
+
+/** 注册/更换全局截图快捷键（空串 = 取消注册）。 */
+export const setScreenshotHotkey = (hotkey: string) =>
+  invoke<void>("set_screenshot_hotkey", { hotkey });
+
+/** 订阅全局截图快捷键按下事件（Rust 侧插件 handler 发出）。 */
+export function onScreenshotHotkey(handler: () => void): Promise<UnlistenFn> {
+  return listen("screenshot-hotkey", () => handler());
+}
+
 /**
  * 扫描同步范围内的笔记，返回每个文件的同步哈希（**不返回内容**）。
  *

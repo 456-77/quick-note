@@ -1,6 +1,8 @@
 pub mod data_dir;
 pub mod net;
 pub mod open_vaults;
+#[cfg(desktop)]
+pub mod screenshot;
 pub mod sync_store;
 pub mod vault;
 pub mod vault_home;
@@ -224,6 +226,20 @@ pub fn run() {
     {
         // 应用内更新（检查/下载/安装）与更新后的重启；密钥与端点见 tauri.conf.json
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        // 全局快捷键（OS 级，应用不在前台也响应）：目前只有「截图识别」一条。
+        // 快捷键本身由前端调 set_screenshot_hotkey 动态注册（可在设置里改，被占用时
+        // 前端会收到错误提示），这里只挂统一 handler：按下即发事件给前端。
+        builder = builder.plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, _shortcut, event| {
+                    use tauri_plugin_global_shortcut::ShortcutState;
+                    if event.state == ShortcutState::Pressed {
+                        use tauri::Emitter;
+                        let _ = app.emit("screenshot-hotkey", ());
+                    }
+                })
+                .build(),
+        );
     }
     builder
         .manage(watch::WatcherState::default())
@@ -347,6 +363,12 @@ pub fn run() {
             sync_store::sync_state_save,
             sync_store::sync_state_load_for,
             sync_store::sync_state_save_for,
+            #[cfg(desktop)]
+            screenshot::screenshot_capture,
+            #[cfg(desktop)]
+            screenshot::screenshot_ocr,
+            #[cfg(desktop)]
+            screenshot::set_screenshot_hotkey,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -780,6 +780,7 @@ kbd {
 
 /* 左栏的名称筛选框 */
 .sidebar-filter {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
@@ -810,6 +811,102 @@ kbd {
 }
 
 .sidebar-filter input::placeholder {
+  color: var(--text-faint);
+}
+
+/* 目录筛选（文件树只显示勾选的一级目录） */
+
+.dir-filter-btn {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+
+.dir-filter-btn:hover,
+.dir-filter-btn.has-filter {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dir-filter-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 18;
+}
+
+.dir-filter-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 10px;
+  right: 10px;
+  z-index: 19;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-pop, 0 8px 28px rgba(0, 0, 0, 0.35));
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 46vh;
+}
+
+.dir-filter-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.dir-filter-clear {
+  border: 0;
+  background: none;
+  font-size: 11.5px;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+}
+
+.dir-filter-list {
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.dir-filter-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 4px;
+  border-radius: var(--radius-sm);
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dir-filter-item:hover {
+  background: var(--accent-soft);
+}
+
+.dir-filter-item input {
+  accent-color: var(--accent);
+  flex: none;
+}
+
+.dir-filter-empty,
+.dir-filter-note {
+  font-size: 11.5px;
   color: var(--text-faint);
 }
 
@@ -3455,6 +3552,13 @@ html.qn-alt-held .cm-line {
   overscroll-behavior: contain;
 }
 
+/* 移动端详情页头部（‹ 设置 / 分区名 / ×）只该在触屏窄屏出现；桌面上它作为
+   .settings-body 第一个子元素裸渲染，就是用户截图里面板顶上多出的那条「设置」
+   按钮（0.20 反馈"是不是多余的"）。这里隐藏，移动端 media 块里 display:flex 重新启用。 */
+.settings-mobile-head {
+  display: none;
+}
+
 .settings-sec {
   display: block;
 }
@@ -3744,6 +3848,24 @@ html.qn-alt-held .cm-line {
 
 .hotkey-row.is-flash {
   background: var(--accent-soft);
+}
+
+/* 启用勾选框（0.20）：行首；停用后整行键帽淡化提示"不生效" */
+.hotkey-row .hotkey-enable {
+  flex: none;
+  align-self: center;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.hotkey-row.is-disabled .hotkey-labelbox {
+  opacity: 0.55;
+}
+
+.hotkey-row.is-disabled .keycap-set,
+.hotkey-row.is-disabled .hotkey-unset {
+  opacity: 0.4;
 }
 
 .hotkey-labelbox {
@@ -4467,7 +4589,8 @@ html.qn-bg-on .calendar-card {
   background: var(--surface);
   border-radius: var(--radius);
   padding: 16px;
-  will-change: transform;
+  /* 不用 will-change:transform——缩放已改为改实际宽高（真实布局重排），
+     合成层提升反而会让 foreignObject 文字按初始尺度光栅化，放大即糊 */
 }
 
 /* mermaid 节点文字在灯箱里可选中复制（foreignObject 内的 div 默认继承） */
@@ -4594,6 +4717,155 @@ html.qn-bg-on .calendar-card {
   border: 1px solid var(--accent);
   border-radius: 999px;
   padding: 1px 8px;
+}
+
+/* 选区标题归一：级别选择弹窗 */
+
+.clamp-heading-card {
+  width: 360px;
+}
+
+.clamp-heading-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.clamp-heading-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 10px 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.clamp-heading-btn:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.clamp-heading-tag {
+  font-family: var(--font-mono, monospace);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.clamp-heading-tag-1 { font-size: 16px; }
+.clamp-heading-tag-2 { font-size: 15px; }
+.clamp-heading-tag-3 { font-size: 14px; }
+.clamp-heading-tag-4 { font-size: 13.5px; }
+.clamp-heading-tag-5 { font-size: 13px; }
+.clamp-heading-tag-6 { font-size: 12.5px; }
+
+.clamp-heading-badge {
+  font-size: 10.5px;
+  color: var(--accent);
+}
+
+.clamp-heading-note {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+/* 全局截图弹窗：屏幕图 + 框选 + OCR 结果 */
+
+.shot-backdrop {
+  z-index: 95;
+}
+
+.shot-card {
+  width: auto;
+  max-width: min(1180px, 96vw);
+  max-height: 94vh;
+}
+
+.shot-card .modal-head {
+  gap: 8px;
+}
+
+.shot-btn {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.shot-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.shot-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.shot-btn-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.shot-stage {
+  position: relative;
+  overflow: auto;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: flex-start;
+}
+
+.shot-img {
+  display: block;
+  max-width: 100%;
+  max-height: 62vh;
+  cursor: crosshair;
+  user-select: none;
+}
+
+.shot-selection {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  pointer-events: none;
+}
+
+.shot-ocr {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.shot-ocr-text {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.55;
+  resize: vertical;
+}
+
+.shot-ocr-text:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.shot-ocr-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 /* 裁剪弹窗 */
@@ -5816,6 +6088,15 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   align-items: center;
   gap: 4px;
   overflow: hidden;
+  /* 0.20 用户反馈：行窄时标签片把笔记名挤没了。名字先拿自然宽度（超长省略），
+     标签片只分剩下的空间，放不下就从行尾裁掉——不再盖在名字上。 */
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.tag-dash .tree-label {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .tag-dash-chip {
@@ -6318,6 +6599,28 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   overflow-wrap: anywhere;
 }
 
+/* 正文下的图片缩略图条（0.20：管理面板支持预览图片） */
+.cm-row-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+}
+
+.cm-row-images img {
+  width: 76px;
+  height: 56px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+  background: var(--surface-2);
+}
+
+.cm-row-images img:hover {
+  border-color: var(--accent);
+}
+
 .cm-row-meta {
   display: flex;
   align-items: center;
@@ -6545,7 +6848,7 @@ button.cm-tag:hover {
 .cm-drawer-edit {
   width: 100%;
   padding: 8px 10px;
-  border: 1px solid var(--accent);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-2);
   color: var(--text);
@@ -6557,6 +6860,13 @@ button.cm-tag:hover {
 
 .cm-drawer-edit:focus {
   outline: none;
+  border-color: var(--accent);
+}
+
+/* 详情抽屉里的图片缩略图（与列表行同款，稍大） */
+.cm-field .cm-row-images img {
+  width: 96px;
+  height: 68px;
 }
 
 .cm-drawer-tags {
@@ -6568,6 +6878,46 @@ button.cm-tag:hover {
 
 .cm-drawer-tags .cm-tag {
   cursor: default;
+  gap: 3px;
+}
+
+.cm-tag-x {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin-left: 2px;
+  font-size: 12px;
+  line-height: 1;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.cm-tag-x:hover {
+  opacity: 1;
+}
+
+.cm-drawer-tag-input {
+  width: 90px;
+  padding: 2px 8px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+}
+
+.cm-drawer-tag-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  border-style: solid;
+}
+
+.cm-drawer-tag-input::placeholder {
+  color: var(--text-faint);
 }
 
 .cm-drawer-target {

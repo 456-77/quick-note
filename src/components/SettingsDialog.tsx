@@ -350,6 +350,32 @@ export default function SettingsDialog({
 
           <div className="settings-group">打开行为</div>
           <label className="settings-row">
+            <span>全局截图快捷键</span>
+            <span className="settings-inline">
+              <input
+                type="text"
+                className="settings-text"
+                value={settings.screenshotHotkey}
+                placeholder="如 Ctrl+Alt+A，留空关闭"
+                onChange={(event) => saveWithFlash({ screenshotHotkey: event.target.value })}
+              />
+              <button
+                type="button"
+                className="btn btn-mini"
+                title="恢复默认 Ctrl+Alt+G"
+                onClick={() => saveWithFlash({ screenshotHotkey: "Ctrl+Alt+G" })}
+              >
+                重置
+              </button>
+            </span>
+          </label>
+          <Hint>
+            OS 级全局快捷键，应用在后台也响应（0.20 新增）。按下后抓取整个屏幕并在弹窗里
+            展示：可拖动框选区域、识别图中文字（Windows OCR）或把截图存进当前笔记。
+            格式如 `Ctrl+Shift+A`；留空 = 关闭。修改后立即生效；提示"被其他程序占用"
+            说明该组合已被微信/QQ 等占用，换一个即可。
+          </Hint>
+          <label className="settings-row">
             <span>打开其他仓库时</span>
             <select
               value={settings.vaultOpenMode}

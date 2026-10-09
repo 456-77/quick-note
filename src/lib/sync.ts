@@ -60,6 +60,14 @@ export interface SyncDeviceState {
   attachmentStamps: Record<string, string>;
   /** 上次成功同步的时间戳（ms），0=从未。 */
   lastSyncAt: number;
+  /**
+   * 各仓库记住的自动同步开关（归一化仓库路径 -> 开关）。
+   *
+   * 用户反馈（0.20）："已经在设置中启用同步，每次重新打开仓库又得重新点击同步选项"。
+   * 停用仍是换仓库时的默认（0.13 的安全语义：带着上一仓库的开关全量推送太危险），
+   * 但每个仓库**用户明确选过**的开关要记住——切回来时恢复，而不是每次都重选。
+   */
+  enabledByVault: Record<string, boolean>;
   /** 服务端签发的 refreshToken（30 天滚动轮换），用于静默续期 accessToken。 */
   refreshToken: string;
   /**
@@ -96,27 +104,39 @@ export const DEFAULT_SYNC_STATE: SyncDeviceState = {
   lastSyncAt: 0,
   refreshToken: "",
   pendingConflicts: [],
+  enabledByVault: {},
 };
 
+/** 仓库路径的归一化键：分隔符统一、去尾分隔符、忽略大小写（Windows 盘符/目录大小写不稳）。 */
+export function normalizeVaultKey(vault: string): string {
+  return vault.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+/** 同一个仓库的两种写法（对话框选择 vs 启动参数推导）视为相等。 */
+export function sameVaultPath(a: string, b: string): boolean {
+  return a !== "" && b !== "" && normalizeVaultKey(a) === normalizeVaultKey(b);
+}
+
 /**
- * 把状态对齐到当前仓库：换过仓库就丢掉游标与哈希，并**停用自动同步**。
+ * 把状态对齐到当前仓库：换过仓库就丢掉游标与哈希。
  *
  * 保留的只有与仓库无关的部分：服务端地址、账号密码、范围、仓库名、
  * refreshToken（它是**账号级**的，不是仓库级的）。
  *
- * 停用是刻意为之（0.13 用户要求）：换到新仓库意味着"这里的文件我还没想好要不要
- * 上云"，带着上一仓库的开关直接全量推送可能把不想同步的东西推上去。开关在设置里
- * 手动打开后照常工作。
- *
- * 代价是"切回上一个仓库会重新全量拉取一次、且要重开一次同步开关"。这比带着别的
- * 仓库的哈希去比对安全得多——后者会让同名文件被误判成本地改动或云端删除。
+ * 自动同步开关：换仓库时默认停用仍是刻意为之（0.13 用户要求）——带着上一仓库的开关
+ * 直接全量推送可能把不想同步的东西推上去。但用户在某个仓库里**明确选过**的开关按
+ * 仓库记进 {@link SyncDeviceState.enabledByVault}，切回该仓库时恢复，不再要求每次重选
+ * （0.20 用户反馈）。当前仓库自身重开（含路径写法不同、大小写差异）则原样保留全部状态。
  */
 export function adaptStateToVault(state: SyncDeviceState, vault: string): SyncDeviceState {
-  if (state.vault === vault && vault !== "") return state;
+  if (sameVaultPath(state.vault, vault)) return state;
+  const enabledByVault = { ...state.enabledByVault };
+  if (state.vault !== "") enabledByVault[normalizeVaultKey(state.vault)] = state.enabled;
   return {
     ...state,
     vault,
-    enabled: false,
+    enabled: enabledByVault[normalizeVaultKey(vault)] ?? false,
+    enabledByVault,
     cursor: 0,
     hashes: {},
     attachmentHashes: {},
@@ -146,6 +166,9 @@ export function normalizeSyncState(raw: Partial<SyncDeviceState> | null | undefi
     scope: raw?.scope === "vault" ? "vault" : "folder",
     cursor: typeof raw?.cursor === "number" && raw.cursor >= 0 ? raw.cursor : 0,
     lastSyncAt: typeof raw?.lastSyncAt === "number" ? raw.lastSyncAt : 0,
+    enabledByVault: Object.fromEntries(
+      Object.entries(raw?.enabledByVault ?? {}).filter(([, v]) => typeof v === "boolean"),
+    ),
     pendingConflicts: Array.isArray(raw?.pendingConflicts)
       ? raw.pendingConflicts.filter(
           (item): item is PendingConflict =>

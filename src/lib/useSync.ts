@@ -24,6 +24,7 @@ import {
   adaptStateToVault,
   defaultVaultName,
   normalizeSyncState,
+  normalizeVaultKey,
   type PendingConflict,
   type SyncDeviceState,
   type SyncStatusKind,
@@ -271,7 +272,15 @@ export function useSync(options: {
     (patch: Partial<SyncConfig>) => {
       // 状态对象在这里被整个换掉，所以引擎必须跟着重建——它还攥着旧对象，
       // 而它写回的游标与哈希要落在同一个对象上，否则会被下一次 persist 覆盖掉。
-      void persist({ ...stateRef.current, ...patch });
+      const next = { ...stateRef.current, ...patch };
+      // 开关是按仓库记的（切仓库时由 adaptStateToVault 恢复各仓库自己的选择）
+      if (typeof patch.enabled === "boolean" && vaultRef.current) {
+        next.enabledByVault = {
+          ...stateRef.current.enabledByVault,
+          [normalizeVaultKey(vaultRef.current)]: patch.enabled,
+        };
+      }
+      void persist(next);
       setEngineToken((value) => value + 1);
     },
     [persist],

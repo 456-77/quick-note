@@ -126,6 +126,43 @@ console.log("同步状态（本机文件，内含凭据，绝不进仓库）\n")
     adaptStateToVault({ ...DEFAULT_SYNC_STATE, vault: "" }, "D:/notes").vault === "D:/notes",
     "首次使用（状态里没有仓库）也记下当前仓库",
   );
+
+  // 0.20 用户反馈：同一个仓库重开（路径写法/大小写不同）必须原样保留开关，
+  // 不再要求每次重新点同步
+  const reopenCase = {
+    ...DEFAULT_SYNC_STATE,
+    vault: "D:/notes",
+    enabled: true,
+    cursor: 7,
+    hashes: { "a.md": "h" },
+  };
+  check(
+    adaptStateToVault(reopenCase, "d:\\notes\\").enabled === true &&
+      adaptStateToVault(reopenCase, "d:\\notes\\").cursor === 7,
+    "同一仓库不同路径写法：开关与游标原样保留",
+  );
+
+  // 按仓库记住的开关：切走时记下当前仓库的选择，切回时恢复
+  const switched = adaptStateToVault(
+    { ...DEFAULT_SYNC_STATE, vault: "D:/notes", enabled: true, enabledByVault: {} },
+    "D:/other",
+  );
+  check(
+    switched.enabled === false && switched.enabledByVault["d:/notes"] === true,
+    "换仓库默认停用，同时把上一仓库的开关记进 enabledByVault",
+  );
+  const backHome = adaptStateToVault(switched, "D:/notes");
+  check(
+    backHome.enabled === true && backHome.enabledByVault["d:/other"] === false,
+    "切回记住过的仓库恢复开关，旧仓库的选择同样入册",
+  );
+  check(
+    adaptStateToVault(
+      { ...DEFAULT_SYNC_STATE, vault: "D:/notes", enabled: true, enabledByVault: { "d:/other": true } },
+      "D:/other",
+    ).enabled === true,
+    "换到记住过「开启」的仓库直接恢复开启",
+  );
 }
 
 // ---------------------------------------------------------------- 范围判定

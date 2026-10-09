@@ -55,12 +55,7 @@ export const COMMAND_KEYS: CommandKeys[] = [
   { id: "heading4", label: "标题 4", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-4"] },
   { id: "heading5", label: "标题 5", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-5"] },
   { id: "heading6", label: "标题 6", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-6"] },
-  { id: "clampHeading1", label: "选区标题归一为 H1", desc: "选区内最高级标题设为 H1，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
-  { id: "clampHeading2", label: "选区标题归一为 H2", desc: "选区内最高级标题设为 H2，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
-  { id: "clampHeading3", label: "选区标题归一为 H3", desc: "选区内最高级标题设为 H3，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
-  { id: "clampHeading4", label: "选区标题归一为 H4", desc: "选区内最高级标题设为 H4，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
-  { id: "clampHeading5", label: "选区标题归一为 H5", desc: "选区内最高级标题设为 H5，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
-  { id: "clampHeading6", label: "选区标题归一为 H6", desc: "选区内最高级标题设为 H6，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
+  { id: "clampHeading", label: "选区标题归一…", desc: "弹窗选择级别：把选区内最高级标题设为该级，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
   { id: "palette", label: "命令面板 / 全局搜索", desc: "搜索笔记、全文或执行命令", group: "nav", keys: ["Mod-K", "Mod-P"] },
   { id: "toggleLeft", label: "收起 / 展开文件栏", group: "nav", keys: ["Mod-B"] },
   { id: "toggleRight", label: "收起 / 展开右侧面板", group: "nav", keys: ["Mod-Shift-B"] },
@@ -87,6 +82,50 @@ function loadOverrides(): Overrides {
 
 let overrides: Overrides = loadOverrides();
 const listeners = new Set<() => void>();
+
+// ---------------------------------------------------------------- 启用/停用
+
+/**
+ * 每条快捷键可单独停用（0.20 用户反馈：快捷键设置要能勾选启用）。
+ * 与键位覆盖分开存，互不牵连；停用的命令只是不再被**键盘**触发，
+ * 命令面板手动执行不受影响。
+ */
+const DISABLED_KEY = "quicknote.hotkeys.disabled";
+
+function loadDisabled(): Set<string> {
+  if (typeof localStorage === "undefined") return new Set();
+  try {
+    const raw = localStorage.getItem(DISABLED_KEY);
+    const list = raw ? (JSON.parse(raw) as unknown) : [];
+    return new Set(Array.isArray(list) ? list.filter((id): id is string => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+
+let disabledIds: Set<string> = loadDisabled();
+
+/** 该命令当前是否响应键盘快捷键（命令面板不受此限制）。 */
+export function isHotkeyEnabled(id: string): boolean {
+  return !disabledIds.has(id);
+}
+
+export function setHotkeyEnabled(id: string, enabled: boolean): void {
+  if (!COMMAND_KEYS.some((cmd) => cmd.id === id)) return;
+  const next = new Set(disabledIds);
+  if (enabled) next.delete(id);
+  else next.add(id);
+  disabledIds = next;
+  if (typeof localStorage !== "undefined") {
+    try {
+      if (next.size === 0) localStorage.removeItem(DISABLED_KEY);
+      else localStorage.setItem(DISABLED_KEY, JSON.stringify([...next]));
+    } catch {
+      // 存不进去只影响下次启动，本次会话照常生效
+    }
+  }
+  for (const listener of listeners) listener();
+}
 
 /** 命令当前生效的键位（默认 + 覆盖）。 */
 export function bindingFor(id: string): string[] {
@@ -197,21 +236,23 @@ export function setCapturing(value: boolean): void {
 
 // ---------------------------------------------------------------- 匹配与显示
 
-/** 命中键位的命令；没有绑定或正在捕获时返回 null。 */
+/** 命中键位的命令；没有绑定、正在捕获或该命令已停用时返回 null。 */
 export function matchCommand(
   event: KeyboardEvent,
   commands: readonly CommandKeys[] = allBindings(),
 ): CommandKeys | null {
   if (capturing) return null;
   const combo = comboOf(event);
-  return commands.find((cmd) => cmd.keys.includes(combo)) ?? null;
+  return commands.find((cmd) => cmd.keys.includes(combo) && !disabledIds.has(cmd.id)) ?? null;
 }
 
 export function resetAllBindings(): void {
   overrides = {};
+  disabledIds = new Set();
   if (typeof localStorage !== "undefined") {
     try {
       localStorage.removeItem(STORAGE_KEY);
+      localStorage.removeItem(DISABLED_KEY);
     } catch {
       // 同 setBinding：清不掉只影响下次启动
     }
@@ -221,12 +262,22 @@ export function resetAllBindings(): void {
 
 // ---------------------------------------------------------------- 导入 / 导出
 
-/** 导出当前自定义键位为 JSON 文本（只含用户改动；恢复默认的键不占条目）。 */
+/** 导出当前自定义键位与停用清单为 JSON 文本（只含用户改动；恢复默认的键不占条目）。 */
 export function exportBindings(): string {
   // 导出内存态（setBinding 对内存与 localStorage 同步写入；重读存储在无
   // localStorage 的环境如 Node 测试里会拿到空表）
-  return JSON.stringify({ version: 1, bindings: overrides }, null, 2);
+  return JSON.stringify({ version: 1, bindings: overrides, disabled: [...disabledIds] }, null, 2);
 }
+
+/** 旧版逐级标题归一命令（0.20 起合并为一条弹窗命令）的迁移映射。 */
+const LEGACY_IDS: Record<string, string> = {
+  clampHeading1: "clampHeading",
+  clampHeading2: "clampHeading",
+  clampHeading3: "clampHeading",
+  clampHeading4: "clampHeading",
+  clampHeading5: "clampHeading",
+  clampHeading6: "clampHeading",
+};
 
 /**
  * 从 JSON 文本导入键位覆盖，返回导入的条数。
@@ -235,22 +286,35 @@ export function exportBindings(): string {
 export function importBindings(text: string): number {
   const parsed: unknown = JSON.parse(text);
   const record =
-    parsed && typeof parsed === "object" && "bindings" in parsed
-      ? (parsed as { bindings: unknown }).bindings
-      : parsed;
+    parsed && typeof parsed === "object" && ("bindings" in parsed || "disabled" in parsed)
+      ? (parsed as { bindings: unknown; disabled?: unknown })
+      : { bindings: parsed };
   if (!record || typeof record !== "object" || Array.isArray(record)) {
     throw new Error("文件里没有键位配置");
   }
+  const bindingsRaw = record.bindings;
+  if (!bindingsRaw || typeof bindingsRaw !== "object" || Array.isArray(bindingsRaw)) {
+    throw new Error("文件里没有键位配置");
+  }
   const known = new Set(COMMAND_KEYS.map((c) => c.id));
-  const entries = Object.entries(record as Record<string, unknown>);
-  for (const [id, keys] of entries) {
-    if (!known.has(id)) throw new Error(`未知命令：${id}`);
+  const entries = Object.entries(bindingsRaw as Record<string, unknown>);
+  for (const [rawId, keys] of entries) {
+    const id = known.has(rawId) ? rawId : LEGACY_IDS[rawId];
+    if (!id) throw new Error(`未知命令：${rawId}`);
     if (!Array.isArray(keys) || keys.some((k) => typeof k !== "string")) {
-      throw new Error(`命令 ${id} 的键位格式不正确`);
+      throw new Error(`命令 ${rawId} 的键位格式不正确`);
     }
   }
-  for (const [id, keys] of entries) {
-    setBinding(id, keys as string[]);
+  for (const [rawId, keys] of entries) {
+    setBinding(known.has(rawId) ? rawId : LEGACY_IDS[rawId], keys as string[]);
+  }
+  const disabled = (record as { disabled?: unknown }).disabled;
+  if (Array.isArray(disabled)) {
+    for (const rawId of disabled) {
+      if (typeof rawId !== "string") continue;
+      const id = known.has(rawId) ? rawId : LEGACY_IDS[rawId];
+      if (id) setHotkeyEnabled(id, false);
+    }
   }
   return entries.length;
 }

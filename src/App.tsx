@@ -6,11 +6,13 @@ import { EditorView } from "@codemirror/view";
 import CalendarPanel from "./components/CalendarPanel";
 import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
 import FilePreview from "./components/FilePreview";
-import FileTree from "./components/FileTree";
+import FileTree, { topLevelDirs } from "./components/FileTree";
+import HeadingLevelDialog from "./components/HeadingLevelDialog";
 import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
 import QuickCaptureDialog from "./components/QuickCaptureDialog";
 import CaptureManager from "./components/CaptureManager";
+import ScreenshotDialog from "./components/ScreenshotDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import StatsPanel from "./components/StatsPanel";
 import TagDashboard from "./components/TagDashboard";
@@ -26,6 +28,7 @@ import {
   IconCopy,
   IconEye,
   IconFocus,
+  IconFolder,
   IconFolderPlus,
   IconLibrary,
   IconListTree,
@@ -43,7 +46,7 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, listEntries, moveEntry, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, searchVault, setCustomDataDir, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
 import { isMobile } from "./lib/platform";
 import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
@@ -57,7 +60,7 @@ import { readBinaryFile } from "./lib/api";
 import type { CaptureImage } from "./components/QuickCaptureDialog";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache, splitEmbedTarget } from "./lib/embed";
-import { clearMermaidCache, requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
+import { applyMermaidTheme, clearMermaidCache, requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
 import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
@@ -106,6 +109,8 @@ const VAULT_KEY = "quicknote.vault";
 const FAVORITES_V2_KEY = "quicknote.favorites.v2";
 /** 固定标签页的存储键（按仓库分桶，同收藏）。 */
 const PINNED_TABS_KEY = "quicknote.ui.pinnedTabs";
+/** 目录筛选的存储键：仓库 → 被隐藏的一级目录列表（0.20 用户反馈：目录太多干扰阅读）。 */
+const HIDDEN_DIRS_KEY = "quicknote.tree.hiddenDirs";
 
 const MODE_KEY = "quicknote.mode";
 const SIDEBAR_KEY = "quicknote.sidebar";
@@ -173,6 +178,41 @@ export default function App() {
   });
   /** 左侧文件树的名称过滤（空串 = 显示完整目录树）。 */
   const [treeFilter, setTreeFilter] = useState("");
+  /**
+   * 目录筛选：被隐藏的一级目录（按仓库分桶，localStorage）。
+   * 只影响文件树展示，收藏/最近/搜索不受影响。
+   */
+  const [hiddenDirsMap, setHiddenDirsMap] = useState<Record<string, string[]>>(() => {
+    try {
+      const raw = localStorage.getItem(HIDDEN_DIRS_KEY);
+      return raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+    } catch {
+      return {};
+    }
+  });
+  const [dirFilterOpen, setDirFilterOpen] = useState(false);
+  const hiddenDirs = useMemo(
+    () => new Set(hiddenDirsMap[vault ?? ""] ?? []),
+    [hiddenDirsMap, vault],
+  );
+  const toggleHiddenDir = useCallback(
+    (dir: string, hidden: boolean) => {
+      if (!vault) return;
+      setHiddenDirsMap((prev) => {
+        const current = new Set(prev[vault] ?? []);
+        if (hidden) current.add(dir);
+        else current.delete(dir);
+        const next = { ...prev, [vault]: [...current] };
+        try {
+          localStorage.setItem(HIDDEN_DIRS_KEY, JSON.stringify(next));
+        } catch {
+          // 存不进去只影响下次启动
+        }
+        return next;
+      });
+    },
+    [vault],
+  );
   /** 全局命令面板（Ctrl+K）开关。 */
   const [paletteOpen, setPaletteOpen] = useState(false);
   /** 左栏视图：知识库 / 收藏 / 最近 / 标签。 */
@@ -233,6 +273,11 @@ export default function App() {
   const [customCssDraft, setCustomCssDraft] = useState(() => getCustomCss());
   /** 周回顾的选周弹窗（M4）。 */
   const [weekDialogOpen, setWeekDialogOpen] = useState(false);
+  /** 选区标题归一的级别选择弹窗（编辑器键位 / 命令面板触发）。 */
+  const [headingDialogOpen, setHeadingDialogOpen] = useState(false);
+  /** 全局截图（OS 级快捷键或命令面板触发）：弹窗展示的 PNG base64。 */
+  const [screenshotImage, setScreenshotImage] = useState<string | null>(null);
+  const [screenshotOpen, setScreenshotOpen] = useState(false);
   /** 正在裁剪的图片（仓库相对路径；null = 弹窗关闭）。 */
   const [cropPath, setCropPath] = useState<string | null>(null);
   /** 标签页右键菜单（固定 / 关闭左侧·右侧·其他·全部）。 */
@@ -736,6 +781,8 @@ export default function App() {
       const resolved = applyTheme(getSettings().theme);
       const view = viewRef.current;
       if (view) applyDarkTheme(view, resolved === "dark");
+      // mermaid 的主题配色与导出/放大都要跟明暗一致（缓存的旧 svg 一并作废）
+      applyMermaidTheme();
     };
     sync();
     const unwatch = watchSystemTheme(sync);
@@ -1753,15 +1800,25 @@ export default function App() {
 
   /** 仓库列表页的「开启同步」：切到该仓库（同步状态跟仓库走）→ 启用自动同步 →
       立即同步一轮 → 回到列表页。 */
+  const [pendingEnableVault, setPendingEnableVault] = useState<string | null>(null);
   const enableVaultSync = useCallback(
     async (path: string) => {
       await switchVault(path);
-      sync.updateConfig({ enabled: true });
-      void sync.syncNow();
+      // 不能在这里直接 updateConfig：useSync 对新仓库的异步加载还没完成，
+      // 现在写入会被加载完成后的 setState 覆盖掉。等 ready 后由下面的 effect 补写。
+      setPendingEnableVault(path);
       setVaultGateOpen(true);
     },
-    [switchVault, sync],
+    [switchVault],
   );
+
+  useEffect(() => {
+    if (!pendingEnableVault || !sync.ready || !vault) return;
+    if (vault.replace(/[\\/]+$/, "").toLowerCase() !== pendingEnableVault.replace(/[\\/]+$/, "").toLowerCase()) return;
+    setPendingEnableVault(null);
+    sync.updateConfig({ enabled: true });
+    void sync.syncNow();
+  }, [pendingEnableVault, sync, vault]);
 
   // ---------------------------------------------------------------- 已打开仓库
 
@@ -1931,8 +1988,11 @@ export default function App() {
   const openNote = useCallback(
     async (path: string) => {
       if (!vault) return;
-      // 打开任何笔记都收起预览窗格（预览与编辑互斥，对齐 Obsidian 的点击语义）
+      // 打开任何笔记都收起预览窗格（预览与编辑互斥，对齐 Obsidian 的点击语义）；
+      // 收件箱面板同理——它盖住编辑区（display:none），不收起的话用户在左侧树里
+      // 点笔记毫无反应，看起来像"点不动、要手动关面板"（0.20 用户反馈）。
       setPreviewPath(null);
+      setCaptureManagerOpen(false);
       // 已是这个标签且没有外部改动：什么都不做（重置会丢光标位置）
       if (path === activeTabRef.current && !staleTabs.current.has(path)) return;
       recordRecent(path);
@@ -2040,8 +2100,9 @@ export default function App() {
   const openEntry = useCallback(
     async (path: string) => {
       const kind = fileKindOf(path);
-      console.log("[openEntry]", path, kind);
       if (kind === "pdf" || kind === "docx" || kind === "ppt" || kind === "spreadsheet" || kind === "html" || kind === "image") {
+        // 预览与收件箱面板互斥：面板开着时点附件，把面板收起来让预览可见
+        setCaptureManagerOpen(false);
         setSelectedPath(path);
         setPreviewPath(path);
         // 预览类文件同样进「最近」列表（此前只记笔记，最近里永远看不到 pdf/docx）
@@ -3255,6 +3316,51 @@ export default function App() {
     view.focus();
   }, []);
 
+  // ---------------------------------------------------------------- 全局截图
+
+  /** 抓屏并打开截图弹窗（OS 全局快捷键与命令面板共用；0.20 用户需求）。 */
+  const runScreenshot = useCallback(async () => {
+    if (isMobile()) return;
+    try {
+      const shot = await screenshotCapture();
+      setScreenshotImage(shot.imageBase64);
+      setScreenshotOpen(true);
+      setStatus("");
+    } catch (e) {
+      setError(`截屏失败：${e}`);
+    }
+  }, []);
+
+  // 全局截图快捷键：启动注册、设置里改了立即重注册（空串 = 关闭）。
+  // 命令只在桌面存在；移动端不调用。被其他程序占用时提示去设置里换组合。
+  useEffect(() => {
+    if (isMobile()) return;
+    setScreenshotHotkey(getSettings().screenshotHotkey).catch((e) =>
+      setError(`注册截图快捷键失败：${e}。可在 设置 → 通用 里换一个组合。`),
+    );
+  }, [settings.screenshotHotkey]);
+
+  // 快捷键按下 → 抓屏 → 弹窗
+  useEffect(() => {
+    if (isMobile()) return;
+    let unlisten: (() => void) | null = null;
+    void onScreenshotHotkey(() => void runScreenshot()).then((off) => {
+      unlisten = off as () => void;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, [runScreenshot]);
+
+  /** 截图存为当前仓库附件（截图弹窗的落库通道；目录随粘贴附件配置）。 */
+  const saveScreenshotAttachment = useCallback(
+    async (name: string, base64: string): Promise<string | null> => {
+      if (!vault) return null;
+      return writeAttachment(vault, dailyRef.current.settings.pastedImageFolder, name, base64);
+    },
+    [vault],
+  );
+
   /** 光标跳到当前笔记的最后一行并滚到可视区（长笔记不用滚轮翻到底）。 */
   const gotoDocEnd = useCallback(() => {
     const view = viewRef.current;
@@ -3300,9 +3406,9 @@ export default function App() {
     (id: string) => {
       const view = viewRef.current;
       if (!view) return;
-      const clampMatch = /^clampHeading([1-6])$/.exec(id);
-      if (clampMatch) {
-        clampHeadings(view, Number(clampMatch[1]));
+      // 选区标题归一：0.20 起改为弹窗选级别（不再每级一条命令）
+      if (id === "clampHeading") {
+        setHeadingDialogOpen(true);
         return;
       }
       const headingMatch = /^heading([1-6])$/.exec(id);
@@ -3336,6 +3442,15 @@ export default function App() {
     },
     [insertAtCursor, daily.today, shortcuts],
   );
+
+  // 编辑器键位触发的选区标题归一：keymap 在 CM 内部，弹窗由这里（React 侧）打开。
+  useEffect(() => {
+    const open = () => {
+      if (viewRef.current) setHeadingDialogOpen(true);
+    };
+    window.addEventListener("qn-clamp-heading", open);
+    return () => window.removeEventListener("qn-clamp-heading", open);
+  }, []);
 
   // 快捷键绑定（Obsidian 式可重绑定）：设置面板改绑定后这里经版本号重算。
   const [hotkeysEpoch, setHotkeysEpoch] = useState(0);
@@ -3444,6 +3559,7 @@ export default function App() {
       { id: "zen", title: zen ? "退出专注模式" : "专注模式（隐藏侧栏）", hint: keyHint("zen"), icon: "🎯", run: shortcuts.zen },
       { id: "review-week", title: "生成本周回顾（插入光标处）", icon: "🗓️", run: () => void insertWeeklyReview(moment().startOf("isoWeek").format("YYYY-MM-DD"), true) },
       { id: "review-pick", title: "生成选定周的回顾…", icon: "🗓️", run: () => setWeekDialogOpen(true) },
+      { id: "screenshot", title: "截图并识别文字（OCR）", icon: "📷", run: () => void runScreenshot() },
       { id: "sync", title: "立即同步", icon: "☁️", run: shortcuts.syncNow },
       { id: "vault", title: "打开其他仓库…", icon: "📂", run: shortcuts.openVaultPicker },
       { id: "settings", title: "打开设置", hint: keyHint("openSettings"), icon: "⚙️", run: shortcuts.openSettings },
@@ -3461,8 +3577,7 @@ export default function App() {
         ]);
         const icons: Record<string, string> = {
           heading1: "#", heading2: "#", heading3: "#", heading4: "#", heading5: "#", heading6: "#",
-          clampHeading1: "⇕", clampHeading2: "⇕", clampHeading3: "⇕",
-          clampHeading4: "⇕", clampHeading5: "⇕", clampHeading6: "⇕",
+          clampHeading: "⇕",
           toggleInlineCode: "</>", toggleCodeBlock: "{}",
           toggleBulletList: "•", toggleNumberList: "1.",
           insertDate: "📅", insertTime: "🕐", toggleTags: "🏷️",
@@ -3478,7 +3593,7 @@ export default function App() {
         }));
       })(),
     ],
-    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf, exportPdfFile, vault, runEditorCommand],
+    [shortcuts, mode, leftCollapsed, rightCollapsed, zen, verifyRoundTrip, insertWeeklyReview, keyHint, exportPdf, exportPdfFile, vault, runEditorCommand, runScreenshot],
   );
 
   /** 速记管理的仓库候选：当前仓库 + 最近仓库 + 已配置的收件仓库（去重）。 */
@@ -4354,6 +4469,22 @@ export default function App() {
                   <IconX size={11} />
                 </button>
               )}
+              <button
+                type="button"
+                className={`icon-btn dir-filter-btn${hiddenDirs.size > 0 ? " has-filter" : ""}`}
+                onClick={() => setDirFilterOpen((value) => !value)}
+                title="目录筛选：只显示勾选的一级目录"
+              >
+                <IconFolder size={13} />
+              </button>
+              {dirFilterOpen && (
+                <DirFilterPopover
+                  dirs={topLevelDirs(entries)}
+                  hiddenDirs={hiddenDirs}
+                  onToggle={toggleHiddenDir}
+                  onClose={() => setDirFilterOpen(false)}
+                />
+              )}
             </div>
           )}
           {(creating || (renaming && renameOwner === "tree")) && (
@@ -4416,6 +4547,7 @@ export default function App() {
               view={leftView}
               favorites={visibleFavorites}
               recents={recents}
+              hiddenDirs={hiddenDirs}
               selectedPath={selectedPath}
               onSelectPath={setSelectedPath}
               onOpen={(p) => void openEntry(p)}
@@ -4749,7 +4881,9 @@ export default function App() {
             <OutlinePanel
               getView={() => viewRef.current}
               revision={revision}
-              activeKey={activeTab}
+              // 预览 pdf/docx 等文件时编辑器还装着上一篇 md，大纲继续显示它会误导
+              // （0.20 用户反馈"预览 pdf 时右侧目录还显示 md 的目录"），清空让空态接管
+              activeKey={previewPath ? null : activeTab}
               cursorLine={cursorLine}
               onJump={jumpToLine}
             />
@@ -4858,6 +4992,28 @@ export default function App() {
         onPick={(mondayISO) => void insertWeeklyReview(mondayISO, false)}
       />
 
+      <HeadingLevelDialog
+        open={headingDialogOpen}
+        onClose={() => setHeadingDialogOpen(false)}
+        onPick={(level) => {
+          const view = viewRef.current;
+          if (view) clampHeadings(view, level);
+        }}
+      />
+
+      <ScreenshotDialog
+        open={screenshotOpen}
+        imageBase64={screenshotImage}
+        onClose={() => setScreenshotOpen(false)}
+        notice={(message, kind) => {
+          if (kind === "error") setError(message);
+          else setStatus(message);
+        }}
+        insertText={insertAtCursor}
+        saveAttachment={saveScreenshotAttachment}
+        linkFormat={() => getSettings().linkFormat}
+      />
+
       <ImageCropDialog
         open={cropPath !== null}
         vault={vault ?? ""}
@@ -4872,6 +5028,58 @@ export default function App() {
 /** 取路径的文件名（标签页标题）。 */
 function baseName(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);
+}
+
+/** 目录筛选弹层：勾选一级目录，取消勾选的整枝从文件树里藏起来（按仓库记忆）。 */
+function DirFilterPopover({
+  dirs,
+  hiddenDirs,
+  onToggle,
+  onClose,
+}: {
+  dirs: string[];
+  hiddenDirs: ReadonlySet<string>;
+  onToggle: (dir: string, hidden: boolean) => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="dir-filter-backdrop" onClick={onClose} />
+      <div className="dir-filter-pop" role="dialog" aria-label="目录筛选">
+        <div className="dir-filter-head">
+          <span>只显示勾选的目录</span>
+          {hiddenDirs.size > 0 && (
+            <button
+              type="button"
+              className="dir-filter-clear"
+              onClick={() => dirs.forEach((dir) => hiddenDirs.has(dir) && onToggle(dir, false))}
+            >
+              全部显示
+            </button>
+          )}
+        </div>
+        {dirs.length === 0 ? (
+          <div className="dir-filter-empty">仓库根目录下还没有文件夹。</div>
+        ) : (
+          <div className="dir-filter-list">
+            {dirs.map((dir) => (
+              <label key={dir} className="dir-filter-item" title={dir}>
+                <input
+                  type="checkbox"
+                  checked={!hiddenDirs.has(dir)}
+                  onChange={(event) => onToggle(dir, !event.target.checked)}
+                />
+                <span>{baseName(dir)}</span>
+              </label>
+            ))}
+          </div>
+        )}
+        {hiddenDirs.size > 0 && (
+          <div className="dir-filter-note">已隐藏 {hiddenDirs.size} 个目录；收藏、最近与搜索不受影响。</div>
+        )}
+      </div>
+    </>
+  );
 }
 
 /** 取仓库路径的目录名（最近仓库下拉里显示用的短名）。 */

@@ -184,6 +184,24 @@ function flattenMatches(nodes: TreeNode[], terms: string[], out: TreeNode[]): vo
   }
 }
 
+/** 条目是否落在被隐藏目录之下（含目录本身）。 */
+export function isUnderHiddenDirs(path: string, hiddenDirs: ReadonlySet<string>): boolean {
+  if (hiddenDirs.size === 0) return false;
+  for (const dir of hiddenDirs) {
+    if (!dir) continue;
+    if (path === dir || path.startsWith(`${dir}/`)) return true;
+  }
+  return false;
+}
+
+/** 仓库根下的一级目录（目录筛选弹层的候选清单，稳定排序）。 */
+export function topLevelDirs(entries: EntryMeta[]): string[] {
+  const dirs = entries
+    .filter((entry) => entry.isDir && !entry.path.includes("/"))
+    .map((entry) => entry.path);
+  return dirs.sort((a, b) => a.localeCompare(b, "zh"));
+}
+
 /**
  * 收藏 / 最近视图的扁平列表：目录以外的文件都收（md 笔记、可编辑文本、
  * 预览类文件）——收藏不只属于笔记，pdf/docx/图片同样可以钉在收藏里。
@@ -451,6 +469,7 @@ export default function FileTree({
   view,
   favorites,
   recents,
+  hiddenDirs,
   selectedPath,
   onSelectPath,
   onOpen,
@@ -466,6 +485,8 @@ export default function FileTree({
   view: LeftView;
   favorites: string[];
   recents: string[];
+  /** 被隐藏的一级目录集合（目录筛选，0.20 用户反馈：目录太多干扰阅读）。 */
+  hiddenDirs?: ReadonlySet<string>;
   /** 当前选中的目录（粘贴目标）。 */
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
@@ -477,7 +498,12 @@ export default function FileTree({
   onMoveEntry: (path: string, destDir: string) => void;
   onCopyEntry: (path: string, destDir: string) => void;
 }) {
-  const tree = useMemo(() => buildTree(entries), [entries]);
+  const tree = useMemo(() => {
+    const visible = hiddenDirs && hiddenDirs.size > 0
+      ? entries.filter((entry) => !isUnderHiddenDirs(entry.path, hiddenDirs))
+      : entries;
+    return buildTree(visible);
+  }, [entries, hiddenDirs]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
   /** 拖到根目录空白处的落点高亮。 */
   const [rootDrop, setRootDrop] = useState(false);

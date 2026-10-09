@@ -21,11 +21,13 @@ import {
   formatKey,
   HOTKEY_GROUPS,
   importBindings,
+  isHotkeyEnabled,
   keycapParts,
   onHotkeysChange,
   resetAllBindings,
   setBinding,
   setCapturing,
+  setHotkeyEnabled,
   type CommandKeys,
   type HotkeyGroupId,
 } from "../lib/hotkeys";
@@ -208,20 +210,31 @@ export default function HotkeysPane() {
 
   const assigned = bindings.filter((c) => c.keys.length > 0).length;
   const modified = bindings.filter((c) => c.keys.join(",") !== defaultKeysOf(c.id)).length;
+  const disabledCount = bindings.filter((c) => !isHotkeyEnabled(c.id)).length;
 
   const renderRow = (command: CommandKeys) => {
     const isDefault = command.keys.join(",") === defaultKeysOf(command.id);
     const capturing = capture?.id === command.id;
     const conflictHere = pending?.conflict?.id === command.id;
+    // 0.20 用户反馈：每条快捷键可勾选启用/停用。停用只挡键盘触发，命令面板不受影响。
+    const enabled = isHotkeyEnabled(command.id);
     return (
       <div
         key={command.id}
         id={`hotkey-row-${command.id}`}
         className={`settings-row hotkey-row${flashId === command.id ? " is-flash" : ""}${
           conflictHere ? " is-conflict" : ""
-        }`}
+        }${enabled ? "" : " is-disabled"}`}
         title={command.desc ? `${command.label} — ${command.desc}` : command.label}
       >
+        <input
+          type="checkbox"
+          className="hotkey-enable"
+          checked={enabled}
+          aria-label={`${enabled ? "停用" : "启用"} ${command.label}`}
+          title={enabled ? "已启用：取消勾选后此快捷键不再响应键盘" : "已停用：勾选后恢复"}
+          onChange={(event) => setHotkeyEnabled(command.id, event.target.checked)}
+        />
         <span className="hotkey-labelbox">
           <span className="hotkey-name">{command.label}</span>
           {command.desc && <span className="hotkey-desc">{command.desc}</span>}
@@ -382,6 +395,7 @@ export default function HotkeysPane() {
           <span className="hotkey-stats">
             {bindings.length} 个命令 · {assigned} 个已分配 · {bindings.length - assigned} 个未分配 ·{" "}
             {modified} 个已修改
+            {disabledCount > 0 && ` · ${disabledCount} 个已停用`}
           </span>
         </div>
       </div>

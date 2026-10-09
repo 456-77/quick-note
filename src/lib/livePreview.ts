@@ -442,17 +442,39 @@ function loadMermaid(): Promise<MermaidApi> {
   if (!mermaidLoader) {
     mermaidLoader = import("mermaid").then((mod) => {
       const mermaid = (mod as unknown as { default: MermaidApi }).default;
-      mermaid.initialize({
-        startOnLoad: false,
-        // strict 会清洗标签里的 HTML/事件处理器。绝不要用 loose——
-        // 笔记内容可能来自别处，loose 等于允许注入。
-        securityLevel: "strict",
-        theme: "neutral",
-      });
+      mermaid.initialize(mermaidInitOptions());
       return mermaid;
     });
   }
   return mermaidLoader;
+}
+
+/** 跟随应用主题的 mermaid 初始化参数（导出物与页面观感一致，文字颜色不再与底色打架）。 */
+function mermaidInitOptions(): {
+  startOnLoad: false;
+  securityLevel: "strict";
+  theme: "neutral" | "dark";
+} {
+  return {
+    startOnLoad: false,
+    // strict 会清洗标签里的 HTML/事件处理器。绝不要用 loose——
+    // 笔记内容可能来自别处，loose 等于允许注入。
+    securityLevel: "strict",
+    theme: document.documentElement.dataset.theme === "dark" ? "dark" : "neutral",
+  };
+}
+
+/**
+ * 主题切换后让后续渲染跟上：重新 initialize 并清掉 SVG 缓存。
+ * 已挂载的图保持旧主题，新渲染/翻页重进的图用新主题（强制全部重绘需要重建
+ * 装饰，代价大于收益；主题切换不是高频操作）。
+ */
+export function applyMermaidTheme(): void {
+  if (!mermaidLoader) return;
+  void mermaidLoader.then((mermaid) => {
+    mermaid.initialize(mermaidInitOptions());
+    svgCache.clear();
+  });
 }
 
 /** 已渲染 SVG 的缓存，避免同一张图反复解析渲染。简单的先进先出淘汰。
@@ -728,11 +750,20 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
   clone.style.height = "auto";
   overlay.appendChild(clone);
 
+  // 基准尺寸：首次布局（fit 进 92vw/86vh）后实测。缩放改**实际宽高**而不是
+  // transform:scale——foreignObject 里的 HTML 文字按初始尺度光栅化后不再重排，
+  // transform 放大只会把糊的位图拉大；改 width/height 走真实布局，文字始终锐利。
+  let baseW = 0;
   let scale = 1;
   let x = 0;
   let y = 0;
   const apply = () => {
-    clone.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+    if (baseW > 0) {
+      clone.style.width = `${Math.max(1, baseW * scale)}px`;
+      clone.style.maxWidth = "none";
+      clone.style.maxHeight = "none";
+    }
+    clone.style.transform = `translate(${x}px, ${y}px)`;
   };
 
   const onWheel = (event: WheelEvent) => {
@@ -803,6 +834,9 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
   });
   document.addEventListener("keydown", onKey, true);
   document.body.appendChild(overlay);
+  // 挂进文档后才有布局：实测 fit 尺寸作为缩放基准（量不到就退回 viewBox 宽）
+  const fitRect = clone.getBoundingClientRect();
+  baseW = fitRect.width > 0 ? fitRect.width : svg.viewBox.baseVal.width || 300;
 }
 
 /**
@@ -835,7 +869,9 @@ async function downloadDiagram(
     const target = dir ? `${dir}/${name}` : name;
 
     if (format === "svg") {
-      const clone = cloneForExport(svg, state);
+      // SVG 也走 foreignObject→<text> 换算：原样导出的 svg 里文字是 HTML，
+      // 很多查看器（以及作为 <img> 放大）不渲染/会光栅化它——放大即糊、丢字
+      const clone = svgWithTextOnly(svg, state);
       const xml = new XMLSerializer().serializeToString(clone);
       await writeVaultBinary(vaultPath, target, new TextEncoder().encode(xml));
     } else {
@@ -893,42 +929,49 @@ function cloneForExport(svg: SVGSVGElement, state: MermaidZoomState): SVGSVGElem
 }
 
 /**
- * 序列化 SVG 为 Blob URL（PNG 导出用）。
+ * 把克隆里所有 foreignObject（HTML 文字）换算成普通 `<text>`，返回换算后的克隆。
  *
- * mermaid 的文字默认用 foreignObject 承载 HTML，而 SVG 作为 <img> 加载时浏览器
- * 不渲染其中的 HTML——PNG 会丢掉所有文字。克隆时把 foreignObject 逐个换成
- * 普通 <text>（位置/字号/颜色取自原始 DOM 的实时布局），文字就保住了。
+ * 0.20 起导出 SVG 与 PNG 共用这一步。此前两条路各有一个坑：PNG 的换算直接量
+ * **原位** DOM，而原位 svg 处于 fitted/max-width 约束下，视口宽高比与 viewBox
+ * 不一致时换算坐标整体错位、字号漂移，部分标签直接量不到文字就静默消失；
+ * SVG 导出干脆不换算，文字以 foreignObject 原样带出去，脱离页面后放大即糊。
+ *
+ * 做法：把克隆以**自然尺寸**挂到文档外缘（position:fixed 离屏、visibility:hidden）
+ * 测一次布局——此时宽高比与 viewBox 严格一致，坐标 1:1 落回自然坐标系；
+ * 文字、字号、颜色、对齐全部来自克隆自身的实时布局与 computed style。
  */
-function svgToBlobUrl(svg: SVGSVGElement, state: MermaidZoomState): string {
+function svgWithTextOnly(svg: SVGSVGElement, state: MermaidZoomState): SVGSVGElement {
   const clone = cloneForExport(svg, state);
-  const sourceFos = Array.from(svg.querySelectorAll("foreignObject"));
   const cloneFos = Array.from(clone.querySelectorAll("foreignObject"));
-  if (sourceFos.length > 0) {
-    const sourceRect = svg.getBoundingClientRect();
-    const displayScale = sourceRect.width > 0 ? sourceRect.width / state.naturalW : 1;
+  if (cloneFos.length === 0) return clone;
+
+  const stage = document.createElement("div");
+  stage.style.cssText =
+    "position:fixed;left:-99999px;top:0;margin:0;padding:0;border:0;" +
+    `width:${state.naturalW}px;height:${state.naturalH}px;visibility:hidden;`;
+  stage.appendChild(clone);
+  document.body.appendChild(stage);
+  try {
     const ns = "http://www.w3.org/2000/svg";
-    cloneFos.forEach((cloneFo, index) => {
-      const sourceFo = sourceFos[index];
-      const holder = sourceFo?.querySelector("div, span");
-      const text = holder ? flattenLabelText(holder as HTMLElement).trim() : "";
-      if (!sourceFo || !holder || !text) {
+    const stageRect = stage.getBoundingClientRect();
+    for (const cloneFo of cloneFos) {
+      const holder = cloneFo.querySelector("div, span") as HTMLElement | null;
+      const text = holder ? flattenLabelText(holder).trim() : "";
+      if (!holder || !text) {
         cloneFo.remove();
-        return;
+        continue;
       }
-      const rect = (holder as HTMLElement).getBoundingClientRect();
-      const style = getComputedStyle(holder as HTMLElement);
+      const rect = holder.getBoundingClientRect();
+      const style = getComputedStyle(holder);
       const fontSize = parseFloat(style.fontSize) || 16;
-      const lineHeight = fontSize * 1.2;
-      const centerX = (rect.left + rect.width / 2 - sourceRect.left) / displayScale;
-      const topY = (rect.top - sourceRect.top) / displayScale;
+      const lineHeight = fontSize * 1.25;
+      const centerX = rect.left + rect.width / 2 - stageRect.left;
+      const topY = rect.top - stageRect.top;
       const anchor = style.textAlign === "left" ? "start" : "middle";
       text.split("\n").forEach((lineText, lineIndex) => {
         if (!lineText.trim()) return;
         const el = document.createElementNS(ns, "text");
-        el.setAttribute(
-          "x",
-          String(anchor === "middle" ? centerX : (rect.left - sourceRect.left) / displayScale),
-        );
+        el.setAttribute("x", String(anchor === "middle" ? centerX : rect.left - stageRect.left));
         el.setAttribute("y", String(topY + fontSize + lineIndex * lineHeight));
         el.setAttribute("font-size", `${fontSize}px`);
         el.setAttribute("font-family", style.fontFamily || "inherit");
@@ -939,9 +982,19 @@ function svgToBlobUrl(svg: SVGSVGElement, state: MermaidZoomState): string {
         cloneFo.parentElement?.insertBefore(el, cloneFo);
       });
       cloneFo.remove();
-    });
+    }
+  } finally {
+    stage.remove();
   }
-  const xml = new XMLSerializer().serializeToString(clone);
+  return clone;
+}
+
+/**
+ * 序列化 SVG 为 Blob URL（PNG 导出用）：foreignObject 全部换成 `<text>`，
+ * 作为 <img> 加载时文字不再丢失。
+ */
+function svgToBlobUrl(svg: SVGSVGElement, state: MermaidZoomState): string {
+  const xml = new XMLSerializer().serializeToString(svgWithTextOnly(svg, state));
   return URL.createObjectURL(new Blob([xml], { type: "image/svg+xml;charset=utf-8" }));
 }
 

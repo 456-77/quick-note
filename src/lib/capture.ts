@@ -210,6 +210,30 @@ export function lineAddTagEdit(line: string, tag: string): string | null {
 }
 
 /**
+ * 从某一行移除一个标签（前导标签与正文里手写的同名 `#标签` 都算，删**第一处**）。
+ * 速记标签是行内 `#tag` 记号，删除 = 连同相邻一个空格一起拿掉；
+ * 行里没有这个标签（或命中的只是更长标签的前缀，如 `#tag2` 里的 `#tag`）返回 null。
+ */
+export function lineRemoveTagEdit(line: string, tag: string): string | null {
+  const cr = line.endsWith("\r") ? "\r" : "";
+  const body = cr ? line.slice(0, -1) : line;
+  if (!tag) return null;
+  const token = `#${tag}`;
+  let index = body.indexOf(token);
+  while (index >= 0) {
+    const after = body.slice(index + token.length);
+    if (!after || /^\s/.test(after)) break;
+    index = body.indexOf(token, index + 1);
+  }
+  if (index < 0) return null;
+  let start = index;
+  let end = index + token.length;
+  if (end < body.length && /\s/.test(body[end])) end += 1;
+  else if (start > 0 && /\s/.test(body[start - 1])) start -= 1;
+  return `${body.slice(0, start)}${body.slice(end)}${cr}`;
+}
+
+/**
  * 归档时要追加到目标笔记的**物理行数组**：与速记行同格式，但剥掉归档标记
  * （目标笔记里它是一条普通记录，不再是「待整理」状态）；多行正文带缩进续行。
  */

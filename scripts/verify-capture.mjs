@@ -13,6 +13,7 @@ import {
   detectEol,
   lineAddTagEdit,
   lineArchiveEdit,
+  lineRemoveTagEdit,
   lineTextEditLines,
   lineTextEditText,
   parseCaptureEntries,
@@ -114,6 +115,27 @@ check(
   lineAddTagEdit("- 2026-09-30 14:32 内容\r", "想法") === "- 2026-09-30 14:32 内容 #想法\r",
   "加标签保留 CRLF",
 );
+
+// 移除标签（0.20 详情抽屉的标签芯片 ×）
+check(
+  lineRemoveTagEdit("- 2026-09-30 14:32 [仓库] #想法 #问题 正文 ^archived", "想法") ===
+    "- 2026-09-30 14:32 [仓库] #问题 正文 ^archived",
+  "移除前导标签，其余原样",
+);
+check(
+  lineRemoveTagEdit("- 2026-09-30 14:32 #想法 正文里也有 #想法", "想法") ===
+    "- 2026-09-30 14:32 正文里也有 #想法",
+  "移除只删第一处",
+);
+check(
+  lineRemoveTagEdit("- 2026-09-30 14:32 #tag2 内容", "tag") === null,
+  "更长标签的前缀不算命中（#tag2 里的 #tag）",
+);
+check(
+  lineRemoveTagEdit("- 2026-09-30 14:32 正文 #旧标签", "旧标签") === "- 2026-09-30 14:32 正文",
+  "移除行尾标签连同一个空格",
+);
+check(lineRemoveTagEdit("- 2026-09-30 14:32 内容", "想法") === null, "没有该标签 = 无变化");
 
 // 正文替换：保留前缀与归档标记
 check(

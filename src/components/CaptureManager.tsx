@@ -15,16 +15,20 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { listEntries, pickDirectory, readNoteOptional, writeNote } from "../lib/api";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { allowAssetDir, listEntries, pickDirectory, readNoteOptional, writeNote } from "../lib/api";
 import {
   archivedLinesForTarget,
   detectEol,
   lineAddTagEdit,
   lineArchiveEdit,
+  lineRemoveTagEdit,
   lineTextEditLines,
   parseCaptureEntries,
   type CaptureEntry,
 } from "../lib/capture";
+import { IMAGE_EXT } from "../lib/paths";
+import { openLightbox } from "../lib/lightbox";
 import { normalizeTagName } from "../lib/tags";
 import { IconCalendar, IconFilter, IconFolder, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
 
@@ -66,6 +70,55 @@ function fmtWhen(ts: number): string {
   if (day === localDate(new Date())) return hhmm;
   if (day === localDate(new Date(Date.now() - 86400000))) return `昨天 ${hhmm}`;
   return `${day.slice(5)} ${hhmm}`;
+}
+
+/** 正文里的图片嵌入：`![[名字.png]]`（wiki）与 `![alt](路径.png)`（markdown）。 */
+const WIKI_IMAGE_RE = /!\[\[([^\]|]+?)\]\]/g;
+const MD_IMAGE_RE = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+
+/**
+ * 速记正文里的图片缩略图条（0.20 用户反馈：管理面板要支持预览图片）。
+ * 正文仍是纯文本展示，缩略图独立成条附在正文下，点击走全局 lightbox 放大。
+ */
+function CaptureImageStrip({
+  text,
+  resolve,
+}: {
+  text: string;
+  resolve: (raw: string) => { url: string; alt: string } | null;
+}) {
+  const images = useMemo(() => {
+    const out: { url: string; alt: string }[] = [];
+    const seen = new Set<string>();
+    for (const re of [WIKI_IMAGE_RE, MD_IMAGE_RE]) {
+      for (const match of text.matchAll(re)) {
+        const hit = resolve(match[1]);
+        if (hit && !seen.has(hit.url)) {
+          seen.add(hit.url);
+          out.push(hit);
+        }
+      }
+    }
+    return out;
+  }, [text, resolve]);
+  if (images.length === 0) return null;
+  return (
+    <div className="cm-row-images">
+      {images.map((img) => (
+        <img
+          key={img.url}
+          src={img.url}
+          alt={img.alt}
+          loading="lazy"
+          title={`${img.alt}（点击放大）`}
+          onClick={(event) => {
+            event.stopPropagation();
+            openLightbox(img.url, img.alt);
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 export default function CaptureManager({
@@ -114,14 +167,25 @@ export default function CaptureManager({
   useEffect(() => {
     if (!inboxVault) {
       setScan({ loading: false, entries: [], files: 0, error: null });
+      setImageIndex(new Map());
       return;
     }
     let cancelled = false;
     setScan((prev) => ({ ...prev, loading: true, error: null }));
+    // 速记正文里的 `![[图片]]` 缩略图要用 asset 协议加载，收件仓库得先加白名单
+    void allowAssetDir(inboxVault).catch(() => {});
     void (async () => {
       try {
         const all = await listEntries(inboxVault);
         if (cancelled) return;
+        // 「小写文件名 → 仓库相对路径」的图片索引：wiki 嵌入按文件名全库解析
+        const images = new Map<string, string>();
+        for (const entry of all) {
+          if (!entry.isDir && IMAGE_EXT.test(entry.name)) {
+            images.set(entry.name.toLowerCase(), entry.path);
+          }
+        }
+        setImageIndex(images);
         const files = all
           .filter((entry) => !entry.isDir && entry.name.toLowerCase().endsWith(".md"))
           .map((entry) => entry.path)
@@ -170,6 +234,65 @@ export default function CaptureManager({
     window.addEventListener("qn-capture-written", bump);
     return () => window.removeEventListener("qn-capture-written", bump);
   }, []);
+
+  // ------------------------------------------------------------- 图片预览
+
+  /** 收件仓库的图片索引（小写文件名 → 仓库相对路径），扫描时一并建立。 */
+  const [imageIndex, setImageIndex] = useState<Map<string, string>>(new Map());
+  /** 当前仓库的图片索引：速记从笔记里带出的 `![[ ]]` 可能引用的是来源仓库的附件。 */
+  const [currentImageIndex, setCurrentImageIndex] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
+    if (!currentVault || currentVault === inboxVault) {
+      setCurrentImageIndex(new Map());
+      return;
+    }
+    let cancelled = false;
+    void allowAssetDir(currentVault).catch(() => {});
+    listEntries(currentVault)
+      .then((all) => {
+        if (cancelled) return;
+        const images = new Map<string, string>();
+        for (const entry of all) {
+          if (!entry.isDir && IMAGE_EXT.test(entry.name)) {
+            images.set(entry.name.toLowerCase(), entry.path);
+          }
+        }
+        setCurrentImageIndex(images);
+      })
+      .catch(() => {
+        if (!cancelled) setCurrentImageIndex(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentVault, inboxVault]);
+
+  /** 速记正文里的嵌入名 → 可显示的图片地址（收件仓库优先，其次当前仓库）。 */
+  const resolveImage = useCallback(
+    (raw: string): { url: string; alt: string } | null => {
+      const clean = raw.trim();
+      if (!clean || !IMAGE_EXT.test(clean)) return null;
+      const lower = clean.toLowerCase();
+      let vault: string | null = null;
+      let rel: string | null = null;
+      if (imageIndex.has(lower)) {
+        vault = inboxVault;
+        rel = imageIndex.get(lower) ?? null;
+      } else if (currentImageIndex.has(lower)) {
+        vault = currentVault;
+        rel = currentImageIndex.get(lower) ?? null;
+      } else if (clean.includes("/")) {
+        // 带路径的写法（markdown 形式或 `![[目录/图片.png]]`）：按仓库根相对路径解析
+        vault = inboxVault;
+        rel = clean.replace(/^[\\/]+/, "");
+      }
+      if (!vault || !rel) return null;
+      const abs = `${vault.replace(/[\\/]+$/, "")}/${rel.replace(/^[\\/]+/, "")}`;
+      return { url: convertFileSrc(abs), alt: clean };
+    },
+    [inboxVault, currentVault, imageIndex, currentImageIndex],
+  );
 
   // ------------------------------------------------------------- 筛选状态
 
@@ -645,6 +768,31 @@ export default function CaptureManager({
     [inboxVault, rewriteLines, notice, clearSel, showToast],
   );
 
+  /** 从一条速记移除一个标签（详情抽屉的标签芯片 ×）。 */
+  const removeTagFromEntry = useCallback(
+    async (entry: CaptureEntry, tag: string): Promise<boolean> => {
+      if (!inboxVault) return false;
+      setBusy(true);
+      try {
+        const plan = new Map<string, Map<number, (line: string) => string | null>>([
+          [entry.file, new Map([[entry.line, (line: string) => lineRemoveTagEdit(line, tag)]])],
+        ]);
+        const files = await rewriteLines(inboxVault, plan);
+        if (files > 0) {
+          setScanToken((value) => value + 1);
+          showToast(`已移除 #${tag}`);
+        }
+        return files > 0;
+      } catch (e) {
+        notice(`移除标签失败：${e}`, "error");
+        return false;
+      } finally {
+        setBusy(false);
+      }
+    },
+    [inboxVault, rewriteLines, notice, showToast],
+  );
+
   /** 删除一批速记行（收件行没有墓碑协议，删除即删除）。 */
   const deleteEntries = useCallback(
     async (entries: CaptureEntry[]): Promise<boolean> => {
@@ -782,6 +930,16 @@ export default function CaptureManager({
     () => (drawerKey ? scan.entries.find((entry) => keyOf(entry) === drawerKey) ?? null : null),
     [drawerKey, scan.entries],
   );
+
+  // 抽屉正文本地草稿：打开抽屉时从条目灌入，编辑期间不落盘，失焦/Enter 一次性保存。
+  // 只随抽屉开关重灌（不随重扫）——保存触发的重扫不回写草稿，光标不会跳。
+  const [drawerDraft, setDrawerDraft] = useState("");
+  const drawerTagRef = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    setDrawerDraft(drawerEntry?.text ?? "");
+    if (drawerTagRef.current) drawerTagRef.current.value = "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 只随抽屉开关重灌
+  }, [drawerKey]);
 
   // ------------------------------------------------------------- Esc 逐层退出
 
@@ -1514,7 +1672,7 @@ export default function CaptureManager({
                         className="cm-row-edit"
                         rows={2}
                         value={editDraft}
-                        title="Enter 换行 · Ctrl+Enter 或点击外部 保存 · Esc 取消"
+                        title="Enter 保存 · Shift+Enter 换行 · 点击外部保存 · Esc 取消"
                         onClick={(event) => event.stopPropagation()}
                         onMouseDown={(event) => event.stopPropagation()}
                         onChange={(event) => setEditDraft(event.target.value)}
@@ -1523,8 +1681,8 @@ export default function CaptureManager({
                           finishEdit(entry, editDraft, true);
                         }}
                         onKeyDown={(event) => {
-                          // Enter 直接换行（多行正文是合法内容），保存走 Ctrl+Enter 或失焦
-                          if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                          // 0.20 用户反馈：Enter 保存、Shift+Enter 换行、Ctrl+Enter 保存（不变）
+                          if (event.key === "Enter" && !event.shiftKey) {
                             event.preventDefault();
                             finishEdit(entry, editDraft, true);
                           }
@@ -1537,7 +1695,10 @@ export default function CaptureManager({
                         }}
                       />
                     ) : (
-                      <div className="cm-row-text">{entry.text}</div>
+                      <>
+                        <div className="cm-row-text">{entry.text}</div>
+                        <CaptureImageStrip text={entry.text} resolve={resolveImage} />
+                      </>
                     )}
                     <div className="cm-row-meta">
                       <span className="cm-row-time">
@@ -1729,35 +1890,25 @@ export default function CaptureManager({
               </div>
               <div className="cm-field">
                 <div className="cm-field-label">内容</div>
-                {editKey === keyOf(drawerEntry) ? (
-                  <textarea
-                    autoFocus
-                    className="cm-drawer-edit"
-                    rows={4}
-                    value={editDraft}
-                    title="Enter 换行 · Ctrl+Enter 或点击外部 保存 · Esc 取消"
-                    onChange={(event) => setEditDraft(event.target.value)}
-                    onBlur={() => {
-                      if (editCancelRef.current) return;
-                      finishEdit(drawerEntry, editDraft, true);
-                    }}
-                    onKeyDown={(event) => {
-                      // Enter 直接换行（多行正文是合法内容），保存走 Ctrl+Enter 或失焦
-                      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
-                        event.preventDefault();
-                        finishEdit(drawerEntry, editDraft, true);
-                      }
-                      if (event.key === "Escape") {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        editCancelRef.current = true;
-                        setEditKey(null);
-                      }
-                    }}
-                  />
-                ) : (
-                  <div className="cm-field-value cm-drawer-text">{drawerEntry.text}</div>
-                )}
+                {/* 0.20 用户反馈：详情内容直接可编辑——Enter 保存、Shift+Enter 换行、
+                    Ctrl+Enter 保存（保持）。失焦也保存，与行内编辑同口径。 */}
+                <textarea
+                  className="cm-drawer-edit"
+                  rows={Math.min(14, Math.max(3, drawerDraft.split("\n").length + 1))}
+                  value={drawerDraft}
+                  title="Enter 保存 · Shift+Enter 换行 · Ctrl+Enter 保存"
+                  onChange={(event) => setDrawerDraft(event.target.value)}
+                  onBlur={() => {
+                    if (drawerEntry) void saveEdit(drawerEntry, drawerDraft);
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      if (drawerEntry) void saveEdit(drawerEntry, drawerDraft);
+                    }
+                  }}
+                />
+                <CaptureImageStrip text={drawerDraft} resolve={resolveImage} />
               </div>
               <div className="cm-field">
                 <div className="cm-field-label">标签</div>
@@ -1765,9 +1916,43 @@ export default function CaptureManager({
                   {drawerEntry.tags.map((tag) => (
                     <span key={tag} className="cm-tag">
                       #{tag}
+                      <button
+                        type="button"
+                        className="cm-tag-x"
+                        title="移除这个标签"
+                        disabled={busy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          void removeTagFromEntry(drawerEntry, tag);
+                        }}
+                      >
+                        ×
+                      </button>
                     </span>
                   ))}
                   {drawerEntry.tags.length === 0 && <span className="cm-field-dim">无标签</span>}
+                  <input
+                    ref={drawerTagRef}
+                    type="text"
+                    className="cm-drawer-tag-input"
+                    placeholder="＋ 标签"
+                    title="Enter 添加标签 · Esc 清空"
+                    disabled={busy}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        const name = normalizeTagName(drawerTagRef.current?.value ?? "");
+                        if (name) {
+                          void addTagToEntries([drawerEntry], name);
+                          if (drawerTagRef.current) drawerTagRef.current.value = "";
+                        }
+                      }
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        if (drawerTagRef.current) drawerTagRef.current.value = "";
+                      }
+                    }}
+                  />
                 </div>
               </div>
               <div className="cm-field">
@@ -1801,8 +1986,13 @@ export default function CaptureManager({
                 disabled={busy}
                 onClick={() => {
                   const entry = drawerEntry;
+                  const draft = drawerDraft;
                   setDrawerKey(null);
-                  void deleteEntries([entry]);
+                  // 先把未落盘的草稿保存掉再做动作，删除/归档用的行号与文本才是最新的
+                  void (async () => {
+                    await saveEdit(entry, draft);
+                    await deleteEntries([entry]);
+                  })();
                 }}
               >
                 删除
@@ -1816,7 +2006,7 @@ export default function CaptureManager({
                   onClick={() => {
                     const entry = drawerEntry;
                     setDrawerKey(null);
-                    void unarchiveEntries([entry]);
+                    void saveEdit(entry, drawerDraft).then(() => unarchiveEntries([entry]));
                   }}
                 >
                   撤销归档
@@ -1828,8 +2018,17 @@ export default function CaptureManager({
                   disabled={busy || !targetVault || !targetNote}
                   onClick={() => {
                     const entry = drawerEntry;
+                    // 归档携带的是正文：把草稿的**最新文本**一并交给归档，
+                    // 否则「编辑了还没保存就点归档」会把旧文本追加到目标笔记
+                    const draft = drawerDraft
+                      .replace(/\r\n/g, "\n")
+                      .replace(/^\n+|\n+$/g, "")
+                      .trimEnd();
                     setDrawerKey(null);
-                    void archiveEntries([entry]);
+                    void (async () => {
+                      await saveEdit(entry, draft);
+                      await archiveEntries([{ ...entry, text: draft }]);
+                    })();
                   }}
                 >
                   归档

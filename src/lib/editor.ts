@@ -15,9 +15,9 @@ import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
-import { clampHeadings, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
+import { toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
 import { markdownPairAction } from "./autoPairs";
-import { bindingFor, comboOf, comboOfCode, isCapturing } from "./hotkeys";
+import { bindingFor, comboOf, comboOfCode, isCapturing, isHotkeyEnabled } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
 import { logLanguageDescription } from "./logLang";
 import { isCursorInTable, tableShiftTab, tableTab } from "./tableEdit";
@@ -404,6 +404,7 @@ function autoPairExtension(language: EditorLanguage): Extension {
  *
  * 键位读 hotkeys 的实时绑定表（不是状态创建时的快照），设置面板里改完立即生效。
  * 设置面板「捕获下一次按键」期间让路，否则重绑 Mod-` 会先切一次行内代码。
+ * 单条命令被停用（设置页勾选框）后不再响应键盘。
  */
 function editorToggleKeymap(): Extension {
   return EditorView.domEventHandlers({
@@ -411,35 +412,35 @@ function editorToggleKeymap(): Extension {
       if (isCapturing() || !view.hasFocus) return false;
       // comboOfCode：Shift+反引号在美式键盘上 key 是 "~"，用物理键位兜底
       const combo = comboOfCode(event) ?? comboOf(event);
-      if (bindingFor("toggleInlineCode").includes(combo)) {
+      const hits = (id: string) => isHotkeyEnabled(id) && bindingFor(id).includes(combo);
+      if (hits("toggleInlineCode")) {
         event.preventDefault();
         return toggleInlineCode(view);
       }
-      if (bindingFor("toggleCodeBlock").includes(combo)) {
+      if (hits("toggleCodeBlock")) {
         event.preventDefault();
         return toggleCodeBlock(view);
       }
-      if (bindingFor("toggleBulletList").includes(combo)) {
+      if (hits("toggleBulletList")) {
         event.preventDefault();
         return toggleBulletList(view);
       }
-      if (bindingFor("toggleNumberList").includes(combo)) {
+      if (hits("toggleNumberList")) {
         event.preventDefault();
         return toggleNumberList(view);
       }
       // 标题 1–6（Ctrl+1..6）：作用于光标所在行，再按同级别取消
       for (let level = 1; level <= 6; level += 1) {
-        if (bindingFor(`heading${level}`).includes(combo)) {
+        if (hits(`heading${level}`)) {
           event.preventDefault();
           return toggleHeading(view, level);
         }
       }
-      // 选区标题归一 1–6：默认无键位，设置面板里可绑
-      for (let level = 1; level <= 6; level += 1) {
-        if (bindingFor(`clampHeading${level}`).includes(combo)) {
-          event.preventDefault();
-          return clampHeadings(view, level);
-        }
+      // 选区标题归一：弹窗选级别（0.20 用户反馈：不是每级一个快捷键）
+      if (hits("clampHeading")) {
+        event.preventDefault();
+        window.dispatchEvent(new CustomEvent("qn-clamp-heading"));
+        return true;
       }
       return false;
     },
