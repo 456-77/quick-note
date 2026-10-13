@@ -83,7 +83,7 @@ for (let i = 0; i < 40; i += 1) {
 }
 const opened = await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(TARGET)}); if (!b) return false; b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(TARGET)} + '（')); if (!b) return false; b.click(); return true; })()`,
 );
 check(opened === true, `打开 ${TARGET}`);
 await sleep(800);
@@ -157,7 +157,7 @@ writeFileSync(join(vault, "外部新建.md"), "# 外部新建的笔记\n", "utf8
 let treeHasNew = false;
 for (let i = 0; i < 30; i += 1) {
   await sleep(200);
-  const titles = await evaluate(ws, `[...document.querySelectorAll('.tree-file')].map(b => b.title)`);
+  const titles = await evaluate(ws, `[...document.querySelectorAll('.tree-file')].map(b => b.title.replace(/（[^（]*）$/, \"\"))`);
   if ((titles ?? []).includes("外部新建.md")) {
     treeHasNew = true;
     break;

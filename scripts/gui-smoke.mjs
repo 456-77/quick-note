@@ -103,30 +103,34 @@ const vaultPath = await evaluate(ws, `document.querySelector('.vault-pill')?.tex
 check(vaultPath.includes("test-vault"), `仓库路径已载入（${vaultPath}）`);
 
 // 4) 文件树内容（证明 list_notes 经 IPC 返回并渲染）
+// NoteRow 的 title 是「路径（点击选中为粘贴目标 · Alt+点击在资源管理器中定位）」，
+// 附件（图片）也会进树（后缀「不支持打开」）——匹配一律剥掉末尾的（…）后缀。
 const fileTitles = await evaluate(
   ws,
   `[...document.querySelectorAll('.tree-file')].map(b => b.title)`,
 );
+const treePaths = (fileTitles ?? []).map((t) => t.replace(/（[^（]*）$/, "").trim());
 // fixture 另外还会生成两篇**按当天日期命名**的日记（今天与昨天），用于日历打点
 // 与字数统计。它们的文件名随运行日期变化，所以只能计入数量、不能列进 EXPECTED。
 const DATED_DAILY_NOTES = 2;
+const mdPaths = treePaths.filter((p) => p.endsWith(".md"));
 check(
-  Array.isArray(fileTitles) && fileTitles.length === EXPECTED.length + DATED_DAILY_NOTES,
-  `文件树条目数 = ${EXPECTED.length + DATED_DAILY_NOTES}`,
-  `实际=${fileTitles?.length}`,
+  mdPaths.length === EXPECTED.length + DATED_DAILY_NOTES,
+  `文件树 md 条目数 = ${EXPECTED.length + DATED_DAILY_NOTES}`,
+  `实际=${mdPaths.length}（全部条目 ${treePaths.length}，含附件）`,
 );
 for (const want of EXPECTED) {
-  check(fileTitles?.includes(want), `树中包含 ${want}`);
+  check(treePaths.includes(want), `树中包含 ${want}`);
 }
 for (const bad of FORBIDDEN) {
-  check(!fileTitles?.some((t) => t.includes(bad)), `树中不包含 ${bad}`);
+  check(!treePaths.some((t) => t.includes(bad)), `树中不包含 ${bad}`);
 }
 
 // 5) 打开一篇 CRLF 笔记，验证编辑器渲染内容（走 read_note）
 const target = "日记/2026-W37 周记.md";
 const clicked = await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(target)}); if (!b) return false; b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.replace(/（[^（]*）$/, "").trim() === ${JSON.stringify(target)}); if (!b) return false; b.click(); return true; })()`,
 );
 check(clicked === true, `点击了 ${target}`);
 await sleep(700);

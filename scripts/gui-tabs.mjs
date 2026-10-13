@@ -61,7 +61,7 @@ async function openNote(ws, path) {
   const ok = await evaluate(
     ws,
     `(() => {
-       const row = [...document.querySelectorAll('.tree-file')].find(e => e.title === ${JSON.stringify(path)});
+       const row = [...document.querySelectorAll('.tree-file')].find(e => e.title.startsWith(${JSON.stringify(path)} + '（'));
        if (!row) return false;
        const r = row.getBoundingClientRect();
        const events = ["mousePressed","mouseReleased"].map(type => new MouseEvent(type === "mousePressed" ? "mousedown" : "click", { bubbles: true, clientX: r.left + 10, clientY: r.top + 5 }));

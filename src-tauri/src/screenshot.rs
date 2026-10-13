@@ -97,17 +97,21 @@ fn ocr_blocking(image_base64: String) -> Result<String, String> {
 /// 1. **多语言引擎**：用户语言 + zh-Hans + en-US 逐个识别（按语言去重），取文本
 ///    最长的结果——中英混排（代码截图、报错弹窗）时单引擎常丢一半；
 /// 2. **超尺寸缩放**：WinRT OCR 有 `OcrEngine.MaxImageDimension` 上限，多联屏
-///    整屏截图超出会直接抛异常，解码时按上限等比缩小。
+///    整屏截图超出会直接抛异常。
 ///
-/// 三个实测踩出来的点（PS 5.1 / Win10-zh-CN 验证）：
-/// 1. `System.WindowsRuntimeSystemExtensions` 在 `System.Runtime.WindowsRuntime`
+/// 实测踩出来的点（PS 5.1 本机验证）：
+/// 1. `System.Windows.RuntimeSystemExtensions` 在 `System.Runtime.WindowsRuntime`
 ///    程序集里，不 Add-Type 就找不到 AsTask；
 /// 2. `BitmapDecoder::CreateAsync(IStorageFile)` 重载绑定不上（StorageFile 不是
 ///    IRandomAccessStream），必须先 `OpenAsync` 拿流再建解码器；
-/// 3. 输出先切 UTF-8，中文识别结果才不乱码。
+/// 3. **5 参数的 `GetSoftwareBitmapAsync(fmt, mode, transform, exif, color)` 绑不上**
+///    （重载在投影表里存在，PS 却报"找不到重载，参数计数为:5"——0.22.0 因此整链
+///    报错），只能用 2 参数重载；超尺寸缩放退而用 System.Drawing 预缩放落盘再解码；
+/// 4. 输出先切 UTF-8，中文识别结果才不乱码。
 fn ocr_file(path: &Path) -> Result<String, String> {
     // 单引号字符串里反斜杠不需要转义；路径里出现单引号的概率可以忽略
     let file = path.to_string_lossy();
+    let scaled = format!("{file}.scaled.png");
     let script = format!(
         concat!(
             "$ErrorActionPreference='Stop';",
@@ -115,11 +119,8 @@ fn ocr_file(path: &Path) -> Result<String, String> {
             "Add-Type -AssemblyName System.Runtime.WindowsRuntime;",
             "[Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Graphics.Imaging.BitmapDecoder,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
-            "[Windows.Graphics.Imaging.BitmapTransform,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Graphics.Imaging.BitmapPixelFormat,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Graphics.Imaging.BitmapAlphaMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
-            "[Windows.Graphics.Imaging.ExifOrientationMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
-            "[Windows.Graphics.Imaging.ColorManagementMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Storage.StorageFile,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Storage.Streams.IRandomAccessStream,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Storage.FileAccessMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
@@ -130,18 +131,22 @@ fn ocr_file(path: &Path) -> Result<String, String> {
             "$stream=Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream]);",
             "$decoder=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder]);",
             "$max=[Windows.Media.Ocr.OcrEngine]::MaxImageDimension;",
-            "$transform=[Windows.Graphics.Imaging.BitmapTransform]::new();",
             "if($decoder.PixelWidth -gt $max -or $decoder.PixelHeight -gt $max){{",
-            "  $scale=[Math]::Min($max/$decoder.PixelWidth,$max/$decoder.PixelHeight);",
-            "  $transform.ScaledWidth=[int][Math]::Round($decoder.PixelWidth*$scale);",
-            "  $transform.ScaledHeight=[int][Math]::Round($decoder.PixelHeight*$scale);",
+            "  Add-Type -AssemblyName System.Drawing;",
+            "  $img=[System.Drawing.Image]::FromFile('{file}');",
+            "  $scale=[Math]::Min([double]$max/$img.Width,[double]$max/$img.Height);",
+            "  $scaledBmp=New-Object System.Drawing.Bitmap ([int][Math]::Round($img.Width*$scale)),([int][Math]::Round($img.Height*$scale));",
+            "  $g=[System.Drawing.Graphics]::FromImage($scaledBmp);",
+            "  $g.InterpolationMode=[System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic;",
+            "  $g.DrawImage($img,0,0,$scaledBmp.Width,$scaledBmp.Height);",
+            "  $g.Dispose();$img.Dispose();",
+            "  $scaledBmp.Save('{scaled}',[System.Drawing.Imaging.ImageFormat]::Png);",
+            "  $scaledBmp.Dispose();",
+            "  $file=Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('{scaled}')) ([Windows.Storage.StorageFile]);",
+            "  $stream=Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream]);",
+            "  $decoder=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder]);",
             "}}",
-            "$bmp=Await ($decoder.GetSoftwareBitmapAsync(",
-            "  [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,",
-            "  [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied,",
-            "  $transform,",
-            "  [Windows.Graphics.Imaging.ExifOrientationMode]::IgnoreExif,",
-            "  [Windows.Graphics.Imaging.ColorManagementMode]::DoNotColorManage)) ([Windows.Graphics.Imaging.SoftwareBitmap]);",
+            "$bmp=Await ($decoder.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,[Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied)) ([Windows.Graphics.Imaging.SoftwareBitmap]);",
             "$engines=@();",
             "$seen=@{{}};",
             "$u=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages();",
@@ -161,8 +166,11 @@ fn ocr_file(path: &Path) -> Result<String, String> {
             "Write-Output $best",
         ),
         file = file,
+        scaled = scaled,
     );
     let stdout = run_powershell(&script)?;
+    // 缩放中间图只在超尺寸时产生；常态下删除不存在的文件是无害的 no-op
+    let _ = std::fs::remove_file(&scaled);
     // 识别文本原样回传（可能是多行）；去掉结尾换行
     Ok(stdout.trim_end().to_string())
 }

@@ -327,9 +327,10 @@ function closeIfOpen(view: EditorView): boolean {
 export function customSearchPanel(): Extension {
   return [
     search(),
-    // 文档变化时刷新匹配计数
+    // 文档或选区变化时刷新匹配计数：palette 跳转会预选命中词，光标落位后
+    // current 才从 "-"（不在任何命中内）变成实际序号
     EditorView.updateListener.of((update) => {
-      if (update.docChanged && panel && panelView === update.view) updateCount(update.view);
+      if ((update.docChanged || update.selectionSet) && panel && panelView === update.view) updateCount(update.view);
     }),
     Prec.high(
       keymap.of([

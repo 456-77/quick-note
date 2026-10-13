@@ -71,7 +71,7 @@ await new Promise((res, rej) => {
 // 打开目标笔记
 const opened = await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(TARGET)}); if (!b) return false; b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(TARGET)} + '（')); if (!b) return false; b.click(); return true; })()`,
 );
 check(opened === true, `打开 ${TARGET}`);
 await sleep(800);

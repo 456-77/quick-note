@@ -135,7 +135,7 @@ for (let i = 0; i < 40; i += 1) {
 }
 const opened = await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(NOTE)}); if (!b) return false; b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(NOTE)} + '（')); if (!b) return false; b.click(); return true; })()`,
 );
 check(opened === true, `打开 ${NOTE}`);
 await sleep(800);
@@ -221,7 +221,7 @@ await setSettingsOpen(ws, true);
 const setFolder = await evaluate(
   ws,
   `(() => {
-     const input = document.querySelector('.settings-panel input[type=text]');
+     const input = [...document.querySelectorAll('.settings-panel input[type=text]')].find(i => (i.placeholder || '').includes('attachments'));
      if (!input) return false;
      // React 受控组件：直接改 .value 不会触发 onChange，必须走原生 setter + input 事件
      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
@@ -258,7 +258,7 @@ await setSettingsOpen(ws, true);
 await evaluate(
   ws,
   `(() => {
-     const input = document.querySelector('.settings-panel input[type=text]');
+     const input = [...document.querySelectorAll('.settings-panel input[type=text]')].find(i => (i.placeholder || '').includes('attachments'));
      if (!input) return false;
      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
      setter.call(input, 'attachments');
@@ -273,15 +273,12 @@ await setSettingsOpen(ws, false);
 if (nestedFile !== null) {
   unlinkSync(join(nestedDir, nestedFile));
 }
-const nestedRemoved = readdirSync(nestedDir).length === 0;
-if (nestedRemoved) {
+// 目录没建出来（设置没生效等失败场景）时不能裸 readdir——那会 ENOENT 崩掉整个脚本
+if (existsSync(nestedDir) && readdirSync(nestedDir).length === 0) {
   // 只删这个测试创建的目录，deep/ 是 fixture 里本来就有的
   rmdirSync(nestedDir);
 }
-check(
-  !existsSync(nestedDir) || readdirSync(nestedDir).length > 0,
-  "测试创建的嵌套目录已清理（deep/ 本身保留）",
-);
+check(!existsSync(nestedDir), "测试创建的嵌套目录已清理（deep/ 本身保留）");
 
 // ---------------------------------------------------------------- 清理
 for (const name of afterDisabled) {

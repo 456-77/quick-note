@@ -407,7 +407,8 @@ try {
     "选中今天时出现顺延提示（fixture 里昨天有 1 项未完成）",
   );
   const carryText = await evaluate(ws, `document.querySelector('.cal-carryover')?.innerText ?? ''`);
-  check(/昨天有 1 项待办未完成/.test(carryText), "提示里写明未完成数量", carryText);
+  // 提示文案用 shortDay 日期前缀（如「10-13 有 1 项待办未完成」），不再写死「昨天」
+  check(/有 1 项待办未完成/.test(carryText), "提示里写明未完成数量", carryText);
 
   await clickSelector(ws, ".cal-carryover-btn");
   const carried = await waitFor(

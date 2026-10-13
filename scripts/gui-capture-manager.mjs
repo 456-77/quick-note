@@ -13,7 +13,7 @@
 // 用法：node scripts/gui-capture-manager.mjs <vaultDir> [port]
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const vault = process.argv[2] ?? "test-vault";
@@ -21,7 +21,8 @@ const port = process.argv[3] ?? "9222";
 
 // 规范成正斜杠：批量栏的仓库 <select> 候选来自应用侧（正斜杠风格），
 // 赋值 .value 时必须与 option 值逐字一致才选得上（fs 调用两种写法都认）。
-const absVault = join(process.cwd(), vault).replace(/\\/g, "/");
+// resolve 兼容绝对路径参数（verify-gui 传的是绝对路径，join(cwd, 绝对路径) 会拼出坏路径）。
+const absVault = resolve(vault).replace(/\\/g, "/");
 const inbox = join(tmpdir(), `qn-capture-inbox-${Date.now()}`);
 mkdirSync(inbox, { recursive: true });
 const INBOX_FILE = join(inbox, "Inbox.md");

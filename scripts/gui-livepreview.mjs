@@ -136,7 +136,7 @@ for (let i = 0; i < 40; i += 1) {
 }
 const opened = await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(TARGET)}); if (!b) return false; b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.replace(/（[^（]*）$/, "").trim() === ${JSON.stringify(TARGET)}); if (!b) return false; b.click(); return true; })()`,
 );
 check(opened === true, `打开 ${TARGET}`);
 await sleep(900);
@@ -937,19 +937,29 @@ check(after.includes("```ts"), "代码块围栏在源码中原样保留（渲染
       `(() => { const s = window.getSelection(); return s ? s.toString() : ""; })()`,
     );
     check(first.trim() === "普通", "第一次 Ctrl+A 只选本格内容", JSON.stringify(first));
-    // 第二次 Ctrl+A：整张表
-    // CDP 的修饰键用 modifiers 位掩码（Ctrl=2）；`control: true` 不是有效参数
+    // 第二次 Ctrl+A：整表选中。跨格 DOM 选区会被浏览器归一化掉（老实现的坑），
+    // 整表选中现在是视觉态（is-table-selected），copy 按该态序列化 markdown 源码。
     await cdp(ws, "Input.dispatchKeyEvent", { type: "keyDown", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
     await cdp(ws, "Input.dispatchKeyEvent", { type: "keyUp", key: "a", code: "KeyA", windowsVirtualKeyCode: 65, modifiers: 2 });
     await sleep(200);
-    const second = await evaluate(
+    const tableState = await evaluate(
       ws,
-      `(() => { const s = window.getSelection(); return s ? s.toString() : ""; })()`,
+      `(() => { const t = document.querySelector('.cm-lp-tablewrap table'); return t ? t.classList.contains('is-table-selected') : false; })()`,
+    );
+    check(tableState === true, "第二次 Ctrl+A 整表选中（视觉高亮态）");
+    const copied = await evaluate(
+      ws,
+      `(() => {
+         const t = document.querySelector('.cm-lp-tablewrap table');
+         const dt = new DataTransfer();
+         t.dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }));
+         return dt.getData('text/plain');
+       })()`,
     );
     check(
-      second.includes("左对齐") && second.includes("普通"),
-      "第二次 Ctrl+A 选中整张表",
-      JSON.stringify(second.slice(0, 60)),
+      typeof copied === "string" && copied.includes("左对齐") && copied.includes("普通") && copied.includes("|"),
+      "整表选中复制 → markdown 表格源码",
+      JSON.stringify(String(copied).slice(0, 60)),
     );
   }
 

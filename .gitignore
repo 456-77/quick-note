@@ -34,3 +34,4 @@ test-vault.detect.json
 
 # 应用内更新清单（发版脚本生成，随 Release 附件上传）
 latest.json
+.release-notes-*.md

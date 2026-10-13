@@ -1870,7 +1870,10 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
     color-mix(in srgb, var(--callout-green) 7%, var(--code-bg));
 }
 
-.cm-lp-fence {
+/* 特异性必须压过 .editor-host .cm-lp-codeblock（0,2,0）——0.20 代码块重构加了
+   .editor-host 前缀后，裸 .cm-lp-fence（0,1,0）的压缩被字号规则盖掉，每个代码块
+   底部多出一条空行（gui-livepreview 断言抓出）。 */
+.editor-host .cm-line.cm-lp-fence {
   font-size: 0;
   line-height: 0;
 }
@@ -2342,6 +2345,18 @@ html.qn-alt-held .cm-line {
   border-radius: var(--radius);
   overflow: hidden;
   cursor: text;
+}
+
+/* 整表选中态（第二次 Ctrl+A）：跨 contenteditable 单元格的 DOM 选区会被浏览器
+   归一化掉，整表选中以视觉态表达，copy/cut 按该态序列化整表源码 */
+.cm-lp-table.is-table-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cm-lp-table.is-table-selected td,
+.cm-lp-table.is-table-selected th {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .cm-lp-table th,

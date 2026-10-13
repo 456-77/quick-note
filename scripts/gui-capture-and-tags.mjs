@@ -11,13 +11,13 @@
 // 前置：gui-test 变体已启动（CDP 9222），test-vault 已生成。
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 
 const vault = process.argv[2] ?? "test-vault";
 const port = process.argv[3] ?? "9222";
 
-const absVault = join(process.cwd(), vault);
+const absVault = resolve(vault); // 兼容绝对路径参数（verify-gui 传的是绝对路径）
 const inbox = join(tmpdir(), `qn-inbox-${Date.now()}`);
 mkdirSync(inbox, { recursive: true });
 const today = (() => {

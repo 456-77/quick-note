@@ -814,15 +814,18 @@ try {
   await clickSyncStatus(ws);
   await waitFor(
     "冲突横幅出现",
-    async () => (await bannerText(ws)).includes("本地与云端都改"),
+    async () => (await bannerText(ws)).includes("本地与云端都有改动"),
     10000,
   );
   check(
-    (await bannerText(ws)).includes("本地与云端都改"),
-    "双边都改过时给出冲突提示",
+    (await bannerText(ws)).includes("本地与云端都有改动"),
+    "双边都改过时给出冲突提示（已暂停同步待裁决）",
     await bannerText(ws),
   );
   check(fileText(localPath) === "# 本地版本\r\n", "本地版本被保留（没被云端覆盖）");
+  // 0.2x 起冲突不再默认「本地胜并重推」，要手动裁决：选「本地覆盖云端」
+  // → 保留本地并重新上传
+  await clickByText(ws, ".banner button", "本地覆盖云端");
   await waitFor(
     "冲突后本地版本被重新推上去",
     async () => backend.lastPushed(VAULT_NAME, localPath)?.content === "# 本地版本\r\n",
@@ -830,13 +833,10 @@ try {
   );
   check(
     backend.lastPushed(VAULT_NAME, localPath)?.content === "# 本地版本\r\n",
-    "冲突后本地版本重新上传（对方会拿到它）",
+    "选择「本地覆盖云端」后本地版本重新上传（对方会拿到它）",
   );
-  // 收掉冲突横幅：它是告知性的（本地版本已经推上去了）。留着会干扰后面
-  // "密码错了要报什么"这类基于横幅文本的断言。
-  await clickByText(ws, ".banner button", "知道了");
-  await waitFor("冲突横幅可以关掉", async () => !(await bannerText(ws)).includes("本地与云端都改"));
-  check(!(await bannerText(ws)).includes("本地与云端都改"), "冲突横幅点「知道了」后消失");
+  await waitFor("冲突横幅在裁决后消失", async () => !(await bannerText(ws)).includes("本地与云端都有改动"));
+  check(!(await bannerText(ws)).includes("本地与云端都有改动"), "裁决完成后冲突横幅消失");
 
   // ---------------------------------------------------------------- 待办
   console.log("\n待办：走虚拟文件（不落盘）双向同步\n");

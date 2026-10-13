@@ -123,6 +123,9 @@ export default function CommandPalette({
   const previewSeq = useRef(0);
 
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
+  /** 原始大小写的首个词：跳转预填搜索面板时用它高亮——面板按原文预填，
+   *  传小写化后的 terms[0] 会把面板输入框也变成小写（0.22 批测发现）。 */
+  const rawFirstTerm = useMemo(() => query.trim().split(/\s+/).filter(Boolean)[0] ?? "", [query]);
 
   // 打开时重置并聚焦；关闭时清掉残留的搜索结果
   useEffect(() => {
@@ -218,14 +221,14 @@ export default function CommandPalette({
           title: hit.path.slice(hit.path.lastIndexOf("/") + 1),
           detail: hit.text.trim(),
           // 带回首个关键词：打开后预填搜索面板高亮全文命中（0.21 用户反馈）
-          run: () => onOpenNote(hit.path, hit.line, terms[0]),
+          run: () => onOpenNote(hit.path, hit.line, rawFirstTerm),
           hit,
         });
       }
     }
 
     return out;
-  }, [open, actions, actions.length, entries, terms, query, contentHits, onOpenNote]);
+  }, [open, actions, actions.length, entries, terms, query, rawFirstTerm, contentHits, onOpenNote]);
 
   // 结果变化时把选中项拉回范围
   useEffect(() => {

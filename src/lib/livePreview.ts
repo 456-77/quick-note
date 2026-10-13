@@ -1122,35 +1122,85 @@ class TableWidget extends WidgetType {
       }
     }
 
-    // Ctrl+A 两段式全选：第一次全选本格，第二次升级为**选中整张表**。
+    // Ctrl+A 两段式全选：第一次全选本格，第二次升级为**整表选中态**。
     // 跨格拖选在「单元格各自独立编辑宿主」的模型下会被浏览器钳在单格里
     // （Obsidian 用自研表格模型才做得到跨格选区），用两段式全选代替；
     // 单元格保持独立编辑宿主——表格宿主一旦 contenteditable，Chromium 会把
     // 焦点给表格而不是单元格，整套就地编辑就失效了（实测）。
     // 两段都手动 Range 并 preventDefault：原生的 Ctrl+A 选区会被 CM 的
     // DOM 观察者按文档选区重置掉（实测），靠不住。
+    // 第二段的「整表」不能再放 DOM 选区：跨 contenteditable 单元格的选区会被
+    // 浏览器归一化（锚点被拉回文档正文，随即被 CM 按文档选区清空，实测）。
+    // 改挂视觉选中态（is-table-selected），copy/cut 按该态序列化整表源码。
+    const setTableSelected = (on: boolean) => table.classList.toggle("is-table-selected", on);
     table.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && table.classList.contains("is-table-selected")) {
+        setTableSelected(false);
+        return;
+      }
       if (!(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== "a") return;
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
-      const cell = selection.anchorNode?.parentElement?.closest<HTMLElement>("td,th");
+      // 锚点可能是格内文本（parentElement 即 td），也可能是格元素本身——
+      // 本格选区是我们用 selectNodeContents(cell) 手工设的，anchorNode 就是 td，
+      // 从 td.parentElement（tr）往上 closest 永远找不到格，第二次 Ctrl+A 会
+      // 直接早退放行原生全选（实测；旧实现就坏在这里）。
+      const anchor = selection.anchorNode;
+      const anchorEl = anchor?.nodeType === 1 ? (anchor as HTMLElement) : anchor?.parentElement ?? null;
+      const cell = anchorEl?.closest<HTMLElement>("td,th");
       if (!cell || !table.contains(cell)) return;
       event.preventDefault();
       event.stopPropagation();
+      // 已处于整表选中态 → 收掉，回到本格（三段循环）
+      if (table.classList.contains("is-table-selected")) {
+        setTableSelected(false);
+        const range = document.createRange();
+        range.selectNodeContents(cell);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return;
+      }
       const current = selection.getRangeAt(0);
       const cellRange = document.createRange();
       cellRange.selectNodeContents(cell);
       // 已全选本格（且本格非空）→ 升级为整表；否则全选本格
       const coversCell =
         current.toString() === cellRange.toString() && current.toString().trim() !== "";
-      const range = document.createRange();
-      range.selectNodeContents(coversCell ? table : cell);
-      selection.removeAllRanges();
-      selection.addRange(range);
+      if (coversCell) {
+        setTableSelected(true);
+        selection.removeAllRanges();
+      } else {
+        const range = document.createRange();
+        range.selectNodeContents(cell);
+        selection.removeAllRanges();
+        selection.addRange(range);
+      }
     });
+    // 整表选中态的收尾：光标/选区离开这张表（点别处、CM 重置选区）即解除。
+    // listener 挂在 document 上但随 widget 销毁自摘，不会累积。
+    // 空选区（anchorNode 为 null）不算离开——整表选中态本身就把选区收掉了，
+    // 一进监听就摘类等于自杀（实测踩过）。
+    const onDocSelectionChange = () => {
+      if (!table.isConnected) {
+        document.removeEventListener("selectionchange", onDocSelectionChange);
+        return;
+      }
+      if (!table.classList.contains("is-table-selected")) return;
+      const anchor = window.getSelection()?.anchorNode ?? null;
+      if (anchor === null) return;
+      if (!table.contains(anchor)) setTableSelected(false);
+    };
+    document.addEventListener("selectionchange", onDocSelectionChange);
     // 整表选择被复制时以选中文本为准——CM 的 copy 处理会按**文档选区**序列化源码，
     // widget 内部的 DOM 选区对它是没有意义的位置
     table.addEventListener("copy", (event) => {
+      // 整表选中态：直接放**表格的 markdown 源码**（粘贴回来是可编辑的表格）
+      if (table.classList.contains("is-table-selected")) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.clipboardData?.setData("text/plain", view.state.sliceDoc(this.from, this.to).trimEnd());
+        return;
+      }
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
       const range = selection.getRangeAt(0);
@@ -1166,6 +1216,17 @@ class TableWidget extends WidgetType {
     // 渲染文本删掉的字符映射不回源码，强删会丢 `**`/`` ` `` 标记；这类格子保持
     // 原样（内容已进剪贴板）。纯文本格子删完直接按新文本写回源码。
     table.addEventListener("cut", (event) => {
+      // 整表选中态：复制源码 + 整块删除（含末行行尾，不留空行）
+      if (table.classList.contains("is-table-selected")) {
+        event.preventDefault();
+        event.stopPropagation();
+        event.clipboardData?.setData("text/plain", view.state.sliceDoc(this.from, this.to).trimEnd());
+        const lastLine = view.state.doc.lineAt(this.to);
+        const end = lastLine.to < view.state.doc.length ? lastLine.to + 1 : lastLine.to;
+        view.dispatch({ changes: { from: this.from, to: end } });
+        setTableSelected(false);
+        return;
+      }
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
       const range = selection.getRangeAt(0);
@@ -2890,40 +2951,62 @@ export function livePreviewExtension() {
  * 实时模式下光标进块 = 显示源码、出块 = 恢复渲染，鼠标点击 widget 很难精确把
  * 光标放到"块里"。行号是现成的块定位器：点块内任意一行的行号 → 光标进块（源码）；
  * 块处于源码态时再点行号 → 光标跳出（渲染）。非块行不拦截，行为与原先一致。
+ *
+ * 注意：gutter（.cm-gutters）**不在** contentDOM 里，EditorView.domEventHandlers
+ * 收不到 gutter 上的事件（CM 把它们挂在 contentDOM 上）——必须在 view.dom 上
+ * 自己挂监听（ViewPlugin 的构造/销毁成对装卸）。
  */
 function gutterSourceToggle(): Extension {
-  return EditorView.domEventHandlers({
-    mousedown: (event, view) => {
-      if (event.button !== 0) return false;
-      const target = event.target as HTMLElement | null;
-      if (!target?.closest(".cm-gutters")) return false;
-      // gutter 在内容区左侧，posAtCoords 对内容区外的 x 不可靠：用内容区左缘 + 事件 y 定位行
-      const contentLeft = view.contentDOM.getBoundingClientRect().left + 1;
-      const pos = view.posAtCoords({ x: contentLeft, y: event.clientY });
-      if (pos === null) return false;
-      const block = toggleableBlockAt(view.state, pos);
-      if (!block) return false;
-      event.preventDefault();
-      const sel = view.state.selection.main;
-      const inside = sel.from >= block.from && sel.to <= block.to;
-      const doc = view.state.doc;
-      let anchor: number;
-      if (inside) {
-        // 源码态 → 渲染：光标挪到块外（块首在文档开头就挪到块尾之后）
-        anchor = block.from > 0 ? block.from - 1 : Math.min(block.to + 1, doc.length);
-      } else {
-        // 渲染态 → 源码：光标放进块内
-        anchor = Math.min(block.from + 1, block.to);
+  return ViewPlugin.fromClass(
+    class {
+      private view: EditorView;
+      private onDown: (event: MouseEvent) => void;
+
+      constructor(view: EditorView) {
+        this.view = view;
+        this.onDown = (event: MouseEvent) => {
+          if (event.button !== 0) return;
+          const target = event.target as HTMLElement | null;
+          if (!target?.closest(".cm-gutters")) return;
+          // gutter 在内容区左侧，posAtCoords 对内容区外的 x 不可靠；且表格被整块
+          // widget 替换后那些行在 gutter 里没有行号元素，posAtCoords 在替换块边界
+          // 上的取值也不稳定（可能给 to 边界 → 解析到表格外）。改用按高度定位：
+          // lineBlockAtHeight 对 widget 行返回整块替换区间、普通行返回该行，
+          // from+1 必然严格落在块内部（toggleableBlockAt 只认块内位置）。
+          const scroller = view.scrollDOM;
+          const height = event.clientY - scroller.getBoundingClientRect().top + scroller.scrollTop;
+          const info = view.lineBlockAtHeight(height);
+          const pos = info ? Math.min(info.from + 1, view.state.doc.length) : null;
+          if (pos === null) return;
+          const block = toggleableBlockAt(view.state, pos);
+          if (!block) return;
+          event.preventDefault();
+          const sel = view.state.selection.main;
+          const inside = sel.from >= block.from && sel.to <= block.to;
+          const doc = view.state.doc;
+          let anchor: number;
+          if (inside) {
+            // 源码态 → 渲染：光标挪到块外（块首在文档开头就挪到块尾之后）
+            anchor = block.from > 0 ? block.from - 1 : Math.min(block.to + 1, doc.length);
+          } else {
+            // 渲染态 → 源码：光标放进块内
+            anchor = Math.min(block.from + 1, block.to);
+          }
+          anchor = Math.min(Math.max(anchor, 0), doc.length);
+          view.dispatch({
+            selection: { anchor },
+            effects: EditorView.scrollIntoView(anchor, { y: "nearest" }),
+          });
+          view.focus();
+        };
+        view.dom.addEventListener("mousedown", this.onDown);
       }
-      anchor = Math.min(Math.max(anchor, 0), doc.length);
-      view.dispatch({
-        selection: { anchor },
-        effects: EditorView.scrollIntoView(anchor, { y: "nearest" }),
-      });
-      view.focus();
-      return true;
+
+      destroy() {
+        this.view.dom.removeEventListener("mousedown", this.onDown);
+      }
     },
-  });
+  );
 }
 
 /** 光标位置所在的"可切换形态"块：表格 / mermaid 围栏 / HTML 块 / 独立图片行。 */

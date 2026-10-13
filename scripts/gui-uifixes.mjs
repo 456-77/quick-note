@@ -74,7 +74,7 @@ for (let i = 0; i < 40; i += 1) {
 }
 await evaluate(
   ws,
-  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(TARGET)}); if (b) b.click(); return true; })()`,
+  `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(TARGET)} + '（')); if (b) b.click(); return true; })()`,
 );
 await sleep(800);
 await evaluate(
@@ -529,17 +529,25 @@ check(
 await cdp(ws, "Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", windowsVirtualKeyCode: 27 });
 await cdp(ws, "Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", windowsVirtualKeyCode: 27 });
 await sleep(200);
-// 恢复默认
+// 恢复默认。导航切换是 React 异步渲染：切到「快捷键」页后必须等一拍再找行，
+// 塞在同一帧里查行会是 undefined，裸 `row.querySelector` 直接把脚本崩掉。
 await ensureSettings(true);
 await evaluate(
   ws,
+  `(() => { const b = [...document.querySelectorAll('.settings-nav-item')].find(x => x.textContent.includes('快捷键')); if (b) b.click(); return !!b; })()`,
+);
+await sleep(400);
+await evaluate(
+  ws,
   `(() => {
-    const b = [...document.querySelectorAll('.settings-nav-item')].find(x => x.textContent.includes('快捷键')); if (b) b.click();
     const row = [...document.querySelectorAll('[data-sec="shortcuts"] .settings-row')].find(r => r.textContent.includes('新建今日日记'));
-    row.querySelector('.shortcut-reset').click();
-    document.querySelector('.settings-nav-head .icon-btn')?.click();
+    if (!row) return false;
+    row.querySelector('.shortcut-reset')?.click();
+    return true;
   })()`,
 );
+await sleep(200);
+await evaluate(ws, `document.querySelector('.settings-nav-head .icon-btn')?.click(), true`);
 await sleep(300);
 check(
   (await evaluate(ws, `localStorage.getItem('quicknote.hotkeys')`)) === null,

@@ -222,8 +222,8 @@ check(
 await typeName(ws, "创建测试笔记");
 check(existsSync(join(vault, NOTE_A)), "笔记文件已在磁盘上创建", NOTE_A);
 check(
-  readFileSync(join(vault, NOTE_A), "utf8") === "# 创建测试笔记\n",
-  "新笔记自动写入「# 文件名」一级标题",
+  /^# 创建测试笔记\n(\n#[^\n]+\n)?$/.test(readFileSync(join(vault, NOTE_A), "utf8")),
+  "新笔记自动写入「# 文件名」一级标题（可带自动标签行）",
   JSON.stringify(readFileSync(join(vault, NOTE_A), "utf8")),
 );
 check(!(await inputOpen(ws)), "创建后输入行自动收起");

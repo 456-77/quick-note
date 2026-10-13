@@ -127,7 +127,7 @@ for (let i = 0; i < 40; i += 1) {
 check(
   (await evaluate(
     ws,
-    `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title === ${JSON.stringify(TARGET)}); if (!b) return false; b.click(); return true; })()`,
+    `(() => { const b = [...document.querySelectorAll('.tree-file')].find(x => x.title.startsWith(${JSON.stringify(TARGET)} + '（')); if (!b) return false; b.click(); return true; })()`,
   )) === true,
   `打开 ${TARGET}`,
 );
