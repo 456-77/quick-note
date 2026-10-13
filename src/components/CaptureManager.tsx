@@ -16,7 +16,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { allowAssetDir, listEntries, pickDirectory, readNoteOptional, writeNote } from "../lib/api";
+import { allowAssetDir, listEntries, pickDirectory, readNoteOptional, writeAttachment, writeNote } from "../lib/api";
+import { attachmentNameFor, linkTextFor } from "../lib/attachments";
+import { clipboardFiles, toBase64 } from "../lib/paste";
 import {
   archivedLinesForTarget,
   detectEol,
@@ -79,23 +81,27 @@ const MD_IMAGE_RE = /!\[[^\]]*\]\(([^)\s]+)\)/g;
 /**
  * 速记正文里的图片缩略图条（0.20 用户反馈：管理面板要支持预览图片）。
  * 正文仍是纯文本展示，缩略图独立成条附在正文下，点击走全局 lightbox 放大。
+ * `onRemove` 给编辑态用：× 按钮把对应的嵌入链接从草稿里摘掉（文件保留在附件目录）。
  */
 function CaptureImageStrip({
   text,
   resolve,
+  onRemove,
 }: {
   text: string;
   resolve: (raw: string) => { url: string; alt: string } | null;
+  /** 提供即显示删除按钮：参数是要从正文里摘掉的完整嵌入链接。 */
+  onRemove?: (link: string) => void;
 }) {
   const images = useMemo(() => {
-    const out: { url: string; alt: string }[] = [];
+    const out: { url: string; alt: string; link: string }[] = [];
     const seen = new Set<string>();
     for (const re of [WIKI_IMAGE_RE, MD_IMAGE_RE]) {
       for (const match of text.matchAll(re)) {
         const hit = resolve(match[1]);
         if (hit && !seen.has(hit.url)) {
           seen.add(hit.url);
-          out.push(hit);
+          out.push({ ...hit, link: match[0] });
         }
       }
     }
@@ -105,17 +111,31 @@ function CaptureImageStrip({
   return (
     <div className="cm-row-images">
       {images.map((img) => (
-        <img
-          key={img.url}
-          src={img.url}
-          alt={img.alt}
-          loading="lazy"
-          title={`${img.alt}（点击放大）`}
-          onClick={(event) => {
-            event.stopPropagation();
-            openLightbox(img.url, img.alt);
-          }}
-        />
+        <span key={img.url} className="cm-row-image">
+          <img
+            src={img.url}
+            alt={img.alt}
+            loading="lazy"
+            title={`${img.alt}（点击放大）`}
+            onClick={(event) => {
+              event.stopPropagation();
+              openLightbox(img.url, img.alt);
+            }}
+          />
+          {onRemove && (
+            <button
+              type="button"
+              className="cm-row-image-x"
+              title="从速记中移除这张图片（附件文件保留）"
+              onClick={(event) => {
+                event.stopPropagation();
+                onRemove(img.link);
+              }}
+            >
+              ×
+            </button>
+          )}
+        </span>
       ))}
     </div>
   );
@@ -131,6 +151,7 @@ export default function CaptureManager({
   onNewCapture,
   onStats,
   carryAttachments,
+  imageFolder,
 }: {
   /** 收件仓库绝对路径（settings.quickCaptureVault）；空串 = 未配置。 */
   inboxVault: string;
@@ -153,6 +174,8 @@ export default function CaptureManager({
     texts: string[],
     targetVault: string,
   ) => Promise<Map<string, string>>;
+  /** 收件仓库的附件目录（库内配置 pastedImageFolder，编辑速记加图落这里）。 */
+  imageFolder: string;
 }) {
   // ---------------------------------------------------------------- 扫描
 
@@ -902,6 +925,109 @@ export default function CaptureManager({
   // 但 Esc 后点击别处会先 blur 再卸载——必须挡住，否则「取消」变「保存」）
   const editCancelRef = useRef(false);
 
+  // ------------------------------------------- 编辑速记的图片增删（0.21 用户反馈）
+  // 之前两处编辑 textarea 没有 onPaste：粘贴图片静默失败，也没有选文件入口；
+  // 删除图片只能手删正文里的 `![[ ]]` 链接。这里补齐：粘贴/按钮 → 落收件仓库
+  // 附件目录 → 链接插进草稿光标处；缩略图条带 × 直接摘掉链接（文件保留）。
+
+  const inlineEditRef = useRef<HTMLTextAreaElement | null>(null);
+  const drawerEditRef = useRef<HTMLTextAreaElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  /** ＋图片 的落点：行内编辑还是抽屉（共享一个隐藏 file input）。 */
+  const imageTargetRef = useRef<"inline" | "drawer">("inline");
+
+  /** 图片文件落收件仓库附件目录；同步把新文件塞进索引，缩略图条立刻能解析。 */
+  const addImagesToInbox = useCallback(
+    async (files: File[]): Promise<string[]> => {
+      if (!inboxVault || files.length === 0) return [];
+      const date = new Date();
+      const links: string[] = [];
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const filename = attachmentNameFor({ name: file.name, type: file.type }, date, index);
+        const relative = await writeAttachment(inboxVault, imageFolder, filename, toBase64(bytes));
+        setImageIndex((prev) => new Map(prev).set(filename.toLowerCase(), relative));
+        links.push(linkTextFor(relative, "wiki"));
+      }
+      return links;
+    },
+    [inboxVault, imageFolder],
+  );
+
+  /** 链接串插进草稿的光标处（没有光标信息就追加到末尾）。 */
+  const insertLinksIntoDraft = useCallback(
+    (target: "inline" | "drawer", links: string) => {
+      const insert = links.trim();
+      if (!insert) return;
+      if (target === "inline") {
+        setEditDraft((draft) => {
+          const at = inlineEditRef.current?.selectionStart;
+          if (at === undefined || at === null || at >= draft.length) {
+            return draft ? `${draft} ${insert}` : insert;
+          }
+          return `${draft.slice(0, at)}${insert} ${draft.slice(at)}`;
+        });
+        return;
+      }
+      setDrawerDraft((draft) => {
+        const at = drawerEditRef.current?.selectionStart;
+        if (at === undefined || at === null || at >= draft.length) {
+          return draft ? `${draft} ${insert}` : insert;
+        }
+        return `${draft.slice(0, at)}${insert} ${draft.slice(at)}`;
+      });
+    },
+    [],
+  );
+
+  /** 粘贴事件里的图片：吃掉默认行为，落盘后把链接插进草稿；无图片放行原粘贴。 */
+  const pasteImages = useCallback(
+    async (
+      event: React.ClipboardEvent<HTMLTextAreaElement>,
+      target: "inline" | "drawer",
+    ): Promise<void> => {
+      const files = clipboardFiles(event.clipboardData).filter((file) =>
+        file.type.startsWith("image/"),
+      );
+      if (files.length === 0) return;
+      event.preventDefault();
+      try {
+        const links = await addImagesToInbox(files);
+        if (links.length > 0) {
+          insertLinksIntoDraft(target, links.join(" "));
+          notice(`已添加 ${links.length} 张图片（随速记保存生效）`);
+        }
+      } catch (e) {
+        notice(`图片保存失败：${e}`, "error");
+      }
+    },
+    [addImagesToInbox, insertLinksIntoDraft, notice],
+  );
+
+  const pickImages = useCallback((target: "inline" | "drawer") => {
+    imageTargetRef.current = target;
+    imageInputRef.current?.click();
+  }, []);
+
+  const onPickedImages = useCallback(
+    async (files: FileList | null) => {
+      const list = Array.from(files ?? []).filter((file) => file.type.startsWith("image/"));
+      if (imageInputRef.current) imageInputRef.current.value = "";
+      if (list.length === 0) return;
+      try {
+        const links = await addImagesToInbox(list);
+        if (links.length > 0) {
+          insertLinksIntoDraft(imageTargetRef.current, links.join(" "));
+          notice(`已添加 ${links.length} 张图片（随速记保存生效）`);
+        }
+      } catch (e) {
+        notice(`图片保存失败：${e}`, "error");
+      }
+    },
+    [addImagesToInbox, insertLinksIntoDraft, notice],
+  );
+
   // 行内加标签：正在输入标签的行（key）。替代原生 window.prompt——原生弹窗与
   // 应用风格割裂。输入框走非受控（ref 直读 DOM 值）：受控值在每次重渲染时回写，
   // 程序化设值（CDP 测试）与快速键入都会被回写吞掉。
@@ -1196,6 +1322,15 @@ export default function CaptureManager({
 
   return (
     <div className="cm-root">
+      {/* 编辑速记时「＋图片」的隐藏选文件入口（行内/抽屉共用，见 pickImages） */}
+      <input
+        ref={imageInputRef}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        onChange={(event) => void onPickedImages(event.target.files)}
+      />
       {/* ------------------------------------------------------------ 顶栏 */}
       <div className="cm-head">
         <div className="cm-head-titles">
@@ -1667,33 +1802,47 @@ export default function CaptureManager({
                   />
                   <div className="cm-row-main">
                     {editing ? (
-                      <textarea
-                        autoFocus
-                        className="cm-row-edit"
-                        rows={2}
-                        value={editDraft}
-                        title="Enter 保存 · Shift+Enter 换行 · 点击外部保存 · Esc 取消"
-                        onClick={(event) => event.stopPropagation()}
-                        onMouseDown={(event) => event.stopPropagation()}
-                        onChange={(event) => setEditDraft(event.target.value)}
-                        onBlur={() => {
-                          if (editCancelRef.current) return;
-                          finishEdit(entry, editDraft, true);
-                        }}
-                        onKeyDown={(event) => {
-                          // 0.20 用户反馈：Enter 保存、Shift+Enter 换行、Ctrl+Enter 保存（不变）
-                          if (event.key === "Enter" && !event.shiftKey) {
-                            event.preventDefault();
+                      <>
+                        <textarea
+                          autoFocus
+                          ref={inlineEditRef}
+                          className="cm-row-edit"
+                          rows={2}
+                          value={editDraft}
+                          title="Enter 保存 · Shift+Enter 换行 · 点击外部保存 · Esc 取消 · 可粘贴图片"
+                          onClick={(event) => event.stopPropagation()}
+                          onMouseDown={(event) => event.stopPropagation()}
+                          onChange={(event) => setEditDraft(event.target.value)}
+                          onPaste={(event) => void pasteImages(event, "inline")}
+                          onBlur={() => {
+                            if (editCancelRef.current) return;
                             finishEdit(entry, editDraft, true);
-                          }
-                          if (event.key === "Escape") {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            editCancelRef.current = true;
-                            setEditKey(null);
-                          }
-                        }}
-                      />
+                          }}
+                          onKeyDown={(event) => {
+                            // 0.20 用户反馈：Enter 保存、Shift+Enter 换行、Ctrl+Enter 保存（不变）
+                            if (event.key === "Enter" && !event.shiftKey) {
+                              event.preventDefault();
+                              finishEdit(entry, editDraft, true);
+                            }
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              editCancelRef.current = true;
+                              setEditKey(null);
+                            }
+                          }}
+                        />
+                        <div className="cm-edit-tools" onClick={(event) => event.stopPropagation()}>
+                          <button
+                            type="button"
+                            className="cm-row-quick"
+                            title="添加图片：链接插入光标处，随速记保存"
+                            onClick={() => pickImages("inline")}
+                          >
+                            ＋图片
+                          </button>
+                        </div>
+                      </>
                     ) : (
                       <>
                         <div className="cm-row-text">{entry.text}</div>
@@ -1891,13 +2040,16 @@ export default function CaptureManager({
               <div className="cm-field">
                 <div className="cm-field-label">内容</div>
                 {/* 0.20 用户反馈：详情内容直接可编辑——Enter 保存、Shift+Enter 换行、
-                    Ctrl+Enter 保存（保持）。失焦也保存，与行内编辑同口径。 */}
+                    Ctrl+Enter 保存（保持）。失焦也保存，与行内编辑同口径。
+                    0.21 反馈：编辑时支持粘贴/添加/移除图片。 */}
                 <textarea
+                  ref={drawerEditRef}
                   className="cm-drawer-edit"
                   rows={Math.min(14, Math.max(3, drawerDraft.split("\n").length + 1))}
                   value={drawerDraft}
-                  title="Enter 保存 · Shift+Enter 换行 · Ctrl+Enter 保存"
+                  title="Enter 保存 · Shift+Enter 换行 · Ctrl+Enter 保存 · 可粘贴图片"
                   onChange={(event) => setDrawerDraft(event.target.value)}
+                  onPaste={(event) => void pasteImages(event, "drawer")}
                   onBlur={() => {
                     if (drawerEntry) void saveEdit(drawerEntry, drawerDraft);
                   }}
@@ -1908,7 +2060,21 @@ export default function CaptureManager({
                     }
                   }}
                 />
-                <CaptureImageStrip text={drawerDraft} resolve={resolveImage} />
+                <div className="cm-edit-tools">
+                  <button
+                    type="button"
+                    className="cm-row-quick"
+                    title="添加图片：链接插入光标处，随速记保存"
+                    onClick={() => pickImages("drawer")}
+                  >
+                    ＋图片
+                  </button>
+                </div>
+                <CaptureImageStrip
+                  text={drawerDraft}
+                  resolve={resolveImage}
+                  onRemove={(link) => setDrawerDraft((draft) => draft.replace(link, ""))}
+                />
               </div>
               <div className="cm-field">
                 <div className="cm-field-label">标签</div>

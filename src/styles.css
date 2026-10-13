@@ -1036,6 +1036,11 @@ kbd {
   color: var(--warn);
 }
 
+/* 置顶收藏的图钉（0.21 用户反馈：收藏栏置顶） */
+.tree-icon-pin {
+  color: var(--accent);
+}
+
 /* div 形态的树行（行内要挂 ⋯ 按钮，不能是 button 套 button） */
 div.tree-item {
   user-select: none;
@@ -4273,6 +4278,85 @@ html.qn-alt-held .cm-line {
   animation: rise-in 0.16s ease;
 }
 
+/* 「内容」结果悬停预览卡（0.21 用户反馈，设置可关）：贴在面板右侧 */
+.palette-preview {
+  position: fixed;
+  left: calc(50% + 316px);
+  top: 12vh;
+  width: min(430px, calc(50vw - 336px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: rise-in 0.16s ease;
+  pointer-events: auto;
+}
+
+.palette-preview-title {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 10px 14px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.palette-preview-name {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.palette-preview-path {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-preview-lines {
+  padding: 6px 0 10px;
+  overflow: auto;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.palette-preview-line {
+  display: flex;
+  gap: 10px;
+  padding: 0 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.palette-preview-line.is-hit {
+  background: var(--accent-soft);
+}
+
+.palette-preview-no {
+  flex: none;
+  width: 3em;
+  text-align: right;
+  color: var(--text-dim);
+  user-select: none;
+}
+
+.palette-preview-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 窄窗口放不下侧卡就整个隐藏（悬停预览是辅助信息，主流程不受影响） */
+@media (max-width: 1080px) {
+  .palette-preview {
+    display: none;
+  }
+}
+
 .palette-input-row {
   display: flex;
   align-items: center;
@@ -5669,6 +5753,40 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   width: 170px;
 }
 
+/* 截图快捷键录入（0.21 用户反馈：手填改按键捕获）。展示态是键帽样式的 kbd，
+   录入态是醒目的捕获框 */
+.shot-hotkey-display {
+  min-width: 90px;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font: 600 12px/1.4 inherit;
+  text-align: center;
+}
+
+.shot-hotkey-capture {
+  min-width: 90px;
+  padding: 3px 10px;
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  animation: shot-hotkey-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes shot-hotkey-pulse {
+  0%,
+  100% {
+    border-color: var(--accent);
+  }
+  50% {
+    border-color: var(--border);
+  }
+}
+
 /* 迷你按钮（行内操作） */
 .btn-mini {
   padding: 3px 9px;
@@ -6031,6 +6149,13 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 /* ------------------------------------------------- 标签仪表盘（左侧栏第 4 视图） */
 
 .tag-dash {
+  /* 0.21 用户反馈：标签太多时列表被侧栏裁掉且无法滚动——补上与 .tree 相同的
+     flex 三件套（侧栏本体是 overflow:hidden 的 flex 列，子元素不自带滚动容器
+     就会被直接裁剪） */
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
   padding: 2px 6px 16px;
 }
 
@@ -6619,6 +6744,46 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 
 .cm-row-images img:hover {
   border-color: var(--accent);
+}
+
+/* 编辑态缩略图：外层 span 定位出 × 的落点（0.21 反馈：编辑速记可删图） */
+.cm-row-image {
+  position: relative;
+  display: inline-flex;
+}
+
+.cm-row-image-x {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 2;
+}
+
+.cm-row-image-x:hover {
+  background: var(--danger);
+  color: #fff;
+  border-color: transparent;
+}
+
+/* 编辑态的「＋图片」工具行（行内编辑与抽屉共用） */
+.cm-edit-tools {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .cm-row-meta {

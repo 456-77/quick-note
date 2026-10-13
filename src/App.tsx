@@ -66,6 +66,7 @@ import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
+import { openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
 import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
@@ -100,13 +101,15 @@ import {
   insertRowBelow,
   isCursorInTable,
 } from "./lib/tableEdit";
-import { clampHeadings, toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList } from "./lib/codeEdit";
+import { clampHeadings, codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList } from "./lib/codeEdit";
 import { useDaily } from "./lib/useDaily";
 import { useSync, type SyncController } from "./lib/useSync";
 import "./styles.css";
 
 const VAULT_KEY = "quicknote.vault";
 const FAVORITES_V2_KEY = "quicknote.favorites.v2";
+/** 收藏置顶的存储键（按仓库分桶，同收藏；0.21 用户反馈：收藏栏要能置顶）。 */
+const FAVORITES_PIN_KEY = "quicknote.favorites.pin.v2";
 /** 固定标签页的存储键（按仓库分桶，同收藏）。 */
 const PINNED_TABS_KEY = "quicknote.ui.pinnedTabs";
 /** 目录筛选的存储键：仓库 → 被隐藏的一级目录列表（0.20 用户反馈：目录太多干扰阅读）。 */
@@ -219,6 +222,8 @@ export default function App() {
   const [leftView, setLeftView] = useState<"files" | "favorites" | "recents" | "tags">("files");
   /** 收藏的笔记（本机 localStorage，**按仓库分桶**：切换仓库各看各的收藏）。 */
   const [favorites, setFavorites] = useState<string[]>([]);
+  /** 置顶的收藏（按仓库分桶，同收藏；收藏视图里排在最前）。 */
+  const [pinnedFavorites, setPinnedFavorites] = useState<string[]>([]);
   /** 最近打开的笔记（本机 localStorage，新的在前）。 */
   const [recents, setRecents] = useState<string[]>(() => {
     try {
@@ -378,6 +383,43 @@ export default function App() {
       setPinnedTabs([]);
     }
   }, [vault]);
+
+  // 收藏置顶：按仓库分桶读（0.21 用户反馈：收藏栏给文件添加置顶选项）
+  useEffect(() => {
+    if (!vault) return;
+    try {
+      const raw = localStorage.getItem(FAVORITES_PIN_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      setPinnedFavorites(Array.isArray(map[vault]) ? map[vault] : []);
+    } catch {
+      setPinnedFavorites([]);
+    }
+  }, [vault]);
+
+  // 置顶列表变化写回分桶存储；顺手剔除已不在收藏里的路径（取消收藏连着取消置顶）
+  useEffect(() => {
+    if (!vault) return;
+    const next = pinnedFavorites.filter((p) => favorites.includes(p));
+    if (next.length !== pinnedFavorites.length) {
+      setPinnedFavorites(next);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem(FAVORITES_PIN_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      map[vault] = next;
+      localStorage.setItem(FAVORITES_PIN_KEY, JSON.stringify(map));
+    } catch {
+      // 存不进去只影响下次启动的置顶状态
+    }
+  }, [pinnedFavorites, favorites, vault]);
+
+  /** 置顶/取消置顶一条收藏：置顶的在收藏视图排在最前。 */
+  const togglePinFavorite = useCallback((path: string) => {
+    setPinnedFavorites((prev) =>
+      prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
+    );
+  }, []);
 
   // 固定列表变化就写回分桶存储（rename/move 的换键也走这里落盘）
   useEffect(() => {
@@ -2695,11 +2737,33 @@ export default function App() {
     localStorage.setItem(SIDEBAR_KEY, next);
   }, []);
 
-  /** 打开笔记并跳到指定行（全局搜索的「内容」结果用）；行号省略时只打开。 */
+  /**
+   * 打开笔记并跳到指定行（全局搜索的「内容」结果用）；行号省略时只打开。
+   * 带关键词时（0.21 用户反馈：定位后突出不明显）打开自定义搜索面板预填——
+   * 全文命中高亮 + 计数 + Enter 下一处，并把该行上的命中词设为选区。
+   */
   const openNoteAt = useCallback(
-    async (path: string, line?: number) => {
+    async (path: string, line?: number, term?: string) => {
       await openNote(path);
-      if (line !== undefined) jumpToLine(line);
+      if (line === undefined) return;
+      const view = viewRef.current;
+      if (!view) return;
+      const target = view.state.doc.line(
+        Math.min(Math.max(line + 1, 1), view.state.doc.lines),
+      );
+      if (!term) {
+        jumpToLine(line);
+        return;
+      }
+      openSearchPanelOn(view, term);
+      const at = target.text.toLowerCase().indexOf(term.toLowerCase());
+      const anchor = at >= 0 ? target.from + at : target.from;
+      const head = at >= 0 ? anchor + term.length : anchor;
+      view.dispatch({
+        selection: { anchor, head },
+        effects: EditorView.scrollIntoView(anchor, { y: "start" }),
+      });
+      view.focus();
     },
     [openNote, jumpToLine],
   );
@@ -3333,12 +3397,40 @@ export default function App() {
 
   // 全局截图快捷键：启动注册、设置里改了立即重注册（空串 = 关闭）。
   // 命令只在桌面存在；移动端不调用。被其他程序占用时提示去设置里换组合。
+  // 多窗口让位（Rust 侧对自家兄弟进程静默跳过）后注册不在此进程：兄弟窗口
+  // 关闭后这里窗口一聚焦就重试一次，把热键接回来。
+  const hotkeyFailedRef = useRef(false);
   useEffect(() => {
     if (isMobile()) return;
-    setScreenshotHotkey(getSettings().screenshotHotkey).catch((e) =>
-      setError(`注册截图快捷键失败：${e}。可在 设置 → 通用 里换一个组合。`),
+    const hotkey = getSettings().screenshotHotkey;
+    setScreenshotHotkey(hotkey).then(
+      () => {
+        hotkeyFailedRef.current = false;
+      },
+      (e) => {
+        hotkeyFailedRef.current = true;
+        setError(`注册截图快捷键失败：${e}。可在 设置 → 通用 里换一个组合。`);
+      },
     );
   }, [settings.screenshotHotkey]);
+
+  // 拥有热键的兄弟窗口关闭后，本窗口重新聚焦时尝试接管
+  useEffect(() => {
+    if (isMobile()) return;
+    const onFocus = () => {
+      if (!hotkeyFailedRef.current) return;
+      setScreenshotHotkey(getSettings().screenshotHotkey).then(
+        () => {
+          hotkeyFailedRef.current = false;
+        },
+        () => {
+          // 还是占着（兄弟窗口还活着）：不弹错误，保持静默让位
+        },
+      );
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
 
   // 快捷键按下 → 抓屏 → 弹窗
   useEffect(() => {
@@ -3423,6 +3515,26 @@ export default function App() {
         case "toggleCodeBlock":
           toggleCodeBlock(view);
           return;
+        case "toggleBold":
+          toggleBold(view);
+          return;
+        case "copyCode": {
+          const hit = codeAtCursor(view.state);
+          if (!hit) {
+            notice("光标不在行内代码或代码块里", "error");
+            return;
+          }
+          void navigator.clipboard.writeText(hit.text).then(
+            () =>
+              notice(
+                hit.kind === "block"
+                  ? `已复制代码块（${hit.text.split("\n").length} 行）`
+                  : "已复制行内代码",
+              ),
+            () => notice("复制失败：剪贴板不可用", "error"),
+          );
+          return;
+        }
         case "toggleBulletList":
           toggleBulletList(view);
           return;
@@ -3452,6 +3564,16 @@ export default function App() {
     return () => window.removeEventListener("qn-clamp-heading", open);
   }, []);
 
+  // 编辑器内部（editor.ts 键位）发起的轻提示：那里拿不到 React 回调，走事件桥。
+  useEffect(() => {
+    const onNotice = (event: Event) => {
+      const detail = (event as CustomEvent<{ message: string; kind?: "info" | "error" }>).detail;
+      if (detail?.message) notice(detail.message, detail.kind);
+    };
+    window.addEventListener("qn-notice", onNotice);
+    return () => window.removeEventListener("qn-notice", onNotice);
+  }, [notice]);
+
   // 快捷键绑定（Obsidian 式可重绑定）：设置面板改绑定后这里经版本号重算。
   const [hotkeysEpoch, setHotkeysEpoch] = useState(0);
   useEffect(() => onHotkeysChange(() => setHotkeysEpoch((n) => n + 1)), []);
@@ -3471,6 +3593,49 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [shortcuts, bindings]);
+
+  // Ctrl+F 统一收进自定义搜索面板（0.21 用户反馈：焦点不在编辑器时弹出了
+  // WebView2 的原生查找栏）。CM 的 Mod-f 键位只在编辑器聚焦时生效；事件漏到
+  // 浏览器层，WebView2 的加速键会打开自己的查找条（灰色原生样式）。捕获阶段
+  // 先拦掉，再路由：焦点在编辑器 → 交给 CM 自己的键位（有选区预填）；焦点在
+  // 其他输入框（弹窗/树过滤）→ 只拦截不抢焦点；其余 → 直接唤起面板。
+  // F3 / Ctrl+G 顺带路由为「下一处」（面板开着时），与浏览器查找习惯一致。
+  // 设置面板打开时让路（它有自己的 Ctrl+F：聚焦设置搜索框）。
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.altKey) return;
+      const key = event.key.toLowerCase();
+      const isFind = (event.ctrlKey || event.metaKey) && !event.shiftKey && key === "f";
+      const isNext =
+        key === "f3" || ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "g");
+      if (!isFind && !isNext) return;
+      const view = viewRef.current;
+      if (isNext) {
+        if (view && searchPanelFindNext(view)) event.preventDefault();
+        return;
+      }
+      if (showSettings) return;
+      // 弹层类 UI（命令面板/速记管理）盖在编辑区上：编辑器可能被隐藏，
+      // 面板无处挂载——只拦掉原生查找，不抢焦点
+      if (paletteOpen || captureManagerOpen) {
+        event.preventDefault();
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest(".cm-content")) return; // 编辑器内：CM 的 Mod-f 键位处理
+      event.preventDefault();
+      if (!view) return;
+      const active = document.activeElement as HTMLElement | null;
+      const inOtherInput =
+        active &&
+        active !== document.body &&
+        !active.closest(".cm-content") &&
+        active.matches("input, textarea, select, [contenteditable]");
+      if (!inOtherInput) openSearchPanelOn(view);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [showSettings, paletteOpen, captureManagerOpen]);
 
   // 全局 Esc 兜底：重命名/新建输入行、右键菜单。此前 Esc 只挂在输入框自身的
   // onKeyDown 上，焦点一点走（比如去点别的面板）Esc 就再也关不掉重命名了。
@@ -4194,6 +4359,17 @@ export default function App() {
                 {favorites.includes(menu.path) ? "取消收藏" : "收藏"}
               </button>
             )}
+            {!menu.isDir && favorites.includes(menu.path) && (
+              <button
+                type="button"
+                onClick={() => {
+                  togglePinFavorite(menu.path);
+                  setMenu(null);
+                }}
+              >
+                {pinnedFavorites.includes(menu.path) ? "取消置顶" : "置顶"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -4546,6 +4722,7 @@ export default function App() {
               filter={treeFilter}
               view={leftView}
               favorites={visibleFavorites}
+              pinnedFavorites={pinnedFavorites}
               recents={recents}
               hiddenDirs={hiddenDirs}
               selectedPath={selectedPath}
@@ -4789,6 +4966,7 @@ export default function App() {
               onNewCapture={() => setQuickCaptureOpen(true)}
               onStats={setInboxStats}
               carryAttachments={carryAttachmentsForArchive}
+              imageFolder={daily.settings.pastedImageFolder}
             />
           )}
         </main>
@@ -4982,8 +5160,9 @@ export default function App() {
         onClose={() => setPaletteOpen(false)}
         entries={entries}
         vault={vault}
-        onOpenNote={(path, line) => void openNoteAt(path, line)}
+        onOpenNote={(path, line, term) => void openNoteAt(path, line, term)}
         actions={paletteActions}
+        hoverPreview={settings.searchHoverPreview}
       />
 
       <WeekReviewDialog
@@ -5004,7 +5183,11 @@ export default function App() {
       <ScreenshotDialog
         open={screenshotOpen}
         imageBase64={screenshotImage}
-        onClose={() => setScreenshotOpen(false)}
+        onClose={() => {
+          setScreenshotOpen(false);
+          // 顺手放掉整屏 PNG 的 base64（多联屏整屏好几 MB；0.21 用户反馈关注内存）
+          setScreenshotImage(null);
+        }}
         notice={(message, kind) => {
           if (kind === "error") setError(message);
           else setStatus(message);

@@ -10,9 +10,10 @@
  * keydown 分发调用。
  */
 
-import { EditorSelection, type SelectionRange } from "@codemirror/state";
+import { EditorSelection, type SelectionRange, type EditorState } from "@codemirror/state";
 import { indentLess, indentMore } from "@codemirror/commands";
-import { indentUnit } from "@codemirror/language";
+import { indentUnit, syntaxTree } from "@codemirror/language";
+import type { SyntaxNode } from "@lezer/common";
 import { EditorView } from "@codemirror/view";
 import { isInsideFence } from "./paste.ts";
 import { detectLanguage } from "./languageDetect.ts";
@@ -587,4 +588,34 @@ export function wrapSelection(view: EditorView, marker: string): boolean {
 /** 切换粗体（`**`）。 */
 export function toggleBold(view: EditorView): boolean {
   return wrapSelection(view, "**");
+}
+
+/**
+ * 光标处的代码内容（0.21 用户反馈：快捷复制行内代码/代码块）。
+ *
+ * 从语法树反查：落在 InlineCode 里 → 剥反引号的内文；落在 FencedCode 里 →
+ * 去掉首尾围栏行的代码体。都没有返回 null（调用方提示"光标不在代码里"）。
+ * 实时/源码两种模式通用（装饰只影响显示，语法树不变）。
+ */
+export function codeAtCursor(state: EditorState): { text: string; kind: "inline" | "block" } | null {
+  const pos = state.selection.main.head;
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1);
+  while (node) {
+    if (node.name === "InlineCode") {
+      const code = state.doc
+        .sliceString(node.from, node.to)
+        .replace(/^`+/, "")
+        .replace(/`+$/, "");
+      return code ? { text: code, kind: "inline" } : null;
+    }
+    if (node.name === "FencedCode") {
+      const lines = state.doc.sliceString(node.from, node.to).split("\n");
+      // 首行是围栏开头（可能带 ```lang），末行是收口围栏；未收口的块最后没有围栏
+      const closed = /^\s*`+\s*$/.test(lines[lines.length - 1] ?? "");
+      const body = lines.slice(1, closed ? lines.length - 1 : undefined).join("\n");
+      return body ? { text: body, kind: "block" } : null;
+    }
+    node = node.parent;
+  }
+  return null;
 }

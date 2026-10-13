@@ -10,6 +10,7 @@ import {
   IconFile,
   IconFileText,
   IconFolder,
+  IconPin,
   IconStar,
 } from "./icons";
 
@@ -468,6 +469,7 @@ export default function FileTree({
   filter,
   view,
   favorites,
+  pinnedFavorites,
   recents,
   hiddenDirs,
   selectedPath,
@@ -484,6 +486,8 @@ export default function FileTree({
   filter: string;
   view: LeftView;
   favorites: string[];
+  /** 置顶的收藏（收藏视图里排在最前，0.21 用户反馈）。 */
+  pinnedFavorites?: string[];
   recents: string[];
   /** 被隐藏的一级目录集合（目录筛选，0.20 用户反馈：目录太多干扰阅读）。 */
   hiddenDirs?: ReadonlySet<string>;
@@ -519,21 +523,30 @@ export default function FileTree({
   }, [tree, terms]);
 
   /** 收藏 / 最近视图的扁平笔记列表。 */
+  const pinnedSet = useMemo(() => new Set(pinnedFavorites ?? []), [pinnedFavorites]);
   const flatNotes = useMemo(() => {
     if (view === "files") return null;
     const all: TreeNode[] = [];
     collectNotes(tree, all);
     if (view === "favorites") {
-      return all
-        .filter((node) => favoriteSet.has(node.path))
-        .sort((a, b) => a.name.localeCompare(b.name, "zh"));
+      // 置顶的排最前（按置顶先后），其余按名称排（0.21 用户反馈：收藏置顶）
+      const pinned: TreeNode[] = [];
+      const rest: TreeNode[] = [];
+      for (const node of all) {
+        if (!favoriteSet.has(node.path)) continue;
+        (pinnedSet.has(node.path) ? pinned : rest).push(node);
+      }
+      const byName = (a: TreeNode, b: TreeNode) => a.name.localeCompare(b.name, "zh");
+      pinned.sort(byName);
+      rest.sort(byName);
+      return [...pinned, ...rest];
     }
     // 最近：按打开顺序（recents 里已按新到旧），只显示还存在的
     const byPath = new Map(all.map((node) => [node.path, node]));
     return recents
       .map((path) => byPath.get(path))
       .filter((node): node is TreeNode => Boolean(node));
-  }, [view, tree, favoriteSet, recents]);
+  }, [view, tree, favoriteSet, pinnedSet, recents]);
 
   if (entries.length === 0) {
     return <div className="tree-empty">仓库内暂无内容</div>;
@@ -556,7 +569,13 @@ export default function FileTree({
             onOpen={onOpen}
             onContext={onContext}
             onReveal={onReveal}
-            leading={<IconStar size={14} className="tree-icon tree-icon-fav" />}
+            leading={
+              pinnedSet.has(node.path) ? (
+                <IconPin size={14} className="tree-icon tree-icon-pin" />
+              ) : (
+                <IconStar size={14} className="tree-icon tree-icon-fav" />
+              )
+            }
           />
         ))}
       </div>

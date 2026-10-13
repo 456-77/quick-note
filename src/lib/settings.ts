@@ -72,6 +72,11 @@ export interface Settings {
    * 选择弹窗里勾「记住选择」即写入这里；设置页可随时改回。
    */
   vaultOpenMode: "ask" | "current" | "newWindow";
+  /**
+   * 全局搜索（Ctrl+K）的内容结果悬停时显示笔记上下文预览卡（0.21 用户反馈，
+   * 可关）。跳转定位的关键词高亮不受此开关影响。
+   */
+  searchHoverPreview: boolean;
   // ---- 全局背景（每设备独立，与插件同一种归属：不进仓库、不随同步走）----
 
   /** 启用全局背景图片。 */
@@ -116,6 +121,7 @@ const DEFAULTS: Settings = {
   renderStyle: "default",
   exportFolder: "导出",
   vaultOpenMode: "ask",
+  searchHoverPreview: true,
   bgEnabled: false,
   bgImagePath: "",
   bgOpacity: 0.35,

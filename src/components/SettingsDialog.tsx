@@ -19,6 +19,7 @@ import type { Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import type { SyncController } from "../lib/useSync";
 import { isMobile } from "../lib/platform";
+import { setCapturing } from "../lib/hotkeys";
 import HotkeysPane from "./HotkeysPane";
 import {
   IconCalendarPlus,
@@ -76,8 +77,29 @@ interface Props {
 
 /** 设置面板里的说明文字：默认只显示一个「?」，点击才展开。 */
 function Hint({ children }: { children: ReactNode }) {
-  // 直接平铺的灰色小字（0.13：去掉「?」折叠钮——关键说明一眼可见，不再点一下才能看）
+  // 直接铺开的灰色小字（0.13：去掉「?」折叠钮——关键说明一眼可见，不再点一下才能）
   return <p className="settings-hint">{children}</p>;
+}
+
+/**
+ * 把按键事件归一成 OS 全局快捷键串（`Ctrl+Alt+G`，与 Rust 端解析同一格式）。
+ * 只收 字母/数字/F1–F12 做主键；主键是字母/数字时必须带至少一个修饰键
+ * （裸键会被系统快捷键吞掉，也不符合全局热键惯例）。不合法返回 null。
+ */
+function osHotkeyOf(event: KeyboardEvent): string | null {
+  const key = event.key;
+  let main: string | null = null;
+  if (/^[a-zA-Z]$/.test(key)) main = key.toUpperCase();
+  else if (/^F\d{1,2}$/.test(key)) main = key;
+  else if (/^[0-9]$/.test(key)) main = key;
+  if (!main) return null;
+  const parts: string[] = [];
+  if (event.ctrlKey) parts.push("Ctrl");
+  if (event.altKey) parts.push("Alt");
+  if (event.shiftKey) parts.push("Shift");
+  if (event.metaKey) parts.push("Meta");
+  if (parts.length === 0 && !main.startsWith("F")) return null;
+  return [...parts, main].join("+");
 }
 
 export default function SettingsDialog({
@@ -113,6 +135,13 @@ export default function SettingsDialog({
   const [query, setQuery] = useState("");
   /** 改动落盘后的轻反馈：「已保存」闪现 1.6s */
   const [savedFlash, setSavedFlash] = useState(false);
+  /**
+   * 截图快捷键的按键录入态（0.21 用户反馈：不该手填文本）。录入期间挂起全局
+   * 快捷键（同 HotkeysPane 的捕获），Enter 确认 / Esc 取消；null = 还没捕获到
+   * 合法组合，"" = 按了个不合法的键（提示语由渲染层给出）。
+   */
+  const [shotRecording, setShotRecording] = useState(false);
+  const [shotPending, setShotPending] = useState<string | null>(null);
   const savedTimerRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -141,6 +170,45 @@ export default function SettingsDialog({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
+
+  // 截图快捷键的按键录入：实时回显，Enter 确认 / Esc 取消（同 HotkeysPane 手感）
+  useEffect(() => {
+    if (!shotRecording) return;
+    setCapturing(true);
+    const onKey = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        setShotRecording(false);
+        setShotPending(null);
+        return;
+      }
+      if (event.key === "Enter") {
+        if (shotPending) saveWithFlash({ screenshotHotkey: shotPending });
+        setShotRecording(false);
+        setShotPending(null);
+        return;
+      }
+      if (["Control", "Shift", "Alt", "Meta"].includes(event.key)) {
+        setShotPending(null);
+        return;
+      }
+      setShotPending(osHotkeyOf(event));
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("keydown", onKey, true);
+      setCapturing(false);
+    };
+  }, [shotRecording, shotPending, saveWithFlash]);
+
+  // 面板关掉时录入态一并收场（避免全局快捷键被一直挂起）
+  useEffect(() => {
+    if (!open && shotRecording) {
+      setShotRecording(false);
+      setShotPending(null);
+    }
+  }, [open, shotRecording]);
 
   // 打开时重置到第一页并清空搜索（快捷键分区的录入态随其组件卸载自动结束）
   useEffect(() => {
@@ -351,14 +419,38 @@ export default function SettingsDialog({
           <div className="settings-group">打开行为</div>
           <label className="settings-row">
             <span>全局截图快捷键</span>
-            <span className="settings-inline">
-              <input
-                type="text"
-                className="settings-text"
-                value={settings.screenshotHotkey}
-                placeholder="如 Ctrl+Alt+A，留空关闭"
-                onChange={(event) => saveWithFlash({ screenshotHotkey: event.target.value })}
-              />
+            <span className="settings-inline shot-hotkey-row">
+              {shotRecording ? (
+                <span className="shot-hotkey-capture" title="Enter 确认 · Esc 取消">
+                  {shotPending === null
+                    ? "按下组合键…"
+                    : shotPending === ""
+                      ? "需含 Ctrl/Alt/Shift/Win + 字母、数字或功能键"
+                      : shotPending}
+                </span>
+              ) : (
+                <kbd className="shot-hotkey-display" title="点击「录入」重新捕获">
+                  {settings.screenshotHotkey || "未启用"}
+                </kbd>
+              )}
+              <button
+                type="button"
+                className="btn btn-mini"
+                onClick={() => {
+                  setShotPending(null);
+                  setShotRecording((value) => !value);
+                }}
+              >
+                {shotRecording ? "取消" : "录入"}
+              </button>
+              <button
+                type="button"
+                className="btn btn-mini"
+                title="清空 = 关闭全局快捷键（命令面板仍可截图）"
+                onClick={() => saveWithFlash({ screenshotHotkey: "" })}
+              >
+                关闭
+              </button>
               <button
                 type="button"
                 className="btn btn-mini"
@@ -370,10 +462,11 @@ export default function SettingsDialog({
             </span>
           </label>
           <Hint>
-            OS 级全局快捷键，应用在后台也响应（0.20 新增）。按下后抓取整个屏幕并在弹窗里
-            展示：可拖动框选区域、识别图中文字（Windows OCR）或把截图存进当前笔记。
-            格式如 `Ctrl+Shift+A`；留空 = 关闭。修改后立即生效；提示"被其他程序占用"
-            说明该组合已被微信/QQ 等占用，换一个即可。
+            OS 级全局快捷键，应用在后台也响应。点「录入」后直接按组合键（Enter 确认、
+            Esc 取消），不再手填。按下后抓取整个屏幕：可拖动框选、识别文字（Windows
+            OCR）或存进当前笔记。留空 = 关闭；提示"被其他程序占用"说明该组合已被
+            微信/QQ 等占用，换一个即可。多个 Quick Note 窗口同时开时由最先打开的
+            窗口响应。
           </Hint>
           <label className="settings-row">
             <span>打开其他仓库时</span>
@@ -423,6 +516,22 @@ export default function SettingsDialog({
             新建笔记时自动写入 `# 文件名` 一级标题；重命名笔记或日记后，把正文**第一个**
             `# 一级标题` 行同步改成新名字（不会凭空补标题；标题里有时间时也会跟着日期一起变）。
             重命名只影响设置后的改动。
+          </Hint>
+
+          <div className="settings-group">搜索</div>
+          <label className="settings-row">
+            <span>全局搜索悬停预览</span>
+            <input
+              type="checkbox"
+              checked={settings.searchHoverPreview}
+              onChange={(event) =>
+                saveWithFlash({ searchHoverPreview: event.target.checked })
+              }
+            />
+          </label>
+          <Hint>
+            命令面板（Ctrl+K）里鼠标悬停「内容」搜索结果时，侧边显示该笔记命中行前后的
+            上下文预览（0.21 新增，可在此关闭）。点开笔记后还会自动高亮所有命中的关键词。
           </Hint>
 
           <div className="settings-group">新建与整理</div>

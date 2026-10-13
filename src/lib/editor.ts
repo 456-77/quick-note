@@ -15,7 +15,7 @@ import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
-import { toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
+import { codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
 import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing, isHotkeyEnabled } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
@@ -421,6 +421,35 @@ function editorToggleKeymap(): Extension {
         event.preventDefault();
         return toggleCodeBlock(view);
       }
+      // 快捷复制光标处的行内代码 / 整个代码块（0.21 用户反馈）；提示走 qn-notice 事件
+      if (hits("copyCode")) {
+        event.preventDefault();
+        const hit = codeAtCursor(view.state);
+        if (!hit) {
+          window.dispatchEvent(
+            new CustomEvent("qn-notice", { detail: { message: "光标不在行内代码或代码块里", kind: "error" } }),
+          );
+          return true;
+        }
+        void navigator.clipboard.writeText(hit.text).then(
+          () =>
+            window.dispatchEvent(
+              new CustomEvent("qn-notice", {
+                detail: {
+                  message:
+                    hit.kind === "block"
+                      ? `已复制代码块（${hit.text.split("\n").length} 行）`
+                      : "已复制行内代码",
+                },
+              }),
+            ),
+          () =>
+            window.dispatchEvent(
+              new CustomEvent("qn-notice", { detail: { message: "复制失败：剪贴板不可用", kind: "error" } }),
+            ),
+        );
+        return true;
+      }
       if (hits("toggleBulletList")) {
         event.preventDefault();
         return toggleBulletList(view);
@@ -441,6 +470,11 @@ function editorToggleKeymap(): Extension {
         event.preventDefault();
         window.dispatchEvent(new CustomEvent("qn-clamp-heading"));
         return true;
+      }
+      // 粗体（0.21 用户反馈：选中内容加粗快捷键）
+      if (hits("toggleBold")) {
+        event.preventDefault();
+        return toggleBold(view);
       }
       return false;
     },

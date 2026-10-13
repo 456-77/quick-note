@@ -93,6 +93,12 @@ fn ocr_blocking(image_base64: String) -> Result<String, String> {
 
 /// 对一个图片文件做 OCR（WinRT：StorageFile → BitmapDecoder → OcrEngine）。
 ///
+/// 0.22 起对齐 PowerToys Text Extractor 的两处做法（用户反馈"识别不够完善"）：
+/// 1. **多语言引擎**：用户语言 + zh-Hans + en-US 逐个识别（按语言去重），取文本
+///    最长的结果——中英混排（代码截图、报错弹窗）时单引擎常丢一半；
+/// 2. **超尺寸缩放**：WinRT OCR 有 `OcrEngine.MaxImageDimension` 上限，多联屏
+///    整屏截图超出会直接抛异常，解码时按上限等比缩小。
+///
 /// 三个实测踩出来的点（PS 5.1 / Win10-zh-CN 验证）：
 /// 1. `System.WindowsRuntimeSystemExtensions` 在 `System.Runtime.WindowsRuntime`
 ///    程序集里，不 Add-Type 就找不到 AsTask；
@@ -109,6 +115,11 @@ fn ocr_file(path: &Path) -> Result<String, String> {
             "Add-Type -AssemblyName System.Runtime.WindowsRuntime;",
             "[Windows.Media.Ocr.OcrEngine,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Graphics.Imaging.BitmapDecoder,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
+            "[Windows.Graphics.Imaging.BitmapTransform,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
+            "[Windows.Graphics.Imaging.BitmapPixelFormat,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
+            "[Windows.Graphics.Imaging.BitmapAlphaMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
+            "[Windows.Graphics.Imaging.ExifOrientationMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
+            "[Windows.Graphics.Imaging.ColorManagementMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Storage.StorageFile,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Storage.Streams.IRandomAccessStream,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
             "[Windows.Storage.FileAccessMode,Windows.Foundation,ContentType=WindowsRuntime]|Out-Null;",
@@ -118,13 +129,36 @@ fn ocr_file(path: &Path) -> Result<String, String> {
             "$file=Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync('{file}')) ([Windows.Storage.StorageFile]);",
             "$stream=Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream]);",
             "$decoder=Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder]);",
-            "$bmp=Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap]);",
-            "$engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages();",
-            "if(-not $engine){{ $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('zh-Hans-CN')) }};",
-            "if(-not $engine){{ $engine=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new('en-US')) }};",
-            "if(-not $engine){{ Write-Output ''; exit }}",
-            "$result=Await ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult]);",
-            "Write-Output $result.Text",
+            "$max=[Windows.Media.Ocr.OcrEngine]::MaxImageDimension;",
+            "$transform=[Windows.Graphics.Imaging.BitmapTransform]::new();",
+            "if($decoder.PixelWidth -gt $max -or $decoder.PixelHeight -gt $max){{",
+            "  $scale=[Math]::Min($max/$decoder.PixelWidth,$max/$decoder.PixelHeight);",
+            "  $transform.ScaledWidth=[int][Math]::Round($decoder.PixelWidth*$scale);",
+            "  $transform.ScaledHeight=[int][Math]::Round($decoder.PixelHeight*$scale);",
+            "}}",
+            "$bmp=Await ($decoder.GetSoftwareBitmapAsync(",
+            "  [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,",
+            "  [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied,",
+            "  $transform,",
+            "  [Windows.Graphics.Imaging.ExifOrientationMode]::IgnoreExif,",
+            "  [Windows.Graphics.Imaging.ColorManagementMode]::DoNotColorManage)) ([Windows.Graphics.Imaging.SoftwareBitmap]);",
+            "$engines=@();",
+            "$seen=@{{}};",
+            "$u=[Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages();",
+            "if($u -and -not $seen.ContainsKey($u.RecognizerLanguage.LanguageTag)){{ $seen[$u.RecognizerLanguage.LanguageTag]=1; $engines+=,$u }};",
+            "foreach($tag in @('zh-Hans-CN','zh-Hant-TW','en-US')){{",
+            "  $e=[Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage([Windows.Globalization.Language]::new($tag));",
+            "  if($e -and -not $seen.ContainsKey($e.RecognizerLanguage.LanguageTag)){{ $seen[$e.RecognizerLanguage.LanguageTag]=1; $engines+=,$e }}",
+            "}}",
+            "if($engines.Count -eq 0){{ Write-Output ''; exit }}",
+            "$best='';",
+            "foreach($engine in $engines){{",
+            "  try{{",
+            "    $result=Await ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult]);",
+            "    if($result.Text.Trim().Length -gt $best.Trim().Length){{ $best=$result.Text }}",
+            "  }}catch{{}}",
+            "}}",
+            "Write-Output $best",
         ),
         file = file,
     );
@@ -151,6 +185,11 @@ pub async fn screenshot_ocr(image_base64: String) -> Result<String, String> {
 /// 快捷键格式与 tauri-plugin-global-shortcut 一致：`Ctrl+Alt+A` / `CommandOrControl+Shift+S`。
 /// 按下时由插件的统一 handler 发 `screenshot-hotkey` 事件给前端。
 ///
+/// 多窗口场景（0.21 用户反馈）：新仓库窗口是独立进程，但设置共享同一个
+/// localStorage，读出同一个快捷键再注册必然撞 OS 级唯一性。占用者是自家兄弟
+/// 进程时（open-vaults 登记表里还有别的活实例）静默让位——热键由先启动的进程
+/// 持有，截屏事件进它的窗口；只有确认不是自己人才报"被其他程序占用"。
+///
 /// **必须是同步命令**（主线程执行）：插件内部维护一张已注册表，register/unregister
 /// 都要回主线程结账；异步命令跑在运行时线程上，`unregister_all` 之后紧接 `register`
 /// 会出现"旧表还没清完、新注册撞 already registered"的时序（实测踩过）。
@@ -168,8 +207,14 @@ pub fn set_screenshot_hotkey(app: tauri::AppHandle, hotkey: Option<String>) -> R
         .to_lowercase()
         .parse()
         .map_err(|e| format!("无法识别快捷键「{trimmed}」：{e}"))?;
-    manager
-        .register(parsed)
-        .map_err(|e| format!("注册快捷键失败（可能被其他程序占用）：{e}"))?;
+    if let Err(e) = manager.register(parsed) {
+        let message = format!("{e}");
+        if message.to_lowercase().contains("already registered")
+            && crate::open_vaults::other_instance_alive(&app)
+        {
+            return Ok(());
+        }
+        return Err(format!("注册快捷键失败（可能被其他程序占用）：{e}"));
+    }
     Ok(())
 }

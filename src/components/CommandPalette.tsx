@@ -11,7 +11,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { searchVault, type EntryMeta, type SearchHit } from "../lib/api";
+import { readNoteOptional, searchVault, type EntryMeta, type SearchHit } from "../lib/api";
 
 export interface PaletteAction {
   id: string;
@@ -37,6 +37,15 @@ interface Item {
   meta?: string;
   hint?: string;
   run: () => void;
+  /** 内容命中的原始数据（悬停预览用）；其他组为空。 */
+  hit?: SearchHit;
+}
+
+/** 悬停预览卡展示的上下文（命中行 ±4 行）。 */
+interface HoverPreview {
+  path: string;
+  line: number;
+  lines: { no: number; text: string }[];
 }
 
 interface Props {
@@ -44,8 +53,11 @@ interface Props {
   onClose: () => void;
   entries: EntryMeta[];
   vault: string | null;
-  onOpenNote: (path: string, line?: number) => void;
+  /** term 一起带回：打开笔记后用它高亮关键词（0.21 用户反馈）。 */
+  onOpenNote: (path: string, line?: number, term?: string) => void;
   actions: PaletteAction[];
+  /** 「内容」结果悬停预览（设置 → 通用 → 搜索，0.21 用户反馈）。 */
+  hoverPreview: boolean;
 }
 
 const SEARCH_DEBOUNCE = 250;
@@ -88,15 +100,27 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
   );
 }
 
-export default function CommandPalette({ open, onClose, entries, vault, onOpenNote, actions }: Props) {
+export default function CommandPalette({
+  open,
+  onClose,
+  entries,
+  vault,
+  onOpenNote,
+  actions,
+  hoverPreview,
+}: Props) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const [contentHits, setContentHits] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
+  const [preview, setPreview] = useState<HoverPreview | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   /** 只用于让过期的异步搜索结果作废。 */
   const searchSeq = useRef(0);
+  /** 悬停预览的防抖计时与过期序号（同一机制）。 */
+  const previewTimer = useRef<number | null>(null);
+  const previewSeq = useRef(0);
 
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
 
@@ -107,9 +131,15 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
       setActive(0);
       setContentHits([]);
       setSearching(false);
+      setPreview(null);
       requestAnimationFrame(() => inputRef.current?.focus());
     }
   }, [open]);
+
+  // 关闭/查询变化时撤销悬停预览
+  useEffect(() => {
+    setPreview(null);
+  }, [terms, open, hoverPreview]);
 
   // 全文搜索防抖；名称过滤是同步的，不在这里
   useEffect(() => {
@@ -187,7 +217,9 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
           icon: "🔎",
           title: hit.path.slice(hit.path.lastIndexOf("/") + 1),
           detail: hit.text.trim(),
-          run: () => onOpenNote(hit.path, hit.line),
+          // 带回首个关键词：打开后预填搜索面板高亮全文命中（0.21 用户反馈）
+          run: () => onOpenNote(hit.path, hit.line, terms[0]),
+          hit,
         });
       }
     }
@@ -206,6 +238,50 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
     const el = list?.querySelector(".palette-item.is-active");
     el?.scrollIntoView({ block: "nearest" });
   }, [active]);
+
+  /** 悬停「内容」结果 300ms 后加载上下文预览；移开/悬到别组立即撤销。 */
+  const hoverContentHit = (hit: SearchHit | null) => {
+    if (previewTimer.current !== null) {
+      window.clearTimeout(previewTimer.current);
+      previewTimer.current = null;
+    }
+    previewSeq.current += 1;
+    if (!hit || !hoverPreview || !vault) {
+      setPreview(null);
+      return;
+    }
+    const seq = previewSeq.current;
+    previewTimer.current = window.setTimeout(() => {
+      previewTimer.current = null;
+      readNoteOptional(vault, hit.path)
+        .then((note) => {
+          if (seq !== previewSeq.current) return;
+          if (!note) {
+            setPreview(null);
+            return;
+          }
+          const all = note.content.split(/\r?\n/);
+          const center = Math.min(Math.max(hit.line, 0), all.length - 1);
+          const from = Math.max(0, center - 4);
+          const to = Math.min(all.length - 1, center + 4);
+          const lines: { no: number; text: string }[] = [];
+          for (let index = from; index <= to; index += 1) {
+            lines.push({ no: index + 1, text: all[index] ?? "" });
+          }
+          setPreview({ path: hit.path, line: center, lines });
+        })
+        .catch(() => {
+          if (seq === previewSeq.current) setPreview(null);
+        });
+    }, 300);
+  };
+
+  useEffect(
+    () => () => {
+      if (previewTimer.current !== null) window.clearTimeout(previewTimer.current);
+    },
+    [],
+  );
 
   if (!open) return null;
 
@@ -257,7 +333,7 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
           <kbd className="palette-kbd">Esc</kbd>
         </div>
 
-        <div className="palette-list" ref={listRef}>
+        <div className="palette-list" ref={listRef} onMouseLeave={() => hoverContentHit(null)}>
           {items.length === 0 && (
             <div className="palette-empty">
               {searching ? "正在搜索…" : terms.length === 0 ? "输入以搜索，↑↓ 选择，回车打开" : "没有匹配的结果"}
@@ -275,6 +351,7 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
                     key={item.key}
                     className={`palette-item${index === active ? " is-active" : ""}`}
                     onMouseMove={() => setActive(index)}
+                    onMouseEnter={() => hoverContentHit(item.hit ?? null)}
                     onClick={() => pick(index)}
                   >
                     <span className="palette-item-icon">{item.icon}</span>
@@ -303,6 +380,28 @@ export default function CommandPalette({ open, onClose, entries, vault, onOpenNo
           <span><kbd>Esc</kbd> 关闭</span>
         </div>
       </div>
+
+      {/* 「内容」结果悬停预览（设置可关）：命中行 ±4 行的上下文，关键词高亮 */}
+      {preview && (
+        <div className="palette-preview" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="palette-preview-title">
+            <span className="palette-preview-name">
+              {preview.path.slice(preview.path.lastIndexOf("/") + 1)}
+            </span>
+            <span className="palette-preview-path">{preview.path}</span>
+          </div>
+          <div className="palette-preview-lines">
+            {preview.lines.map((line) => (
+              <div key={line.no} className={`palette-preview-line${line.no - 1 === preview.line ? " is-hit" : ""}`}>
+                <span className="palette-preview-no">{line.no}</span>
+                <span className="palette-preview-text">
+                  <Highlight text={line.text} terms={terms} />
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

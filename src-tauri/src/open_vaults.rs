@@ -98,6 +98,19 @@ fn load_pruned(path: &Path) -> Vec<OpenVault> {
         .collect()
 }
 
+/// 是否还有**别的** Quick Note 进程活着（截图快捷键等多实例资源仲裁用）。
+///
+/// 打开新仓库 = 起新进程，而全局热键是 OS 级唯一的：第二个进程注册同一个组合
+/// 必然撞 "already registered"。这个判断让后启动的进程知道"占用者其实是自家
+/// 兄弟"，从而静默让位（热键由先启动的进程持有），而不是弹错误吓用户。
+pub fn other_instance_alive(app: &AppHandle) -> bool {
+    let Ok(path) = registry_path(app) else {
+        return false;
+    };
+    let me = std::process::id();
+    load_pruned(&path).iter().any(|entry| entry.pid != me)
+}
+
 /// 登记本进程正打开的仓库（启动与切换仓库时调用；同仓库重复调用即刷新）。
 #[tauri::command]
 pub fn open_vaults_register(app: AppHandle, vault: String) -> Result<(), String> {

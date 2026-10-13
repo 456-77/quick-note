@@ -265,12 +265,20 @@ function prefillFromSelection(view: EditorView): string {
   return panelState.regexp ? text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") : text;
 }
 
-/** 打开面板（已开则聚焦搜索框）。选区非空时用选中文本作为初始查询。 */
-function openPanel(view: EditorView): void {
-  const prefill = prefillFromSelection(view);
-  if (prefill) {
-    panelState.query = prefill;
+/**
+ * 打开面板（已开则聚焦搜索框）。选区非空时用选中文本作为初始查询；
+ * `init.query !== undefined` 时改用它（跳转预填优先于选区）。
+ */
+function openPanel(view: EditorView, init?: { query?: string }): void {
+  if (init && init.query !== undefined) {
+    panelState.query = init.query.slice(0, PREFILL_MAX);
     refresh(view);
+  } else {
+    const prefill = prefillFromSelection(view);
+    if (prefill) {
+      panelState.query = prefill;
+      refresh(view);
+    }
   }
   if (panel) {
     const input = panel.querySelector<HTMLInputElement>(".qn-search-input");
@@ -286,6 +294,26 @@ function openPanel(view: EditorView): void {
   const input = panel.querySelector<HTMLInputElement>(".qn-search-input")!;
   input.focus();
   input.select();
+}
+
+/**
+ * 供编辑器外的地方打开面板（App 的 Ctrl+F 捕获拦截、全局搜索跳转预填关键词）。
+ * 正则模式开着时按字面预填（与选区预填同规则）。
+ */
+export function openSearchPanelOn(view: EditorView, query?: string): void {
+  const literal =
+    query !== undefined && panelState.regexp
+      ? query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+      : query;
+  openPanel(view, literal === undefined ? undefined : { query: literal });
+}
+
+/** 面板开着时跳到下一处（F3 / Ctrl+G 从窗口层路由进来）。面板没开返回 false。 */
+export function searchPanelFindNext(view: EditorView): boolean {
+  if (!panel || panelView !== view) return false;
+  findNext(view);
+  updateCount(view);
+  return true;
 }
 
 /** Esc / Ctrl+F 的关闭路径。面板没开返回 false 交给默认行为。 */

@@ -2878,7 +2878,71 @@ export function livePreviewExtension() {
         return false;
       },
     }),
+    // 点击行号（gutter）切换所在块的「渲染 / 源码」形态（0.21 用户反馈）。
+    // 只在实时模式下挂载（本扩展经 Compartment 切换），源码模式不受影响。
+    gutterSourceToggle(),
   ];
+}
+
+/**
+ * 点击行号切换块形态（0.21 用户反馈：表格/图片/mermaid 的两种形态切换难控制）。
+ *
+ * 实时模式下光标进块 = 显示源码、出块 = 恢复渲染，鼠标点击 widget 很难精确把
+ * 光标放到"块里"。行号是现成的块定位器：点块内任意一行的行号 → 光标进块（源码）；
+ * 块处于源码态时再点行号 → 光标跳出（渲染）。非块行不拦截，行为与原先一致。
+ */
+function gutterSourceToggle(): Extension {
+  return EditorView.domEventHandlers({
+    mousedown: (event, view) => {
+      if (event.button !== 0) return false;
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest(".cm-gutters")) return false;
+      // gutter 在内容区左侧，posAtCoords 对内容区外的 x 不可靠：用内容区左缘 + 事件 y 定位行
+      const contentLeft = view.contentDOM.getBoundingClientRect().left + 1;
+      const pos = view.posAtCoords({ x: contentLeft, y: event.clientY });
+      if (pos === null) return false;
+      const block = toggleableBlockAt(view.state, pos);
+      if (!block) return false;
+      event.preventDefault();
+      const sel = view.state.selection.main;
+      const inside = sel.from >= block.from && sel.to <= block.to;
+      const doc = view.state.doc;
+      let anchor: number;
+      if (inside) {
+        // 源码态 → 渲染：光标挪到块外（块首在文档开头就挪到块尾之后）
+        anchor = block.from > 0 ? block.from - 1 : Math.min(block.to + 1, doc.length);
+      } else {
+        // 渲染态 → 源码：光标放进块内
+        anchor = Math.min(block.from + 1, block.to);
+      }
+      anchor = Math.min(Math.max(anchor, 0), doc.length);
+      view.dispatch({
+        selection: { anchor },
+        effects: EditorView.scrollIntoView(anchor, { y: "nearest" }),
+      });
+      view.focus();
+      return true;
+    },
+  });
+}
+
+/** 光标位置所在的"可切换形态"块：表格 / mermaid 围栏 / HTML 块 / 独立图片行。 */
+function toggleableBlockAt(state: EditorState, pos: number): { from: number; to: number } | null {
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1);
+  while (node) {
+    if (node.name === "Table" || node.name === "HTMLBlock") return { from: node.from, to: node.to };
+    if (node.name === "FencedCode" && mermaidCode(state, node) !== null) {
+      return { from: node.from, to: node.to };
+    }
+    node = node.parent;
+  }
+  // 独立图片行（整行只有一个嵌入语法）：光标上该行即显示源码
+  const line = state.doc.lineAt(pos);
+  const text = line.text;
+  if (/^\s*!\[\[[^\]\n]*\]\]\s*$/.test(text) || /^\s*!\[[^\]\n]*\]\([^)\n]*\)\s*$/.test(text)) {
+    return { from: line.from, to: line.to };
+  }
+  return null;
 }
 
 /** 是否处于鼠标拖选窗口期（模块级：编辑器实例全局只有一份）。 */
