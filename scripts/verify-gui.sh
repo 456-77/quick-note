@@ -188,6 +188,11 @@ echo "=== 17/17 速记管理：标签筛选 / 批量归档 / 快速笔记弹窗 
 node scripts/gui-capture-manager.mjs "$VAULT" "$PORT"
 
 echo
+echo "=== 18/18 0.23 批测：粘贴多表格/字段联动/搜索跳转红高亮/悬停预览保持/md链接/单词本/mermaid3x/跨窗口热加载 ==="
+# 自起实例（独立 UDF+端口+临时仓库），结束时自清理；前置是第 1 步构建的 gui-test 变体。
+node scripts/gui-023-batch.mjs 9333
+
+echo
 echo "关闭应用（必须先关：应用还开着的话，排队中的自动保存会把内容又写回文件）…"
 close_app
 

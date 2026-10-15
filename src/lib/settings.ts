@@ -183,3 +183,17 @@ export function onSettingsChange(listener: (settings: Settings) => void): () => 
     listeners.delete(listener);
   };
 }
+
+// 跨窗口热加载（0.23 用户反馈）：每个仓库窗口是独立进程，另一窗口改设置只写了
+// localStorage，本窗口的内存副本不会自己变——截图快捷键因此出现"两个窗口各持
+// 一个组合"的冲突。storage 事件只在**别的**窗口触发，正好用来把新值拉进来。
+// 同一窗口自己的写入不触发 storage 事件，不会形成回环。
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY && event.key !== null) return;
+    const previous = JSON.stringify(current);
+    current = load();
+    if (JSON.stringify(current) === previous) return;
+    for (const listener of listeners) listener(current);
+  });
+}

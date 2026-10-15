@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { readNoteOptional, searchVault, type EntryMeta, type SearchHit } from "../lib/api";
+import { fieldVariants } from "../lib/searchVariants";
 
 export interface PaletteAction {
   id: string;
@@ -63,6 +64,17 @@ interface Props {
 const SEARCH_DEBOUNCE = 250;
 const NAME_LIMIT = 8;
 const CONTENT_LIMIT = 14;
+/** 上一次搜索词的落盘键（0.23 用户反馈：每次打开都要重新输入太麻烦）。 */
+const LAST_QUERY_KEY = "quicknote.palette.query";
+
+function loadLastQuery(): string {
+  if (typeof localStorage === "undefined") return "";
+  try {
+    return localStorage.getItem(LAST_QUERY_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 /** 大小写不敏感地判断文件名是否命中全部关键词。 */
 function nameHits(name: string, terms: string[]): boolean {
@@ -109,7 +121,9 @@ export default function CommandPalette({
   actions,
   hoverPreview,
 }: Props) {
-  const [query, setQuery] = useState("");
+  // 保留上一次的搜索词（会话内不重置，跨重启落盘 localStorage）。打开时全选
+  // 文本：直接输入即替换，想接着改也可以光标挪过去。
+  const [query, setQuery] = useState(loadLastQuery);
   const [active, setActive] = useState(0);
   const [contentHits, setContentHits] = useState<SearchHit[]>([]);
   const [searching, setSearching] = useState(false);
@@ -121,23 +135,46 @@ export default function CommandPalette({
   /** 悬停预览的防抖计时与过期序号（同一机制）。 */
   const previewTimer = useRef<number | null>(null);
   const previewSeq = useRef(0);
+  /** 鼠标离开结果列表后预览卡的宽限期：正在移向预览卡的路上不立即撤掉。 */
+  const leaveTimer = useRef<number | null>(null);
 
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
   /** 原始大小写的首个词：跳转预填搜索面板时用它高亮——面板按原文预填，
    *  传小写化后的 terms[0] 会把面板输入框也变成小写（0.22 批测发现）。 */
   const rawFirstTerm = useMemo(() => query.trim().split(/\s+/).filter(Boolean)[0] ?? "", [query]);
+  /** 高亮词表：搜索词之外补上字段变体（user_name ↔ userName），命中行里哪种
+   *  形态都能亮出来（0.23 用户反馈）。 */
+  const highlightTerms = useMemo(() => {
+    const rawWords = query.trim().split(/\s+/).filter(Boolean);
+    const set = new Set<string>([...terms, ...rawWords.flatMap((word) => fieldVariants(word).map((v) => v.toLowerCase()))]);
+    return [...set];
+  }, [query, terms]);
 
-  // 打开时重置并聚焦；关闭时清掉残留的搜索结果
+  // 打开时聚焦；关闭时清掉残留的悬停预览。搜索词按上面的策略保留。
   useEffect(() => {
     if (open) {
-      setQuery("");
       setActive(0);
-      setContentHits([]);
       setSearching(false);
       setPreview(null);
-      requestAnimationFrame(() => inputRef.current?.focus());
+      requestAnimationFrame(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        input.focus();
+        if (input.value) input.select();
+      });
     }
   }, [open]);
+
+  useEffect(() => {
+    if (typeof localStorage !== "undefined") {
+      try {
+        if (query) localStorage.setItem(LAST_QUERY_KEY, query);
+        else localStorage.removeItem(LAST_QUERY_KEY);
+      } catch {
+        // 存不进去只影响下次启动
+      }
+    }
+  }, [query]);
 
   // 关闭/查询变化时撤销悬停预览
   useEffect(() => {
@@ -154,7 +191,9 @@ export default function CommandPalette({
     setSearching(true);
     const timer = window.setTimeout(() => {
       const seq = (searchSeq.current += 1);
-      searchVault(vault, terms.join(" "), 50)
+      // 传**原始大小写**的查询：Rust 侧自己小写化，但字段变体（userName ↔
+      // user_name）要在原始大小写上找驼峰边界，提前小写化就丢了
+      searchVault(vault, query.trim(), 50)
         .then((hits) => {
           if (searchSeq.current === seq) setContentHits(hits);
         })
@@ -248,6 +287,7 @@ export default function CommandPalette({
       window.clearTimeout(previewTimer.current);
       previewTimer.current = null;
     }
+    cancelLeaveGrace();
     previewSeq.current += 1;
     if (!hit || !hoverPreview || !vault) {
       setPreview(null);
@@ -279,9 +319,26 @@ export default function CommandPalette({
     }, 300);
   };
 
+  /** 结果列表与预览卡之间有缝隙：离开列表先给一段宽限期，移进预览卡就取消
+   *  撤销（0.23 用户反馈：鼠标一往预览卡上移预览就消失）。超时仍未进入才撤。 */
+  const cancelLeaveGrace = () => {
+    if (leaveTimer.current !== null) {
+      window.clearTimeout(leaveTimer.current);
+      leaveTimer.current = null;
+    }
+  };
+  const scheduleLeaveGrace = () => {
+    cancelLeaveGrace();
+    leaveTimer.current = window.setTimeout(() => {
+      leaveTimer.current = null;
+      hoverContentHit(null);
+    }, 350);
+  };
+
   useEffect(
     () => () => {
       if (previewTimer.current !== null) window.clearTimeout(previewTimer.current);
+      if (leaveTimer.current !== null) window.clearTimeout(leaveTimer.current);
     },
     [],
   );
@@ -336,7 +393,7 @@ export default function CommandPalette({
           <kbd className="palette-kbd">Esc</kbd>
         </div>
 
-        <div className="palette-list" ref={listRef} onMouseLeave={() => hoverContentHit(null)}>
+        <div className="palette-list" ref={listRef} onMouseLeave={scheduleLeaveGrace}>
           {items.length === 0 && (
             <div className="palette-empty">
               {searching ? "正在搜索…" : terms.length === 0 ? "输入以搜索，↑↓ 选择，回车打开" : "没有匹配的结果"}
@@ -360,11 +417,11 @@ export default function CommandPalette({
                     <span className="palette-item-icon">{item.icon}</span>
                     <span className="palette-item-body">
                       <span className="palette-item-title">
-                        <Highlight text={item.title} terms={terms} />
+                        <Highlight text={item.title} terms={highlightTerms} />
                       </span>
                       {item.detail && (
                         <span className="palette-item-detail">
-                          <Highlight text={item.detail} terms={terms} />
+                          <Highlight text={item.detail} terms={highlightTerms} />
                         </span>
                       )}
                     </span>
@@ -384,9 +441,15 @@ export default function CommandPalette({
         </div>
       </div>
 
-      {/* 「内容」结果悬停预览（设置可关）：命中行 ±4 行的上下文，关键词高亮 */}
+      {/* 「内容」结果悬停预览（设置可关）：命中行 ±4 行的上下文，关键词高亮。
+          鼠标移进卡片本身不撤销（宽限期机制），移出卡片才收起。 */}
       {preview && (
-        <div className="palette-preview" onMouseDown={(event) => event.stopPropagation()}>
+        <div
+          className="palette-preview"
+          onMouseDown={(event) => event.stopPropagation()}
+          onMouseEnter={cancelLeaveGrace}
+          onMouseLeave={() => hoverContentHit(null)}
+        >
           <div className="palette-preview-title">
             <span className="palette-preview-name">
               {preview.path.slice(preview.path.lastIndexOf("/") + 1)}
@@ -398,7 +461,7 @@ export default function CommandPalette({
               <div key={line.no} className={`palette-preview-line${line.no - 1 === preview.line ? " is-hit" : ""}`}>
                 <span className="palette-preview-no">{line.no}</span>
                 <span className="palette-preview-text">
-                  <Highlight text={line.text} terms={terms} />
+                  <Highlight text={line.text} terms={highlightTerms} />
                 </span>
               </div>
             ))}

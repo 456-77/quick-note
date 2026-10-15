@@ -12,7 +12,7 @@ import { writeAttachment } from "./api.ts";
 import { livePreviewContext } from "./paths.ts";
 import { detectLanguage } from "./languageDetect.ts";
 import {
-  htmlTableToMarkdown,
+  htmlToMarkdown,
   looksLikeLog,
   looksLikeMarkdownTable,
   normalizePastedText,
@@ -154,14 +154,17 @@ export function smartPaste(options: CodePasteOptions): Extension {
 
       const separator = view.state.lineBreak;
 
-      // 1) HTML 表格：只有剪贴板里真的有 `<table>`（Excel/WPS/网页复制）才转，
-      //    纯文本（含 TSV）不猜——tab 缩进的代码、对齐文本不是表格
-      const tableLines = htmlTableToMarkdown(html);
-      if (tableLines) {
-        event.preventDefault();
-        insertBlock(view, tableLines.join(separator));
-        options.notice?.("已把剪贴板中的表格转成 Markdown 表格");
-        return true;
+      // 1) HTML 带表格时走整篇转换（0.23 修复）：AI 回答这类「标题 + 段落 +
+      //    多张表格」的内容此前只会留下一张表，其余全部丢失。纯文本（含 TSV）
+      //    不猜——tab 缩进的代码、对齐文本不是表格。
+      if (/<table[\s>]/i.test(html)) {
+        const markdown = htmlToMarkdown(html);
+        if (markdown) {
+          event.preventDefault();
+          insertBlock(view, markdown);
+          options.notice?.("已把剪贴板 HTML 转成 Markdown");
+          return true;
+        }
       }
 
       // 代码围栏：整块复制了已带围栏的代码、或光标已在代码块内时都不干预

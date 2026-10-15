@@ -1,9 +1,10 @@
 /**
- * 截图预览与 OCR 弹窗（0.20 用户需求：全局快捷键截图 + 识别图中文本）。
+ * 截图预览与 OCR（0.20 用户需求：全局快捷键截图 + 识别图中文本）。
  *
- * 流程：全局快捷键（settings.screenshotHotkey）→ Rust 抓整个虚拟屏幕回传 base64 →
- * 这里展示并框选 → 识别文本（Windows OCR，走 Rust 的 PowerShell WinRT 通道）或
- * 把选区（未选则整图）存为当前仓库附件并插入链接。
+ * 0.23 重设计（用户反馈：不要弹小窗，要"直接快照当前屏幕再处理"）：
+ * 热键 → Rust 抓整个虚拟屏幕回传 base64 → **全屏冻结浮层**——截图铺满窗口视口、
+ * 十字光标、拖动框选，工具条浮在顶部，Esc 取消。观感与微信/QQ 截图一致：
+ * 窗口被"冻住"的那一瞬间就是屏幕当时的样子，框哪里都还是按下热键时的画面。
  *
  * 选区是**显示坐标**，裁剪/识别前按图片自然尺寸换算；裁剪在 canvas 里做，
  * data URL 直读，不落临时文件。
@@ -185,87 +186,83 @@ export default function ScreenshotDialog({
     dragRef.current = null;
   };
 
+  // 全屏冻结浮层：铺满视口的截图 + 十字光标框选。图片按 100%×100% 铺开
+  // （object-fit: fill 的等价物），虚拟屏幕按比例映射进窗口——框选坐标经
+  // regionBase64 按自然尺寸换算，与显示尺寸无关。
   return (
-    <div className="modal-backdrop shot-backdrop" onClick={onClose}>
-      <div
-        className="modal-card shot-card"
-        role="dialog"
-        aria-label="截图与识别"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="modal-head">
-          <span>截图{select && select.w > 2 ? "（已框选区域）" : "（拖动框选，不选则整图）"}</span>
-          <span className="cm-spacer" />
-          <button type="button" className="shot-btn" disabled={ocrBusy} onClick={() => void recognize()}>
-            {ocrBusy ? "识别中…" : "识别文本"}
-          </button>
-          <button type="button" className="shot-btn" disabled={saveBusy} onClick={() => void saveToNote()}>
-            {saveBusy ? "保存中…" : "存入笔记"}
-          </button>
-          <button type="button" className="shot-btn" onClick={() => void copyImage()}>
-            复制图片
-          </button>
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="关闭">
-            <IconX size={13} />
-          </button>
-        </div>
-        <div className="shot-stage">
-          <img
-            ref={imgRef}
-            src={`data:image/png;base64,${imageBase64}`}
-            alt="屏幕截图"
-            className="shot-img"
-            draggable={false}
-            onMouseDown={onMouseDown}
-            onMouseMove={onMouseMove}
-            onMouseUp={endDrag}
-            onMouseLeave={endDrag}
-          />
-          {select && select.w > 2 && select.h > 2 && (
-            <div
-              className="shot-selection"
-              style={{ left: select.x, top: select.y, width: select.w, height: select.h }}
-            />
-          )}
-        </div>
-        {ocrText !== null && (
-          <div className="shot-ocr">
-            <textarea
-              className="shot-ocr-text"
-              value={ocrText}
-              placeholder="这里显示识别出的文本（可直接修改）"
-              onChange={(event) => setOcrText(event.target.value)}
-              rows={Math.min(10, Math.max(3, ocrText.split("\n").length + 1))}
-            />
-            <div className="shot-ocr-actions">
-              <button
-                type="button"
-                className="shot-btn"
-                onClick={() =>
-                  void navigator.clipboard.writeText(ocrText).then(
-                    () => notice("识别文本已复制"),
-                    () => notice("复制失败：剪贴板不可用", "error"),
-                  )
-                }
-              >
-                复制文本
-              </button>
-              <button
-                type="button"
-                className="shot-btn shot-btn-primary"
-                onClick={() => {
-                  insertText(ocrText);
-                  notice("识别文本已插入当前笔记");
-                  onClose();
-                }}
-                disabled={!ocrText.trim()}
-              >
-                插入到笔记
-              </button>
-            </div>
-          </div>
-        )}
+    <div className="shot-overlay" role="dialog" aria-label="截图与识别">
+      <img
+        ref={imgRef}
+        src={`data:image/png;base64,${imageBase64}`}
+        alt="屏幕截图（冻结画面）"
+        className="shot-freeze"
+        draggable={false}
+        onMouseDown={onMouseDown}
+        onMouseMove={onMouseMove}
+        onMouseUp={endDrag}
+        onMouseLeave={endDrag}
+      />
+      {select && select.w > 2 && select.h > 2 && (
+        <div
+          className="shot-selection"
+          style={{ left: select.x, top: select.y, width: select.w, height: select.h }}
+        />
+      )}
+      <div className="shot-toolbar" onMouseDown={(event) => event.stopPropagation()}>
+        <span className="shot-toolbar-hint">
+          {select && select.w > 2 ? "已框选" : "拖动框选，不选则整图 · Esc 取消"}
+        </span>
+        <span className="cm-spacer" />
+        <button type="button" className="shot-btn" disabled={ocrBusy} onClick={() => void recognize()}>
+          {ocrBusy ? "识别中…" : "识别文本"}
+        </button>
+        <button type="button" className="shot-btn" disabled={saveBusy} onClick={() => void saveToNote()}>
+          {saveBusy ? "保存中…" : "存入笔记"}
+        </button>
+        <button type="button" className="shot-btn" onClick={() => void copyImage()}>
+          复制图片
+        </button>
+        <button type="button" className="icon-btn shot-close" onClick={onClose} aria-label="取消截图">
+          <IconX size={13} />
+        </button>
       </div>
+      {ocrText !== null && (
+        <div className="shot-ocr" onMouseDown={(event) => event.stopPropagation()}>
+          <textarea
+            className="shot-ocr-text"
+            value={ocrText}
+            placeholder="这里显示识别出的文本（可直接修改）"
+            onChange={(event) => setOcrText(event.target.value)}
+            rows={Math.min(10, Math.max(3, ocrText.split("\n").length + 1))}
+          />
+          <div className="shot-ocr-actions">
+            <button
+              type="button"
+              className="shot-btn"
+              onClick={() =>
+                void navigator.clipboard.writeText(ocrText).then(
+                  () => notice("识别文本已复制"),
+                  () => notice("复制失败：剪贴板不可用", "error"),
+                )
+              }
+            >
+              复制文本
+            </button>
+            <button
+              type="button"
+              className="shot-btn shot-btn-primary"
+              onClick={() => {
+                insertText(ocrText);
+                notice("识别文本已插入当前笔记");
+                onClose();
+              }}
+              disabled={!ocrText.trim()}
+            >
+              插入到笔记
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

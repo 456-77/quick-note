@@ -306,13 +306,13 @@ try {
   let shotShown = false;
   for (let i = 0; i < 20 && !shotShown; i += 1) {
     await sleep(800);
-    shotShown = await evaluate(ws, `!!document.querySelector('.shot-card')`).catch(() => false);
+    shotShown = await evaluate(ws, `!!document.querySelector('.shot-overlay')`).catch(() => false);
   }
   check(shotShown, "284 事件触发截图弹窗（抓屏+展示）");
   if (shotShown) {
     const shotImg = await evaluate(
       ws,
-      `(() => { const img = document.querySelector('.shot-img'); return img && img.naturalWidth > 100; })()`,
+      `(() => { const img = document.querySelector('.shot-freeze'); return img && img.naturalWidth > 100; })()`,
     );
     check(shotImg, "284 截图真实抓到屏幕内容");
     // OCR 一把（整图）：只验证通道可用（有结果框即通过，不管内容）

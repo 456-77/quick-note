@@ -11,6 +11,11 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+// PowerShell 调用要抑制控制台窗口（CREATE_NO_WINDOW，0.23 用户反馈：终端闪出
+// 来挡住要截的区域还被截进图里）；非 Windows 平台没有这个方法。
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
 /// 目录递归深度上限，防止符号链接成环导致无限递归。
 const MAX_DEPTH: usize = 32;
 
@@ -718,7 +723,39 @@ pub struct SearchHit {
     pub text: String,
 }
 
-/// 大小写不敏感的全文搜索（多关键词 AND，空格分隔）。
+/// 字段名变体（0.23 用户反馈；与 src/lib/searchVariants.ts 的 `fieldVariants`
+/// 互为镜像，两边改动必须同步）：搜一个字段时它可能以 camelCase（属性名）或
+/// snake_case（表字段）出现。返回"或"匹配的字面集合：
+/// - 含 `_`：补无分隔形态（user_name → username，小写化后与 userName 同形）；
+/// - 有驼峰边界（必须在**原始大小写**上判断，小写化后边界就丢了）：补 snake
+///   形态（userName / UserName → user_name）。
+fn field_variants(term: &str) -> Vec<String> {
+    let mut out = vec![term.to_string()];
+    if term.contains('_') {
+        out.push(term.replace('_', ""));
+    } else {
+        let mut snake = String::with_capacity(term.len() + 4);
+        let chars: Vec<char> = term.chars().collect();
+        for (index, &char) in chars.iter().enumerate() {
+            if char.is_ascii_uppercase() {
+                let prev = chars.get(index.wrapping_sub(1)).copied();
+                if prev.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+                    snake.push('_');
+                }
+                snake.push(char.to_ascii_lowercase());
+            } else {
+                snake.push(char);
+            }
+        }
+        if snake != term {
+            out.push(snake);
+        }
+    }
+    out
+}
+
+/// 大小写不敏感的全文搜索（多关键词 AND，空格分隔；每个关键词按 [`field_variants`]
+/// 的变体"或"匹配）。
 ///
 /// 遍历仓库内全部 `.md`（跳过点开头的隐藏路径），逐行找首个命中行，每文件最多
 /// 记一次命中。个人库的量级（数百篇）在 Rust 侧全量扫描是毫秒级的，刻意不做
@@ -726,15 +763,32 @@ pub struct SearchHit {
 #[tauri::command]
 pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<SearchHit>, String> {
     let root = vault_root(&vault)?;
-    let terms: Vec<String> = query
+    // 变体在**原始大小写**上生成（驼峰边界依赖大写字母），再统一小写参与子串匹配
+    let term_groups: Vec<Vec<String>> = query
         .split_whitespace()
-        .map(|term| term.to_lowercase())
+        .map(|raw| {
+            let mut seen: Vec<String> = Vec::new();
+            for variant in field_variants(raw) {
+                let lowered = variant.to_lowercase();
+                if !seen.contains(&lowered) {
+                    seen.push(lowered);
+                }
+            }
+            seen
+        })
         .collect();
     // 空查询与「全是空白」都不产生结果，前端把它当作"清空搜索"。
-    if terms.is_empty() {
+    if term_groups.is_empty() {
         return Ok(Vec::new());
     }
     let limit = limit.clamp(1, 200);
+
+    /** 一行的全部关键词是否都按变体命中。 */
+    fn line_matches(line_lower: &str, term_groups: &[Vec<String>]) -> bool {
+        term_groups
+            .iter()
+            .all(|variants| variants.iter().any(|variant| line_lower.contains(variant)))
+    }
 
     let mut entries = Vec::new();
     walk_entries(&root, &root, &mut entries, 0);
@@ -759,12 +813,12 @@ pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<Se
             continue;
         };
         let lowered = content.to_lowercase();
-        if !terms.iter().all(|term| lowered.contains(term)) {
+        if !line_matches(&lowered, &term_groups) {
             continue;
         }
         for (line_index, line) in content.lines().enumerate() {
             let line_lower = line.to_lowercase();
-            if terms.iter().all(|term| line_lower.contains(term)) {
+            if line_matches(&line_lower, &term_groups) {
                 let text: String = if line.chars().count() > 160 {
                     let truncated: String = line.chars().take(160).collect();
                     format!("{truncated}…")
@@ -952,8 +1006,12 @@ pub fn copy_paths_to_clipboard(paths: Vec<String>) -> Result<(), String> {
         .collect::<Vec<_>>()
         .join(",");
     let script = format!("Set-Clipboard -LiteralPath @({list}) | Out-Null");
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+    let mut command = std::process::Command::new("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+    // CREATE_NO_WINDOW：别让控制台窗口在写剪贴板时闪一下（0.23 用户反馈同源）
+    #[cfg(windows)]
+    command.creation_flags(0x0800_0000);
+    let output = command
         .output()
         .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
     if output.status.success() {
@@ -1047,10 +1105,15 @@ pub fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
                   $ErrorActionPreference='SilentlyContinue'; \
                   $fl = Get-Clipboard -Format FileDropList; \
                   if ($fl) { $fl | ForEach-Object { $_.FullName } }";
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .output()
-        .map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
+    let output = {
+        let mut command = std::process::Command::new("powershell");
+        command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+        #[cfg(windows)]
+        command.creation_flags(0x0800_0000);
+        command
+            .output()
+            .map_err(|e| format!("启动 PowerShell 失败: {e}"))?
+    };
     if !output.status.success() {
         return Err(format!(
             "读取剪贴板失败: {}",
@@ -1527,6 +1590,60 @@ pub async fn sync_scan_attachments(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn field_variants_cover_snake_and_camel() {
+        // 与 src/lib/searchVariants.ts 的用例同口径（镜像约束）
+        assert_eq!(field_variants("userName"), vec!["userName", "user_name"]);
+        assert_eq!(field_variants("UserName"), vec!["UserName", "user_name"]);
+        assert_eq!(field_variants("user_name"), vec!["user_name", "username"]);
+        assert_eq!(field_variants("USER_NAME"), vec!["USER_NAME", "USERNAME"]);
+        // 纯小写、数字：没有第二种形态
+        assert_eq!(field_variants("username"), vec!["username"]);
+        assert_eq!(field_variants("table2"), vec!["table2"]);
+        // 下划线分隔的蛇形含数字段
+        assert_eq!(field_variants("order_item_2"), vec!["order_item_2", "orderitem2"]);
+        // HTTP 连续大写只按"小写→大写"边界拆（宽口径，原词兜底）
+        assert_eq!(field_variants("parseHTTP"), vec!["parseHTTP", "parse_http"]);
+    }
+
+    #[test]
+    fn search_vault_matches_field_variants() {
+        let root = std::env::temp_dir().join(format!("qn-search-variants-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("ops")).unwrap();
+        fs::write(
+            root.join("ops/camel.md"),
+            "# 记录\n\nuserName 是属性名\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("ops/snake.md"),
+            "# 建表\n\nuser_name VARCHAR(64) NOT NULL\n",
+        )
+        .unwrap();
+        fs::write(root.join("ops/other.md"), "# 无关\n\n完全不同的内容\n").unwrap();
+
+        let vault = root.to_string_lossy().to_string();
+        // 搜驼峰也能命中表字段的 snake 写法
+        let hits = search_vault(vault.clone(), "userName".into(), 50).unwrap();
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        assert!(paths.contains(&"ops/camel.md"), "原词命中: {paths:?}");
+        assert!(paths.contains(&"ops/snake.md"), "变体命中: {paths:?}");
+        // 反方向：搜 snake 也命中驼峰
+        let hits = search_vault(vault.clone(), "user_name".into(), 50).unwrap();
+        let paths: Vec<&str> = hits.iter().map(|h| h.path.as_str()).collect();
+        assert!(paths.contains(&"ops/snake.md"), "原词命中: {paths:?}");
+        assert!(paths.contains(&"ops/camel.md"), "变体命中: {paths:?}");
+        // 多关键词 AND 语义保持（同一行里同时出现两个词）
+        let hits = search_vault(vault.clone(), "user_name NOT".into(), 50).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "ops/snake.md");
+        // 第二个词只在一篇里、且与第一词不在同一行 → 无命中（行级 AND）
+        let hits = search_vault(vault.clone(), "user_name 建表".into(), 50).unwrap();
+        assert_eq!(hits.len(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn sync_hash_ignores_bom_but_keeps_line_endings() {

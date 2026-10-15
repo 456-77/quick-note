@@ -1,0 +1,154 @@
+// 0.23 新功能的纯逻辑：字段名变体（全局/文件内搜索的下划线↔驼峰联动）与
+// 单词本（解析/新增/掌握/删除的内容变换）。
+//
+// 字段变体是搜索正确性的关键路径：搜 userName 必须能命中 user_name，反之亦然；
+// 漏一个方向用户就会得出"搜不到"的结论。单词本是纯内容变换，解析错一行就是
+// 丢一条记录。HTML→Markdown 转换依赖 DOMParser，由 GUI 批测覆盖（gui-023）。
+//
+// 用法：node --experimental-strip-types scripts/verify-search-vocab.mjs
+
+import { fieldPattern, fieldVariants, hasFieldShape } from "../src/lib/searchVariants.ts";
+import {
+  VOCAB_FILENAME,
+  addVocabEntry,
+  initialVocabulary,
+  parseVocabulary,
+  removeVocabEntry,
+  setVocabLearned,
+} from "../src/lib/vocabulary.ts";
+
+let failures = 0;
+const check = (ok, label, detail = "") => {
+  if (ok) console.log(`✓ ${label}`);
+  else {
+    failures += 1;
+    console.log(`✗ ${label}${detail ? `  ${detail}` : ""}`);
+  }
+};
+
+// ---------------------------------------------------------------- 字段变体
+
+check(
+  JSON.stringify(fieldVariants("userName")) === JSON.stringify(["userName", "user_name"]),
+  "驼峰 → 补 snake 变体",
+  JSON.stringify(fieldVariants("userName")),
+);
+check(
+  JSON.stringify(fieldVariants("UserName")) === JSON.stringify(["UserName", "user_name"]),
+  "帕斯卡 → 补 snake 变体",
+  JSON.stringify(fieldVariants("UserName")),
+);
+check(
+  JSON.stringify(fieldVariants("user_name")) === JSON.stringify(["user_name", "username"]),
+  "snake → 补无分隔变体",
+  JSON.stringify(fieldVariants("user_name")),
+);
+check(
+  fieldVariants("USER_NAME").includes("USERNAME"),
+  "全大写 snake → 补全大写无分隔",
+  JSON.stringify(fieldVariants("USER_NAME")),
+);
+check(
+  JSON.stringify(fieldVariants("username")) === JSON.stringify(["username"]),
+  "纯小写没有第二种形态",
+);
+check(
+  fieldVariants("order_item_2").includes("orderitem2"),
+  "含数字的 snake 也能去分隔",
+  JSON.stringify(fieldVariants("order_item_2")),
+);
+
+// 下划线联动正则
+check(fieldPattern("userName") === "user[_]?name", "驼峰查询 → 段间 [_]?", fieldPattern("userName") ?? "null");
+check(fieldPattern("user_name") === "user[_]?name", "snake 查询 → 段间 [_]?", fieldPattern("user_name") ?? "null");
+check(fieldPattern("__init__") === "__init__", "连续下划线保持字面", fieldPattern("__init__") ?? "null");
+check(fieldPattern("hello") === null, "无字段形态回落 null", fieldPattern("hello") ?? "null");
+check(fieldPattern("") === null, "空查询回落 null");
+// 正则元字符转义
+check(fieldPattern("a.b_c") === "a\\.b[_]?c", "段内元字符转义", fieldPattern("a.b_c") ?? "null");
+check(hasFieldShape("userName"), "驼峰判定为字段形态");
+check(hasFieldShape("user_name"), "snake 判定为字段形态");
+check(!hasFieldShape("username"), "纯小写不是字段形态");
+
+// ---------------------------------------------------------------- 单词本
+
+// 初始内容与解析
+const fresh = initialVocabulary();
+let parsed = parseVocabulary(fresh);
+check(parsed.length === 0, "初始内容解析为空表", JSON.stringify(parsed));
+check(fresh.includes("## 待学习") && fresh.includes("## 已掌握"), "初始内容含两节");
+
+// 新增
+let doc = addVocabEntry(fresh, "resilient", "2026-10-15 · 测试笔记").content;
+parsed = parseVocabulary(doc);
+check(parsed.length === 1 && parsed[0].word === "resilient", "新增进待学习", JSON.stringify(parsed));
+check(parsed[0].learned === false, "新增条目默认未掌握");
+check(parsed[0].meta.includes("2026-10-15"), "元信息带日期");
+check(addVocabEntry(doc, "resilient", "x").added === false, "重复词不重录");
+check(addVocabEntry(doc, "Resilient", "x").added === false, "大小写不敏感去重");
+doc = addVocabEntry(doc, "PR", "").content;
+check(parseVocabulary(doc).some((entry) => entry.word === "PR" && entry.meta === ""), "无元信息的词也能加");
+
+// 掌握 / 撤销
+let moved = setVocabLearned(doc, "resilient", true).content;
+parsed = parseVocabulary(moved);
+check(
+  parsed.find((entry) => entry.word === "resilient")?.learned === true,
+  "移入已掌握",
+  moved,
+);
+check(parseVocabulary(moved).filter((entry) => !entry.learned).length === 1, "待学习只剩另一个词");
+const undo = setVocabLearned(moved, "resilient", false).content;
+check(parseVocabulary(undo).find((entry) => entry.word === "resilient")?.learned === false, "移回待学习");
+check(setVocabLearned(moved, "resilient", true).changed === false, "状态没变不产生写入");
+check(setVocabLearned(moved, "ghost", true).changed === false, "词不存在不产生写入");
+
+// 删除
+let removed = removeVocabEntry(undo, "PR").content;
+check(parseVocabulary(removed).length === 1, "删除待学习条目", removed);
+removed = removeVocabEntry(moved, "resilient").content;
+check(parseVocabulary(removed).length === 1, "删除已掌握条目", removed);
+const emptied = removeVocabEntry(removed, "PR").content;
+check(parseVocabulary(emptied).length === 0, "删空后解析为空", emptied);
+check(removeVocabEntry(removed, "ghost").changed === false, "删除不存在的词无变化");
+
+// 手编文件的宽容解析：小节外的条目归待学习、空行/标题行跳过
+const handWritten = [
+  "# 单词本",
+  "",
+  "- orphan — 无小节的词",
+  "",
+  "## 已掌握",
+  "",
+  "- done — 早就会了",
+  "",
+  "## 待学习",
+  "",
+  "- pending",
+].join("\n");
+parsed = parseVocabulary(handWritten);
+check(parsed.find((entry) => entry.word === "orphan")?.learned === false, "小节外条目归待学习");
+check(parsed.find((entry) => entry.word === "done")?.learned === true, "已掌握节解析");
+check(parsed.find((entry) => entry.word === "pending")?.learned === false, "待学习节解析");
+check(parsed.length === 3, "解析条目数", JSON.stringify(parsed));
+
+// 重复词后写者胜
+const dup = "# 单词本\n\n## 待学习\n\n- Word — 旧\n- word — 新\n";
+parsed = parseVocabulary(dup);
+check(parsed.length === 1 && parsed[0].meta === "新", "同词重录后写者胜", JSON.stringify(parsed));
+
+// CRLF 内容按行正常处理
+const crlf = initialVocabulary().replace(/\n/g, "\r\n");
+const crlfAdded = addVocabEntry(crlf, "alpha", "m").content;
+check(parseVocabulary(crlfAdded).some((entry) => entry.word === "alpha"), "CRLF 文件也能新增");
+
+// 文件名约定
+check(VOCAB_FILENAME === "单词本.md", "单词本落在仓库根的 单词本.md");
+
+// ---------------------------------------------------------------- 汇总
+
+if (failures > 0) {
+  console.error(`\n${failures} 项失败`);
+  process.exit(1);
+}
+console.log("\n全部通过 ✓");

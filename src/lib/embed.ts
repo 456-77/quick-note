@@ -204,11 +204,20 @@ export async function renderMarkdownToHtml(
 
   // 链接：一律不可导航（点 <a href> 会把整个应用导航走）。
   // wiki 链接带 data-wiki-target：点击跟随打开目标笔记（与编辑器渲染的引用同一交互）。
+  // 0.23 起 Markdown 内部链接（含锚点）带 data-md-link——属性放**解析后的仓库
+  // 相对路径**（相对的是被嵌入的笔记，本函数的 ctx 就是它），点击处理在 App 的
+  // document 委托里统一做。外部 http(s) 与其他协议保持纯展示。
   renderer.rules.link_open = (tokens, idx) => {
     const href = tokens[idx].attrGet("href") ?? "";
     const isWiki = href.startsWith("wiki-link:");
     const title = isWiki ? href.slice("wiki-link:".length) : href;
-    const dataAttr = isWiki ? ` data-wiki-target="${escapeHtml(title)}"` : "";
+    let dataAttr = "";
+    if (isWiki) {
+      dataAttr = ` data-wiki-target="${escapeHtml(title)}"`;
+    } else if (title && !/^https?:\/\//i.test(title) && !/^[a-z][a-z0-9+.-]*:/i.test(title)) {
+      const resolved = title.startsWith("#") ? title : resolveWikiRelative(ctx, title) ?? title;
+      dataAttr = ` data-md-link="${escapeHtml(resolved)}"`;
+    }
     return `<span class="cm-lp-link"${dataAttr} title="${escapeHtml(title)}">`;
   };
   renderer.rules.link_close = () => "</span>";

@@ -55,6 +55,13 @@ export const COMMAND_KEYS: CommandKeys[] = [
   { id: "insertDate", label: "插入今天日期", desc: "在光标处插入当前日期（日记日期格式）", group: "edit", keys: ["Mod-Shift-D"] },
   { id: "insertTime", label: "插入当前时间", desc: "在光标处插入 HH:mm（Ctrl+Shift+T 是浏览器保留键，勿绑）", group: "edit", keys: ["Mod-Alt-T"] },
   { id: "toggleTags", label: "添加 / 管理标签", desc: "打开当前笔记的标签浮层", group: "edit", keys: ["Mod-Shift-G"] },
+  {
+    id: "addWord",
+    label: "加入单词本",
+    desc: "把选中的词（或光标所在词）记进仓库根的「单词本.md」，右侧面板的「单词」页签可复习",
+    group: "edit",
+    keys: ["Mod-Alt-V"],
+  },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },
   { id: "heading2", label: "标题 2", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-2"] },
@@ -272,6 +279,24 @@ export function resetAllBindings(): void {
     }
   }
   for (const listener of listeners) listener();
+}
+
+// 跨窗口热加载（0.23 用户反馈）：每个仓库窗口是独立进程，另一窗口改键位/停用
+// 状态只落了 localStorage，本窗口的内存副本不会自己变（重启前两窗口键位不一致）。
+// storage 事件只在**别的**窗口触发，正好把新值拉进来并广播给匹配器。
+// 本窗口自己的写入不触发 storage 事件，没有回环。
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== STORAGE_KEY && event.key !== DISABLED_KEY && event.key !== null) return;
+    const previousBindings = JSON.stringify(overrides);
+    const previousDisabled = JSON.stringify([...disabledIds].sort());
+    overrides = loadOverrides();
+    disabledIds = loadDisabled();
+    if (JSON.stringify(overrides) === previousBindings && JSON.stringify([...disabledIds].sort()) === previousDisabled) {
+      return;
+    }
+    for (const listener of listeners) listener();
+  });
 }
 
 // ---------------------------------------------------------------- 导入 / 导出

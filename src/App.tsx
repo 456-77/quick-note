@@ -15,6 +15,7 @@ import CaptureManager from "./components/CaptureManager";
 import ScreenshotDialog from "./components/ScreenshotDialog";
 import SettingsDialog from "./components/SettingsDialog";
 import StatsPanel from "./components/StatsPanel";
+import VocabularyPanel from "./components/VocabularyPanel";
 import TagDashboard from "./components/TagDashboard";
 import TagPopover from "./components/TagPopover";
 import WeekReviewDialog from "./components/WeekReviewDialog";
@@ -59,14 +60,15 @@ import { saveAndLink, toBase64 } from "./lib/paste";
 import { readBinaryFile } from "./lib/api";
 import type { CaptureImage } from "./components/QuickCaptureDialog";
 import { lineEndingLabel } from "./lib/lineEndings";
-import { clearEmbedCache, splitEmbedTarget } from "./lib/embed";
-import { applyMermaidTheme, clearMermaidCache, requestDecorationRefresh, setMermaidNotice } from "./lib/livePreview";
+import { clearEmbedCache, renderMarkdownToHtml, splitEmbedTarget } from "./lib/embed";
+import { applyMermaidTheme, clearMermaidCache, requestDecorationRefresh, setMermaidNotice, toggleableBlockAt } from "./lib/livePreview";
 import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
-import { resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
+import { EMPTY_CONTEXT, absoluteInVault, resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
-import { getSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
+import { getSettings, onSettingsChange, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
-import { openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
+import { closeSearchPanelIfOpen, openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
+import { VOCAB_FILENAME, addVocabEntry, initialVocabulary } from "./lib/vocabulary";
 import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
@@ -119,6 +121,36 @@ const MODE_KEY = "quicknote.mode";
 const SIDEBAR_KEY = "quicknote.sidebar";
 /** 停止输入多久后自动保存。写盘前会比较内容，未变则不触碰文件。 */
 const AUTOSAVE_DELAY = 1200;
+
+/**
+ * 更新弹窗的新版本介绍（0.23 用户反馈：别显示 Markdown 源码）。用应用同款
+ * markdown-it 管线渲染（html:false 转义原始 HTML，链接不可导航——安全口径与
+ * 嵌入/PDF 导出一致）。EMPTY_CONTEXT：更新说明与仓库无关，资源链接退化为占位。
+ */
+function UpdateNotes({ markdown }: { markdown: string }) {
+  const [html, setHtml] = useState("");
+  useEffect(() => {
+    let alive = true;
+    void renderMarkdownToHtml(markdown, EMPTY_CONTEXT)
+      .then((rendered) => {
+        if (alive) setHtml(rendered);
+      })
+      .catch(() => {
+        if (alive) setHtml("");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [markdown]);
+  if (!html) return null;
+  return (
+    <div
+      className="update-dialog-notes update-dialog-notes-md"
+      // markdown-it html:false 已转义原始 HTML，这里的内容是渲染产物
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
 
 export default function App() {
   const [vault, setVault] = useState<string | null>(null);
@@ -175,9 +207,9 @@ export default function App() {
    * 布局与 Obsidian 对齐：文件树常驻左侧；围绕当前笔记的面板（日记、目录）
    * 与知识库统计放右侧。
    */
-  const [rightPanel, setRightPanel] = useState<"daily" | "outline" | "stats">(() => {
+  const [rightPanel, setRightPanel] = useState<"daily" | "outline" | "stats" | "vocab">(() => {
     const stored = localStorage.getItem(SIDEBAR_KEY);
-    return stored === "outline" || stored === "stats" ? stored : "daily";
+    return stored === "outline" || stored === "stats" || stored === "vocab" ? stored : "daily";
   });
   /** 左侧文件树的名称过滤（空串 = 显示完整目录树）。 */
   const [treeFilter, setTreeFilter] = useState("");
@@ -308,6 +340,11 @@ export default function App() {
   const applySettings = useCallback((patch: Partial<Settings>) => {
     setSettings(updateSettings(patch));
   }, []);
+
+  // 跨窗口热加载（0.23）：另一窗口改设置 → settings.ts 经 storage 事件重载并
+  // 广播，这里把广播接进 React 状态——主题、热键（重注册）、背景图等所有
+  // `settings.*` 依赖项随之在别的窗口即时生效，不用重启。
+  useEffect(() => onSettingsChange((next) => setSettings({ ...next })), []);
 
   // ---------------------------------------------------------------- 窗口控制
 
@@ -1481,7 +1518,8 @@ export default function App() {
     const target = view.state.doc.line(Math.min(Math.max(line + 1, 1), view.state.doc.lines));
     view.dispatch({
       selection: { anchor: target.from },
-      effects: EditorView.scrollIntoView(target.from, { y: "start" }),
+      // 居中滚动（0.23 用户反馈：跳转目标要自动展示在屏幕中间）
+      effects: EditorView.scrollIntoView(target.from, { y: "center" }),
     });
     view.focus();
   }, []);
@@ -2037,6 +2075,9 @@ export default function App() {
       setCaptureManagerOpen(false);
       // 已是这个标签且没有外部改动：什么都不做（重置会丢光标位置）
       if (path === activeTabRef.current && !staleTabs.current.has(path)) return;
+      // 切笔记时收起文件内搜索面板（0.23 用户反馈：搜索框只属于它打开的那篇，
+      // 挂到别的笔记上会带着上一次的高亮，看起来像"搜索框坏了"）
+      closeSearchPanelIfOpen();
       recordRecent(path);
       if (dirtyRef.current) await saveNow();
       // 存量状态且文件没被外部改过：直接换上去，未保存内容与撤销历史都在
@@ -2145,6 +2186,8 @@ export default function App() {
       if (kind === "pdf" || kind === "docx" || kind === "ppt" || kind === "spreadsheet" || kind === "html" || kind === "image") {
         // 预览与收件箱面板互斥：面板开着时点附件，把面板收起来让预览可见
         setCaptureManagerOpen(false);
+        // 切到预览页同样收起文件内搜索面板（0.23 用户反馈：换页面不残留）
+        closeSearchPanelIfOpen();
         setSelectedPath(path);
         setPreviewPath(path);
         // 预览类文件同样进「最近」列表（此前只记笔记，最近里永远看不到 pdf/docx）
@@ -2732,7 +2775,7 @@ export default function App() {
     [current],
   );
 
-  const changeRightPanel = useCallback((next: "daily" | "outline" | "stats") => {
+  const changeRightPanel = useCallback((next: "daily" | "outline" | "stats" | "vocab") => {
     setRightPanel(next);
     localStorage.setItem(SIDEBAR_KEY, next);
   }, []);
@@ -2741,6 +2784,9 @@ export default function App() {
    * 打开笔记并跳到指定行（全局搜索的「内容」结果用）；行号省略时只打开。
    * 带关键词时（0.21 用户反馈：定位后突出不明显）打开自定义搜索面板预填——
    * 全文命中高亮 + 计数 + Enter 下一处，并把该行上的命中词设为选区。
+   *
+   * 0.23：滚动居中；命中落在表格里时光标放到块外——光标留在块内会把整张表
+   * 打成源码（用户反馈"定位到表格时不要显示源码"），表格保持渲染态。
    */
   const openNoteAt = useCallback(
     async (path: string, line?: number, term?: string) => {
@@ -2756,13 +2802,23 @@ export default function App() {
         return;
       }
       openSearchPanelOn(view, term);
-      const at = target.text.toLowerCase().indexOf(term.toLowerCase());
-      const anchor = at >= 0 ? target.from + at : target.from;
-      const head = at >= 0 ? anchor + term.length : anchor;
-      view.dispatch({
-        selection: { anchor, head },
-        effects: EditorView.scrollIntoView(anchor, { y: "start" }),
-      });
+      const block = toggleableBlockAt(view.state, target.from);
+      if (block && target.from >= block.from && target.from <= block.to) {
+        // 命中在表格/图表块里：与行号点击的「切渲染」同一招，光标挪出块
+        const outside = block.from > 0 ? block.from - 1 : Math.min(block.to + 1, view.state.doc.length);
+        view.dispatch({
+          selection: { anchor: outside },
+          effects: EditorView.scrollIntoView(block.from, { y: "center" }),
+        });
+      } else {
+        const at = target.text.toLowerCase().indexOf(term.toLowerCase());
+        const anchor = at >= 0 ? target.from + at : target.from;
+        const head = at >= 0 ? anchor + term.length : anchor;
+        view.dispatch({
+          selection: { anchor, head },
+          effects: EditorView.scrollIntoView(anchor, { y: "center" }),
+        });
+      }
       view.focus();
     },
     [openNote, jumpToLine],
@@ -3060,8 +3116,7 @@ export default function App() {
   // 委托挂在 **document 捕获阶段**：编辑器 widget 内的 mousedown 走 CM 内部事件流，
   // 时机不可控（实测 domEventHandlers 收不到 HtmlWidget 内的合成点击）；捕获阶段
   // 最先执行，preventDefault 后 CM 不会放置光标，行装饰保持渲染态。
-  const openWikiTarget = useCallback(
-    (target: string) => {
+  const openWikiTarget = useCallback(    (target: string) => {
       const { path: notePath, section } = splitEmbedTarget(target);
       const relative = resolveWikiRelative(resourcesRef.current, notePath);
       if (!relative) {
@@ -3094,25 +3149,105 @@ export default function App() {
     },
     [],
   );
+
+  /**
+   * 跟随 Markdown 内部链接（0.23 用户反馈：`[文字](文件)` 的语法支持）。
+   * 属性里是装饰时解析好的仓库相对路径（相对来源笔记），这里只管打开：
+   * `.md` 进应用内编辑器（带小节跳转）；其他文件交给系统默认程序；
+   * `#锚点` 在当前笔记内跳标题。
+   */
+  const openMdLinkTarget = useCallback(
+    (raw: string) => {
+      const target = raw.trim();
+      if (!target) return;
+      if (target.startsWith("#")) {
+        // 页内锚点：在当前笔记里找标题跳过去
+        const view = viewRef.current;
+        if (!view) return;
+        const wanted = target.slice(1).toLowerCase();
+        const doc = view.state.doc;
+        for (let n = 1; n <= doc.lines; n += 1) {
+          const line = doc.line(n);
+          if (
+            new RegExp(`^#{1,6}\\s+${wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i").test(
+              line.text.trim(),
+            )
+          ) {
+            view.dispatch({
+              selection: { anchor: line.from },
+              effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+            });
+            return;
+          }
+        }
+        setStatus(`没在笔记里找到「${target.slice(1)}」`);
+        return;
+      }
+      const { path: noteTarget, section } = splitEmbedTarget(target);
+      if (!/\.md$/i.test(noteTarget)) {
+        // 非笔记文件（图片/pdf/任何附件）：系统默认程序打开
+        if (!vaultRef.current) {
+          setError("尚未打开仓库，无法打开链接的文件");
+          return;
+        }
+        const absolute = absoluteInVault(vaultRef.current, noteTarget);
+        import("@tauri-apps/plugin-opener")
+          .then(({ openPath }) => openPath(absolute))
+          .then(() => setStatus(`已用系统程序打开：${noteTarget}`))
+          .catch((e) => setError(`打开文件失败：${e}`));
+        return;
+      }
+      void openEntryRef.current(noteTarget).then(() => {
+        if (!section) return;
+        window.setTimeout(() => {
+          const view = viewRef.current;
+          if (!view) return;
+          const doc = view.state.doc;
+          const wanted = section.replace(/^\^/, "").toLowerCase();
+          for (let n = 1; n <= doc.lines; n += 1) {
+            const line = doc.line(n);
+            const hit = section.startsWith("^")
+              ? line.text.trimEnd().toLowerCase().endsWith(`^${wanted}`)
+              : new RegExp(`^#{1,6}\\s+${wanted.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*$`, "i").test(
+                  line.text.trim(),
+                );
+            if (hit) {
+              view.dispatch({
+                selection: { anchor: line.from },
+                effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+              });
+              return;
+            }
+          }
+          setStatus(`没在笔记里找到「${section}」，已打开整篇`);
+        }, 500);
+      });
+    },
+    [],
+  );
   useEffect(() => {
     const onDown = (event: MouseEvent) => {
       if (event.button !== 0 || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
-      const link = (event.target as HTMLElement | null)?.closest?.("[data-wiki-target]");
+      const link = (event.target as HTMLElement | null)?.closest?.(
+        "[data-wiki-target],[data-md-link]",
+      );
       if (!link) return;
       const startX = event.clientX;
       const startY = event.clientY;
+      const isMd = link.hasAttribute("data-md-link");
       const onUp = (up: MouseEvent) => {
         window.removeEventListener("mouseup", onUp);
         // 位移明显是拖选文字，不跟随
         if (Math.hypot(up.clientX - startX, up.clientY - startY) > 5) return;
-        openWikiTarget(link.getAttribute("data-wiki-target") ?? "");
+        if (isMd) openMdLinkTarget(link.getAttribute("data-md-link") ?? "");
+        else openWikiTarget(link.getAttribute("data-wiki-target") ?? "");
       };
       window.addEventListener("mouseup", onUp);
       event.preventDefault();
     };
     document.addEventListener("mousedown", onDown, true);
     return () => document.removeEventListener("mousedown", onDown, true);
-  }, [openWikiTarget]);
+  }, [openWikiTarget, openMdLinkTarget]);
 
   // ---------------------------------------------------------------- 文件复制粘贴
 
@@ -3382,13 +3517,20 @@ export default function App() {
 
   // ---------------------------------------------------------------- 全局截图
 
-  /** 抓屏并打开截图弹窗（OS 全局快捷键与命令面板共用；0.20 用户需求）。 */
+  /** 抓屏并打开截图浮层（OS 全局快捷键与命令面板共用；0.20 用户需求）。
+   *  0.23：全屏冻结浮层取代小弹窗；热键触发时窗口多半在后台，抓完先把窗口
+   *  带到前台，冻结画面才立即可见。 */
   const runScreenshot = useCallback(async () => {
     if (isMobile()) return;
     try {
       const shot = await screenshotCapture();
       setScreenshotImage(shot.imageBase64);
       setScreenshotOpen(true);
+      void getCurrentWindow()
+        .setFocus()
+        .catch(() => {
+          // 聚焦失败（部分窗口管理器拒绝转移前台）不影响浮层本身
+        });
       setStatus("");
     } catch (e) {
       setError(`截屏失败：${e}`);
@@ -3397,15 +3539,16 @@ export default function App() {
 
   // 全局截图快捷键：启动注册、设置里改了立即重注册（空串 = 关闭）。
   // 命令只在桌面存在；移动端不调用。被其他程序占用时提示去设置里换组合。
-  // 多窗口让位（Rust 侧对自家兄弟进程静默跳过）后注册不在此进程：兄弟窗口
-  // 关闭后这里窗口一聚焦就重试一次，把热键接回来。
+  // 多窗口让位（Rust 侧对自家兄弟进程静默跳过）后注册不在此进程：让位时置
+  // "未持有"标志——兄弟窗口关闭后这里窗口一聚焦就重试一次，把热键接回来
+  // （0.23 修复：此前让位也算"成功"，兄弟一关热键就成了孤儿，没人响应）。
   const hotkeyFailedRef = useRef(false);
   useEffect(() => {
     if (isMobile()) return;
     const hotkey = getSettings().screenshotHotkey;
     setScreenshotHotkey(hotkey).then(
-      () => {
-        hotkeyFailedRef.current = false;
+      (registered) => {
+        hotkeyFailedRef.current = !registered;
       },
       (e) => {
         hotkeyFailedRef.current = true;
@@ -3420,8 +3563,8 @@ export default function App() {
     const onFocus = () => {
       if (!hotkeyFailedRef.current) return;
       setScreenshotHotkey(getSettings().screenshotHotkey).then(
-        () => {
-          hotkeyFailedRef.current = false;
+        (registered) => {
+          hotkeyFailedRef.current = !registered;
         },
         () => {
           // 还是占着（兄弟窗口还活着）：不弹错误，保持静默让位
@@ -3452,6 +3595,47 @@ export default function App() {
     },
     [vault],
   );
+
+  /**
+   * 单词本（0.23 用户反馈，交互对齐 IDEA 的「保存到词典」）：把选中的词（或
+   * 光标所在词）记进仓库根的 单词本.md。重复词不重录；右侧「单词」页签翻看。
+   */
+  const addWordToVocabulary = useCallback(async () => {
+    const view = viewRef.current;
+    if (!view) {
+      notice("请先打开一篇笔记再记单词", "error");
+      return;
+    }
+    const selection = view.state.selection.main;
+    let word = selection.empty ? "" : view.state.sliceDoc(selection.from, selection.to).trim();
+    if (!word) {
+      const found = view.state.wordAt(selection.head);
+      word = found ? view.state.sliceDoc(found.from, found.to).trim() : "";
+    }
+    if (!word || /\s/.test(word)) {
+      notice("选中一个词（或把光标放在词上），再加入单词本", "error");
+      return;
+    }
+    if (!vaultRef.current) {
+      notice("尚未打开仓库，无法记单词", "error");
+      return;
+    }
+    try {
+      const note = await readNoteOptional(vaultRef.current, VOCAB_FILENAME);
+      const content = note?.content ?? initialVocabulary();
+      const source = currentRef.current?.path ?? "";
+      const from = source ? source.slice(source.lastIndexOf("/") + 1).replace(/\.md$/i, "") : "";
+      const result = addVocabEntry(content, word, `${dailyRef.current.today} · ${from || "手动添加"}`);
+      if (!result.added) {
+        notice(`单词本里已有「${word}」`);
+        return;
+      }
+      await writeNote(vaultRef.current, VOCAB_FILENAME, result.content, false);
+      notice(`已加入单词本：${word}`);
+    } catch (e) {
+      notice(`加入单词本失败：${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  }, [notice]);
 
   /** 光标跳到当前笔记的最后一行并滚到可视区（长笔记不用滚轮翻到底）。 */
   const gotoDocEnd = useCallback(() => {
@@ -3488,9 +3672,10 @@ export default function App() {
         }
         setTagPopoverOpen((value) => !value);
       },
+      addWord: () => void addWordToVocabulary(),
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
-    [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice],
+    [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary],
   );
 
   /** 编辑器内命令的统一分发：命令面板搜到的快捷键命令（标题/列表/行内代码等）从这里走。 */
@@ -3549,6 +3734,9 @@ export default function App() {
           return;
         case "toggleTags":
           shortcuts.toggleTags();
+          return;
+        case "addWord":
+          shortcuts.addWord();
           return;
       }
     },
@@ -4145,9 +4333,7 @@ export default function App() {
                 <IconX size={14} />
               </button>
             </div>
-            {updateCheck.notes && (
-              <div className="update-dialog-notes">{updateCheck.notes}</div>
-            )}
+            {updateCheck.notes && <UpdateNotes markdown={updateCheck.notes} />}
             <div className="update-dialog-actions">
               <button
                 type="button"
@@ -5033,6 +5219,16 @@ export default function App() {
               <IconChart size={13} />
               统计
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanel === "vocab"}
+              className={`sidebar-tab${rightPanel === "vocab" ? " is-on" : ""}`}
+              onClick={() => changeRightPanel("vocab")}
+            >
+              <IconLibrary size={13} />
+              单词
+            </button>
           </div>
           {rightPanel === "daily" && (
             <CalendarPanel
@@ -5068,6 +5264,14 @@ export default function App() {
           )}
           {rightPanel === "stats" && (
             <StatsPanel entries={entries} daily={daily} onOpen={(p) => void openEntry(p)} />
+          )}
+          {rightPanel === "vocab" && (
+            <VocabularyPanel
+              vault={vault}
+              revision={revision}
+              onOpen={(p) => void openEntry(p)}
+              notice={notice}
+            />
           )}
         </aside>
         )}

@@ -351,9 +351,13 @@ export const screenshotCapture = () => invoke<ScreenCapture>("screenshot_capture
 export const screenshotOcr = (imageBase64: string) =>
   invoke<string>("screenshot_ocr", { imageBase64 });
 
-/** 注册/更换全局截图快捷键（空串 = 取消注册）。 */
+/**
+ * 注册/更换全局截图快捷键（空串 = 取消注册）。
+ * 返回本进程是否真的持有热键：false = 让位给了兄弟窗口（先启动的进程持有），
+ * 前端据此置"未持有"标志，等窗口聚焦时重试接管。
+ */
 export const setScreenshotHotkey = (hotkey: string) =>
-  invoke<void>("set_screenshot_hotkey", { hotkey });
+  invoke<boolean>("set_screenshot_hotkey", { hotkey });
 
 /** 订阅全局截图快捷键按下事件（Rust 侧插件 handler 发出）。 */
 export function onScreenshotHotkey(handler: () => void): Promise<UnlistenFn> {

@@ -16,10 +16,26 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+/// Windows 上 spawn powershell.exe 必须带 CREATE_NO_WINDOW：控制台子系统进程
+/// 默认会闪出一个终端窗口——0.23 用户反馈，抓屏前闪出来的终端不仅挡住要截的
+/// 区域，还被抓进了截图里。
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// 组装一段 PowerShell 命令（统一带 -NoProfile/-NonInteractive 与窗口抑制）。
+fn powershell_command(script: &str) -> Command {
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-NonInteractive", "-Command", script]);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+    command
+}
+
 /// 跑一段 PowerShell，返回 stdout 文本（UTF-8）。非零退出视为失败。
 fn run_powershell(script: &str) -> Result<String, String> {
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
+    let output = powershell_command(script)
         .output()
         .map_err(|e| format!("无法启动 PowerShell：{e}"))?;
     if !output.status.success() {
@@ -193,6 +209,11 @@ pub async fn screenshot_ocr(image_base64: String) -> Result<String, String> {
 /// 快捷键格式与 tauri-plugin-global-shortcut 一致：`Ctrl+Alt+A` / `CommandOrControl+Shift+S`。
 /// 按下时由插件的统一 handler 发 `screenshot-hotkey` 事件给前端。
 ///
+/// 返回值告诉前端**本进程是否真的持有热键**：`Ok(true)` = 注册成功；`Ok(false)` =
+/// 让位给了自家兄弟进程（热键由先启动的进程持有）——前端据此置"未持有"标志，
+/// 等兄弟窗口关闭、本窗口聚焦时重试接管（0.23：让位后置标志，修复"兄弟关了
+/// 热键却没人接"的孤儿窗口期）。
+///
 /// 多窗口场景（0.21 用户反馈）：新仓库窗口是独立进程，但设置共享同一个
 /// localStorage，读出同一个快捷键再注册必然撞 OS 级唯一性。占用者是自家兄弟
 /// 进程时（open-vaults 登记表里还有别的活实例）静默让位——热键由先启动的进程
@@ -202,14 +223,14 @@ pub async fn screenshot_ocr(image_base64: String) -> Result<String, String> {
 /// 都要回主线程结账；异步命令跑在运行时线程上，`unregister_all` 之后紧接 `register`
 /// 会出现"旧表还没清完、新注册撞 already registered"的时序（实测踩过）。
 #[tauri::command]
-pub fn set_screenshot_hotkey(app: tauri::AppHandle, hotkey: Option<String>) -> Result<(), String> {
+pub fn set_screenshot_hotkey(app: tauri::AppHandle, hotkey: Option<String>) -> Result<bool, String> {
     use tauri_plugin_global_shortcut::GlobalShortcutExt;
     let manager = app.global_shortcut();
     manager.unregister_all().map_err(|e| format!("注销旧快捷键失败：{e}"))?;
-    let Some(raw) = hotkey else { return Ok(()) };
+    let Some(raw) = hotkey else { return Ok(true) };
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Ok(());
+        return Ok(true);
     }
     let parsed: tauri_plugin_global_shortcut::Shortcut = trimmed
         .to_lowercase()
@@ -220,9 +241,9 @@ pub fn set_screenshot_hotkey(app: tauri::AppHandle, hotkey: Option<String>) -> R
         if message.to_lowercase().contains("already registered")
             && crate::open_vaults::other_instance_alive(&app)
         {
-            return Ok(());
+            return Ok(false);
         }
         return Err(format!("注册快捷键失败（可能被其他程序占用）：{e}"));
     }
-    Ok(())
+    Ok(true)
 }

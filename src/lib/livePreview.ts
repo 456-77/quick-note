@@ -875,8 +875,12 @@ async function downloadDiagram(
       const xml = new XMLSerializer().serializeToString(clone);
       await writeVaultBinary(vaultPath, target, new TextEncoder().encode(xml));
     } else {
-      const scale = 2;
-      const url = svgToBlobUrl(svg, state);
+      // PNG 按 3 倍目标分辨率重新光栅化：把克隆的 width/height 设成放大后的尺寸
+      // （viewBox 不变，矢量在解码时放大），<img> 以大尺寸解码后 1:1 落 canvas。
+      // 此前按自然尺寸解码再 drawImage 拉伸到位图缩放，文字发糊——0.23 用户反馈
+      // 「导出还是模糊」的根源就是这个，不是倍率不够。
+      const scale = 3;
+      const url = svgToBlobUrl(svg, state, scale);
       try {
         const image = new Image();
         await new Promise<void>((resolve, reject) => {
@@ -891,6 +895,7 @@ async function downloadDiagram(
         if (!ctx) throw new Error("Canvas 不可用");
         ctx.fillStyle = themeBackgroundColor();
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        // 1:1 绘制：位图不再被二次缩放
         ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
         const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
         if (!blob) throw new Error("PNG 生成失败");
@@ -991,10 +996,16 @@ function svgWithTextOnly(svg: SVGSVGElement, state: MermaidZoomState): SVGSVGEle
 
 /**
  * 序列化 SVG 为 Blob URL（PNG 导出用）：foreignObject 全部换成 `<text>`，
- * 作为 <img> 加载时文字不再丢失。
+ * 作为 <img> 加载时文字不再丢失。`scale` 是目标放大倍率——width/height 设成
+ * 放大后的尺寸（viewBox 不变），<img> 解码时矢量内部放大，导出才不发糊。
  */
-function svgToBlobUrl(svg: SVGSVGElement, state: MermaidZoomState): string {
-  const xml = new XMLSerializer().serializeToString(svgWithTextOnly(svg, state));
+function svgToBlobUrl(svg: SVGSVGElement, state: MermaidZoomState, scale = 1): string {
+  const clone = svgWithTextOnly(svg, state);
+  if (scale !== 1) {
+    clone.setAttribute("width", String(Math.round(state.naturalW * scale)));
+    clone.setAttribute("height", String(Math.round(state.naturalH * scale)));
+  }
+  const xml = new XMLSerializer().serializeToString(clone);
   return URL.createObjectURL(new Blob([xml], { type: "image/svg+xml;charset=utf-8" }));
 }
 
@@ -2479,7 +2490,16 @@ export function buildLivePreviewDecorations(
               marks.push(
                 isExternalUrl(url)
                   ? externalLinkMark(url).range(open.to, close.from)
-                  : MARK.link.range(open.to, close.from),
+                  // 内部链接（含 `#锚点`）：带 data-md-link 供 App 的 document
+                  // 委托点击跟随（0.23 用户反馈：链接文件的语法支持）。属性里放
+                  // **解析后的仓库相对路径**（embed 渲染的同名属性同理）——点击
+                  // 处理就不用再关心相对路径是相对哪篇笔记。
+                  : Decoration.mark({
+                      class: "cm-lp-link",
+                      attributes: {
+                        "data-md-link": resolveWikiRelative(resources, url) ?? url,
+                      },
+                    }).range(open.to, close.from),
               );
             }
           }
@@ -3010,7 +3030,7 @@ function gutterSourceToggle(): Extension {
 }
 
 /** 光标位置所在的"可切换形态"块：表格 / mermaid 围栏 / HTML 块 / 独立图片行。 */
-function toggleableBlockAt(state: EditorState, pos: number): { from: number; to: number } | null {
+export function toggleableBlockAt(state: EditorState, pos: number): { from: number; to: number } | null {
   let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, 1);
   while (node) {
     if (node.name === "Table" || node.name === "HTMLBlock") return { from: node.from, to: node.to };

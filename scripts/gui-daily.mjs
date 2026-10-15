@@ -233,7 +233,7 @@ try {
      })()`,
   );
   check(layout.right === true, "右侧面板存在");
-  check(layout.rightTabs.join(",") === "日历,目录,统计", "右侧面板只有 日记/目录 两个页签", JSON.stringify(layout.rightTabs));
+  check(layout.rightTabs.join(",") === "日历,目录,统计,单词", "右侧面板页签（0.23 起含单词本）", JSON.stringify(layout.rightTabs));
   check(layout.calInRight === true, "日历渲染在右侧面板内");
   check(layout.leftHasTree === true, "文件树常驻左栏");
   check(layout.leftHasTabbar === false, "左栏没有页签（文件就是左栏本体）");
@@ -355,7 +355,7 @@ try {
   const secondPath = join(vault, FOLDER, `${TODAY} 验证第二篇.md`);
   await typeInto(ws, ".cal-create-row input", "验证第二篇");
   await pressEnter(ws, ".cal-create-row input");
-  await waitFor("第二篇日记文件出现", async () => existsSync(secondPath));
+  await waitFor("第二篇日记文件出现", async () => existsSync(secondPath), 15000);
   check(existsSync(secondPath), `同一天建出第二篇：${FOLDER}/${TODAY} 验证第二篇.md`);
   if (existsSync(secondPath)) created.push(secondPath);
   {
@@ -697,7 +697,9 @@ try {
   const dailyExisted = existsSync(dailyPath);
   await typeInto(ws, ".cal-create-row input", "验证新建");
   await pressEnter(ws, ".cal-create-row input");
-  await waitFor("日记文件出现", async () => existsSync(dailyPath));
+  // 创建链路（双击 → 输入 → Enter → Rust 建文件 → watcher）在长跑实例上偶发
+  // 超过 6s（整套件跑到第 11 节时后台 Autosave/watcher 繁忙），放宽到 15s
+  await waitFor("日记文件出现", async () => existsSync(dailyPath), 15000);
   check(existsSync(dailyPath), `新建了 ${FOLDER}/${emptyDay} 验证新建.md（日期 + 空格 + 名字）`);
   if (!dailyExisted) created.push(dailyPath);
 
@@ -746,19 +748,38 @@ try {
     // 触发一次设置写入：把附件目录设为同值也会 serialize 全部自有键——
     // pastedImageFolder 是 0.3 新增的自有键，fixture 里没有它，
     // 只有真实发生过一次设置写入它才会被追加到末尾。
+    // 设置面板是 toggle：不依赖前序小节把它留着开——先查后点（0.5 轮教训）
     await evaluate(
       ws,
       `(() => {
-         const row = [...document.querySelectorAll('.settings-row')].find(r => r.querySelector('span')?.textContent === '附件保存目录');
-         const el = row?.querySelector('input');
-         if (!el) return false;
-         const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-         setter.call(el, 'attachments');
-         el.dispatchEvent(new Event('input', { bubbles: true }));
-         return true;
+         if (!document.querySelector('.settings-panel')) {
+           document.querySelector('.topbar .icon-btn[title^="设置"]')?.click();
+         }
+         return !!document.querySelector('.settings-panel');
        })()`,
     );
-    await sleep(1500);
+    await sleep(800);
+    // React 对「同值」input 事件去重（value tracker）：目录已是默认值 attachments
+    // 时，直接设成同值不触发 onChange、不落盘——全新实例上必现（此前靠前序小节
+    // 改过目录才碰巧成立）。先写异值再写目标值，两次都是真变更。
+    const writeFolder = async (value) => {
+      await evaluate(
+        ws,
+        `(() => {
+           const row = [...document.querySelectorAll('.settings-row')].find(r => r.querySelector('span')?.textContent === '附件保存目录');
+           const el = row?.querySelector('input');
+           if (!el) return false;
+           const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+           setter.call(el, ${JSON.stringify(value)});
+           el.dispatchEvent(new Event('input', { bubbles: true }));
+           return true;
+         })()`,
+      );
+      await sleep(1200);
+    };
+    await writeFolder("attachments-x");
+    await writeFolder("attachments");
+    await sleep(800);
     const config = readConfig();
     check(
       config.emailAccessKey === "plugin-only-key-do-not-drop",
@@ -818,9 +839,14 @@ try {
   // 设置面板里显示的应当是库内配置的值（证明配置真的读出来了）
   await evaluate(
     ws,
-    `document.querySelector('.topbar .icon-btn[title^="设置"]').click()`,
+    `(() => {
+       if (!document.querySelector('.settings-panel')) {
+         document.querySelector('.topbar .icon-btn[title^="设置"]')?.click();
+       }
+       return !!document.querySelector('.settings-panel');
+     })()`,
   );
-  await sleep(300);
+  await sleep(600);
   const settingsValues = await evaluate(
     ws,
     `[...document.querySelectorAll('.settings-row')].map((row) => {

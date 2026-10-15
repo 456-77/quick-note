@@ -28,74 +28,78 @@ ROOT="$(pwd)"
 VAULT="$ROOT/test-vault"
 DETECT="$ROOT/test-vault.detect.json"
 
-echo "=== 1/17 类型检查 ==="
+echo "=== 1/18 类型检查 ==="
 npx tsc --noEmit
 
 echo
-echo "=== 2/17 重建测试仓库并记录基线 ==="
+echo "=== 2/18 重建测试仓库并记录基线 ==="
 bash scripts/make-test-vault.sh "$VAULT" > /dev/null
 bash scripts/verify-roundtrip.sh snapshot "$VAULT" > /dev/null
 echo "基线已记录（$(($(wc -l < "$VAULT.baseline.txt"))) 个文件）"
 
 echo
-echo "=== 3/17 Rust 集成测试（往返 + 新建/重命名/删除 + 同步扫描与 HTTP 通道） ==="
+echo "=== 3/18 Rust 集成测试（往返 + 新建/重命名/删除 + 同步扫描与 HTTP 通道） ==="
 (cd src-tauri && cargo test --quiet --test roundtrip --test create --test sync)
 
 echo
-echo "=== 4/17 导出 Rust 的换行符探测结果 ==="
+echo "=== 4/18 导出 Rust 的换行符探测结果 ==="
 (cd src-tauri && cargo run --quiet --example dump-detect -- "$VAULT") > "$DETECT"
 echo "已导出 $DETECT"
 
 echo
-echo "=== 5/17 编辑器层测试：字符串 ↔ CodeMirror 状态 ==="
+echo "=== 5/18 编辑器层测试：字符串 ↔ CodeMirror 状态 ==="
 node --experimental-strip-types --no-warnings scripts/verify-cm6-roundtrip.mjs "$VAULT" "$DETECT"
 
 echo
-echo "=== 6/17 Live Preview 装饰层测试 ==="
+echo "=== 6/18 Live Preview 装饰层测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-livepreview.mjs "$VAULT/features.md"
 
 echo
-echo "=== 7/17 额外行内语法扫描测试 ==="
+echo "=== 7/18 额外行内语法扫描测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-inline-syntax.mjs
 
 echo
-echo "=== 8/17 附件命名与链接测试 ==="
+echo "=== 8/18 附件命名与链接测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-attachments.mjs
 
 echo
-echo "=== 9/17 日记与日历的纯逻辑 ==="
+echo "=== 9/18 日记与日历的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-daily.mjs
 
 echo
-echo "=== 10/17 云同步的纯逻辑（冲突决策、快照合并、哈希口径） ==="
+echo "=== 10/18 云同步的纯逻辑（冲突决策、快照合并、哈希口径） ==="
 node --experimental-strip-types --no-warnings scripts/verify-sync.mjs
 
 echo
-echo "=== 11/17 表格结构编辑与大纲的纯逻辑 ==="
+echo "=== 11/18 表格结构编辑与大纲的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-tables.mjs
 
 echo
-echo "=== 12/17 M4 增强功能的纯逻辑 ==="
+echo "=== 12/18 M4 增强功能的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-m4.mjs
 
 echo
-echo "=== 13/17 行内代码 / 代码块切换的纯逻辑 ==="
+echo "=== 13/18 行内代码 / 代码块切换的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-code-edit.mjs
 
 echo
-echo "=== 14/17 Markdown 成对符号自动闭合的纯逻辑 ==="
+echo "=== 14/18 Markdown 成对符号自动闭合的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-autopairs.mjs
 
 echo
-echo "=== 15/17 列表切换 / 日记改名日期 / 待办日期前缀的纯逻辑 ==="
+echo "=== 15/18 列表切换 / 日记改名日期 / 待办日期前缀的纯逻辑 ==="
 node --experimental-strip-types --no-warnings scripts/verify-lists-daily.mjs
 
 echo
-echo "=== 16/17 速记行格式：组装/解析/行级编辑（纯逻辑） ==="
+echo "=== 16/18 速记行格式：组装/解析/行级编辑（纯逻辑） ==="
 node --experimental-strip-types --no-warnings scripts/verify-capture.mjs
 
 echo
-echo "=== 17/17 比对基线：确认文件未被改动 ==="
+echo "=== 17/18 搜索变体与单词本（字段联动/单词本纯变换） ==="
+node --experimental-strip-types --no-warnings scripts/verify-search-vocab.mjs
+
+echo
+echo "=== 18/18 比对基线：确认文件未被改动 ==="
 bash scripts/verify-roundtrip.sh check "$VAULT"
 
 echo

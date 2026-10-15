@@ -13,8 +13,8 @@
  * 负责导航与替换）——高亮、环绕、正则/全词匹配都是现成的成熟实现。
  */
 
-import { Prec, type Extension } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { Prec, type Extension, RangeSetBuilder } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import {
   findNext,
   findPrevious,
@@ -24,6 +24,7 @@ import {
   SearchQuery,
   setSearchQuery,
 } from "@codemirror/search";
+import { fieldPattern } from "./searchVariants.ts";
 
 /** 面板上的可调选项。 */
 interface PanelState {
@@ -31,6 +32,8 @@ interface PanelState {
   replace: string;
   caseSensitive: boolean;
   regexp: boolean;
+  /** 字段联动：下划线/驼峰两种写法一并匹配（0.23 用户反馈；替换语义随正则变化，做成开关）。 */
+  fieldMode: boolean;
   wholeWord: boolean;
   replaceOpen: boolean;
 }
@@ -40,14 +43,74 @@ const panelState: PanelState = {
   replace: "",
   caseSensitive: false,
   regexp: false,
+  fieldMode: false,
   wholeWord: false,
   replaceOpen: false,
 };
+
+/**
+ * 面板状态跨会话持久化（0.23 用户反馈：搜索词每次都要重输）。搜索词、替换词与
+ * 各开关写进 localStorage，新会话打开面板时原样带回。
+ */
+const STATE_KEY = "quicknote.searchPanel";
+
+function persistPanelState(): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    localStorage.setItem(
+      STATE_KEY,
+      JSON.stringify({
+        query: panelState.query,
+        replace: panelState.replace,
+        caseSensitive: panelState.caseSensitive,
+        regexp: panelState.regexp,
+        fieldMode: panelState.fieldMode,
+        wholeWord: panelState.wholeWord,
+        replaceOpen: panelState.replaceOpen,
+      }),
+    );
+  } catch {
+    // 存不进去只影响下次启动，本次会话照常
+  }
+}
+
+function loadPanelState(): void {
+  if (typeof localStorage === "undefined") return;
+  try {
+    const raw = localStorage.getItem(STATE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as Partial<PanelState>;
+    if (typeof parsed.query === "string") panelState.query = parsed.query;
+    if (typeof parsed.replace === "string") panelState.replace = parsed.replace;
+    if (typeof parsed.caseSensitive === "boolean") panelState.caseSensitive = parsed.caseSensitive;
+    if (typeof parsed.regexp === "boolean") panelState.regexp = parsed.regexp;
+    if (typeof parsed.fieldMode === "boolean") panelState.fieldMode = parsed.fieldMode;
+    if (typeof parsed.wholeWord === "boolean") panelState.wholeWord = parsed.wholeWord;
+    if (typeof parsed.replaceOpen === "boolean") panelState.replaceOpen = parsed.replaceOpen;
+  } catch {
+    // 坏数据按默认值走
+  }
+}
+loadPanelState();
 
 let panel: HTMLElement | null = null;
 let panelView: EditorView | null = null;
 
 function buildQuery(): SearchQuery {
+  // 字段联动：生成段间允许 `_` 的正则（大小写不敏感、整词关闭——联动本身就是
+  // 宽口径的字段查找）。与正则模式互斥，buildQuery 只会在两者取其一时走到这里。
+  if (panelState.fieldMode && panelState.query && !panelState.regexp) {
+    const pattern = fieldPattern(panelState.query);
+    if (pattern) {
+      return new SearchQuery({
+        search: pattern,
+        replace: panelState.replace,
+        caseSensitive: false,
+        regexp: true,
+        wholeWord: false,
+      });
+    }
+  }
   return new SearchQuery({
     search: panelState.query,
     replace: panelState.replace,
@@ -57,7 +120,7 @@ function buildQuery(): SearchQuery {
   });
 }
 
-/** 把当前查询同步给 CM（驱动文档内高亮与查找替换命令）。 */
+/** 把当前查询同步给 CM（驱动查找替换命令）。 */
 function applyQuery(view: EditorView): void {
   // setSearchQuery 的效果类型不接受 null：空查询用「永不匹配」的哨兵清除高亮
   view.dispatch({
@@ -65,7 +128,73 @@ function applyQuery(view: EditorView): void {
       panelState.query ? buildQuery() : new SearchQuery({ search: "\u0000a^" }),
     ),
   });
+  queryEpoch += 1;
 }
+
+// ---------------------------------------------------------------- 命中高亮
+//
+// CM 自带的 search 高亮器要求 searchState 里的 panel 打开才绘制（源码
+// `if (!panel || ...) return Decoration.none`）——本面板刻意不用 CM 的面板 DOM，
+// 所以它永远不亮。这里按同一套 class 自绘：视口范围内逐段 getCursor 取命中，
+// 与当前选区重合的那处加深。0.23 用户要求高亮为红色（styles.css 的
+// cm-searchMatch 覆盖）。
+
+const matchMark = Decoration.mark({ class: "cm-searchMatch" });
+const selectedMatchMark = Decoration.mark({ class: "cm-searchMatch cm-searchMatch-selected" });
+
+/** 查询版本号：applyQuery / 开关变化自增，高亮插件据此重建装饰。 */
+let queryEpoch = 0;
+
+const MATCH_LIMIT = 9999;
+
+const searchMatchHighlighter = ViewPlugin.fromClass(
+  class {
+    epoch: number;
+    decorations: DecorationSet;
+
+    constructor(view: EditorView) {
+      this.epoch = queryEpoch;
+      this.decorations = this.build(view);
+    }
+
+    update(update: ViewUpdate) {
+      if (
+        this.epoch !== queryEpoch ||
+        update.docChanged ||
+        update.viewportChanged ||
+        update.selectionSet
+      ) {
+        this.epoch = queryEpoch;
+        this.decorations = this.build(update.view);
+      }
+    }
+
+    private build(view: EditorView): DecorationSet {
+      if (!panelState.query || panelView !== view) return Decoration.none;
+      const query = buildQuery();
+      const builder = new RangeSetBuilder<Decoration>();
+      const main = view.state.selection.main;
+      let count = 0;
+      for (const range of view.visibleRanges) {
+        let cursor;
+        try {
+          cursor = query.getCursor(view.state, range.from, range.to);
+        } catch {
+          return Decoration.none; // 正则无效（输入中），不画
+        }
+        for (let step = cursor.next(); !step.done; step = cursor.next()) {
+          if (count >= MATCH_LIMIT) return builder.finish();
+          count += 1;
+          const { from, to } = step.value;
+          const selected = main.from === from && main.to === to;
+          builder.add(from, to, selected ? selectedMatchMark : matchMark);
+        }
+      }
+      return builder.finish();
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
 
 interface MatchInfo {
   total: number;
@@ -123,7 +252,24 @@ function closePanel(view: EditorView): void {
   panel = null;
   el.classList.add("is-closing");
   window.setTimeout(() => el.remove(), 150);
+  // 清掉**活的**查询状态：单一 EditorView 服务所有标签，不清的话上一篇的
+  // 命中高亮会原样挂在下一篇上（0.23 用户反馈"搜索框只属于它打开的那篇"）。
+  // panelState.query 保留（跨重启持久化），重开面板时重新应用。
+  view.dispatch({
+    effects: setSearchQuery.of(new SearchQuery({ search: "\u0000a^" })),
+  });
+  queryEpoch += 1;
   view.contentDOM?.focus();
+}
+
+/**
+ * 立即收起面板（切笔记/切页面用，0.23 用户反馈：搜索框不该一直挂在别的笔记上）。
+ * 不带关闭动画——切页是瞬时场景，动画残留反而像 bug。返回是否真的关了。
+ */
+export function closeSearchPanelIfOpen(): boolean {
+  if (!panel || !panelView) return false;
+  closePanel(panelView);
+  return true;
 }
 
 /** 面板 DOM。图标用内联 SVG，文字按钮用字符（Aa / .* / ab 是 VS Code 同款惯例）。 */
@@ -143,6 +289,11 @@ function buildPanel(view: EditorView): HTMLElement {
       <button type="button" data-act="next" title="下一处（Enter）">↓</button>
       <button type="button" data-toggle="case" title="区分大小写">Aa</button>
       <button type="button" data-toggle="regexp" title="正则表达式">.*</button>
+      <button
+        type="button"
+        data-toggle="fieldMode"
+        title="字段联动：user_name 与 userName 两种写法一并匹配（忽略大小写；替换按正则语义）"
+      >a_b</button>
       <button type="button" data-toggle="word" title="全词匹配">ab</button>
       <span class="qn-search-sep"></span>
       <button type="button" data-act="replace-toggle" title="替换">⇄</button>
@@ -161,13 +312,14 @@ function buildPanel(view: EditorView): HTMLElement {
   queryInput.value = panelState.query;
   replaceInput.value = panelState.replace;
   for (const toggle of el.querySelectorAll<HTMLElement>("[data-toggle]")) {
-    const key = toggle.dataset.toggle as "caseSensitive" | "regexp" | "wholeWord";
+    const key = toggle.dataset.toggle as "caseSensitive" | "regexp" | "fieldMode" | "wholeWord";
     if (panelState[key]) toggle.classList.add("is-on");
   }
   if (panelState.replaceOpen) openReplaceRow();
 
   queryInput.addEventListener("input", () => {
     panelState.query = queryInput.value;
+    persistPanelState();
     refresh(view);
   });
   queryInput.addEventListener("keydown", (event) => {
@@ -182,6 +334,7 @@ function buildPanel(view: EditorView): HTMLElement {
   });
   replaceInput.addEventListener("input", () => {
     panelState.replace = replaceInput.value;
+    persistPanelState();
     applyQuery(view);
   });
   replaceInput.addEventListener("keydown", (event) => {
@@ -199,10 +352,23 @@ function buildPanel(view: EditorView): HTMLElement {
     const button = (event.target as HTMLElement).closest<HTMLElement>("button");
     if (!button) return;
     const act = button.dataset.act;
-    const toggle = button.dataset.toggle as "caseSensitive" | "regexp" | "wholeWord" | undefined;
+    const toggle = button.dataset
+      .toggle as "caseSensitive" | "regexp" | "fieldMode" | "wholeWord" | undefined;
     if (toggle) {
       panelState[toggle] = !panelState[toggle];
-      button.classList.toggle("is-on", panelState[toggle]);
+      // 字段联动与正则互斥（联动的实现就是正则）：开一个要关掉另一个
+      if (toggle === "fieldMode" && panelState.fieldMode) {
+        panelState.regexp = false;
+        el.querySelector<HTMLElement>('[data-toggle="regexp"]')?.classList.remove("is-on");
+      } else if (toggle === "regexp" && panelState.regexp) {
+        panelState.fieldMode = false;
+        el.querySelector<HTMLElement>('[data-toggle="fieldMode"]')?.classList.remove("is-on");
+      }
+      for (const node of el.querySelectorAll<HTMLElement>("[data-toggle]")) {
+        const key = node.dataset.toggle as keyof PanelState;
+        if (key) node.classList.toggle("is-on", panelState[key] === true);
+      }
+      persistPanelState();
       refresh(view);
       queryInput.focus();
       return;
@@ -224,6 +390,7 @@ function buildPanel(view: EditorView): HTMLElement {
         } else {
           openReplaceRow();
         }
+        persistPanelState();
         break;
       case "replace-one":
         replaceNext(view);
@@ -290,6 +457,8 @@ function openPanel(view: EditorView, init?: { query?: string }): void {
   panelView = view;
   panel = buildPanel(view);
   view.dom.appendChild(panel);
+  // 面板（重新）打开即应用持久化的查询：高亮与计数立刻与输入框一致
+  applyQuery(view);
   updateCount(view);
   const input = panel.querySelector<HTMLInputElement>(".qn-search-input")!;
   input.focus();
@@ -327,6 +496,8 @@ function closeIfOpen(view: EditorView): boolean {
 export function customSearchPanel(): Extension {
   return [
     search(),
+    // 自绘命中高亮（CM 的高亮器要求它的 panel 打开，见上方说明）
+    searchMatchHighlighter,
     // 文档或选区变化时刷新匹配计数：palette 跳转会预选命中词，光标落位后
     // current 才从 "-"（不在任何命中内）变成实际序号
     EditorView.updateListener.of((update) => {
