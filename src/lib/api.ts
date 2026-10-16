@@ -257,12 +257,22 @@ export const startupFile = () => invoke<string | null>("startup_file");
 /** 另起一个应用窗口打开指定仓库（「在新窗口打开」）。 */
 export const openNewWindow = (vault: string) => invoke<void>("open_new_window", { vault });
 
-/** 登记本窗口正打开的仓库（跨进程登记表，识别「已在其他窗口打开」用）。 */
+/**
+ * 登记本窗口正打开的仓库（跨进程登记表，识别「已在其他窗口打开」用）。
+ * 失败重试一次：登记表也是热键仲裁的依据，持有热键的窗口若没登记上，
+ * 新窗口会误判"占用者不是自己人"而当面弹"注册快捷键失败"（0.24 用户反馈）。
+ */
 export const registerOpenVault = async (vault: string): Promise<void> => {
+  const attempt = () => invoke("open_vaults_register", { vault });
   try {
-    await invoke("open_vaults_register", { vault });
+    await attempt();
   } catch {
-    // 登记失败只影响「跳过弹窗直接聚焦」这一处体验
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 800));
+      await attempt();
+    } catch {
+      // 登记失败只影响「跳过弹窗直接聚焦」与热键仲裁的准确性
+    }
   }
 };
 
@@ -401,9 +411,14 @@ export const syncStateLoad = () => invoke<string | null>("sync_state_load");
 /** 批量同步：读取某个仓库的独立同步状态（不存在返回 null）。 */
 export const syncStateLoadFor = (name: string) => invoke<string | null>("sync_state_load_for", { name });
 
-/** 批量同步：写某个仓库的独立同步状态（原子写）。 */
+/**
+ * 批量同步：写某个仓库的独立同步状态（原子写）。
+ * 注意参数名是 **text**——Rust 命令签名是 `text: String`，此前传成 `state`
+ * 一直被 Tauri 以缺参数拒绝，per-vault 状态（批量轮游标/哈希）从未落过盘
+ * （0.24 批测抓出来：每轮批量同步都在全量重拉，冲突裁决也留不到下一轮）。
+ */
 export const syncStateSaveFor = (name: string, state: string) =>
-  invoke<void>("sync_state_save_for", { name, state: state });
+  invoke<void>("sync_state_save_for", { name, text: state });
 
 export const syncStateSave = (text: string) => invoke<void>("sync_state_save", { text });
 

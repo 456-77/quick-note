@@ -15,6 +15,7 @@ import {
   parseVocabulary,
   removeVocabEntry,
   setVocabLearned,
+  updateVocabEntry,
 } from "../src/lib/vocabulary.ts";
 
 let failures = 0;
@@ -141,6 +142,51 @@ check(parsed.length === 1 && parsed[0].meta === "新", "同词重录后写者胜
 const crlf = initialVocabulary().replace(/\n/g, "\r\n");
 const crlfAdded = addVocabEntry(crlf, "alpha", "m").content;
 check(parseVocabulary(crlfAdded).some((entry) => entry.word === "alpha"), "CRLF 文件也能新增");
+
+// v2 行格式：`- word | 释义 | 备注 — meta`（0.24 快速查词）
+const v2 = addVocabEntry(fresh, "hscs_hsdt", "2026-10-16 · 数据库表清单", "数据传输任务接口表", "测试库").content;
+parsed = parseVocabulary(v2);
+check(
+  parsed[0].word === "hscs_hsdt" && parsed[0].meaning === "数据传输任务接口表" && parsed[0].note === "测试库",
+  "v2 行解析出释义与备注",
+  JSON.stringify(parsed[0]),
+);
+check(v2.includes("- hscs_hsdt | 数据传输任务接口表 | 测试库 — 2026-10-16 · 数据库表清单"), "v2 行序列化格式", v2);
+const v2NoNote = parseVocabulary(addVocabEntry(fresh, "alpha", "m", "只带释义").content);
+check(v2NoNote[0].meaning === "只带释义" && v2NoNote[0].note === "", "只带释义时备注截断", v2NoNote[0] ? "- alpha | 只带释义 — m" : "");
+check(
+  !addVocabEntry(fresh, "alpha", "m").content.includes("|"),
+  "空释义备注不产生竖线（与 v1 行一致）",
+);
+const v1Mixed = "# 单词本\n\n## 待学习\n\n- legacy — 2026-10-01 · 旧\n- hello\n";
+parsed = parseVocabulary(v1Mixed);
+check(parsed[0].meaning === "" && parsed[0].note === "" && parsed[0].meta === "2026-10-01 · 旧", "v1 裸行兼容", JSON.stringify(parsed));
+check(parsed[1].meaning === "" && parsed[1].note === "", "v1 无 meta 行兼容");
+
+// v2 编辑：更新释义/备注（原行就地重写，meta 保留）
+const edited = updateVocabEntry(v2, "HSCS_HSDT", { meaning: "数据传输任务接口表（更新）", note: "" }).content;
+parsed = parseVocabulary(edited);
+check(
+  parsed[0].meaning === "数据传输任务接口表（更新）" && parsed[0].note === "",
+  "编辑后释义备注生效（大小写不敏感定位）",
+  edited,
+);
+check(parsed[0].meta === "2026-10-16 · 数据库表清单", "编辑保留 meta", JSON.stringify(parsed[0]));
+check(updateVocabEntry(v2, "hscs_hsdt", { meaning: "数据传输任务接口表", note: "测试库" }).changed === false, "内容没变不产生写入");
+check(updateVocabEntry(fresh, "ghost", { meaning: "x" }).changed === false, "编辑不存在的词无变化");
+const editedLearned = updateVocabEntry(v2, "hscs_hsdt", { note: "新备注" }).content;
+check(parseVocabulary(editedLearned)[0].note === "新备注" && parseVocabulary(editedLearned)[0].meaning === "数据传输任务接口表", "只改备注时释义保留");
+
+// v2 条目在状态切换/删除时保留释义备注
+const movedV2 = setVocabLearned(v2, "hscs_hsdt", true).content;
+const movedParsed = parseVocabulary(movedV2);
+check(
+  movedParsed[0].learned === true && movedParsed[0].meaning === "数据传输任务接口表" && movedParsed[0].note === "测试库",
+  "移入已掌握时释义备注跟着走",
+  movedV2,
+);
+const removedV2 = removeVocabEntry(movedV2, "hscs_hsdt").content;
+check(parseVocabulary(removedV2).length === 0, "v2 条目可删除");
 
 // 文件名约定
 check(VOCAB_FILENAME === "单词本.md", "单词本落在仓库根的 单词本.md");

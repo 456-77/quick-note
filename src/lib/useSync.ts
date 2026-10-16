@@ -59,7 +59,9 @@ export interface SyncController {
   dismissSaveError: () => void;
   updateConfig: (patch: Partial<SyncConfig>) => void;
   /** 批量同步一轮：为指定仓库临时建独立引擎跑一轮（不切 UI，per-vault 状态）。 */
-  syncVaultOnce: (vaultPath: string) => Promise<void>;
+  syncVaultOnce: (vaultPath: string, onConflicts?: (paths: string[]) => void) => Promise<void>;
+  /** 指定仓库是否开着自动同步（当前仓库看生效开关；其余先看按仓库记忆，再读它的 per-vault 状态文件）。 */
+  enabledForVault: (vaultPath: string) => Promise<boolean>;
   /** 列出云端当前用户的全部仓库（引导/列表页枚举用）。 */
   listCloudVaults: () => Promise<Array<{ name: string; version: number }>>;
   /** 立即同步一次（设置里改完、或用户点状态栏）。 */
@@ -291,38 +293,64 @@ export function useSync(options: {
    * 不动全局状态**。状态持久化到 per-vault 文件（sync-state-<仓库名>.json），
    * 与当前 UI 仓库的 sync-state.json 互不干扰。folder/待办快照不参与批量轮
    * （各仓库库内配置不同，v1 按整库推送；打开仓库后的常规同步仍完整）。
-   * 冲突由引擎的 conflictHold 扣住：本轮跳过推送，用户打开仓库重新同步时
-   * 会再次弹出裁决。
+   * 冲突由引擎的 conflictHold 扣住（哈希不更新，打开仓库的常规同步会再次
+   * 弹出裁决），`onConflicts` 把本轮撞上的文件报给调用方做提示（0.24：速记
+   * 归档触发的自动轮用它提醒用户打开仓库手动处理）。
    */
-  const syncVaultOnce = useCallback((vaultPath: string): Promise<void> => {
-    const name = vaultPath.replace(/[\/]+$/, "").split(/[\/]/).pop() ?? vaultPath;
-    const configuredBase = stateRef.current;
-    return syncStateLoadFor(name)
-      .then((saved) => {
-        const base = saved ? (normalizeSyncState(JSON.parse(saved)) as SyncDeviceState) : configuredBase;
-        const adapted = adaptStateToVault(base, vaultPath);
-        const engine = new SyncEngine(vaultPath, adapted, {
-          getFolder: () => "",
-          getVaultName: () => name,
-          excludedSyncPaths: () => [],
-          getVirtualFiles: () => ({}),
-          mergeVirtualFile: () => false,
-          onStatus: () => {},
-          onNotice: (message, kind) => noticeRef.current(message, kind),
-          onConflicts: () => {
-            // 冲突文件被 conflictHold 扣住（哈希不更新），打开仓库的常规同步
-            // 会再次弹出裁决
-          },
-          persist: (next) =>
-            syncStateSaveFor(name, JSON.stringify(next, null, 2)).then(
-              () => {},
-              (e) => noticeRef.current(`保存同步状态失败：${e}`, "error"),
-            ),
+  const syncVaultOnce = useCallback(
+    (vaultPath: string, onConflicts?: (paths: string[]) => void): Promise<void> => {
+      const name = vaultPath.replace(/[\/]+$/, "").split(/[\/]/).pop() ?? vaultPath;
+      const configuredBase = stateRef.current;
+      return syncStateLoadFor(name)
+        .then((saved) => {
+          const base = saved ? (normalizeSyncState(JSON.parse(saved)) as SyncDeviceState) : configuredBase;
+          const adapted = adaptStateToVault(base, vaultPath);
+          const engine = new SyncEngine(vaultPath, adapted, {
+            getFolder: () => "",
+            getVaultName: () => name,
+            excludedSyncPaths: () => [],
+            getVirtualFiles: () => ({}),
+            mergeVirtualFile: () => false,
+            onStatus: () => {},
+            onNotice: (message, kind) => noticeRef.current(message, kind),
+            onConflicts: (items) => {
+              if (onConflicts && items.length > 0) onConflicts(items.map((item) => item.path));
+            },
+            persist: (next) =>
+              syncStateSaveFor(name, JSON.stringify(next, null, 2)).then(
+                () => {},
+                (e) => noticeRef.current(`保存同步状态失败：${e}`, "error"),
+              ),
+          });
+          return engine
+            .syncNow("manual")
+            .finally(() => engine.destroy());
         });
-        return engine
-          .syncNow("manual")
-          .finally(() => engine.destroy());
-      });
+    },
+    [],
+  );
+
+  /**
+   * 指定仓库是否开着自动同步（0.24：速记归档触发同步用）。当前仓库以生效
+   * 开关为准；其他仓库先查「按仓库记忆」的开关表（设备状态里累积的
+   * enabledByVault），查不到再读该仓库自己的 per-vault 状态文件（syncVaultOnce
+   * 落的那份）——它没同步过批量轮时文件不存在，按未开启处理。
+   */
+  const enabledForVault = useCallback(async (vaultPath: string): Promise<boolean> => {
+    const key = normalizeVaultKey(vaultPath);
+    if (vaultRef.current && normalizeVaultKey(vaultRef.current) === key) {
+      return stateRef.current.enabled;
+    }
+    const memory = stateRef.current.enabledByVault[key];
+    if (typeof memory === "boolean") return memory;
+    try {
+      const name = vaultPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? vaultPath;
+      const saved = await syncStateLoadFor(name);
+      if (!saved) return false;
+      return adaptStateToVault(normalizeSyncState(JSON.parse(saved) as Partial<SyncDeviceState>), vaultPath).enabled;
+    } catch {
+      return false;
+    }
   }, []);
 
   /**
@@ -438,6 +466,7 @@ export function useSync(options: {
     saveError,
     updateConfig,
     syncVaultOnce,
+    enabledForVault,
     listCloudVaults,
     syncNow,
     resetCursorAndSync,

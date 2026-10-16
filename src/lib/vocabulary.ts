@@ -1,5 +1,6 @@
 /**
- * 单词本（0.23 用户反馈"添加单词学习功能，类似 IDEA"）。
+ * 单词本（0.23 用户反馈"添加单词学习功能，类似 IDEA"；0.24 按用户提示词升级为
+ * "快速记录 + 快速查词"工具：词条支持释义与备注）。
  *
  * 形态：仓库根的一篇普通笔记 `单词本.md`——用户随时可以自己看、自己改，与其他
  * 工具（Obsidian/同步）完全兼容。结构化的"待学习/已掌握"两个小节，每行一条：
@@ -10,15 +11,11 @@
  *
  *   - word — 2026-10-15 · 来源笔记名
  *   - hello
+ *   - hscs_hsdt | 数据传输任务接口表 | 测试库用的 — 2026-10-16 · 数据库表清单
  *
- *   ## 已掌握
- *
- *   - world — 2026-10-14 · 某笔记
- *
- * IDEA 的"保存到词典"是遇到生词时一键收走；这里同款交互：选中词（或光标所在
- * 词）→ Ctrl+Alt+V / 命令面板「加入单词本」，右侧面板的「单词」页签负责翻看
- * 与标记掌握。全部函数是**纯内容变换**（字符串进字符串出），Node 可直接断言；
- * 读写文件由调用方（App）负责。
+ * 行格式 v2（0.24）：词后面可以带 ` | 释义 | 备注`（都可省略、按需截断）；
+ * v1 的裸 `- word — meta` 行完全兼容。全部函数是**纯内容变换**（字符串进
+ * 字符串出），Node 可直接断言；读写文件由调用方（App）负责。
  */
 
 /** 单词本笔记的文件名（仓库根）。 */
@@ -29,6 +26,10 @@ export const VOCAB_SECTION_DONE = "## 已掌握";
 
 export interface VocabEntry {
   word: string;
+  /** 中文释义（v2 字段；手写/旧行可能没有）。 */
+  meaning: string;
+  /** 备注（v2 字段）。 */
+  note: string;
   /** 记录时间与来源（"2026-10-15 · 来源笔记"）；手写的行可能没有。 */
   meta: string;
   learned: boolean;
@@ -36,9 +37,17 @@ export interface VocabEntry {
   line: number;
 }
 
-/** 一条记录的源码行；词与元信息用全角破折号分隔（与界面文案一致的书写习惯）。 */
-function entryLine(entry: { word: string; meta: string }): string {
-  return entry.meta ? `- ${entry.word} — ${entry.meta}` : `- ${entry.word}`;
+/** 一条记录的源码行：`- word | 释义 | 备注 — meta`，释义/备注空则按需截断。 */
+function entryLine(entry: {
+  word: string;
+  meaning?: string;
+  note?: string;
+  meta: string;
+}): string {
+  const parts = [entry.word, entry.meaning?.trim() ?? "", entry.note?.trim() ?? ""];
+  while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
+  const left = parts.join(" | ");
+  return entry.meta ? `- ${left} — ${entry.meta}` : `- ${left}`;
 }
 
 /** 全新单词本的初始内容。 */
@@ -70,10 +79,20 @@ export function parseVocabulary(content: string): VocabEntry[] {
     const body = line.slice(2).trim();
     if (!body) continue;
     const dash = body.indexOf(" — ");
-    const word = (dash >= 0 ? body.slice(0, dash) : body).trim();
-    if (!word) continue;
+    const left = (dash >= 0 ? body.slice(0, dash) : body).trim();
     const meta = dash >= 0 ? body.slice(dash + 3).trim() : "";
-    const entry: VocabEntry = { word, meta, learned, line: index };
+    // v2：词后面可带 ` | 释义 | 备注`；v1 的裸词行没有竖线，拆出来就是单项
+    const fields = left.split(" | ").map((field) => field.trim());
+    const word = fields[0] ?? "";
+    if (!word) continue;
+    const entry: VocabEntry = {
+      word,
+      meaning: fields[1] ?? "",
+      note: fields[2] ?? "",
+      meta,
+      learned,
+      line: index,
+    };
     const key = word.toLowerCase();
     const old = seen.get(key);
     if (old) {
@@ -95,13 +114,15 @@ export function addVocabEntry(
   content: string,
   word: string,
   meta: string,
+  meaning = "",
+  note = "",
 ): { content: string; added: boolean } {
   const cleaned = word.trim();
   if (!cleaned) return { content, added: false };
   if (parseVocabulary(content).some((entry) => entry.word.toLowerCase() === cleaned.toLowerCase())) {
     return { content, added: false };
   }
-  const line = entryLine({ word: cleaned, meta: meta.trim() });
+  const line = entryLine({ word: cleaned, meaning, note, meta: meta.trim() });
   const lines = content.split(/\r?\n/);
   const todoIndex = lines.findIndex((row) => row.trim() === VOCAB_SECTION_TODO);
   if (todoIndex >= 0) {
@@ -166,5 +187,32 @@ export function removeVocabEntry(
   const fallback = lines.findIndex((row) => row.trim() === entryLine(hit));
   if (fallback < 0) return { content, changed: false };
   lines.splice(fallback, 1);
+  return { content: lines.join("\n"), changed: true };
+}
+
+/**
+ * 更新一个词的释义/备注（0.24 详情面板的「编辑」）。原行就地重写（meta 保留）；
+ * 行号对不上时按完整行文本兜底。词不存在或内容没变时 changed=false。
+ */
+export function updateVocabEntry(
+  content: string,
+  word: string,
+  patch: { meaning?: string; note?: string },
+): { content: string; changed: boolean } {
+  const key = word.toLowerCase();
+  const hit = parseVocabulary(content).find((entry) => entry.word.toLowerCase() === key);
+  if (!hit) return { content, changed: false };
+  const meaning = patch.meaning !== undefined ? patch.meaning.trim() : hit.meaning;
+  const note = patch.note !== undefined ? patch.note.trim() : hit.note;
+  if (meaning === hit.meaning && note === hit.note) return { content, changed: false };
+  const rebuilt = entryLine({ ...hit, meaning, note });
+  const lines = content.split(/\r?\n/);
+  if (lines[hit.line]?.trim().startsWith("- ")) {
+    lines[hit.line] = rebuilt;
+    return { content: lines.join("\n"), changed: true };
+  }
+  const fallback = lines.findIndex((row) => row.trim() === entryLine(hit));
+  if (fallback < 0) return { content, changed: false };
+  lines[fallback] = rebuilt;
   return { content: lines.join("\n"), changed: true };
 }

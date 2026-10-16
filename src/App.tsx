@@ -211,6 +211,12 @@ export default function App() {
     const stored = localStorage.getItem(SIDEBAR_KEY);
     return stored === "outline" || stored === "stats" || stored === "vocab" ? stored : "daily";
   });
+  /**
+   * 单词本代际（0.24 用户反馈：快捷键收词后右侧面板不刷新）：面板只靠 revision
+   * （编辑器文档变更）重读，而收词不经过编辑器。收词落盘、单词本被外部改动
+   * （同步/另一窗口）时 bump，面板据此重读。
+   */
+  const [vocabVersion, setVocabVersion] = useState(0);
   /** 左侧文件树的名称过滤（空串 = 显示完整目录树）。 */
   const [treeFilter, setTreeFilter] = useState("");
   /**
@@ -1667,6 +1673,11 @@ export default function App() {
       // 自己按哈希判断是不是自己刚写的那一次。
       if (paths.includes(DAILY_CONFIG_FILE)) void dailyRef.current.handleVaultChange(paths);
 
+      // 单词本是「单词」面板的数据源：外部改动（另一窗口/同步回写）也要让面板重读
+      if (paths.some((path) => path === VOCAB_FILENAME || path.endsWith(`/${VOCAB_FILENAME}`))) {
+        setVocabVersion((value) => value + 1);
+      }
+
       // 同步引擎按同一批路径排队推送（自己写入产生的回声靠内容哈希跳过）。
       syncRef.current?.handleVaultChange(paths);
 
@@ -1922,14 +1933,21 @@ export default function App() {
 
   // 本窗口打开的仓库登记到跨进程登记表；换仓库（vault 状态变化）自动刷新，
   // 退出时尽力注销——没来得及注销（强杀/崩溃）的条目由 Rust 读取时按 pid 兜底。
+  // 窗口聚焦时补一次登记：登记表还是热键仲裁的依据，WebView 重载（beforeunload
+  // 会先注销）或登记失败后，这里是无重试开销的自愈点（0.24 用户反馈）。
   useEffect(() => {
     if (!vault) return;
     void registerOpenVault(vault);
+    const onFocus = () => void registerOpenVault(vault);
     const onUnload = () => {
       void unregisterOpenVault();
     };
+    window.addEventListener("focus", onFocus);
     window.addEventListener("beforeunload", onUnload);
-    return () => window.removeEventListener("beforeunload", onUnload);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      window.removeEventListener("beforeunload", onUnload);
+    };
   }, [vault]);
 
   const openVault = useCallback(async () => {
@@ -3631,11 +3649,52 @@ export default function App() {
         return;
       }
       await writeNote(vaultRef.current, VOCAB_FILENAME, result.content, false);
+      // 「单词」面板只靠编辑器文档变更刷新，收词不走编辑器——这里显式 bump
+      setVocabVersion((value) => value + 1);
       notice(`已加入单词本：${word}`);
     } catch (e) {
       notice(`加入单词本失败：${e instanceof Error ? e.message : String(e)}`, "error");
     }
   }, [notice]);
+
+  /**
+   * 速记归档后的同步联动（0.24 用户反馈）：归档写到的仓库里开着自动同步的，
+   * 立即各跑一轮——当前仓库走常驻引擎的完整轮（冲突由既有横幅接手），其他
+   * 仓库走 per-vault 临时轮（跨仓库归档此前要等"下次打开它"才同步），临时轮
+   * 撞出的冲突直接提醒用户打开仓库裁决。仓库开关是异步判定的（可能要读
+   * per-vault 状态文件），整个联动挂到后台跑，不阻塞归档本身。
+   */
+  const handleArchiveSync = useCallback(
+    (involved: string[]) => {
+      const sync = syncRef.current;
+      if (!sync) return;
+      void (async () => {
+        for (const target of [...new Set(involved)].filter(Boolean)) {
+          let enabled = false;
+          try {
+            enabled = await sync.enabledForVault(target);
+          } catch {
+            enabled = false;
+          }
+          if (!enabled) continue;
+          if (vault && target === vault) {
+            sync.syncNow();
+            continue;
+          }
+          const name = target.replace(/^.*[\\/]/, "");
+          await sync
+            .syncVaultOnce(target, (paths) => {
+              setError(`同步「${name}」发现 ${paths.length} 个冲突文件：请打开该仓库手动处理`);
+            })
+            .then(
+              () => setStatus(`已自动同步仓库：${name}`),
+              (e) => setError(`归档后同步「${name}」失败：${e}`),
+            );
+        }
+      })();
+    },
+    [vault],
+  );
 
   /** 光标跳到当前笔记的最后一行并滚到可视区（长笔记不用滚轮翻到底）。 */
   const gotoDocEnd = useCallback(() => {
@@ -5153,6 +5212,7 @@ export default function App() {
               onStats={setInboxStats}
               carryAttachments={carryAttachmentsForArchive}
               imageFolder={daily.settings.pastedImageFolder}
+              onArchiveSync={handleArchiveSync}
             />
           )}
         </main>
@@ -5266,12 +5326,13 @@ export default function App() {
             <StatsPanel entries={entries} daily={daily} onOpen={(p) => void openEntry(p)} />
           )}
           {rightPanel === "vocab" && (
-            <VocabularyPanel
-              vault={vault}
-              revision={revision}
-              onOpen={(p) => void openEntry(p)}
-              notice={notice}
-            />
+              <VocabularyPanel
+                vault={vault}
+                revision={revision}
+                version={vocabVersion}
+                onOpen={(path) => void openNote(path)}
+                notice={notice}
+              />
           )}
         </aside>
         )}

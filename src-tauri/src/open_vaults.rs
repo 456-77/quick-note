@@ -103,12 +103,23 @@ fn load_pruned(path: &Path) -> Vec<OpenVault> {
 /// 打开新仓库 = 起新进程，而全局热键是 OS 级唯一的：第二个进程注册同一个组合
 /// 必然撞 "already registered"。这个判断让后启动的进程知道"占用者其实是自家
 /// 兄弟"，从而静默让位（热键由先启动的进程持有），而不是弹错误吓用户。
+///
+/// 0.24 用户反馈"打开两个仓库还是会弹注册失败"：登记表是唯一的判断依据，
+/// **读不到/解析不了时宁可让位**——误判"没有兄弟"会当着用户的面弹红条，而
+/// 误判"有兄弟"只是新窗口不持热键（热键仍由先启动的窗口全局响应，功能不丢）。
+/// 文件不存在才是可靠的"没有兄弟"。
 pub fn other_instance_alive(app: &AppHandle) -> bool {
     let Ok(path) = registry_path(app) else {
-        return false;
+        return true;
     };
     let me = std::process::id();
-    load_pruned(&path).iter().any(|entry| entry.pid != me)
+    let Ok(text) = fs::read_to_string(&path) else {
+        return path.exists();
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<OpenVault>>(&text) else {
+        return true;
+    };
+    entries.into_iter().filter(|entry| pid_alive(entry.pid)).any(|entry| entry.pid != me)
 }
 
 /// 登记本进程正打开的仓库（启动与切换仓库时调用；同仓库重复调用即刷新）。

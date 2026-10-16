@@ -51,6 +51,7 @@ import {
   parseCalloutLine,
 } from "./inlineSyntax.ts";
 import { CalloutLabelWidget, HtmlWidget, isExternalUrl, mathWidgetFor } from "./markdownExtras.ts";
+import { searchNavSelection, tableSearchHighlight } from "./searchPanel.ts";
 import {
   EMPTY_CONTEXT,
   IMAGE_EXT,
@@ -185,6 +186,70 @@ function appendRuns(target: HTMLElement, runs: TextRun[]): void {
       node = el;
     }
     target.appendChild(node);
+  }
+}
+
+/**
+ * 把查询命中包进 `<mark class="qn-search-hit">`（0.24）：搜索高亮是文本装饰，
+ * 画不进块级 widget，渲染态表格里的命中由 widget 自己标。单元格是渲染后的
+ * 富文本（code/strong…），按拼接后的纯文本找命中，再把命中区间映射回各文本
+ * 节点切分换包。正则来自 tableSearchHighlight，带 g 标志——用完必须归零
+ * lastIndex，否则下次进函数会从残留位置接着扫。
+ */
+function applySearchHighlight(cell: HTMLElement, re: RegExp): void {
+  const nodes: Text[] = [];
+  const walker = document.createTreeWalker(cell, NodeFilter.SHOW_TEXT);
+  let text = "";
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    nodes.push(node as Text);
+    text += node.nodeValue ?? "";
+  }
+  if (!text) return;
+  re.lastIndex = 0;
+  const ranges: Array<[number, number]> = [];
+  for (let guard = 0; guard < 500; guard += 1) {
+    const match = re.exec(text);
+    if (!match) break;
+    if (!match[0]) {
+      // 空命中（如 a*）会死循环，前进一格重试
+      re.lastIndex += 1;
+      if (re.lastIndex > text.length) break;
+      continue;
+    }
+    ranges.push([match.index, match.index + match[0].length]);
+  }
+  re.lastIndex = 0;
+  if (ranges.length === 0) return;
+  let offset = 0;
+  let rangeIndex = 0;
+  for (const node of nodes) {
+    const value = node.nodeValue ?? "";
+    const start = offset;
+    const end = start + value.length;
+    offset = end;
+    while (rangeIndex < ranges.length && ranges[rangeIndex][1] <= start) rangeIndex += 1;
+    if (rangeIndex >= ranges.length) break;
+    if (ranges[rangeIndex][0] >= end) continue;
+    const cuts: Array<[number, number]> = []; // 相对节点内的命中段
+    for (let i = rangeIndex; i < ranges.length; i += 1) {
+      const [from, to] = ranges[i];
+      if (from >= end) break;
+      cuts.push([Math.max(from, start) - start, Math.min(to, end) - start]);
+    }
+    const parent = node.parentNode;
+    if (!parent || cuts.length === 0) continue;
+    const frag = document.createDocumentFragment();
+    let cursor = 0;
+    for (const [from, to] of cuts) {
+      if (from > cursor) frag.appendChild(document.createTextNode(value.slice(cursor, from)));
+      const mark = document.createElement("mark");
+      mark.className = "qn-search-hit";
+      mark.textContent = value.slice(from, to);
+      frag.appendChild(mark);
+      cursor = to;
+    }
+    if (cursor < value.length) frag.appendChild(document.createTextNode(value.slice(cursor)));
+    parent.replaceChild(frag, node);
   }
 }
 
@@ -556,7 +621,14 @@ class MermaidWidget extends WidgetType {
     const insertSvg = (svg: string) => {
       box.innerHTML = svg;
       const element = box.querySelector("svg");
-      if (element) enhanceMermaid(box, element as SVGSVGElement, context.vaultPath, context.notePath);
+      if (element)
+        enhanceMermaid(
+          box,
+          element as SVGSVGElement,
+          context.vaultPath,
+          context.notePath,
+          this.code,
+        );
       // 渲染后的 SVG 比占位文字高得多：不重测的话 CM 的高度图停在占位尺寸上，
       // 后续所有点击定位/选区/行号都整体错位（选中的行和实际行对不上）。
       // 异步回调跑的时候 widget 可能已被移除，isConnected 守卫一下。
@@ -622,6 +694,8 @@ function enhanceMermaid(
   svg: SVGSVGElement,
   vaultPath: string | null,
   notePath: string | null,
+  /** 图定义源码：导出走「导出专用重渲染」（见 downloadDiagram）。 */
+  code: string,
 ): void {
   // 自然尺寸：viewBox 最可靠（mermaid 开启 useMaxWidth 时 width 属性是 "100%"，
   // 解析成数字会得到 100——按它缩放就全错了）。
@@ -702,7 +776,7 @@ function enhanceMermaid(
     item.addEventListener("click", (event) => {
       event.stopPropagation();
       menu.classList.remove("me-open");
-      void downloadDiagram(svg, state, format, vaultPath, notePath);
+      void downloadDiagram(svg, state, format, vaultPath, notePath, code);
     });
     menu.appendChild(item);
   }
@@ -846,6 +920,13 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
  * 用 writeBinary 把导出**保存进仓库**（当前笔记同目录，没开笔记就仓库根），
  * 命名 `笔记名-mermaid-N.svg/png`——知识系统的导出物应该跟着库走，而不是散在
  * 下载文件夹里；同时也绕开了 WebView 对 blob 下载支持不确定的问题。
+ *
+ * 0.24 重做导出源（用户反馈"导出效果不好"：导出的 SVG 一排排空节点、深色节点
+ * 配透明底，离开应用就没法看）：页面里渲染的 SVG 文字在 foreignObject 里，
+ * 作为 `<img>` 预览/多数查看器根本不渲染它；此前的 foreignObject→`<text>` 换算
+ * 依赖离屏实测布局，对多行/富文本标签经常量不到字。导出改为**导出专用重渲染**
+ * （flowchart 关 htmlLabels，标签直接以原生 `<text>`/`<tspan>` 输出）并垫一块
+ * 主题底色矩形；重渲染失败回退旧换算路径。
  */
 async function downloadDiagram(
   svg: SVGSVGElement,
@@ -853,6 +934,7 @@ async function downloadDiagram(
   format: "svg" | "png",
   vaultPath: string | null,
   notePath: string | null,
+  code: string,
 ): Promise<void> {
   if (!vaultPath) {
     mermaidNotice("尚未打开仓库，无法导出图表", "error");
@@ -868,19 +950,25 @@ async function downloadDiagram(
     const dir = exportFolder || (notePath && notePath.includes("/") ? notePath.slice(0, notePath.lastIndexOf("/")) : "");
     const target = dir ? `${dir}/${name}` : name;
 
+    const exported = await renderForExport(code);
+    const source = exported ?? svg;
+    const exportState = exported ? zoomStateOf(exported) : state;
+
     if (format === "svg") {
-      // SVG 也走 foreignObject→<text> 换算：原样导出的 svg 里文字是 HTML，
-      // 很多查看器（以及作为 <img> 放大）不渲染/会光栅化它——放大即糊、丢字
-      const clone = svgWithTextOnly(svg, state);
+      // 重渲染失败时回退旧换算（svgWithTextOnly 内含 cloneForExport 的定尺与清样式）
+      let clone = exported ? cloneForExport(source, exportState) : svgWithTextOnly(source, exportState);
+      if (clone.querySelector("foreignObject")) {
+        // 个别图型对 htmlLabels 不买账：兜底把 foreignObject 换算成 <text>
+        clone = svgWithTextOnly(clone, exportState);
+      }
+      addExportBackground(clone, exportState);
       const xml = new XMLSerializer().serializeToString(clone);
       await writeVaultBinary(vaultPath, target, new TextEncoder().encode(xml));
     } else {
       // PNG 按 3 倍目标分辨率重新光栅化：把克隆的 width/height 设成放大后的尺寸
       // （viewBox 不变，矢量在解码时放大），<img> 以大尺寸解码后 1:1 落 canvas。
-      // 此前按自然尺寸解码再 drawImage 拉伸到位图缩放，文字发糊——0.23 用户反馈
-      // 「导出还是模糊」的根源就是这个，不是倍率不够。
       const scale = 3;
-      const url = svgToBlobUrl(svg, state, scale);
+      const url = svgToBlobUrl(source, exportState, scale);
       try {
         const image = new Image();
         await new Promise<void>((resolve, reject) => {
@@ -889,8 +977,8 @@ async function downloadDiagram(
           image.src = url;
         });
         const canvas = document.createElement("canvas");
-        canvas.width = Math.round(state.naturalW * scale);
-        canvas.height = Math.round(state.naturalH * scale);
+        canvas.width = Math.round(exportState.naturalW * scale);
+        canvas.height = Math.round(exportState.naturalH * scale);
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("Canvas 不可用");
         ctx.fillStyle = themeBackgroundColor();
@@ -911,6 +999,64 @@ async function downloadDiagram(
 }
 
 let diagramExportSeq = 0;
+let exportRenderSeq = 0;
+
+/**
+ * 导出专用重渲染（0.24）：关掉 htmlLabels，标签以原生 SVG 文本输出，导出物在
+ * 任何查看器里都一致。注意配置键是**顶层** htmlLabels——`flowchart.htmlLabels`
+ * 在 mermaid 11 里经 initialize 传入时实测被忽略（探针验证：顶层键 fo=0，
+ * flowchart 键 fo=3）。mermaid 的 initialize 是全局的——渲染完在 finally 里
+ * 恢复页面配置，页面内的渲染观感不变。失败返回 null，调用方回退到对页面 SVG
+ * 做换算的旧路径。
+ */
+async function renderForExport(code: string): Promise<SVGSVGElement | null> {
+  try {
+    const mermaid = await loadMermaid();
+    mermaid.initialize({
+      ...mermaidInitOptions(),
+      htmlLabels: false,
+      flowchart: { htmlLabels: false },
+    });
+    try {
+      const { svg } = await mermaid.render(`qn-mermaid-export-${(exportRenderSeq += 1)}`, code);
+      const holder = document.createElement("div");
+      holder.innerHTML = svg;
+      const element = holder.querySelector("svg");
+      return element;
+    } finally {
+      mermaid.initialize(mermaidInitOptions());
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** 由 SVG 自身的 viewBox 算自然尺寸（导出重渲染件没有 enhanceMermaid 的 state）。 */
+function zoomStateOf(svg: SVGSVGElement): MermaidZoomState {
+  const vb = svg.viewBox.baseVal;
+  return {
+    naturalW: vb.width > 0 ? vb.width : 300,
+    naturalH: vb.height > 0 ? vb.height : 200,
+    scale: 1,
+    fitted: true,
+  };
+}
+
+/**
+ * 导出物垫一块主题底色矩形：mermaid 默认不画背景，深色主题的图配透明底，
+ * 拖进浅色查看器就是一片看不见的深色节点（0.24 用户反馈）。矩形插在最前，
+ * 先于一切内容绘制。
+ */
+function addExportBackground(svg: SVGSVGElement, state: MermaidZoomState): void {
+  if (state.naturalW <= 0 || state.naturalH <= 0) return;
+  const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  rect.setAttribute("x", "0");
+  rect.setAttribute("y", "0");
+  rect.setAttribute("width", String(state.naturalW));
+  rect.setAttribute("height", String(state.naturalH));
+  rect.setAttribute("fill", themeBackgroundColor());
+  svg.insertBefore(rect, svg.firstChild);
+}
 
 /** 写入库内二进制（导出用）；动态 import，让纯逻辑测试不必碰 Tauri API。 */
 async function writeVaultBinary(vault: string, path: string, bytes: Uint8Array): Promise<void> {
@@ -936,12 +1082,14 @@ function cloneForExport(svg: SVGSVGElement, state: MermaidZoomState): SVGSVGElem
 /**
  * 把克隆里所有 foreignObject（HTML 文字）换算成普通 `<text>`，返回换算后的克隆。
  *
- * 0.20 起导出 SVG 与 PNG 共用这一步。此前两条路各有一个坑：PNG 的换算直接量
- * **原位** DOM，而原位 svg 处于 fitted/max-width 约束下，视口宽高比与 viewBox
- * 不一致时换算坐标整体错位、字号漂移，部分标签直接量不到文字就静默消失；
- * SVG 导出干脆不换算，文字以 foreignObject 原样带出去，脱离页面后放大即糊。
+ * 0.24 起是**回退路径**：导出优先走 renderForExport 的原生文本重渲染；重渲染
+ * 失败（mermaid 异常等）才用这步对页面 SVG 兜底，行为与 0.20-0.23 一致。
  *
- * 做法：把克隆以**自然尺寸**挂到文档外缘（position:fixed 离屏、visibility:hidden）
+ * 0.20 引入时的两个坑（PNG 的换算直接量**原位** DOM，而原位 svg 处于
+ * fitted/max-width 约束下，视口宽高比与 viewBox 不一致时换算坐标整体错位、
+ * 字号漂移，部分标签直接量不到文字就静默消失；SVG 导出干脆不换算，文字以
+ * foreignObject 原样带出去，脱离页面后放大即糊）依然由这里的做法规避：
+ * 把克隆以**自然尺寸**挂到文档外缘（position:fixed 离屏、visibility:hidden）
  * 测一次布局——此时宽高比与 viewBox 严格一致，坐标 1:1 落回自然坐标系；
  * 文字、字号、颜色、对齐全部来自克隆自身的实时布局与 computed style。
  */
@@ -1048,6 +1196,10 @@ class TableWidget extends WidgetType {
   readonly rawRows: string[][];
   readonly from: number;
   readonly to: number;
+  /** 搜索命中高亮（0.24）：面板开着时把当前查询画进渲染单元格；null = 不画。 */
+  readonly hl: RegExp | null;
+  /** eq 比较键：正则实例不便直接比较，用 source+flags 串代替。 */
+  readonly hlKey: string;
 
   constructor(
     rows: TextRun[][][],
@@ -1055,6 +1207,7 @@ class TableWidget extends WidgetType {
     rawRows: string[][],
     from: number,
     to: number,
+    hl: RegExp | null = null,
   ) {
     super();
     this.rows = rows;
@@ -1062,12 +1215,15 @@ class TableWidget extends WidgetType {
     this.rawRows = rawRows;
     this.from = from;
     this.to = to;
+    this.hl = hl;
+    this.hlKey = hl ? `${hl.source}\u0000${hl.flags}` : "";
   }
 
   eq(other: TableWidget) {
     return (
       other.from === this.from &&
       other.to === this.to &&
+      other.hlKey === this.hlKey &&
       JSON.stringify(other.rows) === JSON.stringify(this.rows) &&
       JSON.stringify(other.align) === JSON.stringify(this.align) &&
       JSON.stringify(other.rawRows) === JSON.stringify(this.rawRows)
@@ -1099,6 +1255,7 @@ class TableWidget extends WidgetType {
         const el = document.createElement(cellTag);
         const runs = cells[index];
         if (runs) appendRuns(el, runs);
+        if (runs && this.hl) applySearchHighlight(el, this.hl);
         const align = this.align[index];
         if (align) el.style.textAlign = align;
         // 就地编辑：WebView2 基于 Chromium，支持 plaintext-only（粘贴自动去格式）
@@ -3073,8 +3230,12 @@ function endMouseSelection(): void {
 export function computeBlockDecorations(state: EditorState): DecorationSet {
   const doc = state.doc;
   const selections = state.selection.ranges;
+  // 搜索导航的落点不算「触碰」（0.24 用户反馈）：Ctrl+F 定位到表格/图表里的
+  // 命中时选区恰好等于命中区间，照常判触碰会把整块翻成源码。此时块保持渲染
+  // 态，命中高亮由 widget 自己画（TableWidget 的 hl，mermaid 是图无文字可标）。
+  const searchNav = searchNavSelection(state);
   const touched = (from: number, to: number) =>
-    selections.some((range) => range.from <= to && range.to >= from);
+    !searchNav && selections.some((range) => range.from <= to && range.to >= from);
 
   const tree = ensureSyntaxTree(state, doc.length, 500) ?? syntaxTree(state);
   const ranges: Range<Decoration>[] = [];
@@ -3127,7 +3288,14 @@ export function computeBlockDecorations(state: EditorState): DecorationSet {
       const [from, to] = wholeLines(node.from, node.to);
       ranges.push(
         Decoration.replace({
-          widget: new TableWidget(parsed.rows, parsed.align, parsed.raw, node.from, node.to),
+          widget: new TableWidget(
+            parsed.rows,
+            parsed.align,
+            parsed.raw,
+            node.from,
+            node.to,
+            tableSearchHighlight(),
+          ),
           block: true,
         }).range(from, to),
       );

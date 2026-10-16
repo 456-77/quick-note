@@ -11,8 +11,10 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { screenshotOcr } from "../lib/api";
 import { linkTextFor } from "../lib/attachments";
+import { isMobile } from "../lib/platform";
 import { IconX } from "./icons";
 
 interface Props {
@@ -79,6 +81,22 @@ export default function ScreenshotDialog({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [open, onClose]);
+
+  // 冻结期把窗口切到**系统全屏**（0.24 用户反馈：冻结的只是部分屏幕——窗口
+  // 最大化时任务栏仍露在外面，窗口没最大化时更是只盖住一小块）。全屏边框覆盖
+  // 整个屏幕（含任务栏），与专业截图工具的"全屏冻结"观感一致；浮层关掉即还原。
+  // 切换失败（部分窗口管理器拒绝）不影响浮层本身，只是覆盖范围退回窗口视口。
+  useEffect(() => {
+    if (!open || isMobile()) return;
+    void getCurrentWindow()
+      .setFullscreen(true)
+      .catch(() => {});
+    return () => {
+      void getCurrentWindow()
+        .setFullscreen(false)
+        .catch(() => {});
+    };
+  }, [open]);
 
   /** 选区（显示坐标）换算成自然坐标；没选就是整图。 */
   const regionBase64 = useCallback(async (): Promise<string> => {

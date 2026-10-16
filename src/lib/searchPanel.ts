@@ -13,7 +13,7 @@
  * 负责导航与替换）——高亮、环绕、正则/全词匹配都是现成的成熟实现。
  */
 
-import { Prec, type Extension, RangeSetBuilder } from "@codemirror/state";
+import { Prec, type EditorState, type Extension, RangeSetBuilder } from "@codemirror/state";
 import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet, type ViewUpdate } from "@codemirror/view";
 import {
   findNext,
@@ -515,4 +515,53 @@ export function customSearchPanel(): Extension {
 /** 文档变化后刷新计数（面板开着时）。供编辑器的 updateListener 调用。 */
 export function notifySearchDocChanged(view: EditorView): void {
   if (panel && panelView === view) updateCount(view);
+}
+
+/**
+ * 主选区是否恰好是一次搜索导航的落点（非空且与查询的某处命中完全重合）。
+ *
+ * 块渲染（livePreview 的 computeBlockDecorations）用它区分「用户在编辑」与
+ * 「搜索跳转路过」：Ctrl+F 定位到表格/图表里的命中时，选区恰好等于命中区间，
+ * 此时应保持块的渲染态（0.24 用户反馈）；光标、拖选等其他选区照旧把块打成
+ * 源码。只在命中起点附近开小窗口扫描，开销与命中长度同阶。
+ */
+export function searchNavSelection(state: EditorState): boolean {
+  if (!panel || !panelState.query) return false;
+  const main = state.selection.main;
+  if (main.empty) return false;
+  let cursor;
+  try {
+    cursor = buildQuery().getCursor(
+      state,
+      Math.max(0, main.from - 1),
+      Math.min(state.doc.length, main.to + 1),
+    );
+  } catch {
+    return false; // 正则无效（输入中）：按普通选区走
+  }
+  for (let step = cursor.next(); !step.done; step = cursor.next()) {
+    if (step.value.from === main.from && step.value.to === main.to) return true;
+  }
+  return false;
+}
+
+/**
+ * 表格 widget 内高亮用的正则（0.24）：面板开着且有查询时，把当前查询编译成
+ * RegExp（与文本高亮同一语义——字段联动/正则/全词/大小写都已折算进 buildQuery）。
+ * 无效正则或面板未开返回 null。块级 widget 的 DOM 在 CM 装饰管线之外，文本高亮
+ * 装饰画不进去，widget 只能按同一查询自己标。
+ */
+export function tableSearchHighlight(): RegExp | null {
+  if (!panel || !panelState.query) return null;
+  const query = buildQuery();
+  try {
+    const source = query.regexp
+      ? query.search
+      : query.search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (!source) return null;
+    const wrapped = query.wholeWord ? `\\b(?:${source})\\b` : source;
+    return new RegExp(wrapped, query.caseSensitive ? "g" : "gi");
+  } catch {
+    return null;
+  }
 }

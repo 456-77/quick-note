@@ -152,6 +152,7 @@ export default function CaptureManager({
   onStats,
   carryAttachments,
   imageFolder,
+  onArchiveSync,
 }: {
   /** 收件仓库绝对路径（settings.quickCaptureVault）；空串 = 未配置。 */
   inboxVault: string;
@@ -176,7 +177,18 @@ export default function CaptureManager({
   ) => Promise<Map<string, string>>;
   /** 收件仓库的附件目录（库内配置 pastedImageFolder，编辑速记加图落这里）。 */
   imageFolder: string;
+  /**
+   * 归档成功后的同步联动（0.24 用户反馈：归档的仓库开着同步就自动同步一轮，
+   * 冲突提醒用户打开仓库处理）。入参是这次归档写到的仓库（收件仓库 + 目标
+   * 仓库，已去重）；是否真的同步、怎么提示由 App 侧按各仓库的开关决定。
+   * 经 ref 转发以避免归档回调的依赖列表跟着 App 每次渲染抖动。
+   */
+  onArchiveSync?: (involvedVaults: string[]) => void;
 }) {
+  const onArchiveSyncRef = useRef(onArchiveSync);
+  useEffect(() => {
+    onArchiveSyncRef.current = onArchiveSync;
+  });
   // ---------------------------------------------------------------- 扫描
 
   const [scan, setScan] = useState<{
@@ -681,15 +693,13 @@ export default function CaptureManager({
         const keys = chosen.map(keyOf);
         clearSel();
         leaveAndRescan(keys);
-        // 目标笔记在当前仓库里时，写入的 watcher 事件会自动驱动云同步推送；
-        // 跨仓库归档时那个仓库不在本实例监听范围内，它的同步在下次打开时补做
-        const crossVault = targetVault !== currentVault;
+        // 同步联动（0.24 用户反馈）：收件仓库与目标仓库里开着自动同步的，App 侧
+        // 立即各跑一轮并提醒冲突；没开同步的仓库维持原状（打开它时补做）。
+        onArchiveSyncRef.current?.([...new Set([inboxVault, targetVault])].filter(Boolean));
         showToast(
           `已归档 ${chosen.length} 条到「${targetNote.replace(/^.*\//, "")}」${
             carried && carried.size > 0 ? `，随迁 ${carried.size} 个附件` : ""
-          }${
-            crossVault ? `（${targetVault.replace(/^.*[\\/]/, "")} 的云同步将在打开它时进行）` : ""
-          }`,
+          }${targetVault !== currentVault ? `（跨仓库：${targetVault.replace(/^.*[\\/]/, "")}）` : ""}`,
           // 撤销走 unarchiveEntries，它按 entry.archived 过滤——这里捕获的还是
           // 归档前的对象（archived:false），必须带上归档后的状态，否则撤销为空操作
           () => void unarchiveEntries(chosen.map((entry) => ({ ...entry, archived: true }))),

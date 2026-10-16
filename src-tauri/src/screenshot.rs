@@ -58,13 +58,19 @@ pub struct ScreenCapture {
     pub height: u32,
 }
 
-/// 抓取整个虚拟屏幕为 PNG。DPI：CopyFromScreen 取的是物理像素（进程不感知 DPI 时
-/// Windows 会给虚拟化的坐标——SystemInformation.VirtualScreen 同源，宽高与抓图一致，
-/// 前端只拿这组数换算，不会错位）。
+/// 抓取整个虚拟屏幕为 PNG。
+///
+/// DPI（0.24 用户反馈"冻结的只是部分屏幕"）：PowerShell 子进程默认不感知 DPI，
+/// `SystemInformation.VirtualScreen` 报的是虚拟化的**逻辑**尺寸（125% 缩放的
+/// 1920x1080 屏只报 1536x864），CopyFromScreen 照它抓就漏掉右侧/下侧的物理像素。
+/// 抓屏前先 `SetProcessDPIAware` 把进程切成感知模式，VirtualScreen 与抓图都回到
+/// 物理像素——多显示器合并的虚拟屏完整覆盖。
 fn capture_blocking() -> Result<ScreenCapture, String> {
     let script = concat!(
         "$ErrorActionPreference='Stop';",
         "[Console]::OutputEncoding=[Text.Encoding]::UTF8;",
+        "Add-Type -TypeDefinition 'using System.Runtime.InteropServices;public sealed class QnDpi{[DllImport(\"user32.dll\")]public static extern bool SetProcessDPIAware();}';",
+        "[QnDpi]::SetProcessDPIAware()|Out-Null;",
         "Add-Type -AssemblyName System.Windows.Forms,System.Drawing;",
         "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;",
         "$bmp=New-Object Drawing.Bitmap $b.Width,$b.Height;",

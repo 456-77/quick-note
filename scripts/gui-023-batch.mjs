@@ -188,7 +188,14 @@ try {
     }
   }
   check(booted, "应用就绪（临时仓库已打开）");
-  if (!booted) throw new Error("应用没起来");
+  if (!booted) {
+    // 诊断现场：调试端口上到底有哪些目标、页面在什么 URL
+    const targets = await fetch(`http://127.0.0.1:${port}/json/list`)
+      .then((r) => r.json())
+      .catch((e) => `list-failed: ${e}`);
+    console.log("  启动失败现场：", JSON.stringify(targets)?.slice(0, 1200));
+    throw new Error("应用没起来");
+  }
 
   const docString = () => evaluate(ws, `window.__qnView.state.doc.toString()`);
 
@@ -439,6 +446,8 @@ try {
   }
 
   // ---------------------------------------------- 8. mermaid PNG 导出 3x 光栅化
+  // （0.24 起导出走「原生文本重渲染」，图尺寸与页面内 HTML 标签渲染的 viewBox
+  // 不同——基准改为导出的 SVG 文件自身的 viewBox，两者同源同比例）
   check(await openNoteByLabel("qn23图.md"), "打开 qn23图.md");
   let svgInfo = null;
   for (let i = 0; i < 20 && !svgInfo; i += 1) {
@@ -457,29 +466,43 @@ try {
     const dl = await rectCenter(ws, `document.querySelector('.cm-lp-mermaid .qn-mermaid-toolbar button[title="导出 SVG / PNG"]')`);
     check(!!dl, "mermaid 工具栏出现");
     if (dl) {
+      // 先导 SVG（拿基准 viewBox），再导 PNG 比对
+      await mouseClick(ws, dl.x, dl.y);
+      await sleep(400);
+      const svgItem = await rectCenter(ws, `Array.from(document.querySelectorAll('.qn-mermaid-menu-item')).find((el) => el.textContent === 'SVG')`);
+      if (svgItem) {
+        await mouseClick(ws, svgItem.x, svgItem.y);
+        await sleep(2500);
+      }
       await mouseClick(ws, dl.x, dl.y);
       await sleep(400);
       const pngItem = await rectCenter(ws, `Array.from(document.querySelectorAll('.qn-mermaid-menu-item')).find((el) => el.textContent === 'PNG')`);
       if (pngItem) {
         await mouseClick(ws, pngItem.x, pngItem.y);
+        let svgPath = null;
         let pngPath = null;
-        for (let i = 0; i < 10 && !pngPath; i += 1) {
+        for (let i = 0; i < 10 && !(svgPath && pngPath); i += 1) {
           await sleep(800);
           const dir = join(vault, "导出");
           if (existsSync(dir)) {
             const fsMod = await import("node:fs");
-            const files = fsMod.readdirSync(dir).filter((f) => f.endsWith(".png"));
-            if (files.length > 0) pngPath = join(dir, files[0]);
+            const files = fsMod.readdirSync(dir);
+            if (!svgPath && files.some((f) => f.endsWith(".svg"))) svgPath = join(dir, files.find((f) => f.endsWith(".svg")));
+            if (!pngPath && files.some((f) => f.endsWith(".png"))) pngPath = join(dir, files.find((f) => f.endsWith(".png")));
           }
         }
         check(!!pngPath, "导出 PNG 落到导出目录", pngPath ?? "无文件");
-        if (pngPath) {
+        if (pngPath && svgPath) {
+          const vb = /viewBox="([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"/.exec(readFileSync(svgPath, "utf8"));
           const buf = readFileSync(pngPath);
           const width = buf.readUInt32BE(16);
           const height = buf.readUInt32BE(20);
-          const expectW = Math.round(svgInfo.w * 3);
-          const expectH = Math.round(svgInfo.h * 3);
-          check(width === expectW && height === expectH, `PNG 按自然尺寸 3x 光栅化（${width}x${height} vs ${expectW}x${expectH}）`);
+          const baseW = vb ? Number(vb[3]) : 0;
+          const baseH = vb ? Number(vb[4]) : 0;
+          check(
+            baseW > 0 && Math.abs(width / baseW - 3) < 0.05 && Math.abs(height / baseH - 3) < 0.05,
+            `PNG 与导出 SVG 同比例 3x 光栅化（${width}x${height} vs ${baseW}x${baseH}）`,
+          );
         }
       } else {
         check(false, "导出菜单没有 PNG 项");
@@ -488,29 +511,29 @@ try {
   }
 
   // ---------------------------------------------- 9. 单词本
+  // （0.24 面板重做后：快速添加走 .vocab-quickadd-*，标记掌握走详情弹层）
   const tabPos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
   check(!!tabPos, "右侧面板出现「单词」页签");
   if (tabPos) {
     await mouseClick(ws, tabPos.x, tabPos.y);
     await sleep(500);
-    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-input'); if (!el) return false; (${nativeSet})(el, 'QN23WORD'); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-quickadd-input'); if (!el) return false; (${nativeSet})(el, 'QN23WORD'); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
     await sleep(900);
     const vocabFile = join(vault, "单词本.md");
     let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
     check(vocab.includes("- QN23WORD"), "面板输入加入单词 → 落盘 单词本.md", vocab);
     check(vocab.indexOf("## 待学习") < vocab.indexOf("- QN23WORD"), "新词落在待学习节");
-    // 标记掌握
-    const learnBtn = await rectCenter(ws, `Array.from(document.querySelectorAll('.vocab-row')).find((row) => row.textContent.includes('QN23WORD'))?.querySelector('.vocab-act[title="标记为已掌握"]')`);
-    if (learnBtn) {
-      await mouseClick(ws, learnBtn.x, learnBtn.y);
-      await sleep(900);
-      vocab = readFileSync(vocabFile, "utf8");
-      const doneIdx = vocab.indexOf("## 已掌握");
-      const wordIdx = vocab.indexOf("- QN23WORD");
-      check(wordIdx >= 0 && doneIdx >= 0 && wordIdx > doneIdx, "✓ 标记后移入已掌握节", vocab);
-    } else {
-      check(false, "没找到「标记为已掌握」按钮");
-    }
+    // 标记掌握：点条目 → 详情弹层 → 标记为已掌握 → 关闭
+    await evaluate(ws, `(() => { const item = Array.from(document.querySelectorAll('.vocab-item')).find((el) => el.textContent.includes('QN23WORD')); item?.click(); return !!item; })()`);
+    await sleep(500);
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '标记为已掌握')?.click(); return true; })()`);
+    await sleep(900);
+    vocab = readFileSync(vocabFile, "utf8");
+    const doneIdx = vocab.indexOf("## 已掌握");
+    const wordIdx = vocab.indexOf("- QN23WORD");
+    check(wordIdx >= 0 && doneIdx >= 0 && wordIdx > doneIdx, "✓ 标记后移入已掌握节", vocab);
+    await evaluate(ws, `(() => { document.querySelector('.vocab-detail-close')?.click(); return true; })()`);
+    await sleep(400);
   }
 
   // 热键收词：选中词 Ctrl+Alt+V
