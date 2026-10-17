@@ -188,6 +188,39 @@ check(
 const removedV2 = removeVocabEntry(movedV2, "hscs_hsdt").content;
 check(parseVocabulary(removedV2).length === 0, "v2 条目可删除");
 
+// v3 行格式（0.25 释义自动获取）：`- word | 释义 | 备注 | 音标 — meta`，
+// v2/v1 行完全兼容（缺省字段按需截断）
+const v3 = addVocabEntry(fresh, "scenario", "2026-10-17 · 手动添加", "n. 设想，方案", "", "/sɪˈnɑːriəʊ/").content;
+parsed = parseVocabulary(v3);
+check(
+  parsed[0].meaning === "n. 设想，方案" && parsed[0].note === "" && parsed[0].phonetic === "/sɪˈnɑːriəʊ/",
+  "v3 行解析出释义与音标（备注为空截断）",
+  JSON.stringify(parsed[0]),
+);
+check(
+  v3.includes("- scenario | n. 设想，方案 |  | /sɪˈnɑːriəʊ/ — 2026-10-17 · 手动添加"),
+  "v3 行序列化格式（空备注中置空段）",
+  v3,
+);
+const v3Full = parseVocabulary(
+  addVocabEntry(fresh, "alpha", "m", "释义", "备注", "/ˈælfə/").content,
+);
+check(v3Full[0].phonetic === "/ˈælfə/", "v3 四字段齐全解析", JSON.stringify(v3Full[0]));
+const v2Still = parseVocabulary(v2);
+check(v2Still[0].phonetic === "", "v2 行解析音标为空串（向后兼容）", JSON.stringify(v2Still[0]));
+const v3Edited = updateVocabEntry(v3, "scenario", { phonetic: "/səˈnɑːrioʊ/" }).content;
+check(
+  parseVocabulary(v3Edited)[0].phonetic === "/səˈnɑːrioʊ/" && parseVocabulary(v3Edited)[0].meaning === "n. 设想，方案",
+  "编辑音标保留释义",
+  v3Edited,
+);
+const v3Moved = setVocabLearned(v3, "scenario", true).content;
+check(
+  parseVocabulary(v3Moved).find((entry) => entry.word === "scenario")?.phonetic === "/sɪˈnɑːriəʊ/",
+  "状态切换时音标跟着走",
+  v3Moved,
+);
+
 // 文件名约定
 check(VOCAB_FILENAME === "单词本.md", "单词本落在仓库根的 单词本.md");
 

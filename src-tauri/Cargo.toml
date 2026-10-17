@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.24.0"
+version = "0.25.0"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
@@ -45,7 +45,9 @@ tauri-plugin-updater = "2"
 tauri-plugin-global-shortcut = "2"
 # TLS 走系统实现（Windows 上是 SChannel），因此不引入 ring 之类的 C 依赖，也不用装 OpenSSL。
 # native-tls 没有 Android 后端，这里必须与移动端的 rustls 依赖互斥分层。
-ureq = { version = "3", default-features = false, features = ["native-tls"] }
+# 0.25 起桌面也编译 rustls（仅词典查询用）：youado 的交叉签名根链 Windows schannel
+# 不认（"unable to find any user-specified roots"），改走 WebPki 捆绑根证书。
+ureq = { version = "3", default-features = false, features = ["native-tls", "rustls"] }
 
 # ---- 移动端依赖 ----------------------------------------------------------
 # Android 上走纯 Rust 的 rustls + 捆绑的 Mozilla 根证书（WebPki）：Android 系统信任库
@@ -61,10 +63,12 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 webview2-com = "0.39"
 windows-core = "=0.62.2"
 # 跨进程聚焦仓库窗口（open_vaults.rs）：枚举窗口、AttachThreadInput 前台切换、
-# OpenProcess 探测登记表里 pid 的存活。版本与上面的 windows-core 一致（同一棵树）。
+# OpenProcess 探测登记表里 pid 的存活；0.25 起热键仲裁还用 ToolHelp 枚举同名
+# 兄弟进程（OS 级真值，不依赖登记表的登记纪律）。版本与上面的 windows-core 一致。
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
+    "Win32_System_Diagnostics_ToolHelp",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

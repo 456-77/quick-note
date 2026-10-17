@@ -108,7 +108,16 @@ fn load_pruned(path: &Path) -> Vec<OpenVault> {
 /// **读不到/解析不了时宁可让位**——误判"没有兄弟"会当着用户的面弹红条，而
 /// 误判"有兄弟"只是新窗口不持热键（热键仍由先启动的窗口全局响应，功能不丢）。
 /// 文件不存在才是可靠的"没有兄弟"。
+///
+/// 0.25 用户反馈同样的问题还在：登记表条目会因为**本窗口 WebView 后台重载**
+/// （beforeunload 注销，重新聚焦才补登）或启动竞态暂时缺失，让"兄弟活着"误判
+/// 成"占用者是外部程序"。所以仲裁的第一依据改成**按进程名枚举**（OS 级真值，
+/// 兄弟进程要么活着要么没有，不受登记表状态影响），登记表查询降级为补充信号
+/// ——两者任一命中即让位。误让位的代价始终只是"本窗口暂不持热键、聚焦时重试"。
 pub fn other_instance_alive(app: &AppHandle) -> bool {
+    if sibling_process_alive() {
+        return true;
+    }
     let Ok(path) = registry_path(app) else {
         return true;
     };
@@ -122,15 +131,103 @@ pub fn other_instance_alive(app: &AppHandle) -> bool {
     entries.into_iter().filter(|entry| pid_alive(entry.pid)).any(|entry| entry.pid != me)
 }
 
+/// 是否有**别的同名进程**活着：枚举系统进程表，找 pid 不同于自己、exe 文件名
+/// 相同的进程。这是"有没有自家兄弟"的 OS 级真值，不依赖登记表的登记纪律。
+#[cfg(windows)]
+fn sibling_process_alive() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
+
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(name) = exe.file_name().map(|name| name.to_string_lossy().to_lowercase()) else {
+        return false;
+    };
+    let me = std::process::id();
+
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).unwrap_or(INVALID_HANDLE_VALUE);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return false;
+        }
+        let mut entry = PROCESSENTRY32W {
+            dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut found = false;
+        if Process32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                if entry.th32ProcessID != me {
+                    let process_name =
+                        String::from_utf16_lossy(&entry.szExeFile).trim_end_matches('\0').to_lowercase();
+                    if process_name == name {
+                        found = true;
+                        break;
+                    }
+                }
+                if Process32NextW(snapshot, &mut entry).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snapshot);
+        found
+    }
+}
+
+/// 非 Windows 桌面/移动平台：读 /proc 的 comm（进程名截断到 15 字符，
+/// "quick-note.exe" 14 字符放得下）。
+#[cfg(not(windows))]
+fn sibling_process_alive() -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let Some(name) = exe.file_name().map(|name| name.to_string_lossy()) else {
+        return false;
+    };
+    let me = std::process::id();
+    for entry in entries.flatten() {
+        let Ok(file_name) = entry.file_name().into_string() else {
+            continue;
+        };
+        let Ok(pid) = file_name.parse::<u32>() else {
+            continue;
+        };
+        if pid == me {
+            continue;
+        }
+        if let Ok(comm) = fs::read_to_string(entry.path().join("comm")) {
+            if comm.trim() == name {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// 登记本进程正打开的仓库（启动与切换仓库时调用；同仓库重复调用即刷新）。
 #[tauri::command]
 pub fn open_vaults_register(app: AppHandle, vault: String) -> Result<(), String> {
-    let path = registry_path(&app)?;
+    register_self(&app, &vault)
+}
+
+/// `open_vaults_register` 的 Rust 内部入口：0.25 起进程在 setup（出生）时就
+/// 自登记（argv 仓库或空串占位），关闭"前端尚未跑到 registerOpenVault 之前
+/// 登记表查不到本进程"的窗口——那正是热键仲裁误判的场景之一。
+pub fn register_self(app: &AppHandle, vault: &str) -> Result<(), String> {
+    let path = registry_path(app)?;
     let mut entries: Vec<OpenVault> = load_pruned(&path)
         .into_iter()
         .filter(|entry| entry.pid != std::process::id())
         .collect();
-    entries.push(OpenVault { vault, pid: std::process::id() });
+    entries.push(OpenVault { vault: vault.to_string(), pid: std::process::id() });
     save_at(&path, &entries)
 }
 

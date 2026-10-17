@@ -120,6 +120,20 @@ export const searchVault = (vault: string, query: string, limit = 60) =>
 export const writeNote = (vault: string, path: string, content: string, hasBom: boolean) =>
   invoke<WriteResult>("write_note", { vault, path, content, hasBom });
 
+/** 在线查词结果（Rust 侧有道词典 jsonapi 解析；查不到时 reject "未找到在线释义"）。 */
+export interface VocabLookup {
+  word: string;
+  /** 音标（形如 `/səˈnɑːriəʊ/`；没有则空串）。 */
+  phonetic: string;
+  /** 中文释义（ec 词典；fallback 网络释义）。 */
+  meaning: string;
+  /** 释义来源："ec" = 词典正文 / "web" = 网络释义。 */
+  source: string;
+}
+
+/** 在线查询单词释义（免 key 的有道词典接口；网络失败/查不到都走 reject）。 */
+export const vocabLookup = (word: string) => invoke<VocabLookup>("vocab_lookup", { word });
+
 /**
  * 写入一个附件（二进制走 base64），返回实际写入的仓库相对路径。
  *

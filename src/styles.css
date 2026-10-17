@@ -755,7 +755,8 @@ kbd {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 4px 0;
+  min-height: 28px;
+  padding: 4px 2px;
   font: inherit;
   font-size: 11.5px;
   font-weight: 500;
@@ -772,10 +773,11 @@ kbd {
   color: var(--text);
 }
 
+/* 选中态：主题色文字 + 低透明底（与右侧页签同一语言），不再用白卡片浮起 */
 .left-view-tab.is-on {
-  background: var(--surface);
+  background: var(--accent-soft);
   color: var(--accent);
-  box-shadow: var(--shadow-1);
+  font-weight: 600;
 }
 
 /* 左栏的名称筛选框 */
@@ -4541,15 +4543,31 @@ html.qn-bg-on .app {
   background: transparent;
 }
 
+/* 0.25（用户 31 节规范 · 五）：背景图只能作为"氛围"，不能干扰阅读。
+   图层上叠一层主题色遮罩把图压成幽灵——深色 80% 暗遮罩 / 浅色 88% 亮遮罩，
+   等效于把图片压到 ~12-15% 的感知透明度；配合下方表面不透明度补偿，
+   文字对比度不再随图片内容明暗波动。用户自己的不透明度设置仍在其上生效。 */
+html.qn-bg-on #qn-bg-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.88);
+}
+
+html.qn-bg-on[data-theme="dark"] #qn-bg-layer::after {
+  background: rgba(10, 10, 15, 0.8);
+}
+
 /* 毛玻璃（backdrop-filter）会让合成器常驻多层大纹理，实测是背景图开启时
-   内存飙升的主力。这里用半透明底替代模糊：观感相近，GPU 内存占用小得多。 */
+   内存飙升的主力。这里用半透明底替代模糊：观感相近，GPU 内存占用小得多。
+   （0.25：遮罩接管了压图任务，表面不透明度相应调高，保证内容对比度稳定） */
 html.qn-bg-on .topbar,
 html.qn-bg-on .statusbar {
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
 }
 
 html.qn-bg-on .sidebar {
-  background: color-mix(in srgb, var(--panel) 66%, transparent);
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
 }
 
 html.qn-bg-on .editor-pane,
@@ -4558,7 +4576,7 @@ html.qn-bg-on .tabbar {
 }
 
 html.qn-bg-on .editor-pane {
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
 }
 
 html.qn-bg-on .editor-host .cm-editor {
@@ -4568,7 +4586,7 @@ html.qn-bg-on .editor-host .cm-editor {
 html.qn-bg-on .sidebar .cm-editor,
 html.qn-bg-on .panel-card,
 html.qn-bg-on .calendar-card {
-  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  background: color-mix(in srgb, var(--surface) 93%, transparent);
 }
 
 /* ------------------------------------------------- mermaid 增强 */
@@ -8608,7 +8626,9 @@ button.cm-tag:hover {
 }
 
 /* ==========================================================================
-   单词本面板（0.23；0.24 按用户提示词重做：搜索优先 + 列表卡片 + 详情弹层）
+   单词本面板（0.23 起步；0.24 搜索优先 + 列表卡片 + 详情弹层；0.25 按"个人
+   词汇速查库"规范重排：颜色全部走主题语义变量深浅自动跟随、添加区折叠 +
+   在线查词、状态与排序分离、字母分组轻量化、44dp 触控目标）
    ========================================================================== */
 
 .vocab-panel {
@@ -8621,23 +8641,35 @@ button.cm-tag:hover {
   min-height: 0;
 }
 
-/* —— 搜索框（主视觉） —— */
-.vocab-search {
+/* —— 搜索行（主视觉）：搜索框 + 圆形刷新钮。打开单词本.md 在「···」菜单里 —— */
+.vocab-search-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
+}
+
+.vocab-search {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 10px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  border-radius: 10px;
   background: var(--surface-2);
+  transition: border-color 0.15s ease, background 0.15s ease;
 }
 
 .vocab-search:focus-within {
   border-color: var(--accent);
+  background: var(--surface);
 }
 
 .vocab-search-icon {
   display: inline-flex;
+  flex: none;
   color: var(--text-dim);
 }
 
@@ -8648,22 +8680,31 @@ button.cm-tag:hover {
   background: transparent;
   color: var(--text);
   font-size: 13px;
-  padding: 3px 0;
+  padding: 0;
 }
 
 .vocab-search-input:focus {
   outline: none;
 }
 
+.vocab-search-input::placeholder {
+  color: var(--text-faint);
+}
+
 .vocab-search-clear {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   border: none;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 1;
-  padding: 2px 4px;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 .vocab-search-clear:hover {
@@ -8671,48 +8712,190 @@ button.cm-tag:hover {
   background: var(--hover);
 }
 
-/* —— 快速添加（视觉层级低于搜索框） —— */
-.vocab-quickadd {
+/* 圆形刷新图标钮：小图标不抢搜索框的戏 */
+.vocab-refresh {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.vocab-refresh:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* —— 添加区：默认收起成一个轻量入口，展开后回车自动查询释义 —— */
+.vocab-add-toggle {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  min-height: 28px;
+  padding: 3px 11px;
+  border: 1px dashed var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.vocab-add-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.vocab-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.vocab-add-row {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 2px;
 }
 
-.vocab-quickadd-input {
+.vocab-add-input {
   flex: 1;
   min-width: 0;
-  padding: 4px 8px;
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-2);
   color: var(--text);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
-.vocab-quickadd-input:focus {
+.vocab-add-input:focus {
   outline: none;
   border-color: var(--accent);
-  border-style: solid;
+  background: var(--surface);
 }
 
-.vocab-quickadd-btn {
+.vocab-add-input::placeholder {
+  color: var(--text-faint);
+}
+
+.vocab-add-btn {
+  flex: none;
+  height: 34px;
+  padding: 0 12px;
   border: none;
-  background: transparent;
-  color: var(--accent);
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
-  font-size: 12px;
-  padding: 5px 8px;
-  border-radius: var(--radius-sm);
+  transition: filter 0.15s ease, opacity 0.15s ease;
 }
 
-.vocab-quickadd-btn:hover:not(:disabled) {
-  background: var(--hover);
+.vocab-add-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
 }
 
-.vocab-quickadd-btn:disabled {
+.vocab-add-btn:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+/* 通用轻量按钮：主按钮（主题色实心）与次按钮（描边）；面板内空态/菜单共用 */
+.vocab-btn {
+  min-height: 28px;
+  padding: 4px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.vocab-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.vocab-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.vocab-btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-weight: 600;
+}
+
+.vocab-btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+/* —— 在线查询预览卡（音标 + 释义，取消/保存；失败给手动填写，不堵保存） —— */
+.vocab-lookup {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.vocab-lookup-loading {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.vocab-lookup-word {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.vocab-lookup-phonetic {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.vocab-lookup-meaning {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.vocab-lookup-none {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.vocab-lookup-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 /* —— 最近搜索 —— */
@@ -8752,20 +8935,31 @@ button.cm-tag:hover {
   color: var(--text);
 }
 
-/* —— 快捷筛选 —— */
+/* —— 工具行：状态筛选（全部/待学习/已掌握）+ 排序 + 「···」 —— */
+.vocab-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  row-gap: 4px;
+}
+
+.vocab-toolbar-spacer {
+  flex: 1;
+}
+
 .vocab-filters {
   display: flex;
   gap: 4px;
 }
 
 .vocab-filter {
-  flex: 1;
   border: none;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
   font-size: 12px;
-  padding: 5px 2px;
+  padding: 5px 9px;
   border-radius: var(--radius-sm);
   white-space: nowrap;
 }
@@ -8777,7 +8971,7 @@ button.cm-tag:hover {
 
 .vocab-filter.is-on {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  background: var(--accent-soft);
   font-weight: 600;
 }
 
@@ -8785,6 +8979,88 @@ button.cm-tag:hover {
   font-size: 10.5px;
   opacity: 0.75;
   margin-left: 2px;
+}
+
+.vocab-toolbar-btn {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 11.5px;
+  padding: 5px 8px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.vocab-toolbar-btn:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.vocab-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.vocab-more-btn {
+  letter-spacing: 0.08em;
+  font-weight: 700;
+}
+
+/* 面板内轻量下拉菜单（排序 / 「···」） */
+.vocab-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 132px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-1);
+  display: flex;
+  flex-direction: column;
+  z-index: 8;
+  animation: vocab-menu-in 0.13s ease;
+}
+
+.vocab-menu-item {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 12px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.vocab-menu-item:hover:not(:disabled) {
+  background: var(--hover);
+}
+
+.vocab-menu-item.is-on {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.vocab-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+@keyframes vocab-menu-in {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .vocab-count-line {
@@ -8802,16 +9078,28 @@ button.cm-tag:hover {
   padding: 0 4px;
 }
 
+/* 字母分组头：字母 + 计数 + 细分割线（不再是色块），吸顶方便定位 */
 .vocab-group-letter {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
   font-size: 11px;
   font-weight: 700;
   color: var(--text-dim);
   letter-spacing: 0.06em;
-  padding: 8px 2px 3px;
+  padding: 9px 2px 4px;
+  border-bottom: 1px solid var(--border-soft);
   position: sticky;
   top: 0;
-  background: var(--surface);
+  background: var(--panel);
   z-index: 1;
+}
+
+.vocab-group-count {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-faint);
+  letter-spacing: 0;
 }
 
 .vocab-item {
@@ -8821,7 +9109,7 @@ button.cm-tag:hover {
   padding: 7px 8px;
   border-radius: var(--radius-sm);
   cursor: pointer;
-  min-height: 34px;
+  min-height: 38px;
 }
 
 .vocab-item:hover {
@@ -8837,10 +9125,18 @@ button.cm-tag:hover {
 }
 
 .vocab-item-word {
-  font-size: 13px;
+  font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
   word-break: break-all;
+}
+
+/* 音标：12px 次级灰，跟在词后面同排（列表卡不因此变高） */
+.vocab-item-phonetic {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-faint);
+  margin-left: 5px;
 }
 
 .vocab-item-meaning {
@@ -8856,19 +9152,23 @@ button.cm-tag:hover {
   font-weight: 500;
 }
 
-/* 状态标识：轻量小字，不抢单词的视觉层级 */
+/* 状态标识：小圆点 + 文字，不上彩色底（规范：状态只作辅助信息） */
 .vocab-status {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10.5px;
-  padding: 2px 7px;
-  border-radius: 999px;
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.vocab-status-dot {
+  font-size: 8px;
+  line-height: 1;
 }
 
 .vocab-status.is-learned {
-  color: var(--text-dim);
-  background: color-mix(in srgb, var(--text-dim) 12%, transparent);
+  color: var(--ok);
 }
 
 /* 悬停快捷切换状态（桌面端） */
@@ -8890,7 +9190,7 @@ button.cm-tag:hover {
 
 .vocab-item-toggle:hover {
   color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  background: var(--accent-soft);
 }
 
 /* —— 字母快速定位栏 —— */
@@ -8920,27 +9220,14 @@ button.cm-tag:hover {
   font-weight: 700;
 }
 
-/* —— 空态 —— */
-.vocab-hint {
-  font-size: 11.5px;
-  line-height: 1.6;
-  color: var(--text-dim);
-  margin: 0;
-}
-
-.vocab-hint kbd {
-  padding: 0 4px;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 10.5px;
-}
-
+/* —— 空态（无结果 / 无单词）：图标 + 一句话 + 建议，极简不加插画 —— */
 .vocab-empty {
   font-size: 12px;
   color: var(--text-dim);
 }
 
-.vocab-empty-search {
+.vocab-empty-search,
+.vocab-empty-list {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -8949,25 +9236,35 @@ button.cm-tag:hover {
   gap: 10px;
   color: var(--text-dim);
   font-size: 12.5px;
-  padding: 24px 0;
+  padding: 24px 8px;
+  text-align: center;
 }
 
-.vocab-empty-search p {
+.vocab-empty-search p,
+.vocab-empty-list p {
   margin: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
 }
 
-.vocab-empty-add {
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
-  cursor: pointer;
-  font-size: 12px;
-  padding: 6px 14px;
-  border-radius: 999px;
+.vocab-empty-icon {
+  font-size: 20px;
+  color: var(--text-faint);
 }
 
-.vocab-empty-add:hover {
-  background: color-mix(in srgb, var(--accent) 14%, transparent);
+.vocab-empty-tips {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--text-dim);
+  max-width: 240px;
+}
+
+.vocab-empty-tips kbd {
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10.5px;
 }
 
 /* —— 面板内轻量 Toast —— */
@@ -9093,6 +9390,11 @@ button.cm-tag:hover {
   color: var(--text-dim);
 }
 
+.vocab-detail-phonetic {
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
 .vocab-detail-meaning {
   font-size: 13.5px;
   line-height: 1.55;
@@ -9108,9 +9410,13 @@ button.cm-tag:hover {
 }
 
 .vocab-detail-none {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
   font-size: 12px;
   color: var(--text-dim);
-  opacity: 0.8;
+  opacity: 0.85;
 }
 
 .vocab-detail-edit {
@@ -9179,11 +9485,11 @@ button.cm-tag:hover {
 }
 
 .vocab-detail-danger:hover:not(:disabled) {
-  border-color: #e53935;
-  color: #e53935;
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
-/* 移动端（触摸屏）：详情改为底部弹层，触控目标加大 */
+/* 移动端（触摸屏）：详情改为底部弹层，触控目标 ≥44dp（0.25 规范 二十六） */
 @media (hover: none) and (pointer: coarse) {
   .vocab-detail-backdrop {
     align-items: flex-end;
@@ -9192,23 +9498,60 @@ button.cm-tag:hover {
   .vocab-detail {
     width: 100%;
     max-height: 72vh;
-    border-radius: 16px 16px 0 0;
+    border-radius: 18px 18px 0 0;
     padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
   }
 
-  .vocab-item,
+  .vocab-item {
+    min-height: 48px;
+  }
+
+  /* 顶部导航页签（日历/目录/统计/单词）与左栏视图切换：点击区域 ≥44dp（规范 六/二十六） */
+  .sidebar-tab,
+  .sidebar-left .left-view-tab {
+    min-height: 44px;
+  }
+
   .vocab-detail-act,
-  .vocab-filter {
-    min-height: 40px;
+  .vocab-filter,
+  .vocab-toolbar-btn,
+  .vocab-btn,
+  .vocab-refresh,
+  .vocab-add-toggle {
+    min-height: 44px;
+  }
+
+  .vocab-search,
+  .vocab-add-input,
+  .vocab-add-btn {
+    height: 44px;
   }
 
   .vocab-item-toggle {
     opacity: 1;
+    width: 44px;
+    height: 44px;
   }
 
   .vocab-search-input,
-  .vocab-quickadd-input {
+  .vocab-add-input {
     font-size: 16px; /* 小于 16px 的输入框在 Android/iOS 上聚焦会放大页面 */
+  }
+
+  .vocab-item-word {
+    font-size: 16px;
+  }
+
+  .vocab-item-phonetic {
+    font-size: 12px;
+  }
+
+  .vocab-item-meaning {
+    font-size: 13px;
+  }
+
+  .vocab-status {
+    font-size: 11.5px;
   }
 }
 

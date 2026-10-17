@@ -783,6 +783,8 @@ export default function App() {
   // 然后才是抽屉——按固定优先级的话，设置开着时按返回会先关设置而用户看到
   // 的是弹窗还开着（用户实测反馈过）。
   const backConsumeRef = useRef<() => boolean>(() => false);
+  /** 单词面板注册的返回键消费者（详情弹层 → 添加区 → 搜索态，先于抽屉收起）。 */
+  const vocabBackRef = useRef<(() => boolean) | null>(null);
   backConsumeRef.current = () => {
     if (quickCaptureOpen) {
       setQuickCaptureOpen(false);
@@ -798,6 +800,10 @@ export default function App() {
     }
     if (showSettings) {
       setShowSettings(false);
+      return true;
+    }
+    // 单词面板的内层状态（详情/添加/搜索）视觉上盖在抽屉内容之上，先于抽屉关闭
+    if (!rightCollapsed && vocabBackRef.current?.()) {
       return true;
     }
     if (!leftCollapsed) {
@@ -1933,19 +1939,29 @@ export default function App() {
 
   // 本窗口打开的仓库登记到跨进程登记表；换仓库（vault 状态变化）自动刷新，
   // 退出时尽力注销——没来得及注销（强杀/崩溃）的条目由 Rust 读取时按 pid 兜底。
-  // 窗口聚焦时补一次登记：登记表还是热键仲裁的依据，WebView 重载（beforeunload
-  // 会先注销）或登记失败后，这里是无重试开销的自愈点（0.24 用户反馈）。
+  // 窗口聚焦/pageshow/切回前台时补一次登记：登记表还是热键仲裁的信号之一，
+  // WebView 后台重载（beforeunload 会先注销）或登记失败后，这里是无重试开销的
+  // 自愈点（0.24 用户反馈；0.25 再补 pageshow/visibilitychange——后台重载发生时
+  // 窗口没有 focus 事件，只有这两个能补上）。
   useEffect(() => {
     if (!vault) return;
     void registerOpenVault(vault);
     const onFocus = () => void registerOpenVault(vault);
+    const onShow = () => void registerOpenVault(vault);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void registerOpenVault(vault);
+    };
     const onUnload = () => {
       void unregisterOpenVault();
     };
     window.addEventListener("focus", onFocus);
+    window.addEventListener("pageshow", onShow);
+    document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("beforeunload", onUnload);
     return () => {
       window.removeEventListener("focus", onFocus);
+      window.removeEventListener("pageshow", onShow);
+      document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("beforeunload", onUnload);
     };
   }, [vault]);
@@ -5332,6 +5348,7 @@ export default function App() {
                 version={vocabVersion}
                 onOpen={(path) => void openNote(path)}
                 notice={notice}
+                backConsumerRef={vocabBackRef}
               />
           )}
         </aside>

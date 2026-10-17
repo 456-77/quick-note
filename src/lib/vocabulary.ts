@@ -1,6 +1,7 @@
 /**
  * 单词本（0.23 用户反馈"添加单词学习功能，类似 IDEA"；0.24 按用户提示词升级为
- * "快速记录 + 快速查词"工具：词条支持释义与备注）。
+ * "快速记录 + 快速查词"工具：词条支持释义与备注；0.25 释义自动获取，行格式
+ * v3 增加第 4 个可选字段——音标）。
  *
  * 形态：仓库根的一篇普通笔记 `单词本.md`——用户随时可以自己看、自己改，与其他
  * 工具（Obsidian/同步）完全兼容。结构化的"待学习/已掌握"两个小节，每行一条：
@@ -12,10 +13,11 @@
  *   - word — 2026-10-15 · 来源笔记名
  *   - hello
  *   - hscs_hsdt | 数据传输任务接口表 | 测试库用的 — 2026-10-16 · 数据库表清单
+ *   - scenario | n. 设想，方案 | 备注可以留空 | /sɪˈnɑːriəʊ/ — 2026-10-17 · 手动添加
  *
- * 行格式 v2（0.24）：词后面可以带 ` | 释义 | 备注`（都可省略、按需截断）；
- * v1 的裸 `- word — meta` 行完全兼容。全部函数是**纯内容变换**（字符串进
- * 字符串出），Node 可直接断言；读写文件由调用方（App）负责。
+ * 行格式 v3（0.25）：词后面可带 ` | 释义 | 备注 | 音标`（都可省略、按需截断）；
+ * v2（无音标）与 v1（裸 `- word — meta`）行完全兼容。全部函数是**纯内容变换**
+ * （字符串进字符串出），Node 可直接断言；读写文件由调用方（App）负责。
  */
 
 /** 单词本笔记的文件名（仓库根）。 */
@@ -30,6 +32,8 @@ export interface VocabEntry {
   meaning: string;
   /** 备注（v2 字段）。 */
   note: string;
+  /** 音标（v3 字段，形如 `/sɪˈnɑːriəʊ/`；旧行/在线查询失败时没有）。 */
+  phonetic: string;
   /** 记录时间与来源（"2026-10-15 · 来源笔记"）；手写的行可能没有。 */
   meta: string;
   learned: boolean;
@@ -37,14 +41,20 @@ export interface VocabEntry {
   line: number;
 }
 
-/** 一条记录的源码行：`- word | 释义 | 备注 — meta`，释义/备注空则按需截断。 */
+/** 一条记录的源码行：`- word | 释义 | 备注 | 音标 — meta`，空字段按需截断。 */
 function entryLine(entry: {
   word: string;
   meaning?: string;
   note?: string;
+  phonetic?: string;
   meta: string;
 }): string {
-  const parts = [entry.word, entry.meaning?.trim() ?? "", entry.note?.trim() ?? ""];
+  const parts = [
+    entry.word,
+    entry.meaning?.trim() ?? "",
+    entry.note?.trim() ?? "",
+    entry.phonetic?.trim() ?? "",
+  ];
   while (parts.length > 1 && parts[parts.length - 1] === "") parts.pop();
   const left = parts.join(" | ");
   return entry.meta ? `- ${left} — ${entry.meta}` : `- ${left}`;
@@ -81,7 +91,7 @@ export function parseVocabulary(content: string): VocabEntry[] {
     const dash = body.indexOf(" — ");
     const left = (dash >= 0 ? body.slice(0, dash) : body).trim();
     const meta = dash >= 0 ? body.slice(dash + 3).trim() : "";
-    // v2：词后面可带 ` | 释义 | 备注`；v1 的裸词行没有竖线，拆出来就是单项
+    // v2/v3：词后面可带 ` | 释义 | 备注 | 音标`；v1 的裸词行没有竖线，拆出来就是单项
     const fields = left.split(" | ").map((field) => field.trim());
     const word = fields[0] ?? "";
     if (!word) continue;
@@ -89,6 +99,7 @@ export function parseVocabulary(content: string): VocabEntry[] {
       word,
       meaning: fields[1] ?? "",
       note: fields[2] ?? "",
+      phonetic: fields[3] ?? "",
       meta,
       learned,
       line: index,
@@ -116,13 +127,14 @@ export function addVocabEntry(
   meta: string,
   meaning = "",
   note = "",
+  phonetic = "",
 ): { content: string; added: boolean } {
   const cleaned = word.trim();
   if (!cleaned) return { content, added: false };
   if (parseVocabulary(content).some((entry) => entry.word.toLowerCase() === cleaned.toLowerCase())) {
     return { content, added: false };
   }
-  const line = entryLine({ word: cleaned, meaning, note, meta: meta.trim() });
+  const line = entryLine({ word: cleaned, meaning, note, phonetic, meta: meta.trim() });
   const lines = content.split(/\r?\n/);
   const todoIndex = lines.findIndex((row) => row.trim() === VOCAB_SECTION_TODO);
   if (todoIndex >= 0) {
@@ -197,15 +209,18 @@ export function removeVocabEntry(
 export function updateVocabEntry(
   content: string,
   word: string,
-  patch: { meaning?: string; note?: string },
+  patch: { meaning?: string; note?: string; phonetic?: string },
 ): { content: string; changed: boolean } {
   const key = word.toLowerCase();
   const hit = parseVocabulary(content).find((entry) => entry.word.toLowerCase() === key);
   if (!hit) return { content, changed: false };
   const meaning = patch.meaning !== undefined ? patch.meaning.trim() : hit.meaning;
   const note = patch.note !== undefined ? patch.note.trim() : hit.note;
-  if (meaning === hit.meaning && note === hit.note) return { content, changed: false };
-  const rebuilt = entryLine({ ...hit, meaning, note });
+  const phonetic = patch.phonetic !== undefined ? patch.phonetic.trim() : hit.phonetic;
+  if (meaning === hit.meaning && note === hit.note && phonetic === hit.phonetic) {
+    return { content, changed: false };
+  }
+  const rebuilt = entryLine({ ...hit, meaning, note, phonetic });
   const lines = content.split(/\r?\n/);
   if (lines[hit.line]?.trim().startsWith("- ")) {
     lines[hit.line] = rebuilt;

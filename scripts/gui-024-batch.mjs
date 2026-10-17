@@ -501,53 +501,68 @@ try {
     }
   }
 
-  // ---------------------------------------------- 3. 单词面板 v2（0.24 反馈③④）
+  // ---------------------------------------------- 3. 单词面板 v2（0.24 反馈③④；0.25 面板重排后适配）
+  // 添加区流程：展开 → 输入 → 回车在线查询 → 生造词走「手动填写释义」兜底保存。
+  const saveViaAdd = `(() => {
+    const lookup = document.querySelector('.vocab-lookup');
+    if (!lookup) return false;
+    const save = [...lookup.querySelectorAll('button')].find((x) => x.textContent === '保存');
+    if (save) { save.click(); return true; }
+    const manual = [...lookup.querySelectorAll('button')].find((x) => x.textContent === '手动填写释义');
+    if (manual) { manual.click(); return false; }
+    return false;
+  })()`;
   const tabPos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
   check(!!tabPos, "右侧面板出现「单词」页签");
   if (tabPos) {
     await mouseClick(ws, tabPos.x, tabPos.y);
     await sleep(700);
     check(
-      (await evaluate(ws, `document.querySelector('.vocab-search-input')?.placeholder ?? ''`)) === "搜索单词...",
-      "搜索框置顶（placeholder=搜索单词...）",
+      (await evaluate(ws, `document.querySelector('.vocab-search-input')?.placeholder ?? ''`)) === "搜索单词、释义...",
+      "搜索框置顶（placeholder=搜索单词、释义...）",
     );
     const filters = await evaluate(ws, `[...document.querySelectorAll('.vocab-filter')].map((b) => b.textContent)`);
     check(
-      filters.length === 4 && filters[0].includes("全部") && filters[1].includes("待学习") && filters[2].includes("已掌握") && filters[3].includes("最近添加"),
-      "快捷筛选：全部/待学习/已掌握/最近添加",
+      filters.length === 3 && filters[0].includes("全部") && filters[1].includes("待学习") && filters[2].includes("已掌握"),
+      "快捷筛选：全部/待学习/已掌握（最近添加已移进排序）",
       JSON.stringify(filters),
     );
-    // 快速添加 → Toast
-    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-quickadd-input'), 'QN24WORD1'); return true; })()`);
-    await sleep(200);
-    await evaluate(ws, `(() => { document.querySelector('.vocab-quickadd-btn')?.click(); return true; })()`);
-    const toast1 = await waitFor(ws, `document.querySelector('.vocab-toast')?.textContent ?? ''`, 6000);
+    // 添加区默认收起；展开 → 查询（生造词必失败）→ 手动兜底 → 保存 → Toast
+    check(!!(await evaluate(ws, `!!document.querySelector('.vocab-add-toggle')`)), "添加区默认收起（＋ 添加新单词）");
+    await evaluate(ws, `(() => { document.querySelector('.vocab-add-toggle')?.click(); return true; })()`);
+    await sleep(300);
+    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'QN24WORD1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await waitFor(ws, saveViaAdd, 20000, 600);
+    await sleep(900);
+    const toast1 = await evaluate(ws, `document.querySelector('.vocab-toast')?.textContent ?? ''`);
     check(String(toast1).includes("已添加到待学习"), "添加成功 Toast", String(toast1));
     const vocabFile = join(vaultA, "单词本.md");
     let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
     check(vocab.includes("- QN24WORD1"), "快速添加落盘 单词本.md", vocab);
     // 重复添加 → 提示已存在 + 查看入口（先等第一条 Toast 消失，避免轮询命中残留）
     await waitFor(ws, `!document.querySelector('.vocab-toast')`, 5000);
-    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-quickadd-input'), 'QN24WORD1'); return true; })()`);
-    await sleep(200);
-    await evaluate(ws, `(() => { document.querySelector('.vocab-quickadd-btn')?.click(); return true; })()`);
+    await evaluate(ws, `(() => { const t = document.querySelector('.vocab-add-toggle'); if (t) { t.click(); return true; } return !!document.querySelector('.vocab-add-input'); })()`);
+    await sleep(300);
+    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'QN24WORD1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await waitFor(ws, saveViaAdd, 20000, 600);
+    await sleep(900);
     const toast2 = await waitFor(ws, `(document.querySelector('.vocab-toast')?.textContent ?? '').includes('已经添加过了')`, 6000);
     check(!!toast2, "重复词 Toast 提示", String(await evaluate(ws, `document.querySelector('.vocab-toast')?.textContent ?? ''`)));
     const viewBtn = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.vocab-toast button')].find((x) => x.textContent === '查看'); if (!b) return false; b.click(); return true; })()`, 4000);
     check(viewBtn, "Toast 的「查看」打开详情");
     await waitFor(ws, `!!document.querySelector('.vocab-detail')`, 4000);
     check(await evaluate(ws, `document.querySelector('.vocab-detail-word')?.textContent === 'QN24WORD1'`), "详情弹层显示单词");
-    // 详情里编辑释义/备注
+    // 详情里编辑释义/备注（0.25 起编辑表单是 音标/释义/备注 三个字段）
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '编辑')?.click(); return true; })()`);
     await sleep(300);
-    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-detail-edit label:nth-child(1) input'); (${nativeSet})(el, '数据传输任务接口表'); return true; })()`);
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-detail-edit label:nth-child(2) input'); (${nativeSet})(el, '数据传输任务接口表'); return true; })()`);
     await sleep(200);
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-edit-actions .btn')].find((b) => b.textContent === '保存')?.click(); return true; })()`);
     await sleep(900);
     vocab = readFileSync(vocabFile, "utf8");
     check(vocab.includes("QN24WORD1 | 数据传输任务接口表"), "编辑释义写回（v2 行格式）", vocab.split("\n").filter((l) => l.includes("QN24WORD1")).join(" ; "));
-    // 详情里标记已掌握
-    await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '标记为已掌握')?.click(); return true; })()`);
+    // 详情里标记已掌握（0.25 起按钮文案是「已掌握」）
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '已掌握')?.click(); return true; })()`);
     await sleep(900);
     vocab = readFileSync(vocabFile, "utf8");
     const doneIdx = vocab.indexOf("## 已掌握");
@@ -556,12 +571,12 @@ try {
     await evaluate(ws, `(() => { document.querySelector('.vocab-detail-close')?.click(); return true; })()`);
     await sleep(400);
 
-    // 中文释义搜索 + 匹配计数
+    // 中文释义搜索 + 匹配计数（0.25 起计数行文案是「搜索结果 · N」）
     await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-search-input'), '接口表'); return true; })()`);
     await sleep(500);
     const cnHits = await evaluate(ws, `document.querySelectorAll('.vocab-item').length`);
     const countLine = await evaluate(ws, `document.querySelector('.vocab-count-line')?.textContent ?? ''`);
-    check(cnHits === 1 && countLine.includes("1"), "中文释义可搜索且显示匹配数", `${cnHits} ${countLine}`);
+    check(cnHits === 1 && countLine.includes("搜索结果 · 1"), "中文释义可搜索且显示匹配数", `${cnHits} ${countLine}`);
     await evaluate(ws, `(() => { document.querySelector('.vocab-search-clear')?.click(); return true; })()`);
     await sleep(400);
 
@@ -586,20 +601,25 @@ try {
     const afterCount = await evaluate(ws, `document.querySelectorAll('.vocab-item').length`);
     check(afterCount === beforeCount + 1, "面板列表计数 +1", `${beforeCount} -> ${afterCount}`);
 
-    // 无结果空态 + 一键收录
+    // 无结果空态 + 收录（0.25：收录会展开添加区并走在线查询，生造词手动兜底）
     await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-search-input'), 'zzz不存在词'); return true; })()`);
     await sleep(500);
     const emptyShown = await evaluate(ws, `(() => { const el = document.querySelector('.vocab-empty-search'); return el && el.textContent.includes('没有找到相关单词'); })()`);
     check(emptyShown, "搜索无结果出现居中空态");
-    await evaluate(ws, `(() => { document.querySelector('.vocab-empty-add')?.click(); return true; })()`);
+    await evaluate(ws, `(() => { const b = document.querySelector('.vocab-empty-search .vocab-btn'); b?.click(); return !!b; })()`);
+    await waitFor(ws, saveViaAdd, 20000, 600);
     await sleep(900);
     vocab = readFileSync(vocabFile, "utf8");
-    check(vocab.includes("- zzz不存在词"), "空态的「添加这个单词」收录搜索词", vocab);
-    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-search-input'), ''); return true; })()`);
+    check(vocab.includes("- zzz不存在词"), "空态的「收录」走添加区落盘", vocab);
+    const queryCleared = await evaluate(ws, `document.querySelector('.vocab-search-input')?.value === ''`);
+    check(queryCleared, "收录保存后清除搜索词（列表直接可见新词）");
     await sleep(400);
     // 字母分组与定位栏
     const hasAlpha = await evaluate(ws, `(() => { const a = document.querySelector('.vocab-alpha'); return a && a.querySelectorAll('button').length > 1; })()`);
     check(hasAlpha, "字母快速定位栏出现（多于一个分组）");
+    // 字母分组头：字母 + 计数 + 分隔线（不再是色块）
+    const groupHead = await evaluate(ws, `(() => { const g = document.querySelector('.vocab-group-letter'); return g ? g.textContent : ''; })()`);
+    check(/·\s*\d+ 个单词/.test(String(groupHead)), "字母分组头为「字母 · N 个单词」", String(groupHead));
   }
 
   // ---------------------------------------------- 4. 截图：物理分辨率 + 全屏冻结（0.24 反馈⑤）

@@ -6,6 +6,7 @@ pub mod screenshot;
 pub mod sync_store;
 pub mod vault;
 pub mod vault_home;
+pub mod vocab;
 mod watch;
 
 /// WebView2 启动参数。
@@ -38,8 +39,14 @@ fn configure_webview2() {
 ///
 /// 参数是一个 **.md 文件**（资源管理器「打开方式 → Quick Note」/ 双击关联文件）
 /// 时取其父目录为仓库；文件本身经 {@link startup_file} 传给前端打开。
-#[tauri::command]
-fn startup_vault() -> Option<String> {
+/// 启动参数里指定的仓库目录（可选；`startup_vault` 命令与 setup 自登记共用）。
+///
+/// 用途：从命令行/文件管理器直接打开一个文件夹；也让自动化冒烟测试无需操作
+/// 目录选择框就能进入有内容的状态。
+///
+/// 参数是一个 **.md 文件**（资源管理器「打开方式 → Quick Note」/ 双击关联文件）
+/// 时取其父目录为仓库；文件本身经 {@link startup_file} 传给前端打开。
+fn startup_vault_from_args() -> Option<String> {
     let arg = std::env::args().skip(1).find(|arg| !arg.starts_with('-'))?;
     let path = std::path::Path::new(&arg);
     if path.is_dir() {
@@ -49,6 +56,11 @@ fn startup_vault() -> Option<String> {
         return path.parent().map(|dir| dir.to_string_lossy().into_owned());
     }
     None
+}
+
+#[tauri::command]
+fn startup_vault() -> Option<String> {
+    startup_vault_from_args()
 }
 
 /// 启动参数里指定的**笔记文件**（可选）：资源管理器双击 .md 打开时，
@@ -307,6 +319,14 @@ pub fn run() {
                         }
                     });
                 }
+
+                // 进程出生即登记仓库登记表（argv 仓库或空串占位，前端起来后会用
+                // 真实仓库 upsert 覆盖）。热键仲裁要靠登记表+进程枚举识别"自家
+                // 兄弟"：此前登记要等前端跑起来才发生，新进程头几秒是"登记表
+                // 查不到的黑窗"，两个窗口快速连续打开时前一个会被误判成外部程序
+                // 而当着用户的面弹"注册快捷键失败"。
+                let startup_vault = startup_vault_from_args().unwrap_or_default();
+                let _ = open_vaults::register_self(app.handle(), &startup_vault);
             }
             Ok(())
         })
@@ -322,6 +342,7 @@ pub fn run() {
             open_vaults::open_vaults_unregister,
             open_vaults::open_vaults_list,
             open_vaults::open_vaults_focus,
+            vocab::vocab_lookup,
             read_text_file,
             write_text_file,
             read_binary_file,

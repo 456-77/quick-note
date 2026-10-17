@@ -53,6 +53,16 @@ const check = (ok, label, detail = "") => {
   }
 };
 
+/** 轮询直到 evaluate 断言为真或超时；返回最后的真值（0.25 单词面板流程用）。 */
+const waitFor = async (ws, expression, timeoutMs, pollMs = 500) => {
+  for (let waited = 0; waited < timeoutMs; waited += pollMs) {
+    const hit = await evaluate(ws, expression).catch(() => false);
+    if (hit) return hit;
+    await sleep(pollMs);
+  }
+  return false;
+};
+
 const nativeSet = `(el, value) => {
   const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
@@ -511,22 +521,31 @@ try {
   }
 
   // ---------------------------------------------- 9. 单词本
-  // （0.24 面板重做后：快速添加走 .vocab-quickadd-*，标记掌握走详情弹层）
+  // （0.25 面板重排后：添加区默认收起（＋ 添加新单词），展开后回车先在线查询——
+  // 生造词查询必失败，走「手动填写释义」兜底保存；标记掌握走详情弹层）
   const tabPos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
   check(!!tabPos, "右侧面板出现「单词」页签");
   if (tabPos) {
     await mouseClick(ws, tabPos.x, tabPos.y);
     await sleep(500);
-    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-quickadd-input'); if (!el) return false; (${nativeSet})(el, 'QN23WORD'); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    // 展开添加区：点「＋ 添加新单词」
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-toggle'); if (!el) return false; el.click(); return true; })()`);
+    await sleep(400);
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-input'); if (!el) return false; (${nativeSet})(el, 'QN23WORD'); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    // 生造词在线查询失败 → 预览卡出现「未找到在线释义」
+    await waitFor(ws, `(() => { const el = document.querySelector('.vocab-lookup'); return !!el && el.textContent.includes('未找到在线释义'); })()`, 15000);
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-lookup button')].find((x) => x.textContent === '手动填写释义'); b?.click(); return !!b; })()`);
+    await sleep(300);
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-lookup-actions button')].find((x) => x.textContent === '保存'); b?.click(); return !!b; })()`);
     await sleep(900);
     const vocabFile = join(vault, "单词本.md");
     let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
     check(vocab.includes("- QN23WORD"), "面板输入加入单词 → 落盘 单词本.md", vocab);
     check(vocab.indexOf("## 待学习") < vocab.indexOf("- QN23WORD"), "新词落在待学习节");
-    // 标记掌握：点条目 → 详情弹层 → 标记为已掌握 → 关闭
+    // 标记掌握：点条目 → 详情弹层 → 已掌握 → 关闭
     await evaluate(ws, `(() => { const item = Array.from(document.querySelectorAll('.vocab-item')).find((el) => el.textContent.includes('QN23WORD')); item?.click(); return !!item; })()`);
     await sleep(500);
-    await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '标记为已掌握')?.click(); return true; })()`);
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '已掌握')?.click(); return true; })()`);
     await sleep(900);
     vocab = readFileSync(vocabFile, "utf8");
     const doneIdx = vocab.indexOf("## 已掌握");

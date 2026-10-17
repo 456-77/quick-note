@@ -5,18 +5,23 @@
  * 读取 → 解析 → 行级变换 → 写回，文件本身保持用户可手编的普通 Markdown。
  *
  * 0.24 按用户提示词重做（"轻量的个人单词记忆工具，快速记录 + 快速查词"）：
- *  - 搜索优先：顶部醒目搜索框（英文/中文释义实时过滤、回车记入最近搜索、
+ *  - 搜索优先：顶部醒目搜索框（英文单词与中文释义实时过滤、回车记入最近搜索、
  *    清除按钮、匹配计数、无结果空态 + 一键收录）；
- *  - 快捷筛选：全部 / 待学习 / 已掌握 / 最近添加，默认全部；
  *  - 列表卡片：单词为主、释义次级、轻量状态标识，按字母分组 + 字母栏快速定位；
- *  - 点击单词弹轻量详情（发音 / 释义 / 备注 / 状态 / 添加时间 / 标记 / 编辑 /
- *    删除），没有内容的模块自动隐藏；移动端走底部弹层样式；
- *  - 快速添加：输入 → 添加 → 轻量 Toast（重复词给「查看」入口），不跳转。
+ *  - 点击单词弹轻量详情，没有内容的模块自动隐藏；移动端走底部弹层样式；
+ * 0.25 按"个人词汇速查库"规范再打磨（用户 31 节提示词）：
+ *  - 添加区默认收起（＋ 添加新单词），展开后回车**自动在线查询释义**（有道词典
+ *    免费接口，vocab.rs），成功给"音标 + 释义"预览卡（取消/保存），失败给
+ *    「手动填写释义」——不阻止保存；
+ *  - 「最近添加」从筛选 Tab 移进排序下拉（最近添加 / 字母 A-Z / 字母 Z-A）；
+ *    「打开单词本.md」挪进「···」菜单，搜索行只留搜索框 + 圆形刷新钮；
+ *  - 字母分组头从黑块改为"字母 · N 个单词"+ 细分割线；搜索结果扁平展示；
+ *  - 空态、触控目标（≥44dp）、Android 返回键消费链（详情→添加→搜索→抽屉）。
  * 刷新时机：仓库切换 / 文件树 revision / 收词或外部改动触发的 version 变化。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { readNoteOptional, writeNote } from "../lib/api";
+import { MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readNoteOptional, vocabLookup, writeNote, type VocabLookup } from "../lib/api";
 import { isMobile } from "../lib/platform";
 import {
   VOCAB_FILENAME,
@@ -36,18 +41,27 @@ interface Props {
   version: number;
   onOpen: (path: string) => void;
   notice: (message: string, kind?: "info" | "error") => void;
+  /** Android 返回键消费链（App 的 backConsumeRef 在抽屉收起前先问这里）。 */
+  backConsumerRef?: MutableRefObject<(() => boolean) | null>;
 }
 
-type Filter = "all" | "todo" | "done" | "recent";
+type Filter = "all" | "todo" | "done";
+type Sort = "az" | "za" | "recent";
 
 const FILTERS: Array<{ key: Filter; label: string }> = [
   { key: "all", label: "全部" },
   { key: "todo", label: "待学习" },
   { key: "done", label: "已掌握" },
+];
+
+const SORTS: Array<{ key: Sort; label: string }> = [
   { key: "recent", label: "最近添加" },
+  { key: "az", label: "字母 A-Z" },
+  { key: "za", label: "字母 Z-A" },
 ];
 
 const RECENT_KEY = "quicknote.vocabRecentSearches";
+const SORT_KEY = "quicknote.vocabSort";
 const RECENT_LIMIT = 8;
 
 function loadRecent(): string[] {
@@ -62,9 +76,18 @@ function loadRecent(): string[] {
   }
 }
 
-/** 词条按查询过滤：空格分段的每一段都要在 词/释义/备注 里出现（大小写不敏感）。 */
+function loadSort(): Sort {
+  try {
+    const raw = localStorage.getItem(SORT_KEY);
+    return SORTS.some((item) => item.key === raw) ? (raw as Sort) : "az";
+  } catch {
+    return "az";
+  }
+}
+
+/** 词条按查询过滤：空格分段的每一段都要在 词/释义/备注/音标 里出现（大小写不敏感）。 */
 function matchEntry(entry: VocabEntry, tokens: string[]): boolean {
-  const hay = `${entry.word}\n${entry.meaning}\n${entry.note}`.toLowerCase();
+  const hay = `${entry.word}\n${entry.meaning}\n${entry.note}\n${entry.phonetic}`.toLowerCase();
   return tokens.every((token) => hay.includes(token));
 }
 
@@ -94,18 +117,36 @@ interface PanelToast {
   action?: { label: string; run: () => void };
 }
 
-export default function VocabularyPanel({ vault, revision, version, onOpen, notice }: Props) {
+/** 添加区的在线查询状态机：折叠 → 输入 → 回车查询（loading）→ 预览/失败。 */
+interface LookupState {
+  status: "idle" | "loading" | "done" | "failed";
+  result: VocabLookup | null;
+  /** 查询失败后展开的手动释义输入（不阻止保存）。 */
+  manualMeaning: string;
+  manualOpen: boolean;
+}
+
+const LOOKUP_IDLE: LookupState = { status: "idle", result: null, manualMeaning: "", manualOpen: false };
+
+export default function VocabularyPanel({ vault, revision, version, onOpen, notice, backConsumerRef }: Props) {
   const [entries, setEntries] = useState<VocabEntry[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
+  const [sort, setSort] = useState<Sort>(loadSort);
+  const [sortOpen, setSortOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [lookup, setLookup] = useState<LookupState>(LOOKUP_IDLE);
   const [busy, setBusy] = useState(false);
   const [detailWord, setDetailWord] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const [toast, setToast] = useState<PanelToast | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const lookupSeq = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const addInputRef = useRef<HTMLInputElement | null>(null);
 
   // 桌面端进入面板即聚焦搜索框（移动端不自动弹键盘，点击再聚焦）
   useEffect(() => {
@@ -137,6 +178,31 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     [],
   );
 
+  // Android 返回键：详情 → 添加区（含查询预览）→ 搜索态，都被消费后才轮到抽屉
+  useEffect(() => {
+    if (!backConsumerRef) return;
+    backConsumerRef.current = () => {
+      if (detailWord) {
+        setDetailWord(null);
+        return true;
+      }
+      if (addOpen) {
+        setAddOpen(false);
+        setDraft("");
+        setLookup(LOOKUP_IDLE);
+        return true;
+      }
+      if (query) {
+        setQuery("");
+        return true;
+      }
+      return false;
+    };
+    return () => {
+      backConsumerRef.current = null;
+    };
+  }, [backConsumerRef, detailWord, addOpen, query]);
+
   /** 行级变换的公共骨架：读 → 变换 → 写回 → 刷新列表。 */
   const mutate = useCallback(
     async (transform: (content: string) => string): Promise<boolean> => {
@@ -166,17 +232,21 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     toastTimer.current = window.setTimeout(() => setToast(null), 2800);
   }, []);
 
-  /** 快速添加（不跳转）：成功 Toast；重复词给「查看」入口。 */
-  const addWord = useCallback(
-    async (raw: string) => {
-      const word = raw.trim();
-      if (!word || !vault || busy) return;
-      setDraft((prev) => (prev.trim() === word ? "" : prev));
+  const tokens = useMemo(
+    () => query.trim().toLowerCase().split(/\s+/).filter(Boolean),
+    [query],
+  );
+  const searching = tokens.length > 0;
+
+  /** 落盘一个新词（释义/音标来自在线查询或手动填写）。 */
+  const saveWord = useCallback(
+    async (word: string, meaning: string, phonetic: string) => {
+      if (!vault) return;
       setBusy(true);
       try {
         const note = await readNoteOptional(vault, VOCAB_FILENAME);
         const content = note?.content ?? "";
-        const result = addVocabEntry(content, word, `${today()} · 手动添加`);
+        const result = addVocabEntry(content, word, `${today()} · 手动添加`, meaning, "", phonetic);
         if (!result.added) {
           showToast("这个单词已经添加过了", { label: "查看", run: () => setDetailWord(word) });
           return;
@@ -190,8 +260,56 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
         void reload();
       }
     },
-    [vault, busy, notice, reload, showToast],
+    [vault, notice, reload, showToast],
   );
+
+  /** 在线查询释义（免费词典接口）：成功进预览，失败给「手动填写释义」。 */
+  const runLookup = useCallback(
+    async (raw: string) => {
+      const word = raw.trim();
+      if (!word) return;
+      const seq = ++lookupSeq.current;
+      setLookup({ status: "loading", result: null, manualMeaning: "", manualOpen: false });
+      try {
+        const result = await vocabLookup(word);
+        if (lookupSeq.current !== seq) return; // 连续查询：只认最后一次
+        setLookup({ status: "done", result, manualMeaning: "", manualOpen: false });
+      } catch {
+        if (lookupSeq.current !== seq) return;
+        setLookup({
+          status: "failed",
+          result: null,
+          manualMeaning: "",
+          manualOpen: false,
+        });
+        // 失败原因（网络/未收录）在预览卡里用统一文案，不打断添加
+      }
+    },
+    [],
+  );
+
+  /** 添加区回车：先在线查询，不让用户手写翻译。 */
+  const submitDraft = useCallback(() => {
+    if (!draft.trim() || lookup.status === "loading") return;
+    void runLookup(draft);
+  }, [draft, lookup.status, runLookup]);
+
+  const closeAdd = useCallback(() => {
+    setAddOpen(false);
+    setDraft("");
+    setLookup(LOOKUP_IDLE);
+  }, []);
+
+  const confirmSave = useCallback(() => {
+    const word = draft.trim();
+    if (!word) return;
+    const meaning = lookup.result?.meaning ?? lookup.manualMeaning.trim();
+    const phonetic = lookup.result?.phonetic ?? "";
+    void saveWord(word, meaning, phonetic);
+    closeAdd();
+    // 从「搜索无结果 → 收录」进来的保存：清掉搜索词，让新词直接出现在列表里
+    if (searching && query.trim().toLowerCase() === word.toLowerCase()) setQuery("");
+  }, [draft, lookup, saveWord, closeAdd, searching, query]);
 
   /** 回车提交搜索：记入最近搜索（去重、限量）。 */
   const commitSearch = useCallback(() => {
@@ -211,32 +329,26 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     });
   }, [query]);
 
-  const tokens = useMemo(
-    () => query.trim().toLowerCase().split(/\s+/).filter(Boolean),
-    [query],
-  );
-  const searching = tokens.length > 0;
-
   const visible = useMemo(() => {
     let list = entries;
     if (searching) list = list.filter((entry) => matchEntry(entry, tokens));
     if (filter === "todo") list = list.filter((entry) => !entry.learned);
     else if (filter === "done") list = list.filter((entry) => entry.learned);
-    else if (filter === "recent") {
-      list = [...list].sort(
+    if (sort === "recent") {
+      return [...list].sort(
         (a, b) => addedAt(b).localeCompare(addedAt(a)) || b.line - a.line,
       );
     }
-    if (filter !== "recent") {
-      const collator = new Intl.Collator("zh-Hans-CN", { numeric: true });
-      list = [...list].sort((a, b) => collator.compare(a.word, b.word));
-    }
-    return list;
-  }, [entries, searching, tokens, filter]);
+    const collator = new Intl.Collator("zh-Hans-CN", { numeric: true });
+    return [...list].sort((a, b) =>
+      sort === "za" ? collator.compare(b.word, a.word) : collator.compare(a.word, b.word),
+    );
+  }, [entries, searching, tokens, filter, sort]);
 
-  /** 字母分组（「最近添加」是纯时间序，不分组）。 */
+  /** 字母分组（「最近添加」排序与搜索结果是纯列表，不分组）。 */
+  const grouped = !searching && sort !== "recent";
   const groups = useMemo(() => {
-    if (filter === "recent") return [{ key: "", items: visible }];
+    if (!grouped) return [{ key: "", items: visible }];
     const map = new Map<string, VocabEntry[]>();
     for (const entry of visible) {
       const key = groupKey(entry.word);
@@ -247,7 +359,7 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     return [...map.entries()]
       .sort((a, b) => (a[0] === "#" ? 1 : 0) - (b[0] === "#" ? 1 : 0) || a[0].localeCompare(b[0]))
       .map(([key, items]) => ({ key, items }));
-  }, [visible, filter]);
+  }, [visible, grouped]);
 
   const detail = useMemo(
     () => (detailWord ? entries.find((entry) => entry.word.toLowerCase() === detailWord.toLowerCase()) ?? null : null),
@@ -266,6 +378,20 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [detailWord]);
+
+  // 「···」/排序下拉：点外面就收起（面板内轻量菜单，不值得引 popper）
+  useEffect(() => {
+    if (!sortOpen && !moreOpen) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest(".vocab-menu-wrap")) {
+        setSortOpen(false);
+        setMoreOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [sortOpen, moreOpen]);
 
   const scrollToGroup = useCallback((key: string) => {
     const target = listRef.current?.querySelector<HTMLElement>(`[data-group="${CSS.escape(key)}"]`);
@@ -291,6 +417,25 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     [mutate, showToast],
   );
 
+  /** 详情里的「查询在线释义」：收词快捷键进来的词往往只有词本身。 */
+  const fillDetailMeaning = useCallback(
+    async (entry: VocabEntry) => {
+      try {
+        const result = await vocabLookup(entry.word);
+        const ok = await mutate((content) =>
+          updateVocabEntry(content, entry.word, {
+            meaning: result.meaning || entry.meaning,
+            phonetic: result.phonetic || entry.phonetic,
+          }).content,
+        );
+        if (ok) showToast(`已填入「${entry.word}」的在线释义`);
+      } catch (e) {
+        notice(e instanceof Error ? e.message : String(e), "info");
+      }
+    },
+    [mutate, notice, showToast],
+  );
+
   if (!vault) {
     return <div className="vocab-panel vocab-empty">打开仓库后可使用单词本。</div>;
   }
@@ -299,83 +444,164 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
 
   return (
     <div className="vocab-panel">
-      {/* 搜索优先：顶部主搜索框（英文单词与中文释义都能搜，实时过滤） */}
-      <div className="vocab-search">
-        <span className="vocab-search-icon" aria-hidden>
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2">
-            <circle cx="11" cy="11" r="7"></circle>
-            <line x1="21" y1="21" x2="16.5" y2="16.5"></line>
-          </svg>
-        </span>
-        <input
-          ref={searchInputRef}
-          type="text"
-          className="vocab-search-input"
-          placeholder="搜索单词..."
-          value={query}
-          spellCheck={false}
-          enterKeyHint="search"
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              commitSearch();
-            }
-          }}
-        />
-        {query && (
-          <button
-            type="button"
-            className="vocab-search-clear"
-            title="清除搜索"
-            onClick={() => setQuery("")}
-          >
-            ×
-          </button>
-        )}
+      {/* 搜索优先：顶部主搜索框（英文单词/中文释义/音标都能搜，实时过滤）。
+          「打开单词本.md」不在这里——它不是查词动作，挪进「···」菜单。 */}
+      <div className="vocab-search-row">
+        <div className="vocab-search">
+          <span className="vocab-search-icon" aria-hidden>
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="11" cy="11" r="7"></circle>
+              <line x1="21" y1="21" x2="16.5" y2="16.5"></line>
+            </svg>
+          </span>
+          <input
+            ref={searchInputRef}
+            type="text"
+            className="vocab-search-input"
+            placeholder="搜索单词、释义..."
+            value={query}
+            spellCheck={false}
+            enterKeyHint="search"
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                commitSearch();
+              }
+            }}
+          />
+          {query && (
+            <button
+              type="button"
+              className="vocab-search-clear"
+              title="清除搜索"
+              onClick={() => setQuery("")}
+            >
+              ×
+            </button>
+          )}
+        </div>
         <button
           type="button"
-          className="btn btn-mini"
+          className="vocab-refresh"
           title="重新读取单词本.md"
+          aria-label="重新读取单词本"
           onClick={() => void reload()}
         >
           ⟳
         </button>
-        <button
-          type="button"
-          className="btn btn-mini"
-          title="在编辑器中打开单词本.md"
-          onClick={() => onOpen(VOCAB_FILENAME)}
-        >
-          打开
-        </button>
       </div>
 
-      {/* 快速添加：视觉层级低于搜索框，添加后停留原地 + Toast */}
-      <div className="vocab-quickadd">
-        <input
-          type="text"
-          className="vocab-quickadd-input"
-          placeholder="输入单词，回车加入待学习…"
-          value={draft}
-          spellCheck={false}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              void addWord(draft);
-            }
-          }}
-        />
-        <button
-          type="button"
-          className="vocab-quickadd-btn"
-          disabled={busy || !draft.trim()}
-          onClick={() => void addWord(draft)}
-        >
-          添加
+      {/* 添加区默认收起：一个小按钮，不跟搜索框抢视觉。展开后回车自动查询释义。 */}
+      {!addOpen ? (
+        <button type="button" className="vocab-add-toggle" onClick={() => setAddOpen(true)}>
+          ＋ 添加新单词
         </button>
-      </div>
+      ) : (
+        <div className="vocab-add">
+          <div className="vocab-add-row">
+            <input
+              ref={addInputRef}
+              type="text"
+              className="vocab-add-input"
+              placeholder="输入单词，例如 scenario"
+              value={draft}
+              spellCheck={false}
+              enterKeyHint="done"
+              autoFocus
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitDraft();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeAdd();
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="vocab-add-btn"
+              disabled={busy || !draft.trim() || lookup.status === "loading"}
+              onClick={submitDraft}
+            >
+              查询
+            </button>
+          </div>
+
+          {lookup.status === "loading" && (
+            <div className="vocab-lookup vocab-lookup-loading">正在查询在线释义…</div>
+          )}
+
+          {lookup.status === "done" && lookup.result && (
+            <div className="vocab-lookup">
+              <div className="vocab-lookup-word">
+                {lookup.result.word}
+                {lookup.result.phonetic && (
+                  <span className="vocab-lookup-phonetic">{lookup.result.phonetic}</span>
+                )}
+              </div>
+              {lookup.result.meaning ? (
+                <div className="vocab-lookup-meaning">{lookup.result.meaning}</div>
+              ) : (
+                <div className="vocab-lookup-none">词典里没有收录释义</div>
+              )}
+              <div className="vocab-lookup-actions">
+                <button type="button" className="vocab-btn" onClick={closeAdd}>
+                  取消
+                </button>
+                <button type="button" className="vocab-btn vocab-btn-primary" disabled={busy} onClick={confirmSave}>
+                  保存
+                </button>
+              </div>
+            </div>
+          )}
+
+          {lookup.status === "failed" && (
+            <div className="vocab-lookup">
+              <div className="vocab-lookup-none">未找到在线释义</div>
+              {lookup.manualOpen ? (
+                <input
+                  type="text"
+                  className="vocab-add-input"
+                  placeholder="手动填写释义（可留空，之后再补）"
+                  value={lookup.manualMeaning}
+                  spellCheck={false}
+                  autoFocus
+                  onChange={(event) => setLookup((prev) => ({ ...prev, manualMeaning: event.target.value }))}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      confirmSave();
+                    }
+                  }}
+                />
+              ) : (
+                <div className="vocab-lookup-actions">
+                  <button
+                    type="button"
+                    className="vocab-btn"
+                    onClick={() => setLookup((prev) => ({ ...prev, manualOpen: true }))}
+                  >
+                    手动填写释义
+                  </button>
+                </div>
+              )}
+              {lookup.manualOpen && (
+                <div className="vocab-lookup-actions">
+                  <button type="button" className="vocab-btn" onClick={closeAdd}>
+                    取消
+                  </button>
+                  <button type="button" className="vocab-btn vocab-btn-primary" disabled={busy} onClick={confirmSave}>
+                    保存
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 最近搜索（空查询时显示，方便重复查词） */}
       {!searching && recent.length > 0 && (
@@ -408,57 +634,173 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
         </div>
       )}
 
-      {/* 快捷筛选 */}
-      <div className="vocab-filters" role="tablist" aria-label="单词筛选">
-        {FILTERS.map((item) => {
-          const count =
-            item.key === "all"
-              ? entries.length
-              : item.key === "todo"
-                ? entries.filter((entry) => !entry.learned).length
-                : item.key === "done"
-                  ? entries.filter((entry) => entry.learned).length
-                  : null;
-          return (
-            <button
-              key={item.key}
-              type="button"
-              role="tab"
-              aria-selected={filter === item.key}
-              className={`vocab-filter${filter === item.key ? " is-on" : ""}`}
-              onClick={() => setFilter(item.key)}
-            >
-              {item.label}
-              {count !== null && <span className="vocab-filter-count">{count}</span>}
-            </button>
-          );
-        })}
+      {/* 快捷筛选（状态）+ 排序 + 「···」：最近添加不是状态，是排序方式 */}
+      <div className="vocab-toolbar">
+        <div className="vocab-filters" role="tablist" aria-label="单词筛选">
+          {FILTERS.map((item) => {
+            const count =
+              item.key === "all"
+                ? entries.length
+                : item.key === "todo"
+                  ? entries.filter((entry) => !entry.learned).length
+                  : entries.filter((entry) => entry.learned).length;
+            return (
+              <button
+                key={item.key}
+                type="button"
+                role="tab"
+                aria-selected={filter === item.key}
+                className={`vocab-filter${filter === item.key ? " is-on" : ""}`}
+                onClick={() => setFilter(item.key)}
+              >
+                {item.label}
+                <span className="vocab-filter-count">{count}</span>
+              </button>
+            );
+          })}
+        </div>
+        <span className="vocab-toolbar-spacer" />
+        <div className="vocab-menu-wrap">
+          <button
+            type="button"
+            className="vocab-toolbar-btn"
+            aria-haspopup="listbox"
+            aria-expanded={sortOpen}
+            onClick={() => {
+              setSortOpen((prev) => !prev);
+              setMoreOpen(false);
+            }}
+          >
+            {SORTS.find((item) => item.key === sort)?.label} ▾
+          </button>
+          {sortOpen && (
+            <div className="vocab-menu" role="listbox" aria-label="排序方式">
+              {SORTS.map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  role="option"
+                  aria-selected={sort === item.key}
+                  className={`vocab-menu-item${sort === item.key ? " is-on" : ""}`}
+                  onClick={() => {
+                    setSort(item.key);
+                    setSortOpen(false);
+                    try {
+                      localStorage.setItem(SORT_KEY, item.key);
+                    } catch {
+                      // 存不上就下次回到默认
+                    }
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className="vocab-menu-wrap">
+          <button
+            type="button"
+            className="vocab-toolbar-btn vocab-more-btn"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            aria-label="更多操作"
+            onClick={() => {
+              setMoreOpen((prev) => !prev);
+              setSortOpen(false);
+            }}
+          >
+            ···
+          </button>
+          {moreOpen && (
+            <div className="vocab-menu vocab-menu-right" role="menu">
+              <button
+                type="button"
+                className="vocab-menu-item"
+                role="menuitem"
+                onClick={() => {
+                  setMoreOpen(false);
+                  onOpen(VOCAB_FILENAME);
+                }}
+              >
+                打开单词本.md
+              </button>
+              <button
+                type="button"
+                className="vocab-menu-item"
+                role="menuitem"
+                disabled={recent.length === 0}
+                onClick={() => {
+                  setMoreOpen(false);
+                  setRecent([]);
+                  try {
+                    localStorage.removeItem(RECENT_KEY);
+                  } catch {
+                    // 尽力而为
+                  }
+                }}
+              >
+                清除最近搜索
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
+      {/* 搜索结果头（规范：搜索结果 · N） */}
       {searching && (
         <div className="vocab-count-line">
-          {visible.length > 0 ? `找到 ${visible.length} 个单词` : "没有找到相关单词"}
+          {visible.length > 0 ? `搜索结果 · ${visible.length}` : "没有找到相关单词"}
         </div>
       )}
 
-      {/* 无结果空态：居中提示 + 一键收录当前搜索词 */}
+      {/* 无结果空态：先给排查建议，再给一键收录 */}
       {searchEmpty ? (
         <div className="vocab-empty-search">
+          <span className="vocab-empty-icon" aria-hidden>🔍</span>
           <p>没有找到相关单词</p>
-          <button type="button" className="vocab-empty-add" onClick={() => void addWord(query)}>
-            添加「{query.trim()}」这个单词
+          <div className="vocab-empty-tips">
+            可以尝试：检查拼写 · 搜索中文释义 · 只输入部分单词
+          </div>
+          <button
+            type="button"
+            className="vocab-btn"
+            onClick={() => {
+              // 收录 = 展开添加区并带入搜索词，直接走在线查询预览
+              setAddOpen(true);
+              setDraft(query.trim());
+              void runLookup(query);
+            }}
+          >
+            收录「{query.trim()}」并查询释义
           </button>
         </div>
       ) : visible.length === 0 ? (
-        <p className="vocab-hint">
-          还没有单词。在笔记里选中一个词按 <kbd>Ctrl+Alt+V</kbd>，或上面手动添加——
-          单词记在仓库根的「{VOCAB_FILENAME}」里，随时可手改。
-        </p>
+        <div className="vocab-empty-list">
+          <span className="vocab-empty-icon" aria-hidden>✦</span>
+          <p>还没有记录单词</p>
+          <div className="vocab-empty-tips">
+            在笔记里选中一个词按 <kbd>Ctrl+Alt+V</kbd>，或输入一个单词开始记录。
+            单词记在仓库根的「{VOCAB_FILENAME}」里，随时可手改。
+          </div>
+          <button
+            type="button"
+            className="vocab-btn vocab-btn-primary"
+            onClick={() => setAddOpen(true)}
+          >
+            ＋ 添加单词
+          </button>
+        </div>
       ) : (
         <div className="vocab-list" ref={listRef}>
           {groups.map((group) => (
-            <div key={group.key || "recent"} className="vocab-group" data-group={group.key}>
-              {group.key && <div className="vocab-group-letter">{group.key}</div>}
+            <div key={group.key || "flat"} className="vocab-group" data-group={group.key}>
+              {group.key && (
+                <div className="vocab-group-letter">
+                  <span>{group.key}</span>
+                  <span className="vocab-group-count">· {group.items.length} 个单词</span>
+                </div>
+              )}
               {group.items.map((entry) => (
                 <div
                   key={`${entry.line}-${entry.word}`}
@@ -467,9 +809,11 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
                 >
                   <div className="vocab-item-main">
                     <span className="vocab-item-word">{entry.word}</span>
+                    {entry.phonetic && <span className="vocab-item-phonetic">{entry.phonetic}</span>}
                     {entry.meaning && <span className="vocab-item-meaning">{entry.meaning}</span>}
                   </div>
                   <span className={`vocab-status${entry.learned ? " is-learned" : ""}`}>
+                    <span className="vocab-status-dot" aria-hidden>{entry.learned ? "✓" : "●"}</span>
                     {entry.learned ? "已掌握" : "待学习"}
                   </span>
                   <button
@@ -491,8 +835,8 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
         </div>
       )}
 
-      {/* 字母快速定位栏（列出实际存在的分组） */}
-      {filter !== "recent" && groups.length > 1 && (
+      {/* 字母快速定位栏（列出实际存在的分组；搜索态没有分组） */}
+      {grouped && groups.length > 1 && (
         <div className="vocab-alpha" aria-label="按字母定位">
           {groups.map((group) => (
             <button
@@ -530,9 +874,12 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
           onClose={() => setDetailWord(null)}
           onToggle={(learned) => void toggleLearned(detail, learned)}
           onRemove={() => void removeWord(detail)}
-          onSave={(meaning, note) =>
-            void mutate((content) => updateVocabEntry(content, detail.word, { meaning, note }).content)
+          onSave={(meaning, note, phonetic) =>
+            void mutate((content) =>
+              updateVocabEntry(content, detail.word, { meaning, note, phonetic }).content,
+            )
           }
+          onLookup={() => void fillDetailMeaning(detail)}
         />
       )}
     </div>
@@ -547,24 +894,28 @@ function VocabDetail({
   onToggle,
   onRemove,
   onSave,
+  onLookup,
 }: {
   entry: VocabEntry;
   busy: boolean;
   onClose: () => void;
   onToggle: (learned: boolean) => void;
   onRemove: () => void;
-  onSave: (meaning: string, note: string) => void;
+  onSave: (meaning: string, note: string, phonetic: string) => void;
+  onLookup: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [meaning, setMeaning] = useState(entry.meaning);
   const [note, setNote] = useState(entry.note);
+  const [phonetic, setPhonetic] = useState(entry.phonetic);
 
   // 换词（含条目被更新后的重挂载）时重置编辑态
   useEffect(() => {
     setEditing(false);
     setMeaning(entry.meaning);
     setNote(entry.note);
-  }, [entry.word, entry.meaning, entry.note]);
+    setPhonetic(entry.phonetic);
+  }, [entry.word, entry.meaning, entry.note, entry.phonetic]);
 
   const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
   const speak = () => {
@@ -591,6 +942,7 @@ function VocabDetail({
             </button>
           )}
           <span className={`vocab-status${entry.learned ? " is-learned" : ""}`}>
+            <span className="vocab-status-dot" aria-hidden>{entry.learned ? "✓" : "●"}</span>
             {entry.learned ? "已掌握" : "待学习"}
           </span>
           <button type="button" className="vocab-detail-close" title="关闭（Esc）" onClick={onClose}>
@@ -598,10 +950,23 @@ function VocabDetail({
           </button>
         </div>
 
+        {(entry.phonetic || entry.meaning) && (
+          <div className="vocab-detail-phonetic">{entry.phonetic}</div>
+        )}
         {entry.meta && <div className="vocab-detail-meta">{entry.meta}</div>}
 
         {editing ? (
           <div className="vocab-detail-edit">
+            <label>
+              音标
+              <input
+                type="text"
+                value={phonetic}
+                placeholder="/sɪˈnɑːriəʊ/"
+                spellCheck={false}
+                onChange={(event) => setPhonetic(event.target.value)}
+              />
+            </label>
             <label>
               释义
               <input
@@ -629,7 +994,7 @@ function VocabDetail({
                 className="btn btn-mini vocab-detail-primary"
                 disabled={busy}
                 onClick={() => {
-                  onSave(meaning, note);
+                  onSave(meaning, note, phonetic);
                   setEditing(false);
                 }}
               >
@@ -641,8 +1006,13 @@ function VocabDetail({
           <>
             {entry.meaning && <div className="vocab-detail-meaning">{entry.meaning}</div>}
             {entry.note && <div className="vocab-detail-note">{entry.note}</div>}
-            {!entry.meaning && !entry.note && (
-              <div className="vocab-detail-none">还没有释义或备注</div>
+            {!entry.meaning && !entry.note && !entry.phonetic && (
+              <div className="vocab-detail-none">
+                还没有释义或备注
+                <button type="button" className="vocab-btn" disabled={busy} onClick={onLookup}>
+                  查询在线释义
+                </button>
+              </div>
             )}
           </>
         )}
@@ -654,7 +1024,7 @@ function VocabDetail({
             disabled={busy}
             onClick={() => onToggle(!entry.learned)}
           >
-            {entry.learned ? "标记为待学习" : "标记为已掌握"}
+            {entry.learned ? "重新学习" : "已掌握"}
           </button>
           {!editing && (
             <button type="button" className="vocab-detail-act" onClick={() => setEditing(true)}>

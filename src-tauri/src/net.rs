@@ -19,7 +19,6 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use ureq::http::{Request, Response};
-#[cfg(mobile)]
 use ureq::tls::RootCerts;
 use ureq::tls::{TlsConfig, TlsProvider};
 use ureq::{Agent, Body};
@@ -45,22 +44,43 @@ pub struct HttpResponse {
     pub body_base64: String,
 }
 
-fn build_agent(timeout_ms: Option<u64>) -> Agent {
+/// TLS 通道选择：平台默认（同步用，桌面 native-tls / 移动 rustls+WebPki）或
+/// 强制 rustls+WebPki（词典查询用——youdao 证书链带交叉签名根，Windows schannel
+/// 会报 "unable to find any user-specified roots"，WebPki 捆绑根证书不受系统库影响）。
+#[derive(Clone, Copy)]
+pub(crate) enum TlsChoice {
+    PlatformDefault,
+    RustlsWebPki,
+}
+
+pub(crate) fn build_agent(timeout_ms: Option<u64>) -> Agent {
+    build_agent_with_tls(timeout_ms, TlsChoice::PlatformDefault)
+}
+
+pub(crate) fn build_agent_with_tls(timeout_ms: Option<u64>, tls_choice: TlsChoice) -> Agent {
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS));
     // TLS provider 按平台显式指认（ureq 默认是 Rustls，而桌面只编译了 native-tls——
     // 不指认的话第一个 https 请求就会 panic，见下方测试守护）。
     //   - 桌面：native-tls（Windows 上 = SChannel，不引入 C 依赖）；
     //   - 移动：rustls + WebPki 捆绑根证书（Android 系统信任库不在
     //     rustls-native-certs 期望的标准路径上；对 Let's Encrypt 等主流 CA 足够）。
+    // 词典查询（vocab.rs）强制走 rustls+WebPki：桌面要编译 rustls 特性才可用。
     #[cfg(desktop)]
-    let tls = TlsConfig::builder()
-        .provider(TlsProvider::NativeTls)
-        .build();
+    let tls = match tls_choice {
+        TlsChoice::PlatformDefault => TlsConfig::builder()
+            .provider(TlsProvider::NativeTls)
+            .build(),
+        TlsChoice::RustlsWebPki => TlsConfig::builder()
+            .provider(TlsProvider::Rustls)
+            .root_certs(RootCerts::WebPki)
+            .build(),
+    };
     #[cfg(mobile)]
     let tls = TlsConfig::builder()
         .provider(TlsProvider::Rustls)
         .root_certs(RootCerts::WebPki)
         .build();
+    let _ = tls_choice;
     ureq::Agent::config_builder()
         // 4xx/5xx 不当异常：调用方要看的正是状态码本身
         .http_status_as_error(false)
