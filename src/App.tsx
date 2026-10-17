@@ -11,6 +11,7 @@ import HeadingLevelDialog from "./components/HeadingLevelDialog";
 import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
 import QuickCaptureDialog from "./components/QuickCaptureDialog";
+import AddWordDialog from "./components/AddWordDialog";
 import CaptureManager from "./components/CaptureManager";
 import ScreenshotDialog from "./components/ScreenshotDialog";
 import SettingsDialog from "./components/SettingsDialog";
@@ -65,7 +66,7 @@ import { applyMermaidTheme, clearMermaidCache, requestDecorationRefresh, setMerm
 import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { EMPTY_CONTEXT, absoluteInVault, resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
-import { getSettings, onSettingsChange, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
+import { bgSettingsFor, getSettings, onSettingsChange, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
 import { closeSearchPanelIfOpen, openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
 import { VOCAB_FILENAME, addVocabEntry, initialVocabulary } from "./lib/vocabulary";
@@ -121,6 +122,66 @@ const MODE_KEY = "quicknote.mode";
 const SIDEBAR_KEY = "quicknote.sidebar";
 /** 停止输入多久后自动保存。写盘前会比较内容，未变则不触碰文件。 */
 const AUTOSAVE_DELAY = 1200;
+
+/** 嵌套编辑宿主（表格单元格等）的选择器：值与 livePreview 写入的一致。 */
+const NESTED_EDITABLE = '[contenteditable="true"], [contenteditable="plaintext-only"]';
+
+/** DOM 选区/焦点是否落在嵌套编辑宿主（渲染表格的单元格）里。 */
+function selectionInNestedHost(): boolean {
+  const sel = window.getSelection();
+  const host = sel?.anchorNode?.parentElement?.closest<HTMLElement>(NESTED_EDITABLE) ?? null;
+  return !!host && !host.classList.contains("cm-content");
+}
+
+/**
+ * 收词/搜索预填的取词（0.26）：焦点在嵌套宿主（表格单元格）里时，CM 选区是
+ * 进表格前的旧值绝不能用——按 DOM 选区取（非折叠取选中文本、折叠取光标所在词）；
+ * 普通正文按 CM 选区 → DOM 选区 → CM 光标所在词的顺序兜底。
+ */
+function captureWordTerm(view: EditorView): string {
+  if (selectionInNestedHost()) {
+    return domSelectionText() || domWordAtCaretInNestedHost();
+  }
+  const selection = view.state.selection.main;
+  let word = selection.empty ? "" : view.state.sliceDoc(selection.from, selection.to).trim();
+  if (!word) word = domSelectionText();
+  if (!word) {
+    const found = view.state.wordAt(selection.head);
+    word = found ? view.state.sliceDoc(found.from, found.to).trim() : "";
+  }
+  return word;
+}
+
+/** 取当前 DOM 选区的文本：多行只取第一行、截断（与搜索预填同一口径）；空选区返回空串。 */
+function domSelectionText(max = 200): string {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || sel.isCollapsed) return "";
+  const text = sel.toString();
+  const newline = text.search(/\r\n|\r|\n/);
+  return (newline >= 0 ? text.slice(0, newline) : text).trim().slice(0, max);
+}
+
+/**
+ * DOM 光标所在词（收词兜底用）：选区折叠且锚点落在**嵌套编辑宿主**（表格
+ * 单元格）的文本节点里时，从宿主文本里挖出光标处的词。普通正文编辑时 CM 的
+ * wordAt 已经覆盖，这里的锚点限定就是为了不跟它抢。
+ */
+function domWordAtCaretInNestedHost(): string {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return "";
+  const node = sel.anchorNode;
+  if (!node || node.nodeType !== Node.TEXT_NODE) return "";
+  const host = node.parentElement?.closest<HTMLElement>(NESTED_EDITABLE);
+  if (!host || host.classList.contains("cm-content")) return "";
+  const text = node.nodeValue ?? "";
+  const offset = Math.min(sel.anchorOffset, text.length);
+  const isWord = (ch: string) => /[\p{L}\p{N}_]/u.test(ch);
+  let from = offset;
+  let to = offset;
+  while (from > 0 && isWord(text[from - 1])) from -= 1;
+  while (to < text.length && isWord(text[to])) to += 1;
+  return text.slice(from, to).trim();
+}
 
 /**
  * 更新弹窗的新版本介绍（0.23 用户反馈：别显示 Markdown 源码）。用应用同款
@@ -790,6 +851,10 @@ export default function App() {
       setQuickCaptureOpen(false);
       return true;
     }
+    if (addWordDialog !== null) {
+      setAddWordDialog(null);
+      return true;
+    }
     if (paletteOpen) {
       setPaletteOpen(false);
       return true;
@@ -881,14 +946,25 @@ export default function App() {
   }, [settings.theme]);
 
   // 全局背景（M4）：设置或仓库变化时重铺；图片走 asset 协议，路径是仓库内的相对路径。
+  // 参数按仓库取（bgSettingsFor）：每个仓库一份自己的背景（0.26 用户反馈）。
   useEffect(() => {
-    applyBackground(settings, vault);
+    applyBackground(bgSettingsFor(vault, settings), vault);
   }, [settings, vault]);
 
   // 行号显示开关：gutter 的显隐走 html 类（CSS 见 styles.css 的 qn-line-numbers）。
   useEffect(() => {
     document.documentElement.classList.toggle("qn-line-numbers", settings.showLineNumbers);
   }, [settings.showLineNumbers]);
+
+  // 搜索命中高亮颜色（0.26 用户反馈）：文件内搜索、渲染表格内的命中、全局搜索
+  // 跳转高亮统一从 --qn-hit 取色（styles.css），这里把设置值写到根节点。
+  // 非法值（手改 localStorage）退回默认红，绝不能让高亮消失。
+  useEffect(() => {
+    const color = /^#[0-9a-fA-F]{6}$/.test(settings.searchHitColor.trim())
+      ? settings.searchHitColor.trim()
+      : "#ff5252";
+    document.documentElement.style.setProperty("--qn-hit", color);
+  }, [settings.searchHitColor]);
 
   // Markdown 渲染风格（默认 / Blue Topaz 风）：同样走 html 类切换整套覆盖样式。
   useEffect(() => {
@@ -1105,6 +1181,8 @@ export default function App() {
   // 「# 文件名」建头，与新建笔记的标题规则一致。
 
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+  /** 手动添加单词弹窗（0.26）：string = 打开并预填（可为空串），null = 关闭。 */
+  const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
   const [shareDraft, setShareDraft] = useState("");
   /** 系统分享带入的图片（base64，随弹窗提交一并落附件目录）。 */
@@ -1390,6 +1468,18 @@ export default function App() {
     () => entries.filter((entry) => !entry.isDir && entry.name.toLowerCase().endsWith(".md")).length,
     [entries],
   );
+
+  /**
+   * 附件数量（设置 → 存储的数据统计）：附件目录（库内配置 pastedImageFolder，
+   * 默认 attachments）下的文件；目录为空按仓库根的一级文件算。
+   */
+  const attachmentCount = useMemo(() => {
+    const folder = daily.settings.pastedImageFolder.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    const prefix = folder ? `${folder}/` : "";
+    return entries.filter(
+      (entry) => !entry.isDir && (prefix ? entry.path.startsWith(prefix) : !entry.path.includes("/")),
+    ).length;
+  }, [entries, daily.settings.pastedImageFolder]);
 
   /** 仓库目录名（顶栏胶囊按钮上只显示名字，不显示全路径）。 */
   const vaultName = useMemo(
@@ -1924,18 +2014,23 @@ export default function App() {
     a.replace(/[\\/]+$/, "").toLowerCase() === b.replace(/[\\/]+$/, "").toLowerCase();
 
   /**
-   * 目标仓库已在别的窗口打开时把它调到前台，返回是否接管了这次打开。
+   * 目标仓库已在别的窗口打开时把它调到前台。
    * 登记表由各窗口进程维护（Rust 侧 open_vaults），崩溃的窗口按 pid 清理。
-   * 聚焦失败（登记过期、平台限制）时返回 false，调用方走常规打开流程。
+   * 返回三态：focused = 已切换过去；absent = 登记表里没有（没开或已退出）；
+   * focus-failed = 确认别窗口开着、但系统拒绝切换（调用方绝不能默不作声地
+   * 再开一份——那就是 0.26 用户反馈的"点击已打开的仓库会新开窗口"）。
    */
-  const revealOpenVault = useCallback(async (picked: string): Promise<boolean> => {
-    const others = await openedVaults();
-    if (!others.some((dir) => sameVaultPath(dir, picked))) return false;
-    const focused = await focusVaultWindow(picked);
-    if (!focused) return false;
-    setStatus(`仓库已在其他窗口打开，已切换过去：${vaultDisplayName(picked)}`);
-    return true;
-  }, []);
+  const revealOpenVault = useCallback(
+    async (picked: string): Promise<"focused" | "absent" | "focus-failed"> => {
+      const others = await openedVaults();
+      if (!others.some((dir) => sameVaultPath(dir, picked))) return "absent";
+      const focused = await focusVaultWindow(picked);
+      if (!focused) return "focus-failed";
+      setStatus(`仓库已在其他窗口打开，已切换过去：${vaultDisplayName(picked)}`);
+      return "focused";
+    },
+    [],
+  );
 
   // 本窗口打开的仓库登记到跨进程登记表；换仓库（vault 状态变化）自动刷新，
   // 退出时尽力注销——没来得及注销（强杀/崩溃）的条目由 Rust 读取时按 pid 兜底。
@@ -1974,9 +2069,16 @@ export default function App() {
     }
     const picked = await pickVault();
     if (!picked) return;
-    if (picked === vault) return;
-    // 已在其他窗口打开：不再问「当前窗口还是新窗口」，直接切到那个窗口
-    if (await revealOpenVault(picked)) return;
+    if (vault && sameVaultPath(picked, vault)) return;
+    // 已在其他窗口打开：不再问「当前窗口还是新窗口」，直接切到那个窗口；
+    // 切换失败时也绝不静默新开一份，交回弹窗让用户显式选择
+    const reveal = await revealOpenVault(picked);
+    if (reveal === "focused") return;
+    if (reveal === "focus-failed") {
+      setStatus("仓库已在其他窗口打开，但自动切换失败——请手动切换，或选择打开方式");
+      setVaultChoice({ picked, remember: false });
+      return;
+    }
     // 打开方式：设置里固定了就直接走；默认（ask）弹窗让用户选当前窗口/新窗口
     const mode = getSettings().vaultOpenMode;
     if (mode === "newWindow") {
@@ -2037,9 +2139,16 @@ export default function App() {
   const openRecentVault = useCallback(
     async (dir: string) => {
       setVaultMenu(null);
-      if (dir === vault) return;
-      // 已在其他窗口打开：直接切过去，不弹「当前窗口/新窗口」
-      if (await revealOpenVault(dir)) return;
+      // 路径同判用归一化比较：登记表/最近列表/当前仓库的来源不同（目录选择框、
+      // argv、localStorage），尾部分隔符与大小写可能漂移，精确比较会漏判
+      if (vault && sameVaultPath(dir, vault)) return;
+      const reveal = await revealOpenVault(dir);
+      if (reveal === "focused") return;
+      if (reveal === "focus-failed") {
+        setStatus("仓库已在其他窗口打开，但自动切换失败——请手动切换，或选择打开方式");
+        setVaultChoice({ picked: dir, remember: false });
+        return;
+      }
       const mode = getSettings().vaultOpenMode;
       if (mode === "newWindow") {
         try {
@@ -3640,16 +3749,15 @@ export default function App() {
       notice("请先打开一篇笔记再记单词", "error");
       return;
     }
-    const selection = view.state.selection.main;
-    let word = selection.empty ? "" : view.state.sliceDoc(selection.from, selection.to).trim();
-    if (!word) {
-      const found = view.state.wordAt(selection.head);
-      word = found ? view.state.sliceDoc(found.from, found.to).trim() : "";
-    }
+    // 取词统一走 captureWordTerm：正文按 CM 选区，表格单元格按 DOM 选区
+    let word = captureWordTerm(view).trim();
     if (!word || /\s/.test(word)) {
       notice("选中一个词（或把光标放在词上），再加入单词本", "error");
       return;
     }
+    // 词统一转小写（0.26 用户反馈）：收词是"记词汇"不是"记原文"，Scenario 与
+    // scenario 只留一条；去重本来就是大小写不敏感的，这里统一落盘形态
+    word = word.toLowerCase();
     if (!vaultRef.current) {
       notice("尚未打开仓库，无法记单词", "error");
       return;
@@ -3748,6 +3856,11 @@ export default function App() {
         setTagPopoverOpen((value) => !value);
       },
       addWord: () => void addWordToVocabulary(),
+      addWordDialog: () => {
+        // 弹窗预填当前选词（与收词同一取词口径：表格单元格里的选区也算）
+        const view = viewRef.current;
+        setAddWordDialog(view ? captureWordTerm(view).trim() : "");
+      },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
     [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary],
@@ -3812,6 +3925,9 @@ export default function App() {
           return;
         case "addWord":
           shortcuts.addWord();
+          return;
+        case "addWordDialog":
+          shortcuts.addWordDialog();
           return;
       }
     },
@@ -3885,6 +4001,16 @@ export default function App() {
         return;
       }
       const target = event.target as HTMLElement | null;
+      const nestedHost = target?.closest<HTMLElement>(NESTED_EDITABLE) ?? null;
+      if (nestedHost && nestedHost !== view?.contentDOM) {
+        // 嵌套编辑宿主（渲染表格的单元格等就地编辑区）：焦点不在 CM 的
+        // contentDOM 上，CM 的 Mod-f 键位收不到这个事件，拦不掉就会漏给
+        // WebView2 的加速键弹出**原生查找条**（0.26 用户反馈截图）。这里就地
+        // 接管：把宿主内的 DOM 选区预填进搜索面板（无选区就只开面板）。
+        event.preventDefault();
+        if (view) openSearchPanelOn(view, domSelectionText() || undefined);
+        return;
+      }
       if (target?.closest(".cm-content")) return; // 编辑器内：CM 的 Mod-f 键位处理
       event.preventDefault();
       if (!view) return;
@@ -3924,6 +4050,10 @@ export default function App() {
         setCaptureManagerOpen(false);
         return;
       }
+      if (addWordDialog !== null) {
+        setAddWordDialog(null);
+        return;
+      }
       if (renaming) {
         cancelRename();
         return;
@@ -3932,7 +4062,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, cancelRename, cancelCreate]);
+  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, cancelRename, cancelCreate]);
 
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
@@ -4273,6 +4403,24 @@ export default function App() {
         />
       )}
 
+      {addWordDialog !== null && (
+        <AddWordDialog
+          initialWord={addWordDialog}
+          onClose={() => setAddWordDialog(null)}
+          onSubmit={async (word) => {
+            if (!vaultRef.current) throw new Error("尚未打开仓库，无法记单词");
+            const note = await readNoteOptional(vaultRef.current, VOCAB_FILENAME);
+            const content = note?.content ?? initialVocabulary();
+            const result = addVocabEntry(content, word, `${dailyRef.current.today} · 手动添加`);
+            if (!result.added) return `单词本里已有「${word}」`;
+            await writeNote(vaultRef.current, VOCAB_FILENAME, result.content, false);
+            // 收词不走编辑器，显式 bump 让「单词」面板重读
+            setVocabVersion((value) => value + 1);
+            return `已加入单词本：${word}`;
+          }}
+        />
+      )}
+
       {vaultChoice && (
         <>
           <div className="menu-backdrop" onClick={() => setVaultChoice(null)} />
@@ -4368,6 +4516,7 @@ export default function App() {
         onClose={() => setShowSettings(false)}
         settings={settings}
         applySettings={applySettings}
+        vault={vault}
         imagePaths={vaultImages}
         daily={daily}
         sync={sync}
@@ -4390,6 +4539,8 @@ export default function App() {
         checkUpdate={checkUpdate}
         installUpdate={() => (isMobile() ? installUpdateMobile() : void installUpdate())}
         openReleasePage={(url) => void openReleasePage(url)}
+        noteCount={noteCount}
+        attachmentCount={attachmentCount}
       />
 
       {/* 发现新版本的弹窗：启动自动检查或手动检查发现可用更新时出现，展示新版本介绍 */}
@@ -4570,11 +4721,11 @@ export default function App() {
             setVaultMenu(null);
           }} />
           <div className="context-menu vault-menu" ref={menuRefClampedToViewport(vaultMenu.x, vaultMenu.y)} style={{ left: vaultMenu.x, top: vaultMenu.y }}>
-            {vaultRecents.filter((p) => p !== vault).length === 0 && (
+            {vaultRecents.filter((p) => !(vault && sameVaultPath(p, vault))).length === 0 && (
               <div className="vault-menu-empty">还没有最近打开的仓库</div>
             )}
             {vaultRecents
-              .filter((p) => p !== vault)
+              .filter((p) => !(vault && sameVaultPath(p, vault)))
               .slice(0, 8)
               .map((p) => (
                 <button

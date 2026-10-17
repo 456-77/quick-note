@@ -6,16 +6,22 @@
  *   - 所有设置行都是 `.settings-row` 且第一个 span 是标签文本（按标签找控件）；
  *   - 「粘贴时保存附件」的复选框必须是面板里**第一个** checkbox（DOM 顺序：
  *     通用 → 外观 → 日记与附件 → 云同步 → 快捷键 → 关于）；
- *   - 第一个 `input[type=text]` 必须是「附件保存目录」——外观里的背景图选择因此
- *     用下拉框（select），日记分区之前的文本输入也不能用 type=text。
+ *   - 分区先后与行标签文案保持稳定（脚本按 `[data-sec] .settings-row` + 标签
+ *     文本定位控件），改版只动布局与说明文案的呈现方式。
  * 非激活分区**渲染但隐藏**：脚本是程序化赋值，隐藏元素照样能触发 onChange。
+ *
+ * 0.26 按用户 13 节规范重排 UI（不改任何设置项与含义）：
+ *   - 分组标题 + 一行说明 + 右侧控件的统一行结构（长说明收进 title tooltip）；
+ *   - 主题改为浅色/深色/跟随系统分段选项卡；背景区带实时预览，参数**每仓库一份**；
+ *   - 日记与附件按 附件/日记/提醒/天气 分组；存储页补数据统计与缓存清理；
+ *   - 关于页给 Logo、版本、更新与资源入口；设置搜索命中可点击跳转。
  */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { convertFileSrc } from "@tauri-apps/api/core";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
-import { pickDirectory, listVaults } from "../lib/api";
-import type { AppDataPaths } from "../lib/api";
-import type { Settings } from "../lib/settings";
+import { clearWebviewCache, pickDirectory, listVaults, webviewCacheStat, type AppDataPaths, type DirStat } from "../lib/api";
+import { bgSettingsFor, type BgSettings, type Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import type { SyncController } from "../lib/useSync";
 import { isMobile } from "../lib/platform";
@@ -44,11 +50,16 @@ const SECTIONS: { id: SectionId; label: string; icon: ReactNode }[] = [
   { id: "about", label: "关于", icon: <span className="settings-nav-logo">i</span> },
 ];
 
+/** 搜索高亮颜色的预设（0.26 用户反馈"高亮颜色可以在设置中设置"）。 */
+const HIT_COLOR_PRESETS = ["#ff5252", "#ffb300", "#4caf50", "#2196f3", "#ba68c8"];
+
 interface Props {
   open: boolean;
   onClose: () => void;
   settings: Settings;
   applySettings: (patch: Partial<Settings>) => void;
+  /** 当前仓库（背景图按仓库取参数；null = 未开仓库，背景区不可用）。 */
+  vault: string | null;
   /** 仓库内的图片路径（背景图下拉框的候选）。 */
   imagePaths: string[];
   daily: DailyController;
@@ -73,12 +84,42 @@ interface Props {
   checkUpdate: () => void;
   installUpdate: () => void;
   openReleasePage: (url?: string) => void;
+  /** 仓库里的笔记数量（存储页统计；null = 还没统计出来）。 */
+  noteCount: number | null;
+  /** 仓库附件目录里的文件数量。 */
+  attachmentCount: number | null;
 }
 
-/** 设置面板里的说明文字：默认只显示一个「?」，点击才展开。 */
-function Hint({ children }: { children: ReactNode }) {
-  // 直接铺开的灰色小字（0.13：去掉「?」折叠钮——关键说明一眼可见，不再点一下才能）
-  return <p className="settings-hint">{children}</p>;
+/** 设置行：标签 + 一句话说明 + 右侧控件；完整说明放 title tooltip。
+ * 第一个 span 恒为标签文本——GUI 验收按 `row.querySelector("span").textContent` 找行。 */
+function Row({
+  label,
+  desc,
+  tip,
+  keywords,
+  children,
+}: {
+  label: string;
+  /** 一句话说明（标签下方弱化展示；控件说明压缩到此为止）。 */
+  desc?: string;
+  /** 完整规则（title tooltip；不占版面）。 */
+  tip?: string;
+  /** 设置搜索的补充关键词（如 不透明度 → "背景 淡"）。 */
+  keywords?: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="settings-row" data-keywords={keywords} title={tip ?? desc}>
+      <span>{label}</span>
+      {desc && <span className="settings-row-desc">{desc}</span>}
+      {children}
+    </label>
+  );
+}
+
+/** 分组标题：小号强调字 + 分隔线（规范：分组标题 ────────────）。 */
+function Group({ children }: { children: ReactNode }) {
+  return <div className="settings-group">{children}</div>;
 }
 
 /**
@@ -102,11 +143,19 @@ function osHotkeyOf(event: KeyboardEvent): string | null {
   return [...parts, main].join("+");
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
 export default function SettingsDialog({
   open,
   onClose,
   settings,
   applySettings,
+  vault,
   imagePaths,
   daily,
   sync,
@@ -122,6 +171,8 @@ export default function SettingsDialog({
   checkUpdate,
   installUpdate,
   openReleasePage,
+  noteCount,
+  attachmentCount,
 }: Props) {
   const [active, setActive] = useState<SectionId>("general");
   /**
@@ -142,6 +193,12 @@ export default function SettingsDialog({
    */
   const [shotRecording, setShotRecording] = useState(false);
   const [shotPending, setShotPending] = useState<string | null>(null);
+  /** 搜索结果点击后的跳转目标：落位后滚到那一行并闪一次（规范：点击直接跳转）。 */
+  const [jumpTarget, setJumpTarget] = useState<{ sec: SectionId; label: string } | null>(null);
+  /** WebView 缓存体积（存储页统计；进入 storage 分区时取一次）。 */
+  const [cacheStat, setCacheStat] = useState<DirStat | null>(null);
+  /** 清理缓存的进行中/结果提示。 */
+  const [cacheBusy, setCacheBusy] = useState(false);
   const savedTimerRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
@@ -155,6 +212,19 @@ export default function SettingsDialog({
       savedTimerRef.current = window.setTimeout(() => setSavedFlash(false), 1600);
     },
     [applySettings],
+  );
+
+  /** 背景参数（当前仓库生效值）；没开仓库时给默认值，控件渲染为禁用。 */
+  const bg = bgSettingsFor(vault, settings);
+  /** 把一批背景改动写进当前仓库的 per-vault 条目。 */
+  const saveBg = useCallback(
+    (patch: Partial<BgSettings>) => {
+      if (!vault) return;
+      saveWithFlash({
+        bgPerVault: { ...(settings.bgPerVault ?? {}), [vault]: { ...bg, ...patch } },
+      });
+    },
+    [vault, settings.bgPerVault, bg, saveWithFlash],
   );
 
   // 面板打开时 Ctrl/Cmd+F 聚焦「搜索设置」（拦掉浏览器默认页内搜索）
@@ -215,10 +285,36 @@ export default function SettingsDialog({
     if (open) {
       setActive("general");
       setQuery("");
+      setJumpTarget(null);
     }
   }, [open]);
 
-  // 搜索过滤：按行标签文本匹配；命中时显示全部分区（匹配行为 display:none 的反面）
+  // 进入存储分区时取一次缓存体积（递归扫描有成本，不随面板常驻跑）
+  useEffect(() => {
+    if (!open || active !== "storage") return;
+    webviewCacheStat()
+      .then(setCacheStat)
+      .catch(() => setCacheStat(null));
+  }, [open, active]);
+
+  /** 清理 WebView 缓存：完成后刷新统计并提示释放量。 */
+  const clearCacheNow = useCallback(async () => {
+    setCacheBusy(true);
+    try {
+      const freed = await clearWebviewCache();
+      setCacheStat(await webviewCacheStat().catch(() => null));
+      setSavedFlash(true);
+      window.setTimeout(() => setSavedFlash(false), 1600);
+      window.alert(`已释放 ${formatBytes(freed)} 缓存空间`);
+    } catch {
+      window.alert("清理缓存失败：部分文件可能被占用，稍后再试");
+    } finally {
+      setCacheBusy(false);
+    }
+  }, []);
+
+  // 搜索过滤：匹配行标签、一句话说明、补充关键词与分组标题；命中行显示在
+  // 全部分区里（分区标题随命中行显隐），点击命中行跳转到所在分区并定位。
   useEffect(() => {
     const root = bodyRef.current;
     if (!root) return;
@@ -227,7 +323,7 @@ export default function SettingsDialog({
       // 还原：行全部显示，分区只显示激活的那个（由下面的 render 分支控制）
       root.querySelectorAll<HTMLElement>(".settings-sec").forEach((sec) => {
         sec
-          .querySelectorAll<HTMLElement>(".settings-row, .settings-hint, .settings-actions, .settings-group")
+          .querySelectorAll<HTMLElement>(".settings-row, .settings-hint, .settings-actions, .settings-group, .settings-block, .settings-stat")
           .forEach((row) => {
             row.style.display = "";
           });
@@ -237,18 +333,59 @@ export default function SettingsDialog({
     root.querySelectorAll<HTMLElement>(".settings-sec").forEach((sec) => {
       let visibleRows = 0;
       sec
-        .querySelectorAll<HTMLElement>(".settings-row, .settings-hint, .settings-actions, .settings-group")
+        .querySelectorAll<HTMLElement>(".settings-row, .settings-hint, .settings-actions, .settings-group, .settings-block, .settings-stat")
         .forEach((row) => {
           const label = row.classList.contains("settings-group")
             ? (row.textContent ?? "")
             : (row.querySelector("span")?.textContent ?? row.textContent ?? "");
-          const hit = label.toLowerCase().includes(q);
+          const extra = `${row.dataset.keywords ?? ""} ${row.textContent ?? ""}`.toLowerCase();
+          const hit = label.toLowerCase().includes(q) || extra.includes(q);
           row.style.display = hit ? "" : "none";
           if (hit && row.classList.contains("settings-row")) visibleRows += 1;
         });
       sec.style.display = visibleRows > 0 ? "" : "none";
     });
   }, [query, active, open]);
+
+  // 搜索结果点击跳转：切到目标分区、清掉搜索词，然后把那一行滚进视口并闪一次
+  useEffect(() => {
+    if (!jumpTarget) return;
+    const { sec, label } = jumpTarget;
+    if (active !== sec || query.trim() !== "") return;
+    const frame = requestAnimationFrame(() => {
+      const root = bodyRef.current;
+      const secEl = root?.querySelector<HTMLElement>(`.settings-sec[data-sec="${sec}"]`);
+      const row = [...(secEl?.querySelectorAll<HTMLElement>(".settings-row") ?? [])].find(
+        (candidate) => candidate.querySelector("span")?.textContent === label,
+      );
+      if (row) {
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+        row.classList.add("is-flash");
+        window.setTimeout(() => row.classList.remove("is-flash"), 1500);
+      }
+      setJumpTarget(null);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [jumpTarget, active, query]);
+
+  /** 搜索模式下点命中行：跳到所在分区（控件自身的点击行为照常发生）。 */
+  const onBodyClick = useCallback(
+    (event: ReactMouseEvent) => {
+      if (query.trim() === "") return;
+      const row = (event.target as HTMLElement).closest<HTMLElement>(".settings-row");
+      if (!row) return;
+      const sec = row.closest<HTMLElement>(".settings-sec")?.dataset.sec as SectionId | undefined;
+      const label = row.querySelector("span")?.textContent ?? "";
+      if (!sec || !label) return;
+      if (sec !== active) {
+        setActive(sec);
+        setMobileDetail(true);
+      }
+      setQuery("");
+      setJumpTarget({ sec, label });
+    },
+    [query, active],
+  );
 
   // 移动端（触屏）：目录选择器不可用，收件仓库等改用列表选择。
   const mobilePick = isMobile();
@@ -302,7 +439,10 @@ export default function SettingsDialog({
           <button
             key={section.id}
             type="button"
-            className={`settings-nav-item${!searching && active === section.id ? " is-on" : ""}`}
+            data-sec-nav={section.id}
+            className={`settings-nav-item${!searching && active === section.id ? " is-on" : ""}${
+              section.id === "about" ? " is-about" : ""
+            }`}
             onClick={() => {
               setActive(section.id);
               setMobileDetail(true);
@@ -315,7 +455,7 @@ export default function SettingsDialog({
         ))}
       </div>
 
-      <div className="settings-body" ref={bodyRef}>
+      <div className="settings-body" ref={bodyRef} onClick={onBodyClick}>
         {/* 移动端详情页头：返回分类列表 + 关闭（桌面 CSS 隐藏） */}
         <div className="settings-mobile-head">
           <button type="button" className="settings-back" onClick={() => setMobileDetail(false)}>
@@ -331,12 +471,10 @@ export default function SettingsDialog({
             <IconX size={13} />
           </button>
         </div>
-        {/* 顺序即 DOM 顺序：gui 验收依赖「第一个 checkbox 是粘贴开关、
-            第一个 text input 是附件目录」，不要调整分区先后。 */}
+        {/* 顺序即 DOM 顺序：gui 验收依赖「第一个 checkbox 是粘贴开关」，不要调整分区先后。 */}
         <section className="settings-sec" data-sec="general" style={{ display: searching || active === "general" ? undefined : "none" }}>
-          <div className="settings-group">链接与附件</div>
-          <label className="settings-row">
-            <span>插入链接写法</span>
+          <Group>链接与附件</Group>
+          <Row label="插入链接写法" desc="粘贴图片/文件时插入的链接格式。">
             <select
               value={settings.linkFormat}
               onChange={(event) =>
@@ -346,9 +484,12 @@ export default function SettingsDialog({
               <option value="wiki">Wiki：![[图.png]]</option>
               <option value="markdown">Markdown：![](/attachments/图.png)</option>
             </select>
-          </label>
-          <label className="settings-row">
-            <span>粘贴时保存附件</span>
+          </Row>
+          <Row
+            label="粘贴时保存附件"
+            desc="粘贴图片/文件自动存进附件目录并在光标处插入链接。"
+            tip="重名自动加序号，不覆盖已有文件。附件目录在「日记与附件」分组里设置，与 Obsidian 插件共用；同步开启后贴的图会自动上传。"
+          >
             <input
               type="checkbox"
               checked={settings.savePastedAttachments}
@@ -356,13 +497,12 @@ export default function SettingsDialog({
                 saveWithFlash({ savePastedAttachments: event.target.checked })
               }
             />
-          </label>
-          <Hint>
-            粘贴图片或文件会保存到附件目录（重名自动加序号，不覆盖已有文件），并在光标处插入链接。
-            附件目录在「日记与附件」分组里设置，与 Obsidian 插件共用；同步开启后贴的图会自动上传。
-          </Hint>
-          <label className="settings-row">
-            <span>粘贴代码自动识别语言</span>
+          </Row>
+          <Row
+            label="粘贴代码自动识别语言"
+            desc="粘贴代码时自动识别语言并包成围栏代码块。"
+            tip="支持 30+ 种语言；已带围栏的代码、代码块内部的粘贴不会被改写。开关存在库内配置里（与 Obsidian 插件共用）。"
+          >
             <input
               type="checkbox"
               checked={daily.settings.autoDetectCodeLang}
@@ -370,15 +510,14 @@ export default function SettingsDialog({
                 daily.updateSettings({ autoDetectCodeLang: event.target.checked })
               }
             />
-          </label>
-          <Hint>
-            粘贴一段代码时自动识别语言（30+ 种）并包成围栏代码块；已带围栏的代码、
-            代码块内部的粘贴不会被改写。开关存在库内配置里（与 Obsidian 插件共用）。
-          </Hint>
+          </Row>
 
-          <div className="settings-group">导出</div>
-          <label className="settings-row">
-            <span>导出目录</span>
+          <Group>导出</Group>
+          <Row
+            label="导出目录"
+            desc="导出 PDF / mermaid 图表的默认保存位置。"
+            tip="仓库内相对路径，默认「导出」= 仓库根的导出文件夹。保存对话框会预填这个目录；手动选过一次位置后以手动选择优先。"
+          >
             <span className="settings-inline">
               <input
                 type="text"
@@ -410,15 +549,15 @@ export default function SettingsDialog({
                 重置
               </button>
             </span>
-          </label>
-          <Hint>
-            导出 PDF、mermaid 图表的默认保存位置（仓库内相对路径，默认「导出」= 仓库根的
-            导出文件夹）。保存对话框会预填这个目录；手动选过一次位置后以手动选择优先。
-          </Hint>
+          </Row>
 
-          <div className="settings-group">打开行为</div>
-          <label className="settings-row">
-            <span>全局截图快捷键</span>
+          <Group>打开行为</Group>
+          <Row
+            label="全局截图快捷键"
+            desc="OS 级全局热键，应用在后台也响应。"
+            tip="点「录入」后直接按组合键（Enter 确认、Esc 取消），不再手填。按下后抓取整个屏幕：可拖动框选、识别文字（Windows OCR）或存进当前笔记。留空 = 关闭；提示“被其他程序占用”说明该组合已被微信/QQ 等占用，换一个即可。多个 Quick Note 窗口同时开时由最先打开的窗口响应。"
+            keywords="截图 ocr 屏幕捕捉"
+          >
             <span className="settings-inline shot-hotkey-row">
               {shotRecording ? (
                 <span className="shot-hotkey-capture" title="Enter 确认 · Esc 取消">
@@ -460,16 +599,12 @@ export default function SettingsDialog({
                 重置
               </button>
             </span>
-          </label>
-          <Hint>
-            OS 级全局快捷键，应用在后台也响应。点「录入」后直接按组合键（Enter 确认、
-            Esc 取消），不再手填。按下后抓取整个屏幕：可拖动框选、识别文字（Windows
-            OCR）或存进当前笔记。留空 = 关闭；提示"被其他程序占用"说明该组合已被
-            微信/QQ 等占用，换一个即可。多个 Quick Note 窗口同时开时由最先打开的
-            窗口响应。
-          </Hint>
-          <label className="settings-row">
-            <span>打开其他仓库时</span>
+          </Row>
+          <Row
+            label="打开其他仓库时"
+            desc="点最近仓库/选择其他仓库时在当前窗口还是新窗口打开。"
+            tip="「每次询问」在切换仓库时弹窗让你选；勾过「记住我的选择」后会跳过询问，在这里改回「每次询问」即可恢复。目标仓库已在别的窗口开着时会直接把那个窗口切到前台。"
+          >
             <select
               value={settings.vaultOpenMode}
               onChange={(event) =>
@@ -480,13 +615,12 @@ export default function SettingsDialog({
               <option value="current">总是当前窗口</option>
               <option value="newWindow">总是新窗口</option>
             </select>
-          </label>
-          <Hint>
-            「每次询问」在切换仓库时弹窗让你选当前窗口还是新窗口；勾过「记住我的选择」后
-            会跳过询问，在这里改回「每次询问」即可恢复。
-          </Hint>
-          <label className="settings-row">
-            <span>打开笔记时</span>
+          </Row>
+          <Row
+            label="打开笔记时"
+            desc="打开**没打开过**的笔记时替换当前标签还是新开标签。"
+            tip="替换当前标签（Obsidian 式）标签数不增长，点文件树就像翻页；已打开过的笔记永远切回原有标签，两种模式一致。标签多时可以在标签栏上用滚轮左右滑动。"
+          >
             <select
               value={settings.openNoteMode}
               onChange={(event) =>
@@ -496,14 +630,12 @@ export default function SettingsDialog({
               <option value="replace">替换当前标签（Obsidian 式）</option>
               <option value="newTab">新开一个标签页</option>
             </select>
-          </label>
-          <Hint>
-            只影响打开**没打开过**的笔记：替换模式下标签数不增长，点文件树就像翻页；
-            已打开过的笔记永远切回原有标签，两种模式一致。标签多时可以在标签栏上
-            用滚轮左右滑动。
-          </Hint>
-          <label className="settings-row">
-            <span>新建/重命名时同步一级标题</span>
+          </Row>
+          <Row
+            label="新建/重命名时同步一级标题"
+            desc="新建或重命名笔记时，同步更新正文中的一级标题。"
+            tip="新建笔记时自动写入 `# 文件名` 一级标题；重命名笔记或日记后，把正文**第一个** `# 一级标题` 行同步改成新名字（不会凭空补标题；标题里有时间时也会跟着日期一起变）。重命名只影响设置后的改动。"
+          >
             <input
               type="checkbox"
               checked={settings.syncRenameHeading}
@@ -511,16 +643,14 @@ export default function SettingsDialog({
                 saveWithFlash({ syncRenameHeading: event.target.checked })
               }
             />
-          </label>
-          <Hint>
-            新建笔记时自动写入 `# 文件名` 一级标题；重命名笔记或日记后，把正文**第一个**
-            `# 一级标题` 行同步改成新名字（不会凭空补标题；标题里有时间时也会跟着日期一起变）。
-            重命名只影响设置后的改动。
-          </Hint>
+          </Row>
 
-          <div className="settings-group">搜索</div>
-          <label className="settings-row">
-            <span>全局搜索悬停预览</span>
+          <Group>搜索</Group>
+          <Row
+            label="全局搜索悬停预览"
+            desc="在搜索结果中显示当前笔记的上下文预览。"
+            tip="命令面板（Ctrl+K）里鼠标悬停「内容」搜索结果时，侧边显示该笔记命中行前后的上下文预览（0.21 新增，可在此关闭）。点开笔记后还会自动高亮所有命中的关键词。"
+          >
             <input
               type="checkbox"
               checked={settings.searchHoverPreview}
@@ -528,23 +658,50 @@ export default function SettingsDialog({
                 saveWithFlash({ searchHoverPreview: event.target.checked })
               }
             />
-          </label>
-          <Hint>
-            命令面板（Ctrl+K）里鼠标悬停「内容」搜索结果时，侧边显示该笔记命中行前后的
-            上下文预览（0.21 新增，可在此关闭）。点开笔记后还会自动高亮所有命中的关键词。
-          </Hint>
+          </Row>
+          <Row
+            label="搜索高亮颜色"
+            desc="文件内搜索与全局搜索命中高亮的颜色。"
+            keywords="颜色 红色 高亮 background"
+          >
+            <span className="settings-inline">
+              <input
+                type="color"
+                className="settings-color"
+                value={/^#[0-9a-fA-F]{6}$/.test(settings.searchHitColor) ? settings.searchHitColor : "#ff5252"}
+                onChange={(event) => saveWithFlash({ searchHitColor: event.target.value })}
+                title="自定义命中高亮颜色"
+              />
+              {HIT_COLOR_PRESETS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  className={`settings-swatch${settings.searchHitColor === color ? " is-on" : ""}`}
+                  style={{ background: color }}
+                  title={color}
+                  aria-label={`使用 ${color} 作为高亮颜色`}
+                  onClick={() => saveWithFlash({ searchHitColor: color })}
+                />
+              ))}
+            </span>
+          </Row>
 
-          <div className="settings-group">新建与整理</div>
-          <label className="settings-row">
-            <span>新笔记自动打标签</span>
+          <Group>新建与整理</Group>
+          <Row
+            label="新笔记自动打标签"
+            desc="新建笔记时自动添加指定标签。"
+            tip="标签在左侧栏「标签」仪表盘里集中整理——写的时候不用先想分类，回头在仪表盘把标签一键清掉即可。"
+          >
             <input
               type="checkbox"
               checked={settings.autoTagNewNote}
               onChange={(event) => saveWithFlash({ autoTagNewNote: event.target.checked })}
             />
-          </label>
-          <label className="settings-row">
-            <span>自动标签名</span>
+          </Row>
+          <Row
+            label="自动标签名"
+            desc="自动追加的标签名；留空或不合法（含空格等）不打。"
+          >
             <input
               type="text"
               className="settings-text"
@@ -552,15 +709,14 @@ export default function SettingsDialog({
               placeholder="待整理"
               onChange={(event) => saveWithFlash({ autoTagName: event.target.value })}
             />
-          </label>
-          <Hint>
-            新建笔记自动追加这个标签，在左侧栏「标签」仪表盘里集中整理——写的时候不用
-            先想分类，回头在仪表盘把标签一键清掉即可。留空或不合法（含空格等）不打。
-          </Hint>
+          </Row>
 
-          <div className="settings-group">快速笔记（收件箱）</div>
-          <label className="settings-row">
-            <span>收件仓库</span>
+          <Group>快速笔记（收件箱）</Group>
+          <Row
+            label="收件仓库"
+            desc="速记的落点仓库，不随当前窗口切换。"
+            keywords="快速笔记 速记 收件箱"
+          >
             <span className="settings-inline">
               <input
                 type="text"
@@ -601,16 +757,19 @@ export default function SettingsDialog({
               )}
               <button
                 type="button"
-                className="btn btn-mini"
+                className="btn btn-mini btn-danger-soft"
                 title="清除收件仓库（快速笔记将不可用）"
                 onClick={() => saveWithFlash({ quickCaptureVault: "" })}
               >
                 清除
               </button>
             </span>
-          </label>
-          <label className="settings-row">
-            <span>落点文件</span>
+          </Row>
+          <Row
+            label="落点文件"
+            desc="速记追加进这个文件，{{date}} 展开为当天日期。"
+            tip="如 {{date}}.md = 一天一篇；每条速记带「日期 时间」前缀逐行追加。快捷键默认 Ctrl+Alt+N（设置 → 快捷键 可改），写完继续干活，不用切换仓库。"
+          >
             <input
               type="text"
               className="settings-text"
@@ -618,34 +777,42 @@ export default function SettingsDialog({
               placeholder="Inbox.md"
               onChange={(event) => saveWithFlash({ quickCaptureFile: event.target.value })}
             />
-          </label>
-          <Hint>
-            速记追加到收件仓库里的这个文件，{"{{date}}"} 会换成当天日期（如 {"{{date}}.md"} =
-            一天一篇），每条速记带「日期 时间」前缀逐行追加。快捷键默认 Ctrl+Alt+N
-            （设置 → 快捷键 可改），写完继续干活，不用切换仓库。
-          </Hint>
+          </Row>
         </section>
 
         <section className="settings-sec" data-sec="appearance" style={{ display: searching || active === "appearance" ? undefined : "none" }}>
-          <div className="settings-group">外观</div>
-          <label className="settings-row">
-            <span>主题</span>
-            <select
-              value={settings.theme}
-              onChange={(event) =>
-                saveWithFlash({ theme: event.target.value as Settings["theme"] })
-              }
-            >
-              <option value="dark">深色</option>
-              <option value="light">浅色</option>
-              <option value="system">跟随系统</option>
-            </select>
-          </label>
-          <Hint>
-            深色是默认主题；「跟随系统」会在系统明暗切换时自动跟着变。
-          </Hint>
-          <label className="settings-row">
-            <span>Markdown 渲染风格</span>
+          <Group>外观</Group>
+          <Row
+            label="主题"
+            desc="深色是默认主题；「跟随系统」随系统明暗自动切换。"
+            keywords="浅色 深色 dark light"
+          >
+            <span className="settings-segmented" role="tablist" aria-label="主题">
+              {(
+                [
+                  ["light", "浅色"],
+                  ["dark", "深色"],
+                  ["system", "跟随系统"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={settings.theme === value}
+                  className={`settings-segment${settings.theme === value ? " is-on" : ""}`}
+                  onClick={() => saveWithFlash({ theme: value })}
+                >
+                  {label}
+                </button>
+              ))}
+            </span>
+          </Row>
+          <Row
+            label="Markdown 渲染风格"
+            desc="正文渲染观感：默认 / Blue Topaz 风。"
+            tip="Blue Topaz 风仿照 Obsidian 社区主题 Blue Topaz 的正文观感：彩色标题层级、蓝色标题下划线、着色表头与加重的 callout / 引用块。只影响渲染样式，不改任何文件内容；与「自定义样式」叠加生效（自定义的优先级更高）。"
+          >
             <select
               value={settings.renderStyle}
               onChange={(event) =>
@@ -655,38 +822,43 @@ export default function SettingsDialog({
               <option value="default">默认</option>
               <option value="blueTopaz">Blue Topaz 风</option>
             </select>
-          </label>
-          <Hint>
-            Blue Topaz 风仿照 Obsidian 社区主题 Blue Topaz 的正文观感：彩色标题层级、
-            蓝色标题下划线、着色表头与加重的 callout / 引用块。只影响渲染样式，
-            不改任何文件内容；与下方「自定义样式」叠加生效（自定义的优先级更高）。
-          </Hint>
-          <label className="settings-row">
-            <span>显示行号数字</span>
+          </Row>
+          <Row
+            label="显示行号数字"
+            desc="打开后编辑区左缘显示行号，与当前行高亮联动。默认关闭（笔记不是代码）。"
+          >
             <input
               type="checkbox"
               checked={settings.showLineNumbers}
               onChange={(event) => saveWithFlash({ showLineNumbers: event.target.checked })}
             />
-          </label>
-          <Hint>
-            默认关闭（笔记不是代码）。打开后编辑区左缘显示行号，与当前行高亮联动。
-          </Hint>
-          <div className="settings-group">全局背景（每设备独立，存本机）</div>
-          <label className="settings-row">
-            <span>启用背景图片</span>
+          </Row>
+
+          <Group>全局背景（每仓库一份，存本机）</Group>
+          {!vault && <p className="settings-hint">打开仓库后才能选择与预览背景图片（图片来自仓库内部）。</p>}
+          <Row
+            label="启用背景图片"
+            desc="把仓库里的一张图垫在界面最底层营造氛围。"
+            tip="开启后顶栏、侧栏与编辑器卡片会变为半透明让背景透出。支持静态图片；刻意不支持视频动态壁纸（常驻解码是内存杀手，与「轻量」目标相反）。背景参数按仓库各存一份（存本机，不进仓库）。"
+            keywords="背景 壁纸 图片 不透明度 模糊"
+          >
             <input
               type="checkbox"
-              checked={settings.bgEnabled}
-              onChange={(event) => saveWithFlash({ bgEnabled: event.target.checked })}
+              checked={bg.bgEnabled}
+              disabled={!vault}
+              onChange={(event) => saveBg({ bgEnabled: event.target.checked })}
             />
-          </label>
-          <label className="settings-row">
-            <span>背景图片</span>
+          </Row>
+          <Row
+            label="背景图片"
+            desc="从当前仓库的图片里选；想用新图先拷进仓库附件目录。"
+            keywords="背景 壁纸"
+          >
             <select
-              value={settings.bgImagePath}
+              value={bg.bgImagePath}
+              disabled={!vault}
               onChange={(event) =>
-                saveWithFlash({
+                saveBg({
                   bgImagePath: event.target.value,
                   // 选了图顺手启用；选回「无」就一并关掉，避免开着背景却没图的悬空状态
                   bgEnabled: event.target.value ? true : false,
@@ -694,8 +866,8 @@ export default function SettingsDialog({
               }
             >
               <option value="">（无背景图）</option>
-              {settings.bgImagePath && !imagePaths.includes(settings.bgImagePath) && (
-                <option value={settings.bgImagePath}>{settings.bgImagePath}（文件不在仓库里）</option>
+              {bg.bgImagePath && !imagePaths.includes(bg.bgImagePath) && (
+                <option value={bg.bgImagePath}>{bg.bgImagePath}（文件不在仓库里）</option>
               )}
               {imagePaths.map((path) => (
                 <option key={path} value={path}>
@@ -703,133 +875,167 @@ export default function SettingsDialog({
                 </option>
               ))}
             </select>
-          </label>
-          <Hint>
-            下拉框列出当前仓库里的全部图片（png/jpg/gif/webp 等）。想用新图就先把它
-            拷进仓库附件目录再回来选。开启后顶栏、侧栏与编辑器卡片会变为半透明让背景
-            透出。支持静态图片；刻意不支持视频动态壁纸（常驻解码是内存杀手，与
-            「轻量」目标相反）。
-          </Hint>
-          <label className="settings-row">
-            <span>适配方式</span>
+          </Row>
+          {/* 背景预览：按当前参数实时渲染（0.26 规范五），开仓库且有图时出现 */}
+          {vault && bg.bgImagePath && (
+            <div className="settings-block bg-preview-block" data-keywords="背景 预览">
+              <div
+                className="bg-preview"
+                style={{
+                  backgroundImage: `url("${convertFileSrc(`${vault.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`)}")`,
+                  backgroundSize: bg.bgFit === "contain" ? "contain" : "cover",
+                  backgroundPosition: `${bg.bgPosX}% ${bg.bgPosY}%`,
+                  opacity: bg.bgOpacity,
+                  filter: `blur(${bg.bgBlur}px) brightness(${bg.bgBrightness}%) contrast(${bg.bgContrast}%) scale(${bg.bgScale / 100})`,
+                }}
+              >
+                <span className="bg-preview-hint">背景预览（实际观感以界面为准）</span>
+              </div>
+            </div>
+          )}
+          <Row label="适配方式" desc="铺满裁剪（cover）/ 完整显示（contain）。" keywords="背景">
             <select
-              value={settings.bgFit}
-              onChange={(event) =>
-                saveWithFlash({ bgFit: event.target.value as Settings["bgFit"] })
-              }
+              value={bg.bgFit}
+              disabled={!vault}
+              onChange={(event) => saveBg({ bgFit: event.target.value as BgSettings["bgFit"] })}
             >
               <option value="cover">铺满裁剪（cover）</option>
               <option value="contain">完整显示（contain）</option>
             </select>
-          </label>
-          <label className="settings-row">
-            <span>不透明度</span>
-            <input
-              type="range" min={0} max={100} step={5}
-              value={Math.round(settings.bgOpacity * 100)}
-              onChange={(event) => saveWithFlash({ bgOpacity: Number(event.target.value) / 100 })}
+          </Row>
+          <Row label="不透明度" desc="背景图整体的可见程度。" keywords="背景 淡 透明">
+            <span className="settings-slider">
+              <input
+                type="range" min={0} max={100} step={5}
+                value={Math.round(bg.bgOpacity * 100)}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgOpacity: Number(event.target.value) / 100 })}
+              />
+              <span className="settings-slider-value">{Math.round(bg.bgOpacity * 100)}%</span>
+            </span>
+          </Row>
+          <Row label="模糊" desc="背景图的高斯模糊半径。" keywords="背景">
+            <span className="settings-slider">
+              <input
+                type="range" min={0} max={30} step={1}
+                value={bg.bgBlur}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgBlur: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgBlur}px</span>
+            </span>
+          </Row>
+          <Row label="亮度" desc="背景图的明暗。" keywords="背景">
+            <span className="settings-slider">
+              <input
+                type="range" min={30} max={150} step={5}
+                value={bg.bgBrightness}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgBrightness: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgBrightness}%</span>
+            </span>
+          </Row>
+          <Row label="对比度" desc="背景图的浓淡对比。" keywords="背景">
+            <span className="settings-slider">
+              <input
+                type="range" min={30} max={150} step={5}
+                value={bg.bgContrast}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgContrast: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgContrast}%</span>
+            </span>
+          </Row>
+          <Row label="水平位置" desc="图片的横向焦点。" keywords="背景">
+            <span className="settings-slider">
+              <input
+                type="range" min={0} max={100} step={5}
+                value={bg.bgPosX}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgPosX: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgPosX}%</span>
+            </span>
+          </Row>
+          <Row label="垂直位置" desc="图片的纵向焦点。" keywords="背景">
+            <span className="settings-slider">
+              <input
+                type="range" min={0} max={100} step={5}
+                value={bg.bgPosY}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgPosY: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgPosY}%</span>
+            </span>
+          </Row>
+          <Row label="缩放" desc="在适配基础上再放大/缩小。" keywords="背景">
+            <span className="settings-slider">
+              <input
+                type="range" min={50} max={200} step={5}
+                value={bg.bgScale}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgScale: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgScale}%</span>
+            </span>
+          </Row>
+
+          <Group>自定义样式</Group>
+          <div className="settings-block">
+            <textarea
+              className="custom-css-input"
+              rows={6}
+              spellCheck={false}
+              value={customCssDraft}
+              placeholder={"/* 覆盖 Markdown 渲染样式，例如： */\n.cm-lp-heading { font-weight: 500; }\n.cm-lp-table { font-size: 12px; }"}
+              onChange={(event) => onCustomCssChange(event.target.value)}
             />
-          </label>
-          <label className="settings-row">
-            <span>模糊</span>
-            <input
-              type="range" min={0} max={30} step={1}
-              value={settings.bgBlur}
-              onChange={(event) => saveWithFlash({ bgBlur: Number(event.target.value) })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>亮度</span>
-            <input
-              type="range" min={30} max={150} step={5}
-              value={settings.bgBrightness}
-              onChange={(event) => saveWithFlash({ bgBrightness: Number(event.target.value) })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>对比度</span>
-            <input
-              type="range" min={30} max={150} step={5}
-              value={settings.bgContrast}
-              onChange={(event) => saveWithFlash({ bgContrast: Number(event.target.value) })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>水平位置</span>
-            <input
-              type="range" min={0} max={100} step={5}
-              value={settings.bgPosX}
-              onChange={(event) => saveWithFlash({ bgPosX: Number(event.target.value) })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>垂直位置</span>
-            <input
-              type="range" min={0} max={100} step={5}
-              value={settings.bgPosY}
-              onChange={(event) => saveWithFlash({ bgPosY: Number(event.target.value) })}
-            />
-          </label>
-          <label className="settings-row">
-            <span>缩放</span>
-            <input
-              type="range" min={50} max={200} step={5}
-              value={settings.bgScale}
-              onChange={(event) => saveWithFlash({ bgScale: Number(event.target.value) })}
-            />
-          </label>
-          <div className="settings-group">自定义样式</div>
-          <textarea
-            className="custom-css-input"
-            rows={6}
-            spellCheck={false}
-            value={customCssDraft}
-            placeholder={"/* 覆盖 Markdown 渲染样式，例如： */\n.cm-lp-heading { font-weight: 500; }\n.cm-lp-table { font-size: 12px; }"}
-            onChange={(event) => onCustomCssChange(event.target.value)}
-          />
-          <Hint>
-            这段 CSS 会即时注入并保存在本机（不进仓库），用来微调 Markdown 渲染效果。
-            常用选择器：<code>.cm-content</code> 正文、<code>.cm-lp-heading</code> 标题行、
-            <code>.cm-lp-table</code> 表格、<code>.cm-lp-callout-note</code> 等 callout 容器、
-            <code>.cm-lp-mermaid</code> mermaid 图。清空即恢复默认。
-          </Hint>
+            <p className="settings-hint">
+              即时注入并保存在本机（不进仓库），微调 Markdown 渲染。常用选择器：
+              <code>.cm-content</code> 正文、<code>.cm-lp-heading</code> 标题、
+              <code>.cm-lp-table</code> 表格、<code>.cm-lp-mermaid</code> 图。清空即恢复默认。
+            </p>
+          </div>
         </section>
 
         <section className="settings-sec" data-sec="daily" style={{ display: searching || active === "daily" ? undefined : "none" }}>
-          <div className="settings-group">日记与附件（写入库内 {DAILY_CONFIG_FILE}，与 Obsidian 插件共用）</div>
-          <label className="settings-row">
-            <span>附件保存目录</span>
+          <Group>附件</Group>
+          <Row
+            label="附件保存目录"
+            desc="粘贴图片/文件的保存目录（仓库内相对路径，留空即仓库根）。"
+            tip="存在库内配置里（键名与插件相同：pastedImageFolder），两边换用不用设两次；同步开启后多台设备自动一致。改这里会写入库内文件。"
+          >
             <input
               type="text"
               value={daily.settings.pastedImageFolder}
               placeholder="attachments（留空即仓库根目录）"
               onChange={(event) => daily.updateSettings({ pastedImageFolder: event.target.value })}
             />
-          </label>
-          <Hint>
-            附件目录在库内配置里（键名与插件相同：pastedImageFolder），两边换用不用设两次；
-            同步开启后多台设备自动一致。改这里会写入库内文件。
-          </Hint>
-          <label className="settings-row">
-            <span>日记目录</span>
+          </Row>
+
+          <Group>日记</Group>
+          <Row label="日记目录" desc="日记按日期落在这个目录（仓库内相对路径）。">
             <input
               type="text"
               value={daily.settings.folder}
               placeholder="日记（留空即仓库根目录）"
               onChange={(event) => daily.updateSettings({ folder: event.target.value })}
             />
-          </label>
-          <label className="settings-row">
-            <span>日期格式</span>
+          </Row>
+          <Row
+            label="日期格式"
+            desc="moment 语法，同时决定日记文件名与待办分桶。"
+            tip="与插件同一套 moment 语法。模板支持 {{title}}、{{date}}、{{date:格式}}、{{week}}、{{time}}；未知占位符原样保留。日记与模板相关配置与插件共用一份，改动会写到库内文件。"
+          >
             <input
               type="text"
               value={daily.settings.dateFormat}
               placeholder="YYYY-MM-DD"
               onChange={(event) => daily.updateSettings({ dateFormat: event.target.value })}
             />
-          </label>
-          <label className="settings-row">
-            <span>启用日记模板</span>
+          </Row>
+          <Row label="启用日记模板" desc="新建日记时按模板初始化内容。">
             <input
               type="checkbox"
               checked={daily.settings.dailyTemplateEnabled}
@@ -837,18 +1043,16 @@ export default function SettingsDialog({
                 daily.updateSettings({ dailyTemplateEnabled: event.target.checked })
               }
             />
-          </label>
-          <label className="settings-row">
-            <span>日记模板文件</span>
+          </Row>
+          <Row label="日记模板文件" desc="模板路径（仓库内相对路径）。">
             <input
               type="text"
               value={daily.settings.dailyTemplatePath}
               placeholder="模板/日记模板.md"
               onChange={(event) => daily.updateSettings({ dailyTemplatePath: event.target.value })}
             />
-          </label>
-          <label className="settings-row">
-            <span>启用周记模板</span>
+          </Row>
+          <Row label="启用周记模板" desc="新建周记时按模板初始化内容。">
             <input
               type="checkbox"
               checked={daily.settings.weeklyTemplateEnabled}
@@ -856,25 +1060,18 @@ export default function SettingsDialog({
                 daily.updateSettings({ weeklyTemplateEnabled: event.target.checked })
               }
             />
-          </label>
-          <label className="settings-row">
-            <span>周记模板文件</span>
+          </Row>
+          <Row label="周记模板文件" desc="模板路径（仓库内相对路径）。">
             <input
               type="text"
               value={daily.settings.weeklyTemplatePath}
               placeholder="模板/周记模板.md"
               onChange={(event) => daily.updateSettings({ weeklyTemplatePath: event.target.value })}
             />
-          </label>
-          <Hint>
-            日期格式是 moment 语法（插件同一套），它同时决定日记文件名与待办分桶。模板支持
-            {" "}<code>{"{{title}}"}</code>、<code>{"{{date}}"}</code>、<code>{"{{date:格式}}"}</code>、
-            <code>{"{{week}}"}</code>、<code>{"{{time}}"}</code>；未知占位符原样保留。
-            这几项与插件共用一份配置，改动会写到库内文件。
-          </Hint>
-          <div className="settings-group">定时提醒（写入库内配置，与插件共用）</div>
-          <label className="settings-row">
-            <span>每天提醒添加待办</span>
+          </Row>
+
+          <Group>提醒</Group>
+          <Row label="每天提醒添加待办" desc="到点用系统通知提醒记当日待办。">
             <input
               type="checkbox"
               checked={daily.settings.todoReminderEnabled}
@@ -882,18 +1079,16 @@ export default function SettingsDialog({
                 daily.updateSettings({ todoReminderEnabled: event.target.checked })
               }
             />
-          </label>
-          <label className="settings-row">
-            <span>提醒时间</span>
+          </Row>
+          <Row label="提醒时间" desc="每日提醒的触发时刻（HH:mm）。">
             <input
               type="text"
               value={daily.settings.todoReminderTime}
               placeholder="08:00"
               onChange={(event) => daily.updateSettings({ todoReminderTime: event.target.value })}
             />
-          </label>
-          <label className="settings-row">
-            <span>到点检查未完成待办</span>
+          </Row>
+          <Row label="到点检查未完成待办" desc="只在当日确有未完成待办时触发。">
             <input
               type="checkbox"
               checked={daily.settings.checkReminderEnabled}
@@ -901,84 +1096,79 @@ export default function SettingsDialog({
                 daily.updateSettings({ checkReminderEnabled: event.target.checked })
               }
             />
-          </label>
-          <label className="settings-row">
-            <span>检查时间</span>
+          </Row>
+          <Row
+            label="检查时间"
+            desc="检查未完成待办的触发时刻（HH:mm）。"
+            tip="两条提醒都以系统通知 + 界面提示的形式出现。启用时如果当天时间点已过，当天不再补提醒（从次日生效）。"
+          >
             <input
               type="text"
               value={daily.settings.checkReminderTime}
               placeholder="21:00"
               onChange={(event) => daily.updateSettings({ checkReminderTime: event.target.value })}
             />
-          </label>
-          <Hint>
-            两条提醒都以系统通知 + 界面提示的形式出现。启用时如果当天时间点已过，
-            当天不再补提醒（从次日生效）；检查提醒只在当日确有未完成待办时触发。
-          </Hint>
-          <div className="settings-group">天气（写入库内配置，与插件共用）</div>
-          <label className="settings-row">
-            <span>新建日记时写入天气</span>
+          </Row>
+
+          <Group>天气</Group>
+          <Row
+            label="新建日记时写入天气"
+            desc="以引用行（> ☀️ 晴 25°C）插在 frontmatter 之后。"
+            tip="数据来自 Open-Meteo（免费、无需 API key）。新建日记时抓取一次；抓取失败会静默跳过，绝不阻塞日记创建。"
+          >
             <input
               type="checkbox"
               checked={daily.settings.weatherEnabled}
               onChange={(event) => daily.updateSettings({ weatherEnabled: event.target.checked })}
             />
-          </label>
-          <label className="settings-row">
-            <span>城市</span>
+          </Row>
+          <Row label="城市" desc="天气查询的城市名。">
             <input
               type="text"
               value={daily.settings.weatherCity}
               placeholder="北京"
               onChange={(event) => daily.updateSettings({ weatherCity: event.target.value })}
             />
-          </label>
-          <Hint>
-            数据来自 Open-Meteo（免费、无需 API key）。新建日记时抓取一次，
-            以引用行（<code>&gt; ☀️ 晴 25°C</code>）插在 frontmatter 之后；
-            抓取失败会静默跳过，绝不阻塞日记创建。
-          </Hint>
+          </Row>
+          <p className="settings-hint">
+            附件、日记与提醒配置写入库内 {DAILY_CONFIG_FILE}，与 Obsidian 插件共用。
+          </p>
         </section>
 
         <section className="settings-sec" data-sec="sync" style={{ display: searching || active === "sync" ? undefined : "none" }}>
-          <div className="settings-group">云同步（本机设置，不会写进仓库）</div>
-          <label className="settings-row">
-            <span>启用自动同步</span>
+          <Group>云同步（本机设置，不会写进仓库）</Group>
+          <Row label="启用自动同步" desc="与 Obsidian 插件共用同一个云端仓库。">
             <input
               type="checkbox"
               checked={sync.config.enabled}
               onChange={(event) => sync.updateConfig({ enabled: event.target.checked })}
             />
-          </label>
-          <label className="settings-row">
-            <span>服务端地址</span>
+          </Row>
+          <Row label="服务端地址" desc="自建同步服务的地址（http(s)://host:port）。">
             <input
               type="text"
               value={sync.config.serverUrl}
               placeholder="http://your-server:8080"
               onChange={(event) => sync.updateConfig({ serverUrl: event.target.value })}
             />
-          </label>
-          <label className="settings-row">
-            <span>账号</span>
+          </Row>
+          <Row label="账号" desc="登录同步服务的账号。">
             <input
               type="text"
               value={sync.config.username}
               autoComplete="off"
               onChange={(event) => sync.updateConfig({ username: event.target.value })}
             />
-          </label>
-          <label className="settings-row">
-            <span>密码</span>
+          </Row>
+          <Row label="密码" desc="登录同步服务的密码（只存本机）。">
             <input
               type="password"
               value={sync.config.password}
               autoComplete="off"
               onChange={(event) => sync.updateConfig({ password: event.target.value })}
             />
-          </label>
-          <label className="settings-row">
-            <span>推送范围</span>
+          </Row>
+          <Row label="推送范围" desc="仅日记目录或整个仓库。">
             <select
               value={sync.config.scope}
               onChange={(event) =>
@@ -988,24 +1178,21 @@ export default function SettingsDialog({
               <option value="folder">仅日记目录</option>
               <option value="vault">整个仓库</option>
             </select>
-          </label>
-          <label className="settings-row">
-            <span>云端仓库名</span>
+          </Row>
+          <Row
+            label="云端仓库名"
+            desc="留空即用仓库文件夹名。"
+            tip="仓库名要与插件所在库的名字一致，否则会同步到另一个云端仓库（表现为「同步成功但数据没过来」）。正文、待办与附件（按笔记引用上传、本地缺的从云端补下）都会同步；服务端地址、账号与密码只存在本机，不会写进仓库。"
+          >
             <input
               type="text"
               value={sync.config.vaultName}
               placeholder={`留空即用仓库文件夹名：${sync.vaultName}`}
               onChange={(event) => sync.updateConfig({ vaultName: event.target.value })}
             />
-          </label>
-          <Hint>
-            与 Obsidian 插件共用同一个云端仓库。仓库名要与插件所在库的名字一致，否则会同步到
-            另一个云端仓库（表现为「同步成功但数据没过来」）。正文、待办与<b>附件</b>（按笔记
-            引用上传、本地缺的从云端补下）都会同步；服务端地址、账号与密码只存在本机，
-            不会写进仓库。
-          </Hint>
+          </Row>
           <div className="settings-actions">
-            <button type="button" className="btn" onClick={() => sync.syncNow()}>
+            <button type="button" className="btn btn-primary" onClick={() => sync.syncNow()}>
               立即同步
             </button>
             <button
@@ -1022,7 +1209,7 @@ export default function SettingsDialog({
         <section className="settings-sec" data-sec="storage" style={{ display: searching || active === "storage" ? undefined : "none" }}>
           {vaultHome !== null && (
             <>
-              <div className="settings-group">仓库基础目录</div>
+              <Group>仓库基础目录</Group>
               <div className="settings-row storage-row">
                 <span>仓库基础目录</span>
                 <span className="settings-value storage-path">{vaultHome}</span>
@@ -1032,30 +1219,41 @@ export default function SettingsDialog({
                   打开仓库列表…
                 </button>
               </div>
-              <Hint>
+              <p className="settings-hint">
                 它里面的每个子文件夹都是一个独立仓库，与电脑端共用同一份文件。
                 换基础目录在仓库列表页的「更改基础目录」里操作。
-              </Hint>
+              </p>
             </>
           )}
-          <div className="settings-group">数据与缓存位置</div>
-          <div className="settings-row storage-row">
-            <span>数据目录（当前生效）</span>
+          <Group>数据目录</Group>
+          <div className="settings-row storage-row" data-keywords="数据目录 配置目录 路径">
+            <span>当前数据目录</span>
             <span className="settings-value storage-path">{dataPaths?.webview_data_dir ?? "…"}</span>
           </div>
-          <div className="settings-row storage-row">
+          <div className="settings-row storage-row" data-keywords="数据目录 自定义">
             <span>自定义数据目录</span>
             <span className="settings-value storage-path">
               {dataPaths?.custom_data_dir ?? "（未设置，使用默认位置）"}
             </span>
           </div>
-          <div className="settings-row storage-row">
-            <span>配置目录（同步状态）</span>
+          <div className="settings-row storage-row" data-keywords="配置目录 同步状态">
+            <span>配置目录</span>
             <span className="settings-value storage-path">{dataPaths?.config_dir ?? "…"}</span>
           </div>
           <div className="settings-actions">
+            <button
+              type="button"
+              className="btn"
+              title="在系统资源管理器中打开数据目录"
+              onClick={() => {
+                const dir = dataPaths?.webview_data_dir;
+                if (dir) void import("@tauri-apps/plugin-opener").then(({ openPath }) => openPath(dir));
+              }}
+            >
+              打开目录
+            </button>
             <button type="button" className="btn" onClick={onPickDataDir}>
-              选择自定义数据目录…
+              选择目录…
             </button>
             <button
               type="button"
@@ -1066,11 +1264,37 @@ export default function SettingsDialog({
               恢复默认
             </button>
           </div>
-          <Hint>
+          <p className="settings-hint">
             应用设置、快捷键、收藏、最近打开与缓存都在「数据目录」里。选定自定义位置后
             <b>重启应用生效</b>，启用时会自动把现有数据搬过去；「恢复默认」同样重启后回原位。
             笔记永远保存在仓库目录里，不受这个设置影响。
-          </Hint>
+          </p>
+          <Group>数据统计</Group>
+          <div className="settings-row storage-row" data-keywords="统计 笔记 数量">
+            <span>笔记数量</span>
+            <span className="settings-value">{noteCount ?? "…"}</span>
+          </div>
+          <div className="settings-row storage-row" data-keywords="统计 附件 数量">
+            <span>附件数量</span>
+            <span className="settings-value">{attachmentCount ?? "…"}</span>
+          </div>
+          <div className="settings-row storage-row" data-keywords="缓存 大小 清理">
+            <span>缓存大小</span>
+            <span className="settings-value">
+              {cacheStat ? `${formatBytes(cacheStat.bytes)}（${cacheStat.files} 个文件）` : "…"}
+            </span>
+          </div>
+          <div className="settings-actions">
+            <button
+              type="button"
+              className="btn"
+              disabled={cacheBusy || !cacheStat}
+              onClick={() => void clearCacheNow()}
+              title="清理 WebView 的 HTTP/代码/GPU 缓存（登录态与本地数据不受影响）"
+            >
+              {cacheBusy ? "清理中…" : "清理缓存"}
+            </button>
+          </div>
         </section>
 
                 {active === "shortcuts" && (
@@ -1080,15 +1304,23 @@ export default function SettingsDialog({
         )}
 
         <section className="settings-sec" data-sec="about" style={{ display: searching || active === "about" ? undefined : "none" }}>
-          <div className="settings-group">软件更新</div>
-          <div className="settings-row">
+          <div className="settings-block about-hero" data-keywords="版本 logo 简介">
+            <img src="/qn-icon.svg" alt="" className="about-logo" aria-hidden />
+            <div className="about-hero-text">
+              <span className="about-name">Quick Note</span>
+              <span className="about-version">v{appVersion || "…"}</span>
+              <span className="about-tagline">一个本地优先的个人知识管理系统</span>
+            </div>
+          </div>
+          <Group>软件更新</Group>
+          <div className="settings-row storage-row" data-keywords="更新 版本 检查">
             <span>当前版本</span>
             <span className="settings-value">v{appVersion || "…"}</span>
           </div>
           <div className="settings-actions">
             <button
               type="button"
-              className="btn"
+              className="btn btn-primary"
               disabled={updateCheck.state === "checking" || updateCheck.state === "downloading"}
               onClick={() => void checkUpdate()}
             >
@@ -1097,7 +1329,7 @@ export default function SettingsDialog({
             {updateCheck.available && (
               <button
                 type="button"
-                className="btn"
+                className="btn btn-primary"
                 disabled={updateCheck.state === "downloading"}
                 onClick={() => void installUpdate()}
               >
@@ -1108,21 +1340,27 @@ export default function SettingsDialog({
                     : "立即更新"}
               </button>
             )}
-            <button
-              type="button"
-              className="btn"
-              onClick={() => void openReleasePage(updateCheck.url)}
-              title="在系统浏览器中打开 GitHub 发布页"
-            >
-              打开发布页
-            </button>
           </div>
           {updateCheck.state !== "idle" && (
             <p className={`settings-hint${updateCheck.state === "error" ? " hint-error" : ""}`}>
               {updateCheck.message}
             </p>
           )}
-          <div className="settings-group">关于</div>
+          <Group>资源</Group>
+          <div className="settings-actions about-links" data-keywords="github 文档 反馈 许可">
+            <button type="button" className="btn" onClick={() => void openReleasePage("https://github.com/456-77/quick-note")}>
+              GitHub
+            </button>
+            <button type="button" className="btn" onClick={() => void openReleasePage()}>
+              发布页
+            </button>
+            <button type="button" className="btn" onClick={() => void openReleasePage("https://github.com/456-77/quick-note#readme")}>
+              使用文档
+            </button>
+            <button type="button" className="btn" onClick={() => void openReleasePage("https://github.com/456-77/quick-note/issues")}>
+              问题反馈
+            </button>
+          </div>
           <p className="settings-hint">
             Quick Note — 本地优先的个人知识管理系统。文件保持纯 Markdown，
             可与 Obsidian 及 quick-daily-note 插件共用同一个仓库并同步。

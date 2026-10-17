@@ -335,6 +335,21 @@ export const appDataPaths = () => invoke<AppDataPaths>("app_data_paths");
 export const setCustomDataDir = (path: string | null) =>
   invoke<AppDataPaths>("set_custom_data_dir", { path });
 
+/** 目录体积（设置 → 存储 的缓存大小展示用）。 */
+export interface DirStat {
+  files: number;
+  bytes: number;
+}
+
+/** 递归统计一个目录的体积（文件数 + 字节数）。 */
+export const dirStat = (path: string) => invoke<DirStat>("dir_stat", { path });
+
+/** 清理 WebView 缓存（HTTP/代码/GPU 缓存；登录态与本地数据不动），返回释放的字节数。 */
+export const clearWebviewCache = () => invoke<number>("clear_webview_cache");
+
+/** WebView 缓存的合计体积（与清理同一份目录清单）。 */
+export const webviewCacheStat = () => invoke<DirStat>("webview_cache_stat");
+
 /** 读取用户经系统对话框选择的文本文件（UTF-8）。快捷键配置导入用。 */
 /** 读取任意二进制文件（base64；分享图片经 Kotlin 落缓存目录后用）。上限 10MB。 */
 export const readBinaryFile = (path: string) => invoke<string>("read_binary_file", { path });

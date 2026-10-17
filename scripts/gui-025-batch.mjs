@@ -8,7 +8,8 @@
 //   排序下拉（最近添加/字母 A-Z/字母 Z-A）、字母分组头「字母 · N 个单词」、空态
 // - 释义自动获取（真网络·有道词典）：添加成功路径（音标+释义预览→保存→v3 行）；
 //   详情「查询在线释义」把收词快捷键进来的裸词补全
-// - 背景图主题遮罩：qn-bg-on 时图层 ::after 深浅主题各自的遮罩色
+// - 背景图层（0.26 回归）：主题色遮罩已回退，图层 opacity 只听用户滑杆的、
+//   表面回到半透明让图透出来
 // - 左栏激活页签：主题色低透明底（不再是白卡片浮起）
 // - 热键仲裁（0.25 反馈④）：登记表被清空（比 0.24 测的"损坏"更贴近真实丢条目
 //   场景）时第二实例靠进程枚举识别自家兄弟，静默让位不弹「注册截图快捷键失败」；
@@ -319,32 +320,46 @@ try {
   await sleep(250);
   check(!(await evaluate(ws, `!!document.querySelector('.vocab-add-input')`)), "Esc 关闭添加区");
 
-  // ---------------------------------------------- 5. 背景图主题遮罩（CSS 层断言）
-  const maskColors = await evaluate(ws, `(() => {
+  // ---------------------------------------------- 5. 背景图层（0.26 回归断言）
+  // 0.25 曾在图层上叠 ::after 主题色遮罩把图压到 ~12% 感知透明度——用户反馈
+  // "几乎看不见背景图片、调节设置也没有用"，0.26 整体回退。这里断言：
+  //   a) 遮罩确实没有了（::after 不再上色）；
+  //   b) 图层 opacity 完全由内联样式（用户滑杆）控制；
+  //   c) 表面回到半透明（sidebar 66% 面板色），图透得出来。
+  const bgLayer = await evaluate(ws, `(() => {
     document.body.insertAdjacentHTML('beforeend', '<div id="qn-bg-layer"></div>');
     document.documentElement.classList.add('qn-bg-on');
     const layer = document.getElementById('qn-bg-layer');
+    layer.style.opacity = '0.9';
     const root = document.documentElement;
     const prev = root.dataset.theme ?? '';
     root.dataset.theme = 'light';
-    const light = getComputedStyle(layer, '::after').backgroundColor;
+    const afterLight = getComputedStyle(layer, '::after').backgroundColor;
     root.dataset.theme = 'dark';
-    const dark = getComputedStyle(layer, '::after').backgroundColor;
+    const afterDark = getComputedStyle(layer, '::after').backgroundColor;
+    const opacity = getComputedStyle(layer).opacity;
+    const sidebar = getComputedStyle(document.querySelector('.sidebar')).backgroundColor;
     if (prev) root.dataset.theme = prev;
     else delete root.dataset.theme;
     layer.remove();
     root.classList.remove('qn-bg-on');
-    return { light, dark };
+    return { afterLight, afterDark, opacity, sidebar };
   })()`);
   check(
-    String(maskColors?.light ?? "").replace(/\s/g, "").startsWith("rgba(255,255,255,0.88)"),
-    "浅色主题背景遮罩 rgba(255,255,255,0.88)",
-    JSON.stringify(maskColors),
+    String(bgLayer?.afterLight ?? "").replace(/\s/g, "").startsWith("rgba(0,0,0,0)")
+      && String(bgLayer?.afterDark ?? "").replace(/\s/g, "").startsWith("rgba(0,0,0,0)"),
+    "背景图层不再叠主题色遮罩（0.26 回退，图只听不透明度滑杆的）",
+    JSON.stringify(bgLayer),
   );
   check(
-    String(maskColors?.dark ?? "").replace(/\s/g, "").startsWith("rgba(10,10,15,0.8)"),
-    "深色主题背景遮罩 rgba(10,10,15,0.8)",
-    JSON.stringify(maskColors),
+    bgLayer?.opacity === "0.9",
+    "图层 opacity 由用户设置直接控制",
+    JSON.stringify(bgLayer?.opacity),
+  );
+  check(
+    !!bgLayer?.sidebar && !bgLayer.sidebar.startsWith("rgba(0, 0, 0, 0)") && bgLayer.sidebar !== "rgb(255, 255, 255)",
+    "启用背景时侧栏回到半透明底（图能透出来）",
+    JSON.stringify(bgLayer?.sidebar),
   );
 
   // ---------------------------------------------- 6. 左栏激活页签：主题色低透明底

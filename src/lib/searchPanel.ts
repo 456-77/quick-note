@@ -26,6 +26,22 @@ import {
 } from "@codemirror/search";
 import { fieldPattern } from "./searchVariants.ts";
 
+/**
+ * 搜索导航后把命中滚到**屏幕中央**（0.26 用户反馈：命中常贴着视口上下缘，
+ * 看不到上下文）。CM 的 findNext 只做最小滚动；这里在选区真的移动了之后
+ * 追加一次居中滚动。没有移动（无更多匹配、查询无效）就不动滚动位置，
+ * 避免"按 Enter 没找到东西却把页面滚走了"的错乱感。
+ */
+function centeredFind(view: EditorView, find: (view: EditorView) => boolean): void {
+  const before = view.state.selection.main;
+  find(view);
+  const after = view.state.selection.main;
+  if (after.from === before.from && after.to === before.to) return;
+  view.dispatch({
+    effects: EditorView.scrollIntoView(after, { y: "center" }),
+  });
+}
+
 /** 面板上的可调选项。 */
 interface PanelState {
   query: string;
@@ -325,7 +341,7 @@ function buildPanel(view: EditorView): HTMLElement {
   queryInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      (event.shiftKey ? findPrevious : findNext)(view);
+      centeredFind(view, event.shiftKey ? findPrevious : findNext);
       updateCount(view);
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -340,7 +356,7 @@ function buildPanel(view: EditorView): HTMLElement {
   replaceInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();
-      replaceNext(view);
+      centeredFind(view, replaceNext);
       refresh(view);
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -375,11 +391,11 @@ function buildPanel(view: EditorView): HTMLElement {
     }
     switch (act) {
       case "next":
-        findNext(view);
+        centeredFind(view, findNext);
         updateCount(view);
         break;
       case "prev":
-        findPrevious(view);
+        centeredFind(view, findPrevious);
         updateCount(view);
         break;
       case "replace-toggle":
@@ -393,7 +409,7 @@ function buildPanel(view: EditorView): HTMLElement {
         persistPanelState();
         break;
       case "replace-one":
-        replaceNext(view);
+        centeredFind(view, replaceNext);
         refresh(view);
         break;
       case "replace-all":
@@ -480,7 +496,7 @@ export function openSearchPanelOn(view: EditorView, query?: string): void {
 /** 面板开着时跳到下一处（F3 / Ctrl+G 从窗口层路由进来）。面板没开返回 false。 */
 export function searchPanelFindNext(view: EditorView): boolean {
   if (!panel || panelView !== view) return false;
-  findNext(view);
+  centeredFind(view, findNext);
   updateCount(view);
   return true;
 }

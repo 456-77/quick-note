@@ -147,6 +147,37 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const addInputRef = useRef<HTMLInputElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * 面板内下拉菜单（排序 / 「···」）渲染后夹回面板可视区。
+   * `.vocab-panel` 是 overflow:hidden 的裁剪容器，菜单按 right:0 锚在按钮上、
+   * 向左展开，按钮贴近面板右缘时菜单左端会伸出面板被裁掉一条（0.26 用户反馈
+   * 的两个"弹窗被切割"截图）。这里量一次实际几何，越界就改写成 left 定位并
+   * 挪回界内；上下同理（面板矮时菜单底部也可能被裁）。
+   */
+  const menuClampRef = useCallback((el: HTMLDivElement | null) => {
+    if (!el) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    // 先复位再量：同一份 DOM 可能被 React 复用，残留上次的改写会量出假位置
+    el.style.right = "0px";
+    el.style.left = "";
+    el.style.top = "";
+    const panelRect = panel.getBoundingClientRect();
+    const rect = el.getBoundingClientRect();
+    const margin = 4;
+    let dx = 0;
+    if (rect.left < panelRect.left + margin) dx = panelRect.left + margin - rect.left;
+    if (rect.right + dx > panelRect.right - margin) dx = panelRect.right - margin - rect.right;
+    let dy = 0;
+    if (rect.bottom > panelRect.bottom - margin) dy = panelRect.bottom - margin - rect.bottom;
+    if (dx !== 0) {
+      el.style.right = "auto";
+      el.style.left = `${el.offsetLeft + dx}px`;
+    }
+    if (dy !== 0) el.style.top = `${el.offsetTop + dy}px`;
+  }, []);
 
   // 桌面端进入面板即聚焦搜索框（移动端不自动弹键盘，点击再聚焦）
   useEffect(() => {
@@ -288,10 +319,10 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     [],
   );
 
-  /** 添加区回车：先在线查询，不让用户手写翻译。 */
+  /** 添加区回车：先在线查询，不让用户手写翻译。词统一转小写（0.26 用户反馈）。 */
   const submitDraft = useCallback(() => {
     if (!draft.trim() || lookup.status === "loading") return;
-    void runLookup(draft);
+    void runLookup(draft.trim().toLowerCase());
   }, [draft, lookup.status, runLookup]);
 
   const closeAdd = useCallback(() => {
@@ -301,7 +332,9 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
   }, []);
 
   const confirmSave = useCallback(() => {
-    const word = draft.trim();
+    // 落盘同样用小写（0.26 用户反馈"统一成小写"）：查询与保存同源，不会出现
+    // 预览的是 Scenario、存的是 scenario 的错位
+    const word = draft.trim().toLowerCase();
     if (!word) return;
     const meaning = lookup.result?.meaning ?? lookup.manualMeaning.trim();
     const phonetic = lookup.result?.phonetic ?? "";
@@ -443,7 +476,7 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
   const searchEmpty = searching && visible.length === 0;
 
   return (
-    <div className="vocab-panel">
+    <div className="vocab-panel" ref={panelRef}>
       {/* 搜索优先：顶部主搜索框（英文单词/中文释义/音标都能搜，实时过滤）。
           「打开单词本.md」不在这里——它不是查词动作，挪进「···」菜单。 */}
       <div className="vocab-search-row">
@@ -674,7 +707,7 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
             {SORTS.find((item) => item.key === sort)?.label} ▾
           </button>
           {sortOpen && (
-            <div className="vocab-menu" role="listbox" aria-label="排序方式">
+            <div className="vocab-menu" role="listbox" aria-label="排序方式" ref={menuClampRef}>
               {SORTS.map((item) => (
                 <button
                   key={item.key}
@@ -713,7 +746,7 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
             ···
           </button>
           {moreOpen && (
-            <div className="vocab-menu vocab-menu-right" role="menu">
+            <div className="vocab-menu vocab-menu-right" role="menu" ref={menuClampRef}>
               <button
                 type="button"
                 className="vocab-menu-item"

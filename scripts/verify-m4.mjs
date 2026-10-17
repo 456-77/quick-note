@@ -33,6 +33,7 @@ import {
   serializeDailyConfig,
 } from "../src/lib/dailyConfig.ts";
 import { defaultDailySettings } from "../src/lib/daily.ts";
+import { bgSettingsFor, defaultBgSettings, updateBgSettings, updateSettings } from "../src/lib/settings.ts";
 
 let failures = 0;
 let total = 0;
@@ -356,6 +357,49 @@ function isoWeekOf(dateStr) {
   check("autoDetectCodeLang" in freshParsed, "配置：新文件含语言识别键");
   check("weatherEnabled" in freshParsed, "配置：新文件含天气键");
   check("checkReminderTime" in freshParsed, "配置：新文件含检查时间键");
+}
+
+// ---------------------------------------------------------------- per-vault 背景（0.26）
+
+{
+  const vaultA = "H:/vaults/A";
+  const vaultB = "H:/vaults/B";
+
+  // 种入 0.25 及以前的「旧扁平字段」形态（模拟升级前的本机设置）
+  updateSettings({
+    bgEnabled: true,
+    bgImagePath: "img/a.png",
+    bgOpacity: 0.66,
+    bgBlur: 2,
+    bgBrightness: 110,
+    bgContrast: 95,
+    bgPosX: 40,
+    bgPosY: 60,
+    bgScale: 120,
+    bgFit: "contain",
+    bgPerVault: undefined,
+  });
+
+  // 没有任何 per-vault 条目：读旧扁平字段兜底（升级无感，各仓库仍显示原背景）
+  eq(bgSettingsFor(vaultA).bgOpacity, 0.66, "背景：无条目的仓库用旧扁平字段兜底");
+  eq(bgSettingsFor(vaultB).bgFit, "contain", "背景：兜底对每个仓库一致");
+  eq(bgSettingsFor(null).bgImagePath, "img/a.png", "背景：仓库未开时也读得到兜底值");
+
+  // A 改一次参数：只落 A 的条目（以生效值为基底合并），B 仍用旧值——分叉从这里开始
+  const afterA = updateBgSettings(vaultA, { bgOpacity: 0.9 });
+  eq(afterA.bgPerVault?.[vaultA]?.bgOpacity, 0.9, "背景：改动写入 A 的 per-vault 条目");
+  eq(afterA.bgPerVault?.[vaultA]?.bgEnabled, true, "背景：条目以生效值为基底（未改字段继承兜底值）");
+  eq(afterA.bgPerVault?.[vaultB], undefined, "背景：B 没动过就不落条目");
+  eq(bgSettingsFor(vaultB, afterA).bgOpacity, 0.66, "背景：B 仍读旧扁平字段");
+
+  // 没开仓库时 updateBgSettings 是空操作
+  const untouched = updateBgSettings(null, { bgOpacity: 0.1 });
+  eq(untouched.bgPerVault?.[""] ?? null, null, "背景：无仓库不落空键条目");
+
+  // 默认值出口存在且字段齐全
+  const defaults = defaultBgSettings();
+  eq(Object.keys(defaults).length, 10, "背景：默认值字段齐全");
+  eq(defaults.bgFit, "cover", "背景：默认适配为 cover");
 }
 
 console.log(`\n共 ${total} 项断言，失败 ${failures} 项`);

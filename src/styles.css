@@ -24,17 +24,18 @@
   --radius-lg: 14px;
   --sidebar-width: 272px;
 
-  /* -------- 语义色板（浅色主题） -------- */
-  --bg: #f2f3f6;
-  --panel: #fafafc;
+  /* -------- 语义色板（浅色主题；0.26 按用户 13 节规范校准：
+     主背景 #F7F8FA / 内容 #FFFFFF / 次级 #F1F3F6 / 主文字 #1F2329 / 次文字 #69707D） -------- */
+  --bg: #f7f8fa;
+  --panel: #f7f8fa;
   --surface: #ffffff;
-  --surface-2: #eef0f4;
+  --surface-2: #f1f3f6;
   --surface-3: #e7e9ef;
-  --border: #e3e5ea;
+  --border: #e2e4ea;
   --border-soft: #eceef2;
-  --text: #1d1e24;
-  --text-dim: #6b6d7a;
-  --text-faint: #9c9eab;
+  --text: #1f2329;
+  --text-dim: #69707d;
+  --text-faint: #9da3ae;
   --accent: #5b5bd6;
   --accent-strong: #4a4ac4;
   --accent-soft: rgba(91, 91, 214, 0.1);
@@ -106,19 +107,21 @@
 }
 
 /* 深色主题：由 lib/theme.ts 解析后写到 <html data-theme>。
-   深色是这套设计的主角：低饱和深底 + 提亮的文字 + 靛蓝强调色。 */
+   深色是这套设计的主角：低饱和深底 + 提亮的文字 + 靛蓝强调色。
+   0.26 按用户 13 节规范校准：主背景 #14151A / 内容 #191A21 / 次级 #20212A /
+   主文字 #E6E8EF / 次文字 #969BAA / 边框 #2A2C36——不用纯黑。 */
 [data-theme="dark"] {
   color-scheme: dark;
-  --bg: #101014;
-  --panel: #17171e;
-  --surface: #1c1c24;
-  --surface-2: #22222b;
-  --surface-3: #262631;
-  --border: rgba(255, 255, 255, 0.08);
-  --border-soft: rgba(255, 255, 255, 0.05);
-  --text: #e9e9f0;
-  --text-dim: #9d9daf;
-  --text-faint: #6a6a7d;
+  --bg: #14151a;
+  --panel: #14151a;
+  --surface: #191a21;
+  --surface-2: #20212a;
+  --surface-3: #25262f;
+  --border: #2a2c36;
+  --border-soft: #232530;
+  --text: #e6e8ef;
+  --text-dim: #969baa;
+  --text-faint: #666b7a;
   --accent: #8b93ff;
   --accent-strong: #a5abff;
   --accent-soft: rgba(129, 140, 248, 0.14);
@@ -3487,7 +3490,7 @@ html.qn-alt-held .cm-line {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  width: 220px;
+  width: 216px;
   flex: none;
   padding: 10px 8px;
   background: var(--surface-2);
@@ -3506,11 +3509,15 @@ html.qn-alt-held .cm-line {
   font-weight: 650;
 }
 
+/* 左侧导航：统一高度/字号/图标位；选中项淡蓝紫底 + 主题色文字 + 左缘细强调线；
+   非选中项低视觉权重；「关于」与上面各组拉开一档距离（0.26 规范一）。 */
 .settings-nav-item {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 9px;
+  gap: 8px;
+  height: 32px;
+  padding: 0 9px;
   font: inherit;
   font-size: 12.5px;
   border: 0;
@@ -3522,15 +3529,34 @@ html.qn-alt-held .cm-line {
   transition: background 0.12s ease, color 0.12s ease;
 }
 
+.settings-nav-item svg {
+  flex: none;
+}
+
 .settings-nav-item:hover {
   background: var(--hover);
   color: var(--text);
 }
 
 .settings-nav-item.is-on {
-  background: var(--surface);
+  background: var(--accent-soft);
   color: var(--accent);
-  box-shadow: var(--shadow-1);
+  font-weight: 600;
+}
+
+.settings-nav-item.is-on::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.settings-nav-item.is-about {
+  margin-top: 12px;
 }
 
 .settings-nav-logo {
@@ -3543,14 +3569,17 @@ html.qn-alt-held .cm-line {
   display: flex;
   align-items: center;
   gap: 6px;
+  height: 30px;
   margin: 0 0 8px;
-  padding: 5px 8px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
   color: var(--text-faint);
 }
 
 .settings-search:focus-within {
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
   color: var(--accent);
 }
@@ -3585,32 +3614,85 @@ html.qn-alt-held .cm-line {
   display: block;
 }
 
+/* 设置行（0.26 规范二）：标签 + 一句话说明在左（上下两行），控件在右垂直居中。
+   第一个 span 恒为标签文本（GUI 验收契约），说明是随后的 .settings-row-desc。 */
 .settings-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto;
+  column-gap: 16px;
+  row-gap: 1px;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 9px;
+  margin-bottom: 13px;
   font-size: 12.5px;
 }
 
-.settings-row > span {
-  flex: none;
-  width: 118px;
+.settings-row > span:first-child {
+  grid-row: 1;
+  width: auto;
+  color: var(--text);
+}
+
+.settings-row > .settings-row-desc {
+  grid-row: 2;
+  font-size: 11.5px;
+  line-height: 1.45;
   color: var(--text-dim);
 }
 
-.settings-row > span + span {
-  width: auto;
-  flex: 1;
+/* 控件跨两行垂直居中：直接子级的输入/选择/控件组落右列 */
+.settings-row > input,
+.settings-row > select,
+.settings-row > .settings-inline,
+.settings-row > .settings-segmented,
+.settings-row > .settings-slider,
+.settings-row > kbd {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
+/* 无说明的行：控件与标签同行居中 */
+.settings-row:not(:has(> .settings-row-desc)) > input,
+.settings-row:not(:has(> .settings-row-desc)) > select,
+.settings-row:not(:has(> .settings-row-desc)) > .settings-inline,
+.settings-row:not(:has(> .settings-row-desc)) > .settings-segmented,
+.settings-row:not(:has(> .settings-row-desc)) > .settings-slider {
+  grid-row: 1;
+}
+
+/* 搜索命中的跳转反馈：淡主题色底一闪 */
+.settings-row.is-flash {
+  animation: settings-row-flash 1.4s ease;
+}
+
+@keyframes settings-row-flash {
+  0%, 55% { background: var(--accent-soft); }
+  100% { background: transparent; }
+}
+
+/* 存储等纯展示行：标签 + 右对齐的值 */
+.settings-row.storage-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto;
+  column-gap: 16px;
+}
+
+.settings-row.storage-row > .settings-value {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  text-align: right;
 }
 
 .settings-row input[type="text"],
 .settings-row select {
+  width: 100%;
   flex: 1;
   min-width: 0;
   font: inherit;
   font-size: 12.5px;
-  padding: 4px 8px;
+  height: 32px;
+  padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -3629,10 +3711,172 @@ html.qn-alt-held .cm-line {
   accent-color: var(--accent);
   width: 15px;
   height: 15px;
+  justify-self: end;
+  cursor: pointer;
+}
+
+.settings-row input[type="checkbox"]:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .settings-row kbd {
   margin-right: 4px;
+}
+
+/* 分段选项卡（主题 浅色/深色/跟随系统，0.26 规范五） */
+.settings-segmented {
+  display: inline-flex;
+  padding: 2px;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.settings-segment {
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.settings-segment:hover {
+  color: var(--text);
+}
+
+.settings-segment.is-on {
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 600;
+  box-shadow: var(--shadow-1);
+}
+
+/* 滑杆行：滑轨 + 右侧当前值 */
+.settings-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.settings-slider input[type="range"] {
+  width: 160px;
+  accent-color: var(--accent);
+}
+
+.settings-slider-value {
+  min-width: 42px;
+  text-align: right;
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+/* 颜色行：取色器 + 预设色板 */
+.settings-color {
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.settings-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.settings-swatch.is-on {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* 块级设置内容（背景预览、自定义样式、关于头图） */
+.settings-block {
+  margin: 2px 0 13px;
+}
+
+.bg-preview {
+  position: relative;
+  height: 120px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background-color: var(--surface-2);
+  background-repeat: no-repeat;
+  overflow: hidden;
+}
+
+/* 预览里垫一层棋盘格，半透明/contain 的观感能看准 */
+.bg-preview::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    repeating-conic-gradient(var(--surface-3) 0% 25%, var(--surface-2) 0% 50%) 0 0 / 16px 16px;
+  z-index: -1;
+}
+
+.bg-preview-hint {
+  position: absolute;
+  right: 8px;
+  bottom: 6px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 10.5px;
+}
+
+/* 关于页头：Logo + 名称 + 版本 + 一句话定位（0.26 规范九） */
+.about-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 4px 10px;
+}
+
+.about-logo {
+  width: 52px;
+  height: 52px;
+  flex: none;
+}
+
+.about-hero-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.about-name {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.about-version {
+  font-size: 12px;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.about-tagline {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.about-links {
+  margin-top: 4px;
 }
 
 /* ================================================= 快捷键设置（Obsidian 式面板）
@@ -4176,14 +4420,25 @@ html.qn-alt-held .cm-line {
   color: var(--text-dim);
 }
 
+/* 分组标题：小号强调字 + 下方细分隔线（0.26 规范二的「分组标题 ────」） */
 .settings-group {
-  margin: 14px 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0 10px;
   padding: 0;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--text-faint);
+}
+
+.settings-group::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border-soft);
 }
 
 .settings-sec .settings-group:first-child {
@@ -4198,13 +4453,14 @@ html.qn-alt-held .cm-line {
 }
 
 .settings-hint {
-  display: flex;
-  gap: 6px;
-  align-items: flex-start;
   margin: 2px 0 10px;
   font-size: 11.5px;
-  line-height: 1.55;
+  line-height: 1.6;
   color: var(--text-faint);
+}
+
+.settings-hint code {
+  font-size: 10.5px;
 }
 
 .hint-toggle {
@@ -4543,31 +4799,16 @@ html.qn-bg-on .app {
   background: transparent;
 }
 
-/* 0.25（用户 31 节规范 · 五）：背景图只能作为"氛围"，不能干扰阅读。
-   图层上叠一层主题色遮罩把图压成幽灵——深色 80% 暗遮罩 / 浅色 88% 亮遮罩，
-   等效于把图片压到 ~12-15% 的感知透明度；配合下方表面不透明度补偿，
-   文字对比度不再随图片内容明暗波动。用户自己的不透明度设置仍在其上生效。 */
-html.qn-bg-on #qn-bg-layer::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: rgba(255, 255, 255, 0.88);
-}
-
-html.qn-bg-on[data-theme="dark"] #qn-bg-layer::after {
-  background: rgba(10, 10, 15, 0.8);
-}
-
-/* 毛玻璃（backdrop-filter）会让合成器常驻多层大纹理，实测是背景图开启时
-   内存飙升的主力。这里用半透明底替代模糊：观感相近，GPU 内存占用小得多。
-   （0.25：遮罩接管了压图任务，表面不透明度相应调高，保证内容对比度稳定） */
+/* 图层的可见度只由用户的不透明度滑杆控制（0.26 回退 0.25 的主题色遮罩：
+   它把图压到 ~12% 感知透明度，不透明度滑杆形同虚设，用户反馈"几乎看不见
+   背景图片、调节设置也没有用"）。文字可读性由下面表面的半透明底保证。 */
 html.qn-bg-on .topbar,
 html.qn-bg-on .statusbar {
-  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
 }
 
 html.qn-bg-on .sidebar {
-  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  background: color-mix(in srgb, var(--panel) 66%, transparent);
 }
 
 html.qn-bg-on .editor-pane,
@@ -4576,7 +4817,7 @@ html.qn-bg-on .tabbar {
 }
 
 html.qn-bg-on .editor-pane {
-  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  background: color-mix(in srgb, var(--surface) 80%, transparent);
 }
 
 html.qn-bg-on .editor-host .cm-editor {
@@ -4586,7 +4827,7 @@ html.qn-bg-on .editor-host .cm-editor {
 html.qn-bg-on .sidebar .cm-editor,
 html.qn-bg-on .panel-card,
 html.qn-bg-on .calendar-card {
-  background: color-mix(in srgb, var(--surface) 93%, transparent);
+  background: color-mix(in srgb, var(--surface) 76%, transparent);
 }
 
 /* ------------------------------------------------- mermaid 增强 */
@@ -5203,16 +5444,16 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 /* ============================================================================
    搜索面板（0.5 重设计）：浮动卡片 + 毛玻璃 + 图标化 + 动画
    ========================================================================== */
-/* 搜索命中高亮：红色（0.23 用户指定——全局搜索跳转的高亮要醒目，此前黄色
-   视觉权重不够）。CM 默认给深色主题的是青色半透明，辨识度差；当前命中的那处
-   用更深的红，与普通命中区分。!important 压过 CM 运行时注入的主题（同特异性
-   但更晚进文档）。 */
+/* 搜索命中高亮：默认红色（0.23 用户指定——全局搜索跳转的高亮要醒目，此前黄色
+   视觉权重不够）。0.26 起颜色可配置（设置 → 通用 → 搜索高亮颜色）：取 --qn-hit
+   变量，普通命中 38% 透明度、当前命中的那处用 72% 混黑的实色加深区分。
+   !important 压过 CM 运行时注入的主题（同特异性但更晚进文档）。 */
 .cm-editor .cm-searchMatch {
-  background: rgba(255, 82, 82, 0.38) !important;
+  background: color-mix(in srgb, var(--qn-hit, #ff5252) 38%, transparent) !important;
 }
 
 .cm-editor .cm-searchMatch-selected {
-  background: rgba(229, 57, 53, 0.72) !important;
+  background: color-mix(in srgb, var(--qn-hit, #ff5252) 72%, black) !important;
   color: #fff;
 }
 
@@ -5226,9 +5467,9 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 
 /* 渲染态表格里的命中（0.24）：块级 widget 的 DOM 在 CM 装饰管线之外，文本高亮
    画不进去，widget 按 tableSearchHighlight 自己包 mark。颜色与 cm-searchMatch
-   同一红，观感连续。 */
+   同源（--qn-hit），观感连续。 */
 .cm-lp-table mark.qn-search-hit {
-  background: rgba(255, 82, 82, 0.38);
+  background: color-mix(in srgb, var(--qn-hit, #ff5252) 38%, transparent);
   color: inherit;
   border-radius: 2px;
   padding: 0 1px;
@@ -5676,6 +5917,19 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 
 .btn-primary:hover:not(:disabled) {
   background: color-mix(in srgb, var(--accent, #4c8bf5) 85%, #fff);
+}
+
+/* 危险操作的次级按钮：低饱和度红描边（0.26 规范四：不是所有按钮都主题色） */
+.btn-danger-soft {
+  border-color: color-mix(in srgb, var(--danger, #e53935) 45%, transparent);
+  background: color-mix(in srgb, var(--danger, #e53935) 8%, transparent);
+  color: var(--danger, #e53935);
+}
+
+.btn-danger-soft:hover:not(:disabled) {
+  border-color: var(--danger, #e53935);
+  background: color-mix(in srgb, var(--danger, #e53935) 14%, transparent);
+  color: var(--danger, #e53935);
 }
 
 /* ------------------------------------------------- 仓库打开方式弹窗（重设计） */
@@ -6207,6 +6461,45 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 
 .quick-capture-save {
   flex-shrink: 0;
+}
+
+/* 手动添加单词弹窗（0.26）：复用快速笔记的弹窗皮肤，主体是单个输入框 */
+.add-word-dialog {
+  width: 420px;
+}
+
+.add-word-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.add-word-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.add-word-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-word-message.is-ok {
+  color: var(--ok);
+}
+
+.add-word-message.is-error {
+  color: var(--danger);
 }
 
 .quick-capture-setup {

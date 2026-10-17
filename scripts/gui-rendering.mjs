@@ -89,14 +89,13 @@ async function setTheme(ws, value) {
   await evaluate(
     ws,
     `(() => {
-       // 设置面板分类化后主题下拉不再是第一个 select，按行标签定位更稳
+       // 0.26 起主题是分段选项卡（浅色/深色/跟随系统），按行标签定位后点对应分段
        const row = [...document.querySelectorAll('.settings-panel .settings-row')]
          .find((r) => r.querySelector('span')?.textContent === '主题');
-       const select = row?.querySelector('select');
-       if (!select) return false;
-       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-       setter.call(select, ${JSON.stringify(value)});
-       select.dispatchEvent(new Event('change', { bubbles: true }));
+       const segment = [...(row?.querySelectorAll('.settings-segment') ?? [])]
+         .find((b) => b.textContent === ${JSON.stringify(value === "light" ? "浅色" : value === "dark" ? "深色" : "跟随系统")});
+       if (!segment) return false;
+       segment.click();
        return true;
      })()`,
   );
@@ -429,7 +428,7 @@ for (let i = 0; i < 20; i += 1) {
 await setTheme(ws, "light");
 const light = await themeInfo(ws);
 check(light.theme === "light", "指定浅色后根节点标记为 light", JSON.stringify(light.theme));
-check(light.bg === "#f2f3f6", "浅色背景取自色板", JSON.stringify(light.bg));
+check(light.bg === "#f7f8fa", "浅色背景取自色板（0.26 校准）", JSON.stringify(light.bg));
 check(
   light.keywordColor === "rgb(130, 80, 223)",
   "浅色下代码关键字用的是色板里的值（说明内置的默认高亮被覆盖了）",
@@ -439,7 +438,7 @@ check(
 await setTheme(ws, "dark");
 const dark = await themeInfo(ws);
 check(dark.theme === "dark", "切到深色后根节点标记变为 dark", JSON.stringify(dark.theme));
-check(dark.bg === "#101014", "深色背景取自深色色板", JSON.stringify(dark.bg));
+check(dark.bg === "#14151a", "深色背景取自深色色板（0.26 校准，不用纯黑）", JSON.stringify(dark.bg));
 check(dark.bodyBg !== light.bodyBg, "深色下页面背景真的变了", `${light.bodyBg} → ${dark.bodyBg}`);
 check(
   dark.keywordColor === "rgb(199, 146, 234)",

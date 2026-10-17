@@ -274,17 +274,25 @@ pub fn open_vaults_focus(app: AppHandle, vault: String) -> Result<bool, String> 
 ///
 /// 直接 SetForegroundWindow 会被系统的前台锁拒绝（前台进程才有权转移），
 /// 经典解法是 AttachThreadInput 把自己临时接进前台线程与目标线程的输入队列，
-/// 借共享队列的权限完成切换，再拆开。
+/// 借共享队列的权限完成切换，再拆开。用户点菜单项时调用方就是前台进程，
+/// 这条路是通畅的；被系统拒绝时再按 模拟 Alt 按键 → SwitchToThisWindow
+/// 两级兜底，仍失败则返回 false 让前端走"选择打开方式"弹窗（绝不静默新开）。
 #[cfg(windows)]
 fn focus_window_of_pid(pid: u32) -> bool {
     use std::cell::RefCell;
     use std::sync::atomic::{AtomicU32, Ordering};
-    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM};
+    use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, RECT};
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
     use windows::Win32::System::Threading::{
         AttachThreadInput, GetCurrentThreadId, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows::core::{PCSTR, PCWSTR};
+
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU, keybd_event,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindowLongPtrW,
+        BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
         GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow, ShowWindow,
         GWL_EXSTYLE, SW_RESTORE, WS_EX_TOOLWINDOW,
     };
@@ -292,7 +300,7 @@ fn focus_window_of_pid(pid: u32) -> bool {
     static TARGET_PID: AtomicU32 = AtomicU32::new(0);
     // 枚举回调不能捕获环境：候选 HWND 走 thread_local，目标 PID 走静态原子量
     thread_local! {
-        static FOUND: RefCell<Vec<isize>> = const { RefCell::new(Vec::new()) };
+        static FOUND: RefCell<Vec<(isize, i32)>> = const { RefCell::new(Vec::new()) };
     }
 
     unsafe extern "system" fn enum_proc(hwnd: HWND, _lparam: LPARAM) -> windows_core::BOOL {
@@ -306,7 +314,11 @@ fn focus_window_of_pid(pid: u32) -> bool {
         let ex_style = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) } as u32;
         let tool = (ex_style & WS_EX_TOOLWINDOW.0) != 0;
         if visible && !tool {
-            FOUND.with(|found| found.borrow_mut().push(hwnd.0 as isize));
+            // 候选带面积：主窗口才是用户要去的窗口，进程里可能有别的可见顶层窗
+            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+            let ok = unsafe { GetWindowRect(hwnd, &mut rect) }.is_ok();
+            let area = if ok { (rect.right - rect.left).max(0) * (rect.bottom - rect.top).max(0) } else { 0 };
+            FOUND.with(|found| found.borrow_mut().push((hwnd.0 as isize, area)));
         }
         true.into()
     }
@@ -318,11 +330,19 @@ fn focus_window_of_pid(pid: u32) -> bool {
             return false;
         }
     }
-    let hwnd = match FOUND.with(|found| found.borrow().first().copied()) {
-        Some(raw) => HWND(raw as *mut _),
-        None => return false,
+    // 取面积最大的候选（= 主窗口）；没有可见窗口就没有可聚焦的对象
+    let hwnd = FOUND
+        .with(|found| {
+            found
+                .borrow()
+                .iter()
+                .max_by_key(|(_, area)| *area)
+                .map(|(raw, _)| *raw)
+        })
+        .map(|raw| HWND(raw as *mut _));
+    let Some(hwnd) = hwnd else {
+        return false;
     };
-
     unsafe {
         // 目标进程已退出（枚举与聚焦之间）：不再尝试
         match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
@@ -356,8 +376,53 @@ fn focus_window_of_pid(pid: u32) -> bool {
         if target_thread != 0 && target_thread != this_thread {
             let _ = AttachThreadInput(this_thread, target_thread, false);
         }
-        let focused = GetForegroundWindow() == hwnd;
-        focused
+        // 成功判定看**前台窗口属于目标进程**，而不是等于枚举拿到的那个 hwnd：
+        // Tauri 进程有多个顶层窗口（tao 还会建隐藏辅助窗），激活线程时前台会落
+        // 到真正的主窗口上，逐 hwnd 比较会把成功误判成失败（0.26：这正是"点击
+        // 已打开仓库还是新开窗口"的根因——聚焦实际成功了，返回值却是 false，
+        // 前端于是又开了一份）。
+        let mut focused = foreground_belongs_to_pid(pid);
+        if !focused {
+            // 前台锁（ForegroundLockTimeout）下 SetForegroundWindow 会被静默
+            // 拒绝。经典解法是模拟一次 Alt 按键——系统认定"用户正在键盘输入"
+            // 便放开前台转移限制——随后重试一次。
+            let _ = keybd_event(VK_MENU.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+            let _ = keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+            let _ = SetForegroundWindow(hwnd);
+            focused = foreground_belongs_to_pid(pid);
+        }
+        if !focused {
+            // 最后的兜底：SwitchToThisWindow（任务栏用的同款 API，导出自 user32）。
+            // 语义是"把前台交给这个窗口"，对前台锁的容忍度更高；失败也只是
+            // 返回 false 走原有回落流程，无副作用。
+            let module = match GetModuleHandleW(PCWSTR::null()) {
+                Ok(module) => module,
+                Err(_) => return false,
+            };
+            // GetProcAddress 的名字实参是 ANSI（PCSTR）：ASCII 直接收尾加 NUL
+            let name = b"SwitchToThisWindow\0";
+            let proc = GetProcAddress(module, PCSTR::from_raw(name.as_ptr()));
+            let Some(proc) = proc else {
+                return false;
+            };
+            let switch_to_this_window: unsafe extern "system" fn(HWND, bool) =
+                std::mem::transmute(proc);
+            switch_to_this_window(hwnd, true);
+            focused = foreground_belongs_to_pid(pid);
+        }
+        return focused;
+    }
+
+    /// 当前前台窗口是否属于目标进程。
+    #[cfg(windows)]
+    fn foreground_belongs_to_pid(pid: u32) -> bool {
+        let fg = unsafe { GetForegroundWindow() };
+        if fg.0.is_null() {
+            return false;
+        }
+        let mut fg_pid = 0u32;
+        unsafe { GetWindowThreadProcessId(fg, Some(&mut fg_pid)) };
+        fg_pid == pid
     }
 }
 

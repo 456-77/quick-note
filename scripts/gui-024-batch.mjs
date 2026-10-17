@@ -49,6 +49,18 @@ const evaluate = async (ws, expression) => {
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 命中高亮是否为红色（0.26 起颜色可配置、CSS 用 color-mix 派生，计算值
+// 可能是旧 rgba() 或 color(srgb …) 格式——按"红通道显著占优"判，格式无关）
+const isRedish = (value) => {
+  const s = String(value ?? "");
+  if (s.includes("255, 82, 82") || s.includes("229, 57, 53")) return true;
+  const m = s.match(/color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/);
+  if (m) return Number(m[1]) > 0.5 && Number(m[1]) > Number(m[2]) * 1.8 && Number(m[1]) > Number(m[3]) * 1.8;
+  const n = s.match(/rgba?\(([\d.]+),\s*([\d.]+),\s*([\d.]+)/);
+  if (n) return Number(n[1]) > 150 && Number(n[1]) > Number(n[2]) * 1.8 && Number(n[1]) > Number(n[3]) * 1.8;
+  return false;
+};
+
 let failures = 0;
 const check = (ok, label, detail = "") => {
   if (ok) console.log(`✓ ${label}`);
@@ -388,7 +400,7 @@ try {
       return { text: mark.textContent, bg: getComputedStyle(mark).backgroundColor };
     })()`);
     check(
-      !!hitInTable && hitInTable.text === "hscs_hsdt" && String(hitInTable.bg).includes("255, 82, 82"),
+      !!hitInTable && hitInTable.text === "hscs_hsdt" && isRedish(hitInTable.bg),
       "渲染态表格内的命中带红色高亮",
       JSON.stringify(hitInTable),
     );
@@ -424,7 +436,7 @@ try {
       };
     })()`);
     check(
-      codeHit.hasOuter && String(codeHit.outerBg).includes("255, 82, 82"),
+      codeHit.hasOuter && isRedish(codeHit.outerBg),
       "行内 code 的命中外层有红色高亮",
       JSON.stringify(codeHit),
     );
@@ -531,19 +543,19 @@ try {
     check(!!(await evaluate(ws, `!!document.querySelector('.vocab-add-toggle')`)), "添加区默认收起（＋ 添加新单词）");
     await evaluate(ws, `(() => { document.querySelector('.vocab-add-toggle')?.click(); return true; })()`);
     await sleep(300);
-    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'QN24WORD1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'qn24word1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
     await waitFor(ws, saveViaAdd, 20000, 600);
     await sleep(900);
     const toast1 = await evaluate(ws, `document.querySelector('.vocab-toast')?.textContent ?? ''`);
     check(String(toast1).includes("已添加到待学习"), "添加成功 Toast", String(toast1));
     const vocabFile = join(vaultA, "单词本.md");
     let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
-    check(vocab.includes("- QN24WORD1"), "快速添加落盘 单词本.md", vocab);
+    check(vocab.includes("- qn24word1"), "快速添加落盘 单词本.md", vocab);
     // 重复添加 → 提示已存在 + 查看入口（先等第一条 Toast 消失，避免轮询命中残留）
     await waitFor(ws, `!document.querySelector('.vocab-toast')`, 5000);
     await evaluate(ws, `(() => { const t = document.querySelector('.vocab-add-toggle'); if (t) { t.click(); return true; } return !!document.querySelector('.vocab-add-input'); })()`);
     await sleep(300);
-    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'QN24WORD1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'qn24word1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
     await waitFor(ws, saveViaAdd, 20000, 600);
     await sleep(900);
     const toast2 = await waitFor(ws, `(document.querySelector('.vocab-toast')?.textContent ?? '').includes('已经添加过了')`, 6000);
@@ -551,7 +563,7 @@ try {
     const viewBtn = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.vocab-toast button')].find((x) => x.textContent === '查看'); if (!b) return false; b.click(); return true; })()`, 4000);
     check(viewBtn, "Toast 的「查看」打开详情");
     await waitFor(ws, `!!document.querySelector('.vocab-detail')`, 4000);
-    check(await evaluate(ws, `document.querySelector('.vocab-detail-word')?.textContent === 'QN24WORD1'`), "详情弹层显示单词");
+    check(await evaluate(ws, `document.querySelector('.vocab-detail-word')?.textContent === 'qn24word1'`), "详情弹层显示单词");
     // 详情里编辑释义/备注（0.25 起编辑表单是 音标/释义/备注 三个字段）
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '编辑')?.click(); return true; })()`);
     await sleep(300);
@@ -560,13 +572,13 @@ try {
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-edit-actions .btn')].find((b) => b.textContent === '保存')?.click(); return true; })()`);
     await sleep(900);
     vocab = readFileSync(vocabFile, "utf8");
-    check(vocab.includes("QN24WORD1 | 数据传输任务接口表"), "编辑释义写回（v2 行格式）", vocab.split("\n").filter((l) => l.includes("QN24WORD1")).join(" ; "));
+    check(vocab.includes("qn24word1 | 数据传输任务接口表"), "编辑释义写回（v2 行格式）", vocab.split("\n").filter((l) => l.includes("qn24word1")).join(" ; "));
     // 详情里标记已掌握（0.25 起按钮文案是「已掌握」）
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '已掌握')?.click(); return true; })()`);
     await sleep(900);
     vocab = readFileSync(vocabFile, "utf8");
     const doneIdx = vocab.indexOf("## 已掌握");
-    const wordIdx = vocab.indexOf("- QN24WORD1");
+    const wordIdx = vocab.indexOf("- qn24word1");
     check(wordIdx >= 0 && doneIdx >= 0 && wordIdx > doneIdx, "标记为已掌握移入对应节", vocab);
     await evaluate(ws, `(() => { document.querySelector('.vocab-detail-close')?.click(); return true; })()`);
     await sleep(400);

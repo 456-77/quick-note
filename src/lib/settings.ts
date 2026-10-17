@@ -77,7 +77,19 @@ export interface Settings {
    * 可关）。跳转定位的关键词高亮不受此开关影响。
    */
   searchHoverPreview: boolean;
-  // ---- 全局背景（每设备独立，与插件同一种归属：不进仓库、不随同步走）----
+  /**
+   * 搜索命中高亮的颜色（0.26 用户反馈"高亮颜色可以在设置中进行设置"）。
+   * #RRGGBB；文件内搜索面板（cm-searchMatch）、渲染表格内的命中、全局搜索
+   * 跳转高亮都从 CSS 变量 --qn-hit 取色。默认红（0.23 用户指定的醒目红）。
+   */
+  searchHitColor: string;
+  // ---- 全局背景 ----
+  // 归属演变（0.26 用户反馈"不同仓库为什么公用同一套背景图"）：背景图改为
+  // **每仓库一份**（键是仓库绝对路径），仍存本机、不进仓库、不随同步走——
+  // 图是从当前仓库里选的，换仓库连图带参数一起换才符合直觉。
+  // 下面的扁平 bg* 字段是 0.25 及以前的旧存储：不再直接读写，作为还没有
+  // per-vault 条目的仓库的**种子值**（升级后各仓库仍显示原来的背景，改哪篇
+  // 哪篇开始分叉），某个仓库第一次调整背景时即落下自己的条目。
 
   /** 启用全局背景图片。 */
   bgEnabled: boolean;
@@ -99,7 +111,24 @@ export interface Settings {
   bgScale: number;
   /** 适配方式：cover = 铺满裁剪，contain = 完整显示。 */
   bgFit: "cover" | "contain";
+  /** per-vault 背景设置（键：仓库绝对路径）。没有条目的仓库用扁平字段的旧值兜底。 */
+  bgPerVault?: Record<string, BgSettings>;
 }
+
+/** 背景图的全部可调参数（扁平 bg* 字段与 per-vault 条目共用同一形状）。 */
+export type BgSettings = Pick<
+  Settings,
+  | "bgEnabled"
+  | "bgImagePath"
+  | "bgOpacity"
+  | "bgBlur"
+  | "bgBrightness"
+  | "bgContrast"
+  | "bgPosX"
+  | "bgPosY"
+  | "bgScale"
+  | "bgFit"
+>;
 
 const STORAGE_KEY = "quicknote.settings";
 
@@ -122,6 +151,7 @@ const DEFAULTS: Settings = {
   exportFolder: "导出",
   vaultOpenMode: "ask",
   searchHoverPreview: true,
+  searchHitColor: "#ff5252",
   bgEnabled: false,
   bgImagePath: "",
   bgOpacity: 0.35,
@@ -182,6 +212,45 @@ export function onSettingsChange(listener: (settings: Settings) => void): () => 
   return () => {
     listeners.delete(listener);
   };
+}
+
+/** 背景参数的默认值（扁平 DEFAULTS 里 bg* 部分的同源副本）。 */
+export function defaultBgSettings(): BgSettings {
+  const { bgEnabled, bgImagePath, bgOpacity, bgBlur, bgBrightness, bgContrast, bgPosX, bgPosY, bgScale, bgFit } =
+    DEFAULTS;
+  return { bgEnabled, bgImagePath, bgOpacity, bgBlur, bgBrightness, bgContrast, bgPosX, bgPosY, bgScale, bgFit };
+}
+
+/**
+ * 当前生效的背景参数：优先取该仓库自己的 per-vault 条目；没有条目的仓库
+ * 用旧扁平字段兜底（升级无感，见 bgPerVault 注释），连旧值都没有（全新安装）
+ * 就是纯默认。仓库没开时给默认值——背景图本来就是仓库内图片，没仓库必然没有。
+ */
+export function bgSettingsFor(vault: string | null, settings: Settings = current): BgSettings {
+  if (vault && settings.bgPerVault?.[vault]) return { ...settings.bgPerVault[vault] };
+  const legacy: BgSettings = {
+    bgEnabled: settings.bgEnabled,
+    bgImagePath: settings.bgImagePath,
+    bgOpacity: settings.bgOpacity,
+    bgBlur: settings.bgBlur,
+    bgBrightness: settings.bgBrightness,
+    bgContrast: settings.bgContrast,
+    bgPosX: settings.bgPosX,
+    bgPosY: settings.bgPosY,
+    bgScale: settings.bgScale,
+    bgFit: settings.bgFit,
+  };
+  // 全新安装（旧字段全是默认值且没图）与旧值无差别，统一走旧值兜底即可
+  return legacy;
+}
+
+/** 把一批改动落进指定仓库的 per-vault 条目（以生效值为基底合并）。返回新 Settings。 */
+export function updateBgSettings(vault: string | null, patch: Partial<BgSettings>): Settings {
+  if (!vault) return current;
+  const merged: BgSettings = { ...bgSettingsFor(vault), ...patch };
+  return updateSettings({
+    bgPerVault: { ...(current.bgPerVault ?? {}), [vault]: merged },
+  });
 }
 
 // 跨窗口热加载（0.23 用户反馈）：每个仓库窗口是独立进程，另一窗口改设置只写了

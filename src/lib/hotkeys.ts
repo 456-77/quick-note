@@ -62,6 +62,13 @@ export const COMMAND_KEYS: CommandKeys[] = [
     group: "edit",
     keys: ["Mod-Alt-V"],
   },
+  {
+    id: "addWordDialog",
+    label: "手动添加单词…",
+    desc: "弹窗输入单词加入单词本（不用先选中，类似快速笔记的快捷入口）",
+    group: "edit",
+    keys: ["Mod-Alt-U"],
+  },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },
   { id: "heading2", label: "标题 2", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-2"] },

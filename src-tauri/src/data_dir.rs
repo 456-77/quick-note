@@ -203,6 +203,92 @@ pub fn set_custom_data_dir(app: AppHandle, path: Option<String>) -> Result<AppDa
     paths_of(&app)
 }
 
+// ------------------------------------------------------------------ 缓存统计
+
+/// 目录体积（文件数 + 字节数；递归，跳过无权限/消失中的条目）。
+#[derive(serde::Serialize)]
+pub struct DirStat {
+    pub files: u64,
+    pub bytes: u64,
+}
+
+fn stat_dir(path: &Path) -> DirStat {
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    let Ok(entries) = fs::read_dir(path) else {
+        return DirStat { files, bytes };
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            let nested = stat_dir(&entry.path());
+            files += nested.files;
+            bytes += nested.bytes;
+        } else if let Ok(meta) = entry.metadata() {
+            files += 1;
+            bytes += meta.len();
+        }
+    }
+    DirStat { files, bytes }
+}
+
+/// 递归统计一个目录的体积（设置 → 存储 的缓存大小展示用）。
+#[tauri::command]
+pub fn dir_stat(path: String) -> Result<DirStat, String> {
+    Ok(stat_dir(Path::new(&path)))
+}
+
+/// WebView 缓存子目录（相对用户数据目录）：HTTP 缓存、代码缓存、GPU/着色器缓存。
+/// 只清缓存，不碰 Cookies / Local Storage / IndexedDB——登录态与本地数据不受影响。
+const CACHE_SUBDIRS: &[&str] = &[
+    "Default/Cache",
+    "Default/Code Cache",
+    "Default/GPUCache",
+    "Default/DawnCache",
+    "Default/DawnGraphiteCache",
+    "Default/DawnWebGPUCache",
+    "GPUCache",
+    "GrShaderCache",
+    "GraphitePrecomputedShaderCache",
+    "ShaderCache",
+];
+
+/// WebView 缓存的合计体积（设置 → 存储 的「缓存大小」展示；与 clear_webview_cache
+/// 同一份目录清单，展示的就是清理能释放的那部分）。
+#[tauri::command]
+pub fn webview_cache_stat(app: AppHandle) -> Result<DirStat, String> {
+    let paths = paths_of(&app)?;
+    let root = PathBuf::from(&paths.webview_data_dir);
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    for sub in CACHE_SUBDIRS {
+        let stat = stat_dir(&root.join(sub));
+        files += stat.files;
+        bytes += stat.bytes;
+    }
+    Ok(DirStat { files, bytes })
+}
+
+/// 清理 WebView 缓存（设置 → 存储 的「清理缓存」按钮）。逐个目录尽力删除：
+/// 正被 Chromium 持锁的文件删不掉就跳过（活着的那部分照常清），返回释放的字节数。
+#[tauri::command]
+pub fn clear_webview_cache(app: AppHandle) -> Result<u64, String> {
+    let paths = paths_of(&app)?;
+    let root = PathBuf::from(&paths.webview_data_dir);
+    let mut freed = 0u64;
+    for sub in CACHE_SUBDIRS {
+        let dir = root.join(sub);
+        if !dir.is_dir() {
+            continue;
+        }
+        let before = stat_dir(&dir).bytes;
+        if fs::remove_dir_all(&dir).is_ok() {
+            freed += before;
+        }
+    }
+    Ok(freed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

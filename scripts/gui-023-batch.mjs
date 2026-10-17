@@ -368,24 +368,43 @@ try {
   await closePalette();
 
   // 红色高亮：普通文本命中的那处（表格是 widget，源码不渲染、高亮元素不在 DOM）
+  // 0.26 起高亮色可配置（--qn-hit 默认 #ff5252），CSS 用 color-mix 派生——
+  // 计算值不再是 rgba() 字符串而是 color(srgb …)，断言改成"红占优 + 变量就位"。
   const pickedRed = await searchAndPick("QN23RED", "qn23表格.md");
   check(!!pickedRed, "正文命中出现（QN23RED）");
   if (pickedRed) {
     const redHighlight = await evaluate(ws, `(() => {
       const all = document.querySelector('.cm-searchMatch');
       const selected = document.querySelector('.cm-searchMatch-selected');
+      const norm = (value) => {
+        const s = String(value ?? '');
+        let m = s.match(/color\\(srgb\\s+([\\d.]+)\\s+([\\d.]+)\\s+([\\d.]+)/);
+        if (m) return { r: Number(m[1]) * 255, g: Number(m[2]) * 255, b: Number(m[3]) * 255 };
+        m = s.match(/rgba?\\(([\\d.]+),\\s*([\\d.]+),\\s*([\\d.]+)/);
+        if (m) return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+        return null;
+      };
+      const redDominant = (c) => !!c && c.r > 150 && c.r > c.g * 1.8 && c.r > c.b * 1.8;
+      const allBg = all ? getComputedStyle(all).backgroundColor : null;
+      const selectedBg = selected ? getComputedStyle(selected).backgroundColor : null;
+      const sel = norm(selectedBg);
       return {
-        allBg: all ? getComputedStyle(all).backgroundColor : null,
+        varHit: getComputedStyle(document.documentElement).getPropertyValue('--qn-hit').trim(),
+        allBg,
         hasSelected: !!selected,
-        selectedBg: selected ? getComputedStyle(selected).backgroundColor : null,
+        selectedBg,
+        allRed: redDominant(norm(allBg)),
+        selRed: redDominant(sel),
+        // 深红 = 与黑混 72%（srgb 0.72…）或旧格式的 229,57,53
+        selDeep: !!sel && (String(selectedBg).includes('229, 57, 53') || Math.abs(sel.r - 255 * 0.72) < 30),
       };
     })()`);
-    // 单命中场景里唯一可见的 .cm-searchMatch 就是"当前命中"（深红）；两种红都算达标
-    const redish =
-      String(redHighlight.allBg).includes("255, 82, 82") ||
-      String(redHighlight.allBg).includes("229, 57, 53");
-    check(redish, "命中高亮为红色", JSON.stringify(redHighlight));
-    check(redHighlight.hasSelected && String(redHighlight.selectedBg).includes("229, 57, 53"), "当前命中更深红", JSON.stringify(redHighlight));
+    check(
+      redHighlight.varHit === "#ff5252" && redHighlight.allRed,
+      "命中高亮为红色（--qn-hit 变量 + 红占优）",
+      JSON.stringify(redHighlight),
+    );
+    check(redHighlight.hasSelected && redHighlight.selDeep, "当前命中更深红", JSON.stringify(redHighlight));
   }
   await closePalette();
 
@@ -531,7 +550,7 @@ try {
     // 展开添加区：点「＋ 添加新单词」
     await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-toggle'); if (!el) return false; el.click(); return true; })()`);
     await sleep(400);
-    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-input'); if (!el) return false; (${nativeSet})(el, 'QN23WORD'); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-input'); if (!el) return false; (${nativeSet})(el, 'qn23word'); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
     // 生造词在线查询失败 → 预览卡出现「未找到在线释义」
     await waitFor(ws, `(() => { const el = document.querySelector('.vocab-lookup'); return !!el && el.textContent.includes('未找到在线释义'); })()`, 15000);
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-lookup button')].find((x) => x.textContent === '手动填写释义'); b?.click(); return !!b; })()`);
@@ -540,16 +559,16 @@ try {
     await sleep(900);
     const vocabFile = join(vault, "单词本.md");
     let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
-    check(vocab.includes("- QN23WORD"), "面板输入加入单词 → 落盘 单词本.md", vocab);
-    check(vocab.indexOf("## 待学习") < vocab.indexOf("- QN23WORD"), "新词落在待学习节");
+    check(vocab.includes("- qn23word"), "面板输入加入单词 → 落盘 单词本.md", vocab);
+    check(vocab.indexOf("## 待学习") < vocab.indexOf("- qn23word"), "新词落在待学习节");
     // 标记掌握：点条目 → 详情弹层 → 已掌握 → 关闭
-    await evaluate(ws, `(() => { const item = Array.from(document.querySelectorAll('.vocab-item')).find((el) => el.textContent.includes('QN23WORD')); item?.click(); return !!item; })()`);
+    await evaluate(ws, `(() => { const item = Array.from(document.querySelectorAll('.vocab-item')).find((el) => el.textContent.includes('qn23word')); item?.click(); return !!item; })()`);
     await sleep(500);
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '已掌握')?.click(); return true; })()`);
     await sleep(900);
     vocab = readFileSync(vocabFile, "utf8");
     const doneIdx = vocab.indexOf("## 已掌握");
-    const wordIdx = vocab.indexOf("- QN23WORD");
+    const wordIdx = vocab.indexOf("- qn23word");
     check(wordIdx >= 0 && doneIdx >= 0 && wordIdx > doneIdx, "✓ 标记后移入已掌握节", vocab);
     await evaluate(ws, `(() => { document.querySelector('.vocab-detail-close')?.click(); return true; })()`);
     await sleep(400);
