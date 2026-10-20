@@ -25,6 +25,8 @@ import {
   defaultVaultName,
   normalizeSyncState,
   normalizeVaultKey,
+  sameVaultPath,
+  vaultStateKey,
   type PendingConflict,
   type SyncDeviceState,
   type SyncStatusKind,
@@ -159,7 +161,14 @@ export function useSync(options: {
     noticeRef.current = notice;
   }, [notice]);
 
-  /** 状态落盘。合并 300ms 内的连续改动——同步一轮可能更新几十个文件的哈希。 */
+  /**
+   * 状态落盘。合并 300ms 内的连续改动——同步一轮可能更新几十个文件的哈希。
+   *
+   * 0.27 起按仓库拆成 `sync-state-<key>.json`（多窗口=多进程，此前共用一份
+   * `sync-state.json` 互相覆写，游标回退导致全量重拉、冲突横幅反复出现）；
+   * 账号级配置（服务端/账号/refreshToken/各仓库开关）另写一份**共享薄文件**
+   * 到原来的 `sync-state.json` 位置，配置在任何一个窗口改都全局生效。
+   */
   const persist = useCallback(async (next: SyncDeviceState) => {
     stateRef.current = next;
     setState({ ...next });
@@ -168,13 +177,50 @@ export function useSync(options: {
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
       const snapshot = stateRef.current;
-      void syncStateSave(JSON.stringify(snapshot, null, 2)).then(
+      const key = vaultRef.current ? vaultStateKey(vaultRef.current) : null;
+      const write = key
+        ? syncStateSaveFor(key, JSON.stringify(snapshot, null, 2))
+        : syncStateSave(JSON.stringify(snapshot, null, 2));
+      void write.then(
         () => setSaveError(null),
         // 只警告，**不停同步**（engineToken 与 stateError 都不动）：
         // 游标与哈希还在内存里，这一轮同步是有效的，只是重启后会退回上次落盘的状态
         // ——那是"多拉一次"的代价，比"写到一半就不同步了"轻得多。
         (e) => setSaveError(`保存同步状态失败：${e}`),
       );
+      // 共享配置薄文件：读旧合并再写（别的窗口记下的仓库开关不丢），失败只影响
+      // 其他窗口/仓库继承配置，不值得一提。
+      void (async () => {
+        try {
+          let shared: Partial<SyncDeviceState> = {};
+          const current = await syncStateLoad();
+          if (current) {
+            try {
+              shared = JSON.parse(current) as Partial<SyncDeviceState>;
+            } catch {
+              shared = {};
+            }
+          }
+          await syncStateSave(
+            JSON.stringify(
+              {
+                vault: snapshot.vault,
+                serverUrl: snapshot.serverUrl,
+                username: snapshot.username,
+                password: snapshot.password,
+                scope: snapshot.scope,
+                vaultName: snapshot.vaultName,
+                refreshToken: snapshot.refreshToken,
+                enabledByVault: { ...(shared.enabledByVault ?? {}), ...snapshot.enabledByVault },
+              },
+              null,
+              2,
+            ),
+          );
+        } catch {
+          // 配置薄文件写不进去：各仓库自己的状态文件仍然完整
+        }
+      })();
     }, 300);
   }, []);
 
@@ -193,18 +239,16 @@ export function useSync(options: {
     if (!vault) return;
 
     let cancelled = false;
-    syncStateLoad()
-      .then((text) => {
+    const key = vaultStateKey(vault);
+    Promise.all([syncStateLoadFor(key), syncStateLoad()])
+      .then(([perVaultText, sharedText]) => {
         if (cancelled) return;
         let next = { ...DEFAULT_SYNC_STATE };
-        if (text) {
+        if (perVaultText) {
           try {
-            // 换过仓库就丢掉游标与哈希：它们是"我在这个仓库里看到过什么"的记录，
-            // 带到另一个仓库会把同名文件误判成本地改动或云端删除。
-            next = adaptStateToVault(
-              normalizeSyncState(JSON.parse(text) as Partial<SyncDeviceState>),
-              vault,
-            );
+            // 每仓库文件只装着这个仓库的游标与哈希；换仓库的"丢弃"语义用不上了
+            //（文件本来就按仓库分开），但归一化仍要做（补齐缺省字段）。
+            next = normalizeSyncState(JSON.parse(perVaultText) as Partial<SyncDeviceState>);
           } catch (e) {
             // 状态文件坏了不能静默按默认值继续：那样游标归零会被当成"全新设备"，
             // 把库里的文件当成本地新增全推一遍。宁可停下来让用户决定。
@@ -214,8 +258,39 @@ export function useSync(options: {
             setReady(true);
             return;
           }
+        } else if (sharedText) {
+          // 迁移：按仓库的文件还没有（升级后首次打开），旧的单份状态正好就是
+          // 这个仓库的 → 收编为它的 per-vault 状态（游标/哈希原样保留）。
+          try {
+            const legacy = normalizeSyncState(JSON.parse(sharedText) as Partial<SyncDeviceState>);
+            if (sameVaultPath(legacy.vault, vault)) next = legacy;
+          } catch {
+            // 旧文件坏了按默认值走（per-vault 文件本来就不存在）
+          }
+        }
+        // 共享配置（旧的单份状态或新的薄配置文件）里的账号级字段优先：
+        // 配置在任何窗口改都要全局生效，不能被某个仓库的旧文件盖回去。
+        if (sharedText) {
+          try {
+            const shared = normalizeSyncState(JSON.parse(sharedText) as Partial<SyncDeviceState>);
+            if (shared.serverUrl !== "") next.serverUrl = shared.serverUrl;
+            if (shared.username !== "") next.username = shared.username;
+            if (shared.password !== "") next.password = shared.password;
+            next.scope = shared.scope;
+            if (shared.vaultName !== "") next.vaultName = shared.vaultName;
+            if (next.refreshToken === "" && shared.refreshToken !== "") {
+              next.refreshToken = shared.refreshToken;
+            }
+            next.enabledByVault = { ...shared.enabledByVault, ...next.enabledByVault };
+          } catch {
+            // 共享配置解析失败：保留 per-vault（或默认）状态即可
+          }
+        }
+        if (!sameVaultPath(next.vault, vault)) {
+          // 全新仓库（或迁移来源不是它）：丢游标与哈希，保留账号级配置
+          next = adaptStateToVault(next, vault);
         } else {
-          next = { ...next, vault };
+          next.vault = vault;
         }
         stateRef.current = next;
         setState(next);
@@ -301,7 +376,7 @@ export function useSync(options: {
     (vaultPath: string, onConflicts?: (paths: string[]) => void): Promise<void> => {
       const name = vaultPath.replace(/[\/]+$/, "").split(/[\/]/).pop() ?? vaultPath;
       const configuredBase = stateRef.current;
-      return syncStateLoadFor(name)
+      return syncStateLoadFor(vaultStateKey(vaultPath))
         .then((saved) => {
           const base = saved ? (normalizeSyncState(JSON.parse(saved)) as SyncDeviceState) : configuredBase;
           const adapted = adaptStateToVault(base, vaultPath);
@@ -317,7 +392,7 @@ export function useSync(options: {
               if (onConflicts && items.length > 0) onConflicts(items.map((item) => item.path));
             },
             persist: (next) =>
-              syncStateSaveFor(name, JSON.stringify(next, null, 2)).then(
+              syncStateSaveFor(vaultStateKey(vaultPath), JSON.stringify(next, null, 2)).then(
                 () => {},
                 (e) => noticeRef.current(`保存同步状态失败：${e}`, "error"),
               ),
@@ -344,8 +419,7 @@ export function useSync(options: {
     const memory = stateRef.current.enabledByVault[key];
     if (typeof memory === "boolean") return memory;
     try {
-      const name = vaultPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? vaultPath;
-      const saved = await syncStateLoadFor(name);
+      const saved = await syncStateLoadFor(vaultStateKey(vaultPath));
       if (!saved) return false;
       return adaptStateToVault(normalizeSyncState(JSON.parse(saved) as Partial<SyncDeviceState>), vaultPath).enabled;
     } catch {

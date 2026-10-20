@@ -2857,6 +2857,14 @@ html.qn-alt-held .cm-line {
   color: var(--text-faint);
 }
 
+/* 日格固定高度（0.27 用户反馈）：行高此前随「有没有日记圆点」变化——
+   有点的行比没点的行高出圆点那几像素，整个月历看起来一高一矮。
+   固定 34px 后所有行等高，圆点只占位不改高度。 */
+.cal-day {
+  height: 34px;
+  min-height: 34px;
+}
+
 .cal-week-cell:hover {
   background: var(--accent-soft);
   color: var(--accent);
@@ -3708,11 +3716,43 @@ html.qn-alt-held .cm-line {
 }
 
 .settings-row input[type="checkbox"] {
-  accent-color: var(--accent);
-  width: 15px;
-  height: 15px;
+  /* 开关（toggle）样式（0.27 用户反馈：复选框改成开关）——外观换肤，元素仍是
+     原生 checkbox：键盘、表单语义、GUI 脚本的 checked 读写全部不变。 */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 38px;
+  height: 22px;
+  flex: none;
   justify-self: end;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  position: relative;
   cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  margin: 0 0 0 auto;
+}
+
+.settings-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  top: 2px;
+  left: 2px;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.settings-row input[type="checkbox"]:checked {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-color: var(--accent);
+}
+
+.settings-row input[type="checkbox"]:checked::before {
+  transform: translateX(16px);
+  background: var(--accent);
 }
 
 .settings-row input[type="checkbox"]:disabled {
@@ -6126,14 +6166,8 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   font-size: 12px;
 }
 
-/* 勾选框行：标签左、勾选框右，整行可点击（label 已天然支持） */
-.settings-row input[type="checkbox"] {
-  width: 15px;
-  height: 15px;
-  margin: 0 0 0 auto;
-  accent-color: var(--accent, #4c8bf5);
-  cursor: pointer;
-}
+/* 勾选框行：标签左、开关右，整行可点击（label 已天然支持）；
+   开关外观统一在前面那条基础规则里定义（0.27）。 */
 
 /* ------------------------------------------------- 快速笔记（收件箱）弹窗 */
 /* Quick Capture：600px、淡入缩放、chip 标签输入（Obsidian/Linear 弹窗质感） */
@@ -6578,6 +6612,79 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 
 .tag-dash-row .tree-label {
   color: var(--text);
+}
+
+/* 行内次要操作（置顶/重命名，0.27）：悬停浮现，不抢标签名的点击面积 */
+.tag-dash-act {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 11px;
+  line-height: 1;
+  padding: 3px 4px;
+  margin: 0 -2px;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.tag-dash-row:hover .tag-dash-act,
+.tag-dash-head .tag-dash-act {
+  opacity: 1;
+}
+
+.tag-dash-act.is-on {
+  opacity: 1;
+  color: var(--accent);
+}
+
+.tag-dash-act:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 置顶的标签行：文字微强调，一眼可分 */
+.tag-dash-row.is-pinned .tree-label {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.tag-dash-rename-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--input-bg, var(--bg));
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 2px 6px;
+  outline: none;
+}
+
+.tag-dash-rename {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 10px 6px 26px;
+}
+
+.tag-dash-rename input {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--input-bg, var(--bg));
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  padding: 3px 6px;
+  outline: none;
+}
+
+.tag-dash-rename-hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
 }
 
 .tag-dash-chips {
@@ -9395,10 +9502,52 @@ button.cm-tag:hover {
   letter-spacing: 0;
 }
 
-.vocab-item {
+/* —— 标题与总数（0.27 规范 §三.1）：一行排开，复习入口靠右 —— */
+.vocab-head {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 0 2px 8px;
+}
+
+.vocab-head-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.02em;
+}
+
+.vocab-head-count {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.vocab-review-btn {
+  margin-left: auto;
+  border: 1px solid var(--accent-soft, var(--border));
+  background: transparent;
+  color: var(--accent);
+  font-size: 11.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.vocab-review-btn:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.vocab-review-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* —— 列表条目：三行结构（0.27 规范 §四），轻量背景 + 细微分隔 —— */
+.vocab-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   padding: 7px 8px;
   border-radius: var(--radius-sm);
   cursor: pointer;
@@ -9409,27 +9558,53 @@ button.cm-tag:hover {
   background: var(--hover);
 }
 
-.vocab-item-main {
-  flex: 1;
-  min-width: 0;
+.vocab-item + .vocab-item {
+  border-top: 1px solid var(--border-soft);
+}
+
+.vocab-item-line1 {
   display: flex;
-  flex-direction: column;
-  gap: 1px;
+  align-items: center;
+  gap: 8px;
 }
 
 .vocab-item-word {
+  flex: 1;
+  min-width: 0;
   font-size: 13.5px;
   font-weight: 600;
   color: var(--text);
   word-break: break-all;
 }
 
-/* 音标：12px 次级灰，跟在词后面同排（列表卡不因此变高） */
+/* 第二行：音标独占一行（不再是词后跟注），与发音按钮同排 */
+.vocab-item-line2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 0;
+}
+
 .vocab-item-phonetic {
   font-size: 11px;
   font-weight: 400;
   color: var(--text-faint);
-  margin-left: 5px;
+}
+
+.vocab-item-speak {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  line-height: 1;
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.vocab-item-speak:hover {
+  color: var(--accent);
+  background: var(--accent-soft);
 }
 
 .vocab-item-meaning {
@@ -9445,7 +9620,8 @@ button.cm-tag:hover {
   font-weight: 500;
 }
 
-/* 状态标识：小圆点 + 文字，不上彩色底（规范：状态只作辅助信息） */
+/* 状态标识：小圆点 + 文字，不上彩色底（规范：状态只作辅助信息）；
+   0.27 起是按钮——点击即切换待学习/已掌握（规范 §七） */
 .vocab-status {
   flex-shrink: 0;
   display: inline-flex;
@@ -9464,26 +9640,110 @@ button.cm-tag:hover {
   color: var(--ok);
 }
 
-/* 悬停快捷切换状态（桌面端） */
-.vocab-item-toggle {
-  flex-shrink: 0;
+.vocab-status-btn {
   border: none;
   background: transparent;
-  color: var(--text-dim);
-  cursor: pointer;
-  font-size: 12.5px;
-  padding: 4px 6px;
+  font: inherit;
+  padding: 3px 5px;
+  margin: -3px -5px;
   border-radius: 4px;
-  opacity: 0;
+  cursor: pointer;
 }
 
-.vocab-item:hover .vocab-item-toggle {
-  opacity: 1;
+.vocab-status-btn:hover:not(:disabled) {
+  background: var(--hover);
 }
 
-.vocab-item-toggle:hover {
-  color: var(--accent);
-  background: var(--accent-soft);
+.vocab-status-btn:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* —— 快速复习卡（0.27 规范 §八）：复用详情弹层外观 —— */
+.vocab-review-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.vocab-review-count {
+  font-size: 11px;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.vocab-review-bar {
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-soft);
+  overflow: hidden;
+}
+
+.vocab-review-bar-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent);
+  transition: width 0.18s ease;
+}
+
+.vocab-review-word {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 26px;
+  font-weight: 700;
+  color: var(--text);
+  padding: 18px 0 10px;
+  word-break: break-all;
+}
+
+.vocab-review-reveal {
+  display: block;
+  margin: 0 auto;
+}
+
+.vocab-review-answer {
+  min-height: 76px;
+  padding: 4px 2px 8px;
+}
+
+.vocab-review-meaning {
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.vocab-review-no {
+  color: var(--text-dim);
+}
+
+.vocab-review-no:hover {
+  background: var(--hover);
+}
+
+.vocab-review-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 0 6px;
+  text-align: center;
+}
+
+.vocab-review-done-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text);
+  margin: 0;
+}
+
+.vocab-review-done-stats {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin: 0 0 8px;
 }
 
 /* —— 字母快速定位栏 —— */
@@ -9820,10 +10080,16 @@ button.cm-tag:hover {
     height: 44px;
   }
 
-  .vocab-item-toggle {
-    opacity: 1;
-    width: 44px;
-    height: 44px;
+  .vocab-review-btn,
+  .vocab-status-btn,
+  .vocab-item-speak {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  .vocab-review-word {
+    font-size: 30px;
+    padding: 22px 0 12px;
   }
 
   .vocab-search-input,
@@ -9934,4 +10200,197 @@ button.cm-tag:hover {
   border: none;
   border-top: 1px solid var(--border);
   margin: 10px 0;
+}
+
+/* 目录标题文字里的行内标记（0.27：**加粗** 等在目录里渲染） */
+.outline-inline-bold {
+  font-weight: 700;
+}
+
+.outline-inline-italic {
+  font-style: italic;
+}
+
+.outline-inline-strike {
+  text-decoration: line-through;
+  opacity: 0.75;
+}
+
+.outline-inline-code {
+  font-family: var(--mono-font, ui-monospace, Consolas, monospace);
+  font-size: 0.92em;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--code-bg, rgba(127, 127, 127, 0.14));
+}
+
+/* ===================== 最近文件 / 快速待办弹窗（0.27） ===================== */
+/* 两个轻量弹窗共用一套外观：居中面板 + 顶部搜索 + chip 行，Esc/遮罩关闭。 */
+
+.recent-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 940;
+  background: color-mix(in srgb, var(--bg, #14151a) 55%, transparent);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+
+.recent-dialog {
+  width: 560px;
+  max-width: calc(100vw - 48px);
+  max-height: 64vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.32);
+  padding: 12px 14px 10px;
+  animation: quick-capture-in 0.14s ease;
+}
+
+.recent-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 8px;
+}
+
+.recent-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.recent-count {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.recent-close {
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 15px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.recent-close:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.recent-search {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--input-bg, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  outline: none;
+  margin-bottom: 8px;
+}
+
+.recent-search:focus {
+  border-color: var(--accent);
+}
+
+.recent-chips {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 2px 8px;
+}
+
+.recent-chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-chip.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.recent-list {
+  flex: 1;
+  min-height: 120px;
+  overflow-y: auto;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+.recent-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  padding: 6px 8px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.recent-item.is-active,
+.recent-item:hover {
+  background: var(--hover);
+}
+
+.recent-item.is-open .recent-name {
+  color: var(--accent);
+}
+
+.recent-name {
+  font-size: 12.5px;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-dir {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 45%;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recent-empty {
+  padding: 26px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.recent-hint {
+  padding-top: 8px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  text-align: center;
 }

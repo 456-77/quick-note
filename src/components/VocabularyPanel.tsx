@@ -97,6 +97,24 @@ function addedAt(entry: VocabEntry): string {
   return match ? match[1] : "0000-00-00";
 }
 
+/**
+ * 系统语音合成可用才显示发音按钮（规范：没有发音资源时不显示无效按钮）。
+ * WebView2 自带 en-US 语音；Android WebView 也支持 speechSynthesis。
+ */
+const SPEECH_OK = typeof window !== "undefined" && "speechSynthesis" in window;
+
+/** 朗读一个单词（列表行、详情、复习卡共用）。失败静默——按钮只在能力存在时渲染。 */
+function speakWord(word: string) {
+  try {
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(word);
+    utterance.lang = "en-US";
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    // 语音引擎瞬时不可用就算了
+  }
+}
+
 /** 分组键：拉丁字母按首字母归组，其余（中文等）归「#」。 */
 function groupKey(word: string): string {
   const ch = word.charAt(0).toUpperCase();
@@ -126,6 +144,14 @@ interface LookupState {
   manualOpen: boolean;
 }
 
+/** 快速复习的进行态（0.27 规范 §八：先英文 → 主动看释义 → 认识/不认识 → 进度）。 */
+interface ReviewState {
+  queue: VocabEntry[];
+  index: number;
+  revealed: boolean;
+  knownCount: number;
+}
+
 const LOOKUP_IDLE: LookupState = { status: "idle", result: null, manualMeaning: "", manualOpen: false };
 
 export default function VocabularyPanel({ vault, revision, version, onOpen, notice, backConsumerRef }: Props) {
@@ -142,6 +168,8 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
   const [detailWord, setDetailWord] = useState<string | null>(null);
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const [toast, setToast] = useState<PanelToast | null>(null);
+  /** 快速复习：null=没在复习；index 到队尾即完成态（显示战绩与再来一轮）。 */
+  const [review, setReview] = useState<ReviewState | null>(null);
   const toastTimer = useRef<number | null>(null);
   const lookupSeq = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -209,10 +237,14 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     [],
   );
 
-  // Android 返回键：详情 → 添加区（含查询预览）→ 搜索态，都被消费后才轮到抽屉
+  // Android 返回键：复习 → 详情 → 添加区（含查询预览）→ 搜索态，都被消费后才轮到抽屉
   useEffect(() => {
     if (!backConsumerRef) return;
     backConsumerRef.current = () => {
+      if (review) {
+        setReview(null);
+        return true;
+      }
       if (detailWord) {
         setDetailWord(null);
         return true;
@@ -232,7 +264,7 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     return () => {
       backConsumerRef.current = null;
     };
-  }, [backConsumerRef, detailWord, addOpen, query]);
+  }, [backConsumerRef, review, detailWord, addOpen, query]);
 
   /** 行级变换的公共骨架：读 → 变换 → 写回 → 刷新列表。 */
   const mutate = useCallback(
@@ -399,18 +431,19 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     [detailWord, entries],
   );
 
-  // 详情开着时 Esc 只关详情（捕获阶段拦下，不透传给其他 Esc 链）
+  // 详情/复习开着时 Esc 只关最上层（捕获阶段拦下，不透传给其他 Esc 链）
   useEffect(() => {
-    if (!detailWord) return;
+    if (!detailWord && !review) return;
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      setDetailWord(null);
+      if (review) setReview(null);
+      else setDetailWord(null);
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [detailWord]);
+  }, [detailWord, review]);
 
   // 「···」/排序下拉：点外面就收起（面板内轻量菜单，不值得引 popper）
   useEffect(() => {
@@ -469,6 +502,40 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
     [mutate, notice, showToast],
   );
 
+  const todoCount = useMemo(() => entries.filter((entry) => !entry.learned).length, [entries]);
+
+  /**
+   * 开始快速复习（0.27 规范 §八的轻量版）：从「待学习」里取队列，先只显示英文，
+   * 用户主动翻开释义后再自评。顺序取「最近添加优先」——新词最需要过一遍；
+   * 不引入间隔重复算法，不改数据结构，只复用 setVocabLearned。
+   */
+  const startReview = useCallback(() => {
+    const queue = [...entries]
+      .filter((entry) => !entry.learned)
+      .sort((a, b) => addedAt(b).localeCompare(addedAt(a)) || b.line - a.line);
+    if (queue.length === 0) {
+      showToast("没有待学习的单词");
+      return;
+    }
+    setReview({ queue, index: 0, revealed: false, knownCount: 0 });
+  }, [entries, showToast]);
+
+  /** 复习作答：认识 → 落为已掌握；不认识 → 留在待学习。推进队列，到尾进完成态。 */
+  const reviewAnswer = useCallback(
+    (known: boolean) => {
+      if (!review || review.index >= review.queue.length) return;
+      const entry = review.queue[review.index];
+      if (known) void mutate((content) => setVocabLearned(content, entry.word, true).content);
+      setReview({
+        ...review,
+        index: review.index + 1,
+        revealed: false,
+        knownCount: review.knownCount + (known ? 1 : 0),
+      });
+    },
+    [review, mutate],
+  );
+
   if (!vault) {
     return <div className="vocab-panel vocab-empty">打开仓库后可使用单词本。</div>;
   }
@@ -477,6 +544,21 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
 
   return (
     <div className="vocab-panel" ref={panelRef}>
+      {/* 标题与总数（规范 §三.1），右侧是快速复习入口（§三.6：待学习有词才可点） */}
+      <div className="vocab-head">
+        <span className="vocab-head-title">单词本</span>
+        <span className="vocab-head-count">{entries.length} 个单词</span>
+        <button
+          type="button"
+          className="vocab-review-btn"
+          disabled={todoCount === 0}
+          title={todoCount === 0 ? "没有待学习的单词" : `复习 ${todoCount} 个待学习单词`}
+          onClick={startReview}
+        >
+          开始复习{todoCount > 0 ? `（${todoCount}）` : ""}
+        </button>
+      </div>
+
       {/* 搜索优先：顶部主搜索框（英文单词/中文释义/音标都能搜，实时过滤）。
           「打开单词本.md」不在这里——它不是查词动作，挪进「···」菜单。 */}
       <div className="vocab-search-row">
@@ -840,27 +922,44 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
                   className={`vocab-item${entry.learned ? " is-learned" : ""}`}
                   onClick={() => setDetailWord(entry.word)}
                 >
-                  <div className="vocab-item-main">
+                  {/* 第一行：英文单词（视觉主体）+ 学习状态标签（点击即切换，规范 §七） */}
+                  <div className="vocab-item-line1">
                     <span className="vocab-item-word">{entry.word}</span>
-                    {entry.phonetic && <span className="vocab-item-phonetic">{entry.phonetic}</span>}
-                    {entry.meaning && <span className="vocab-item-meaning">{entry.meaning}</span>}
+                    <button
+                      type="button"
+                      className={`vocab-status vocab-status-btn${entry.learned ? " is-learned" : ""}`}
+                      title={entry.learned ? "移回待学习" : "标记为已掌握"}
+                      disabled={busy}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void toggleLearned(entry, !entry.learned);
+                      }}
+                    >
+                      <span className="vocab-status-dot" aria-hidden>{entry.learned ? "✓" : "●"}</span>
+                      {entry.learned ? "已掌握" : "待学习"}
+                    </button>
                   </div>
-                  <span className={`vocab-status${entry.learned ? " is-learned" : ""}`}>
-                    <span className="vocab-status-dot" aria-hidden>{entry.learned ? "✓" : "●"}</span>
-                    {entry.learned ? "已掌握" : "待学习"}
-                  </span>
-                  <button
-                    type="button"
-                    className="vocab-item-toggle"
-                    title={entry.learned ? "移回待学习" : "标记为已掌握"}
-                    disabled={busy}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      void toggleLearned(entry, !entry.learned);
-                    }}
-                  >
-                    {entry.learned ? "↩" : "✓"}
-                  </button>
+                  {/* 第二行：音标 + 发音按钮（系统没有语音合成就整行不渲染，规范 §四） */}
+                  {(entry.phonetic || SPEECH_OK) && (
+                    <div className="vocab-item-line2">
+                      {entry.phonetic && <span className="vocab-item-phonetic">{entry.phonetic}</span>}
+                      {SPEECH_OK && (
+                        <button
+                          type="button"
+                          className="vocab-item-speak"
+                          title={`朗读 ${entry.word}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            speakWord(entry.word);
+                          }}
+                        >
+                          🔊
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {/* 第三行：简短释义；没有就省略整行（条目高度允许不一致，规范 §四） */}
+                  {entry.meaning && <div className="vocab-item-meaning">{entry.meaning}</div>}
                 </div>
               ))}
             </div>
@@ -900,6 +999,16 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
         </div>
       )}
 
+      {review && (
+        <VocabReview
+          review={review}
+          onReveal={() => setReview((prev) => (prev ? { ...prev, revealed: true } : prev))}
+          onAnswer={reviewAnswer}
+          onClose={() => setReview(null)}
+          onRestart={startReview}
+        />
+      )}
+
       {detail && (
         <VocabDetail
           entry={detail}
@@ -915,6 +1024,109 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
           onLookup={() => void fillDetailMeaning(detail)}
         />
       )}
+    </div>
+  );
+}
+
+/**
+ * 快速复习卡（0.27 规范 §八的轻量流程）：先英文 → 「显示释义」→ 认识/不认识。
+ * 认识 = 落为已掌握；不认识 = 留在待学习。完成后给战绩与「再复习一轮」
+ * （用当前仍待学习的词重建队列）。样式复用详情弹层（桌面居中/移动端底部）。
+ */
+function VocabReview({
+  review,
+  onReveal,
+  onAnswer,
+  onClose,
+  onRestart,
+}: {
+  review: ReviewState;
+  onReveal: () => void;
+  onAnswer: (known: boolean) => void;
+  onClose: () => void;
+  onRestart: () => void;
+}) {
+  const done = review.index >= review.queue.length;
+  const entry = done ? null : review.queue[review.index];
+  return (
+    <div
+      className="vocab-detail-backdrop"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="vocab-detail vocab-review" role="dialog" aria-label="快速复习">
+        {done || !entry ? (
+          <div className="vocab-review-done">
+            <span className="vocab-empty-icon" aria-hidden>✦</span>
+            <p className="vocab-review-done-title">复习完成</p>
+            <p className="vocab-review-done-stats">
+              认识 {review.knownCount} · 不认识 {review.queue.length - review.knownCount} · 共 {review.queue.length}
+            </p>
+            <div className="vocab-detail-actions">
+              <button type="button" className="vocab-detail-act" onClick={onRestart}>
+                再复习一轮
+              </button>
+              <button type="button" className="vocab-detail-act vocab-detail-primary" onClick={onClose}>
+                完成
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="vocab-review-progress">
+              <span className="vocab-review-count">
+                {review.index + 1} / {review.queue.length}
+              </span>
+              <div className="vocab-review-bar" aria-hidden>
+                <div
+                  className="vocab-review-bar-fill"
+                  style={{ width: `${Math.round((review.index / review.queue.length) * 100)}%` }}
+                />
+              </div>
+              <button type="button" className="vocab-detail-close" title="结束复习（Esc）" onClick={onClose}>
+                ×
+              </button>
+            </div>
+            <div className="vocab-review-word">
+              {entry.word}
+              {SPEECH_OK && (
+                <button
+                  type="button"
+                  className="vocab-detail-speak"
+                  title={`朗读 ${entry.word}`}
+                  onClick={() => speakWord(entry.word)}
+                >
+                  🔊
+                </button>
+              )}
+            </div>
+            {review.revealed ? (
+              <div className="vocab-review-answer">
+                {entry.phonetic && <div className="vocab-detail-phonetic">{entry.phonetic}</div>}
+                {entry.meaning ? (
+                  <div className="vocab-review-meaning">{entry.meaning}</div>
+                ) : (
+                  <div className="vocab-detail-none">这条还没有释义（可在详情里补在线释义）</div>
+                )}
+                {entry.note && <div className="vocab-detail-note">{entry.note}</div>}
+              </div>
+            ) : (
+              <button type="button" className="vocab-btn vocab-review-reveal" onClick={onReveal}>
+                显示释义
+              </button>
+            )}
+            <div className="vocab-detail-actions">
+              <button type="button" className="vocab-detail-act vocab-review-no" onClick={() => onAnswer(false)}>
+                不认识
+              </button>
+              <button type="button" className="vocab-detail-act vocab-detail-primary" onClick={() => onAnswer(true)}>
+                认识
+              </button>
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -950,17 +1162,8 @@ function VocabDetail({
     setPhonetic(entry.phonetic);
   }, [entry.word, entry.meaning, entry.note, entry.phonetic]);
 
-  const canSpeak = typeof window !== "undefined" && "speechSynthesis" in window;
-  const speak = () => {
-    try {
-      window.speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(entry.word);
-      utterance.lang = "en-US";
-      window.speechSynthesis.speak(utterance);
-    } catch {
-      // 没有可用的语音引擎就算了
-    }
-  };
+  const canSpeak = SPEECH_OK;
+  const speak = () => speakWord(entry.word);
 
   return (
     <div className="vocab-detail-backdrop" onMouseDown={(event) => {

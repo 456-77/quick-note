@@ -51,16 +51,28 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   // 这里靠 vaultPath 现场拼出绝对路径；仓库没开就不显示（enabled 已挡住）。
   const relative = bg.bgImagePath.trim().replace(/\\/g, "/");
   const absolute = `${vaultPath!.replace(/[\\/]+$/, "")}/${relative}`;
+  const blur = clamp(bg.bgBlur, 0, 50);
+  const scale = clamp(bg.bgScale, 10, 400) / 100;
   layer.style.backgroundImage = `url("${convertFileSrc(absolute)}")`;
   layer.style.backgroundPosition = `${bg.bgPosX}% ${bg.bgPosY}%`;
   layer.style.backgroundSize = bg.bgFit === "contain" ? "contain" : "cover";
   layer.style.backgroundRepeat = "no-repeat";
   layer.style.opacity = String(clamp(bg.bgOpacity, 0, 1));
+  // filter 只放合法的 filter 函数。0.26 及之前把 scale() 塞进了 filter——它不是
+  // filter 函数，整条声明被浏览器判无效丢弃，模糊/亮度/对比度跟着全部失效
+  // （0.27 用户反馈"调节不明显"的根因）。
   layer.style.filter = [
-    `blur(${clamp(bg.bgBlur, 0, 50)}px)`,
+    blur > 0 ? `blur(${blur}px)` : "",
     `brightness(${clamp(bg.bgBrightness, 10, 200)}%)`,
     `contrast(${clamp(bg.bgContrast, 10, 200)}%)`,
-    `scale(${clamp(bg.bgScale, 10, 400) / 100})`,
-  ].join(" ");
+  ]
+    .filter(Boolean)
+    .join(" ");
+  // 缩放走 transform，锚点跟随位置滑杆：放大后拖位置才有可感的平移。
+  layer.style.transform = scale !== 1 ? `scale(${scale})` : "";
+  layer.style.transformOrigin = `${bg.bgPosX}% ${bg.bgPosY}%`;
+  // 模糊会把边缘糊成透明（fixed 层从视口外取不到像素）：把层往外扩一圈，
+  // inset:0 + 负 margin 会把盒子撑出视口，糊边就落在视口外。
+  layer.style.margin = blur > 0 ? `${-Math.ceil(blur * 2)}px` : "";
 }
 

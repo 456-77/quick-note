@@ -820,8 +820,19 @@ export class SyncEngine {
     } else {
       if (item.kind === "note") this.dirty.set(path, "mod");
       else this.dirtyAttachments.set(path, "mod");
-      // 立即冲刷：用户选了「本地覆盖云端」，别让改动等到下一个周期
-      await this.doFlush();
+      // 立即冲刷：用户选了「本地覆盖云端」，别让改动等到下一个周期。
+      // 推送失败不能把异常整个抛出去——那会跳过下面的 reportConflicts，横幅
+      // 卡在原地不动（0.27 用户反馈"选完了弹窗还在"的一种成因）。改成：报错
+      // 提示 + 照常清横幅；文件仍在推送队列里，下个周期会重试，真再撞上云端
+      // 新改动会作为新冲突重新弹出——那才是如实反映。
+      try {
+        await this.doFlush();
+      } catch (e) {
+        this.host.onNotice(
+          `云同步：本地覆盖云端推送 ${path} 失败（${e instanceof Error ? e.message : String(e)}），稍后会自动重试`,
+          "error",
+        );
+      }
     }
 
     this.reportConflicts();

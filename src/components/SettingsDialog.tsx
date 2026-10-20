@@ -886,7 +886,10 @@ export default function SettingsDialog({
                   backgroundSize: bg.bgFit === "contain" ? "contain" : "cover",
                   backgroundPosition: `${bg.bgPosX}% ${bg.bgPosY}%`,
                   opacity: bg.bgOpacity,
-                  filter: `blur(${bg.bgBlur}px) brightness(${bg.bgBrightness}%) contrast(${bg.bgContrast}%) scale(${bg.bgScale / 100})`,
+                  // 与 background.ts 同口径：scale 不是 filter 函数，混进 filter 会整条失效
+                  filter: `blur(${bg.bgBlur}px) brightness(${bg.bgBrightness}%) contrast(${bg.bgContrast}%)`,
+                  transform: bg.bgScale !== 100 ? `scale(${bg.bgScale / 100})` : undefined,
+                  transformOrigin: `${bg.bgPosX}% ${bg.bgPosY}%`,
                 }}
               >
                 <span className="bg-preview-hint">背景预览（实际观感以界面为准）</span>

@@ -113,3 +113,16 @@ export function tagRemoveEdit(text: string, tag: string): TagEdit | null {
   }
   return { at: from, insert: "", to };
 }
+
+/**
+ * 计算重命名标签的编辑集：把全文里 `#from` 的每一次出现替换成 `#to`（0.27
+ * 标签列表重命名用）。span 来自与索引同一个扫描器（findTags），因此「索引里
+ * 数到的」与「重命名改到的」严格一致——代码块/行内代码里的 `#` 是否算标签，
+ * 两边同一条判定。编辑按出现顺序升序；应用到文档时多区间一次提交（一步撤销）。
+ */
+export function tagRenameEdits(text: string, from: string, to: string): TagEdit[] {
+  if (from === to) return [];
+  return findTags(text, 0, [])
+    .filter((item) => item.name === from)
+    .map((item) => ({ at: item.from, insert: `#${to}`, to: item.to }));
+}

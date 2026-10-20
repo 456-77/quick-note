@@ -182,9 +182,17 @@ export function carryOver(
 
   const prefix = carryPrefix(fromDate, format);
   for (const item of pending) {
+    // 遗留前缀显示**首次顺延的日期**（待办最初所属的那天，0.27 用户反馈）：
+    // 已带前缀的条目只保留原前缀原地搬走，不换成今天的源日期——否则连着顺延
+    // 几天，前缀跟着变成"昨天"，看不出这件事到底挂了多久。旧数据里叠加的
+    // 多个前缀收成第一个（最老的那个）。
+    const existing = /^(\[[^\]]*遗留\])/.exec(item.text);
+    const text = existing
+      ? `${existing[1]} ${stripCarryPrefix(item.text)}`
+      : `${prefix} ${stripCarryPrefix(item.text)}`;
     target.push({
       id: newTodoId(),
-      text: `${prefix} ${stripCarryPrefix(item.text)}`,
+      text,
       done: false,
       updatedAt: now,
     });

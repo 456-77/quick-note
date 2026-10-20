@@ -79,6 +79,20 @@ export const COMMAND_KEYS: CommandKeys[] = [
   { id: "clampHeading", label: "选区标题归一…", desc: "弹窗选择级别：把选区内最高级标题设为该级，其余小标题保持层级相对平移；空选区作用于全文", group: "markdown", keys: [] },
   { id: "palette", label: "命令面板 / 全局搜索", desc: "搜索笔记、全文或执行命令", group: "nav", keys: ["Mod-K", "Mod-P"] },
   {
+    id: "recentFiles",
+    label: "最近文件…",
+    desc: "类 IDEA 的最近文件弹窗：搜索 + 按一级目录筛选（Ctrl+E 已被「切换实时/源码」占用，默认 Ctrl+Shift+E）",
+    group: "nav",
+    keys: ["Mod-Shift-E"],
+  },
+  {
+    id: "quickTodo",
+    label: "快速添加待办…",
+    desc: "弹窗记一条待办；正文可用「明天 / 2026-10-21」开头记到指定日（Ctrl+Shift+T 是浏览器保留键，勿绑）",
+    group: "edit",
+    keys: ["Mod-Alt-D"],
+  },
+  {
     id: "toggleBold",
     label: "切换粗体",
     desc: "选中则包裹 **，再按取消（0.22 起 Ctrl+B 让位给它，文件栏改 Ctrl+\\）",

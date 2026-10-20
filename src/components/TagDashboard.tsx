@@ -7,8 +7,14 @@
  *
  * 标签索引由 App 扫描全仓库生成（这里是纯展示）；行上的 × 走 App 的统一
  * 移除路径——激活中的笔记在编辑器里改（保住撤销历史），没打开的直接改盘。
+ *
+ * 0.27：行内加了「重命名」（✎，就地输入新名，App 对所有带该标签的笔记做
+ * `#旧 → #新` 多区间替换）与「置顶」（📌，置顶的标签排在自动标签之后、
+ * 其余之前，按仓库记忆）。次要操作悬停才出现，不与标签名抢点击面积。
  */
 
+import { useEffect, useRef, useState } from "react";
+import { normalizeTagName } from "../lib/tags";
 import { IconChevronRight, IconTag, IconX } from "./icons";
 
 export interface TagIndexEntry {
@@ -22,6 +28,11 @@ export default function TagDashboard({
   /** path → 这篇笔记的标签（笔记行的标签 chips 用）。 */
   noteTags,
   activeTag,
+  /** 置顶的标签名（App 按仓库分桶记忆）。 */
+  pinnedTags,
+  onTogglePin,
+  /** 重命名：对所有带该标签的笔记做替换；名字合法性在这里校验。 */
+  onRename,
   onPickTag,
   onBack,
   activePath,
@@ -32,12 +43,46 @@ export default function TagDashboard({
   tags: TagIndexEntry[];
   noteTags: Record<string, string[]>;
   activeTag: string | null;
+  pinnedTags: string[];
+  onTogglePin: (tag: string) => void;
+  onRename: (from: string, to: string) => void;
   onPickTag: (tag: string) => void;
   onBack: () => void;
   activePath: string | null;
   onOpen: (path: string) => void;
   onRemoveTag: (path: string, tag: string) => void;
 }) {
+  /** 正在重命名的标签（null = 没有）；输入框的草稿跟着它。 */
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (renaming !== null) renameInputRef.current?.focus({ preventScroll: true });
+  }, [renaming]);
+
+  const startRename = (tag: string) => {
+    setRenaming(tag);
+    setDraft(tag);
+  };
+
+  const commitRename = () => {
+    if (renaming === null) return;
+    const next = normalizeTagName(draft);
+    if (!next || next === renaming) {
+      setRenaming(null);
+      return;
+    }
+    if (tags.some((tag) => tag.name === next)) {
+      // 重命名成已有标签 = 合并，语义上说得通，但要用户知情
+      const ok = window.confirm(`标签「#${next}」已存在，重命名会把两个标签合并，继续吗？`);
+      if (!ok) return;
+    }
+    const from = renaming;
+    setRenaming(null);
+    onRename(from, next);
+  };
+
   if (tags.length === 0 && !loading) {
     return <div className="tree-empty">仓库里还没有标签。给笔记加 `#标签` 后会汇集在这里。</div>;
   }
@@ -53,7 +98,47 @@ export default function TagDashboard({
           <IconTag size={13} />
           <span className="tag-dash-name">{activeTag}</span>
           <span className="tag-dash-count">{entry?.notes.length ?? 0} 篇</span>
+          <span className="spacer" />
+          <button
+            type="button"
+            className={`tag-dash-act${pinnedTags.includes(activeTag) ? " is-on" : ""}`}
+            title={pinnedTags.includes(activeTag) ? "取消置顶" : "置顶这个标签"}
+            onClick={() => onTogglePin(activeTag)}
+          >
+            📌
+          </button>
+          <button
+            type="button"
+            className="tag-dash-act"
+            title="重命名标签（对所有笔记生效）"
+            onClick={() => startRename(activeTag)}
+          >
+            ✎
+          </button>
         </div>
+        {renaming === activeTag && (
+          <div className="tag-dash-rename">
+            <input
+              ref={renameInputRef}
+              type="text"
+              value={draft}
+              spellCheck={false}
+              placeholder="新标签名"
+              onChange={(event) => setDraft(event.target.value)}
+              onBlur={commitRename}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  commitRename();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setRenaming(null);
+                }
+              }}
+            />
+            <span className="tag-dash-rename-hint">回车确认 · Esc 取消</span>
+          </div>
+        )}
         {(entry?.notes ?? []).map((path) => (
           <div
             key={path}
@@ -98,21 +183,75 @@ export default function TagDashboard({
   return (
     <div className="tag-dash">
       {loading && <div className="tree-empty">正在扫描仓库标签…</div>}
-      {tags.map((tag) => (
-        <button
-          key={tag.name}
-          type="button"
-          className="tree-item tag-dash-row"
-          onClick={() => onPickTag(tag.name)}
-          title={`${tag.name}：${tag.notes.length} 篇笔记`}
-        >
-          <IconTag size={13} className="tree-icon" />
-          <span className="tree-label">{tag.name}</span>
-          <span className="spacer" />
-          <span className="tag-dash-count">{tag.notes.length}</span>
-          <IconChevronRight size={12} />
-        </button>
-      ))}
+      {tags.map((tag) => {
+        const isPinned = pinnedTags.includes(tag.name);
+        return (
+          <div
+            key={tag.name}
+            className={`tree-item tag-dash-row${isPinned ? " is-pinned" : ""}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => onPickTag(tag.name)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") onPickTag(tag.name);
+            }}
+            title={`${tag.name}：${tag.notes.length} 篇笔记`}
+          >
+            <IconTag size={13} className="tree-icon" />
+            {renaming === tag.name ? (
+              <input
+                ref={renameInputRef}
+                type="text"
+                className="tag-dash-rename-input"
+                value={draft}
+                spellCheck={false}
+                onChange={(event) => setDraft(event.target.value)}
+                onBlur={commitRename}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitRename();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    setRenaming(null);
+                  }
+                }}
+              />
+            ) : (
+              <span className="tree-label">{tag.name}</span>
+            )}
+            {renaming !== tag.name && (
+              <>
+                <span className="tag-dash-count">{tag.notes.length}</span>
+                <button
+                  type="button"
+                  className="tag-dash-act"
+                  title="重命名标签（对所有笔记生效）"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    startRename(tag.name);
+                  }}
+                >
+                  ✎
+                </button>
+                <button
+                  type="button"
+                  className={`tag-dash-act${isPinned ? " is-on" : ""}`}
+                  title={isPinned ? "取消置顶" : "置顶"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onTogglePin(tag.name);
+                  }}
+                >
+                  📌
+                </button>
+                <IconChevronRight size={12} />
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -32,6 +32,7 @@ import {
   isAttachmentPath,
   mergeTodoSnapshot,
   normalizeSyncState,
+  vaultStateKey,
 } from "../src/lib/sync.ts";
 import {
   SNAPSHOT_VERSION,
@@ -604,6 +605,24 @@ console.log("\n附件同步（纯逻辑部分）\n");
   check(
     ATTACHMENT_DOWNLOAD_PER_CYCLE === 20 && ATTACHMENT_DOWNLOAD_BYTES_PER_CYCLE === 50 * 1024 * 1024,
     "每轮下载额度与插件一致（20 个 / 50MB）",
+  );
+}
+
+// ---------------------------------------------------------------- 0.27 按仓库拆状态文件
+{
+  const p1 = "H:" + "\\" + "develop" + "\\" + "shuiyi_code" + "\\" + "handTraining";
+  check(vaultStateKey(p1) === "h~~develop~shuiyi_code~handtraining", "盘符冒号与分隔符逐个换 ~、小写");
+  const p2 = "H:" + "\\" + "develop" + "\\" + "shuiyi_code" + "\\" + "运维";
+  check(vaultStateKey(p2) === "h~~develop~shuiyi_code~运维", "中文仓库名保留（合法文件名字符）");
+  check(
+    vaultStateKey("D:/a/vault") === vaultStateKey("d:" + "\\" + "a" + "\\" + "vault" + "\\"),
+    "大小写、正反斜杠、尾分隔符归一到同一个键（多窗口两种写法不拆成两份状态）",
+  );
+  check(vaultStateKey("D:/a/vault") !== vaultStateKey("D:/b/vault"), "不同路径不同键：同名仓库各有各的状态");
+  check(!/[\\/:*?"<>|]/.test(vaultStateKey('C:/weird "name"|x')), "文件系统非法字符全部被清洗");
+  check(
+    vaultStateKey("D:/a_b") !== vaultStateKey("D:/a/b"),
+    "下划线与分隔符不撞名（逐字符转义、不折叠连续串）",
   );
 }
 

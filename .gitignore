@@ -35,3 +35,6 @@ test-vault.detect.json
 # 应用内更新清单（发版脚本生成，随 Release 附件上传）
 latest.json
 .release-notes-*.md
+
+# 历次发版留在仓库根的 Android 安装包（发版产物，随 Release 走，不进 git）
+/*.apk

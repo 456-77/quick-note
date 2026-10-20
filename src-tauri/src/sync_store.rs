@@ -62,9 +62,31 @@ fn save_at(path: &Path, text: &str) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
     }
-    let temp = path.with_extension("json.tmp");
-    fs::write(&temp, text.as_bytes()).map_err(|e| format!("写入同步状态失败: {e}"))?;
-    fs::rename(&temp, path).map_err(|e| format!("替换同步状态失败: {e}"))
+    // 临时文件名带上 pid 与自增序号：多窗口（多进程）同时落盘同一份状态时，
+    // 固定的 `.tmp` 名会让两次写撞在同一个文件上——后写者覆盖前写者、先rename
+    // 者把文件带走，剩下的那次 rename 就报「参数错误 (os error 87)」。
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_extension(format!(
+        "json.{}.{}.tmp",
+        std::process::id(),
+        seq
+    ));
+    fs::write(&tmp, text.as_bytes()).map_err(|e| format!("写入同步状态失败: {e}"))?;
+    // rename 偶发失败（杀毒/索引器短暂占用）时重试一次，仍失败则复制兜底——
+    // 复制失去原子性，但比「状态永远落不了盘」轻得多（游标回退=全量重拉）。
+    if let Err(first) = fs::rename(&tmp, path) {
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        if let Err(second) = fs::rename(&tmp, path) {
+            if let Err(copy_err) = fs::copy(&tmp, path).and_then(|_| fs::remove_file(&tmp)) {
+                let _ = fs::remove_file(&tmp);
+                return Err(format!(
+                    "替换同步状态失败: {first} / 重试 {second} / 复制兜底 {copy_err}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -90,6 +112,38 @@ mod tests {
         assert_eq!(fs::read_to_string(&path).unwrap(), "{\"cursor\":2}");
         // 临时文件不留下
         assert!(!path.with_extension("json.tmp").exists());
+    }
+
+    /// 多窗口 = 多进程同时落盘同一份状态。此前临时文件名固定为 `.json.tmp`，
+    /// 两个进程会撞在同一个临时文件上（一个把另一个的 rename 源带走 → os error 87）。
+    /// 现在临时名带 pid+序号，各写各的，rename 各自成功。
+    #[test]
+    fn concurrent_writers_do_not_collide_on_temp_name() {
+        let dir = temp_dir("concurrent");
+        let path = dir.join(STATE_FILE);
+        let writers: Vec<_> = (0..4)
+            .map(|i| {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    for n in 0..25 {
+                        save_at(&p, &format!("{{\"writer\":{i},\"n\":{n}}}")).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        // 最终内容必是某一次完整写入（不可能是两写拼出的半截）
+        let final_text = fs::read_to_string(&path).unwrap();
+        assert!(final_text.starts_with('{') && final_text.ends_with('}'));
+        // 目录里不残留任何临时文件
+        let leftovers: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "残留临时文件: {leftovers:?}");
     }
 }
 
@@ -121,14 +175,9 @@ pub fn sync_state_load_for(app: AppHandle, name: String) -> Result<Option<String
     fs::read_to_string(&path).map(Some).map_err(|e| format!("读取同步状态失败: {e}"))
 }
 
-/// 写某个仓库的批量同步状态（原子写：临时文件 + 改名）。
+/// 写某个仓库的批量同步状态（原子写：临时文件 + 改名；临时名带 pid 防多窗口撞车）。
 #[tauri::command]
 pub fn sync_state_save_for(app: AppHandle, name: String, text: String) -> Result<(), String> {
     let path = state_path_for(&app, &name)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建配置目录失败: {e}"))?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, text).map_err(|e| format!("写入同步状态失败: {e}"))?;
-    fs::rename(&tmp, &path).map_err(|e| format!("落盘同步状态失败: {e}"))
+    save_at(&path, &text)
 }

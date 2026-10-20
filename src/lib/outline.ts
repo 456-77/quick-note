@@ -65,3 +65,40 @@ export function outlineOf(lines: string[]): OutlineEntry[] {
 
   return entries;
 }
+
+/**
+ * 目录标题文字里的行内标记分段（0.27 用户反馈：标题中的 `**加粗**` 在目录里
+ * 要渲染出来）。支持 行内代码 / 加粗（`**`）/ 删除线 / 斜体（`*`），不做嵌套
+ * ——目录里一层足够，复杂标记按原文显示。
+ *
+ * 刻意不支持下划线变体（`__粗__` / `_斜_`）：`snake_case` 这类词内下划线会
+ * 被误判成斜体，目录里显示错比显示原文更糟；星号没有这个问题。
+ */
+export interface OutlineSpan {
+  text: string;
+  code?: boolean;
+  bold?: boolean;
+  strike?: boolean;
+  italic?: boolean;
+}
+
+const OUTLINE_INLINE_RE =
+  /(`[^`\n]+`)|(\*\*[^*\n]+\*\*)|(~~[^~\n]+~~)|(\*[^*\n]+\*)/g;
+
+export function outlineInlineSpans(text: string): OutlineSpan[] {
+  const spans: OutlineSpan[] = [];
+  let last = 0;
+  OUTLINE_INLINE_RE.lastIndex = 0;
+  for (const match of text.matchAll(OUTLINE_INLINE_RE)) {
+    const at = match.index ?? 0;
+    if (at > last) spans.push({ text: text.slice(last, at) });
+    const raw = match[0];
+    if (match[1]) spans.push({ text: raw.slice(1, -1), code: true });
+    else if (match[2]) spans.push({ text: raw.slice(2, -2), bold: true });
+    else if (match[3]) spans.push({ text: raw.slice(2, -2), strike: true });
+    else spans.push({ text: raw.slice(1, -1), italic: true });
+    last = at + raw.length;
+  }
+  if (last < text.length) spans.push({ text: text.slice(last) });
+  return spans.length > 0 ? spans : [{ text }];
+}

@@ -8,7 +8,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import type { EditorView } from "@codemirror/view";
-import { outlineOf, type OutlineEntry } from "../lib/outline";
+import { outlineInlineSpans, outlineOf, type OutlineEntry } from "../lib/outline";
 
 interface Props {
   /** 取当前激活的编辑器视图（ref 镜像，避免闭包过期）。 */
@@ -75,7 +75,27 @@ export default function OutlinePanel({ getView, revision, activeKey, onJump, cur
             title={`跳到第 ${entry.line + 1} 行`}
             onClick={() => onJump(entry.line)}
           >
-            <span className="outline-text">{entry.text || "（无标题文字）"}</span>
+            <span className="outline-text">
+              {/* 标题里的行内标记渲染出来（0.27）：**加粗** 等不再以原文示人 */}
+              {outlineInlineSpans(entry.text || "（无标题文字）").map((span, i) =>
+                span.code ? (
+                  <code key={i} className="outline-inline-code">{span.text}</code>
+                ) : (
+                  <span
+                    key={i}
+                    className={[
+                      span.bold ? "outline-inline-bold" : "",
+                      span.italic ? "outline-inline-italic" : "",
+                      span.strike ? "outline-inline-strike" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    {span.text}
+                  </span>
+                ),
+              )}
+            </span>
           </button>
         ))}
       </div>

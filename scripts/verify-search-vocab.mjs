@@ -224,6 +224,32 @@ check(
 // 文件名约定
 check(VOCAB_FILENAME === "单词本.md", "单词本落在仓库根的 单词本.md");
 
+// 0.27：备注留空但带音标的行要能往返（此前按 " | " 整串拆，音标被并进备注）
+{
+  const roundTripLine = addVocabEntry(
+    "# 单词本\n\n## 待学习\n",
+    "banana",
+    "2026-10-15 · 批测",
+    "香蕉",
+    "",
+    "/bəˈnɑːnə/",
+  ).content;
+  const parsed = parseVocabulary(roundTripLine).find((entry) => entry.word === "banana");
+  check(
+    !!parsed && parsed.meaning === "香蕉" && parsed.note === "" && parsed.phonetic === "/bəˈnɑːnə/",
+    "备注留空 + 音标：写入的行解析回同样的字段（往返不丢音标）",
+    JSON.stringify(parsed),
+  );
+  // 手写紧凑格式（无空格竖线）同样解析
+  const compact = parseVocabulary("# 单词本\n\n## 待学习\n\n- kiwi|猕猴桃|备注|/ˈkiːwi/ — 2026-10-19 · 手写\n");
+  const kiwi = compact.find((entry) => entry.word === "kiwi");
+  check(
+    !!kiwi && kiwi.meaning === "猕猴桃" && kiwi.note === "备注" && kiwi.phonetic === "/ˈkiːwi/",
+    "无空格竖线的手写行同样解析",
+    JSON.stringify(kiwi),
+  );
+}
+
 // ---------------------------------------------------------------- 汇总
 
 if (failures > 0) {

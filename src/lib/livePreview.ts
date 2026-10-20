@@ -965,10 +965,17 @@ async function downloadDiagram(
       const xml = new XMLSerializer().serializeToString(clone);
       await writeVaultBinary(vaultPath, target, new TextEncoder().encode(xml));
     } else {
-      // PNG 按 3 倍目标分辨率重新光栅化：把克隆的 width/height 设成放大后的尺寸
-      // （viewBox 不变，矢量在解码时放大），<img> 以大尺寸解码后 1:1 落 canvas。
-      const scale = 3;
-      const url = svgToBlobUrl(source, exportState, scale);
+      // PNG 导出（0.27 再修"导出后还是模糊"）：
+      // 1) 以 ≤3 倍光栅解码（矢量内部放大，笔画不带插值毛刺）；
+      // 2) **自己先把光栅高质量降采样到目标长边**再落盘。此前直接交付 3x 原始
+      //    光栅，看图软件把它缩到窗口用的是廉价线性过滤，大图（如几千单位宽的
+      //    流程图）缩放比可达 4x，文字全糊。现在由浏览器
+      //    imageSmoothingQuality:"high"（Lanczos 一族）一步降到 ~2 倍自然尺寸，
+      //    看图软件只剩 ≤2x 的轻缩放，fit-to-window 观感明显更实。
+      // 3) 超大图限制光栅上限（边长 8192 / 64MP），避免 canvas 一次性吃几百 MB。
+      const rasterScale = exportRasterScale(exportState);
+      const finalScale = exportFinalScale(exportState, rasterScale);
+      const url = svgToBlobUrl(source, exportState, rasterScale);
       try {
         const image = new Image();
         await new Promise<void>((resolve, reject) => {
@@ -977,13 +984,14 @@ async function downloadDiagram(
           image.src = url;
         });
         const canvas = document.createElement("canvas");
-        canvas.width = Math.round(exportState.naturalW * scale);
-        canvas.height = Math.round(exportState.naturalH * scale);
+        canvas.width = Math.max(1, Math.round(exportState.naturalW * finalScale));
+        canvas.height = Math.max(1, Math.round(exportState.naturalH * finalScale));
         const ctx = canvas.getContext("2d");
         if (!ctx) throw new Error("Canvas 不可用");
         ctx.fillStyle = themeBackgroundColor();
         ctx.fillRect(0, 0, canvas.width, canvas.height);
-        // 1:1 绘制：位图不再被二次缩放
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
         ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
         const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, "image/png"));
         if (!blob) throw new Error("PNG 生成失败");
@@ -1000,6 +1008,31 @@ async function downloadDiagram(
 
 let diagramExportSeq = 0;
 let exportRenderSeq = 0;
+
+/** PNG 导出的光栅倍率：默认 3x，超大图按边长/像素上限逐步回落，防 canvas 爆内存。 */
+function exportRasterScale(state: MermaidZoomState): number {
+  let scale = 3;
+  while (
+    scale > 1 &&
+    (Math.max(state.naturalW, state.naturalH) * scale > 8192 ||
+      state.naturalW * state.naturalH * scale * scale > 64_000_000)
+  ) {
+    scale -= 0.5;
+  }
+  return scale;
+}
+
+/**
+ * PNG 导出的最终倍率：目标长边 = 自然长边的 2 倍（给查看时的缩放留余量），
+ * 下限 2200（小图也保证有足够像素），上限 5600（再大文件无谓地膨胀）。
+ * 永远不超过光栅倍率（放大光栅没有意义）。
+ */
+function exportFinalScale(state: MermaidZoomState, rasterScale: number): number {
+  const longSide = Math.max(state.naturalW, state.naturalH);
+  if (longSide <= 0) return rasterScale;
+  const targetLong = Math.min(5600, Math.max(2200, longSide * 2));
+  return Math.min(rasterScale, targetLong / longSide);
+}
 
 /**
  * 导出专用重渲染（0.24）：关掉 htmlLabels，标签以原生 SVG 文本输出，导出物在

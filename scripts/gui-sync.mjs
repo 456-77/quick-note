@@ -14,6 +14,7 @@ import { createServer } from "node:http";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { vaultStateKey } from "../src/lib/sync.ts";
 
 const vault = process.argv[2] ?? "test-vault";
 const port = process.argv[3] ?? "9222";
@@ -29,12 +30,14 @@ const BASE = `http://127.0.0.1:${stubPort}`;
  */
 const VAULT_NAME = vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? vault;
 
-/** 应用的同步状态文件（本机配置目录，**不在仓库里**）。 */
-const STATE_FILE = join(
+/** 应用的同步状态（本机配置目录，**不在仓库里**）。0.27 起按仓库拆文件：
+    游标/哈希在 per-vault 文件，账号级配置留在 sync-state.json 薄文件。 */
+const APP_CONFIG_DIR = join(
   process.env.APPDATA ?? join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"),
   "com.quicknote.gui-test",
-  "sync-state.json",
 );
+const STATE_FILE = join(APP_CONFIG_DIR, `sync-state-${vaultStateKey(vault)}.json`);
+const SHARED_STATE_FILE = join(APP_CONFIG_DIR, "sync-state.json");
 
 /** 库内配置：同步范围 scope=folder 时推的是它的 folder。 */
 const CONFIG = join(vault, "quick-daily-note.json");
@@ -590,7 +593,13 @@ async function configure(ws, patch) {
   await sleep(300);
 }
 
-const readStateFile = () => JSON.parse(readFileSync(STATE_FILE, "utf8"));
+const readStateFile = () => {
+  try {
+    return JSON.parse(readFileSync(STATE_FILE, "utf8"));
+  } catch {
+    return JSON.parse(readFileSync(SHARED_STATE_FILE, "utf8"));
+  }
+};
 /** 某附件路径被上传了几次（幂等断言用）。 */
 const countUploadsOf = (path) => {
   const wanted = `path=${encodeURIComponent(path)}`;

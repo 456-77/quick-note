@@ -112,6 +112,23 @@ export function normalizeVaultKey(vault: string): string {
   return vault.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
+/**
+ * 每仓库同步状态文件（`sync-state-<key>.json`）的文件名键。
+ *
+ * **为什么按仓库拆文件**：多窗口 = 多个进程共用同一个配置目录。此前所有窗口写
+ * **同一份** `sync-state.json`，后写的把先写的游标/哈希整个换掉——被换掉的那个
+ * 仓库的窗口重启后游标回退、全量重拉，凡是有未推送本地改动的文件都被判成冲突
+ * （0.27 用户反馈：冲突横幅反复出现）。按仓库拆开后各窗口各写各的文件。
+ *
+ * 键取**整条路径**（不是文件夹名）：不同目录下的同名仓库各有各的状态。文件
+ * 系统不接受的字符（盘符冒号、分隔符、空白）逐个换成 `~`（不折叠连续串——
+ * 折叠会让 `a:b` 与 `a::b` 撞名）；中文等其余合法字符保留。`~` 本身合法但
+ * 极少出现在目录名里，残余歧义概率可忽略（真撞了也只是共享游标，多拉几轮）。
+ */
+export function vaultStateKey(vault: string): string {
+  return normalizeVaultKey(vault).replace(/[^a-z0-9_\-\u4e00-\u9fff]/g, "~");
+}
+
 /** 同一个仓库的两种写法（对话框选择 vs 启动参数推导）视为相等。 */
 export function sameVaultPath(a: string, b: string): boolean {
   return a !== "" && b !== "" && normalizeVaultKey(a) === normalizeVaultKey(b);

@@ -91,8 +91,11 @@ export function parseVocabulary(content: string): VocabEntry[] {
     const dash = body.indexOf(" — ");
     const left = (dash >= 0 ? body.slice(0, dash) : body).trim();
     const meta = dash >= 0 ? body.slice(dash + 3).trim() : "";
-    // v2/v3：词后面可带 ` | 释义 | 备注 | 音标`；v1 的裸词行没有竖线，拆出来就是单项
-    const fields = left.split(" | ").map((field) => field.trim());
+    // v2/v3：词后面可带 ` | 释义 | 备注 | 音标`；v1 的裸词行没有竖线，拆出来就是单项。
+    // 按竖线拆再逐段 trim：entryLine 写出的「备注留空」行是 ` |  | `（两个相邻
+    // 空格），按完整分隔串 " | " 拆会把音标并进备注、音标字段丢失（0.27 批测
+    // 抓到的往返 bug：在线查到的音标保存后自己都读不回来）。
+    const fields = left.split("|").map((field) => field.trim());
     const word = fields[0] ?? "";
     if (!word) continue;
     const entry: VocabEntry = {

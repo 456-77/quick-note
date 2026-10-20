@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync
 import { spawn } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
+import { vaultStateKey } from "../src/lib/sync.ts";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 
@@ -782,7 +783,7 @@ try {
       enabledByVault: { [normalizeKey(vaultB)]: true },
     };
     mkdirSync(appConfig, { recursive: true });
-    writeFileSync(join(appConfig, "sync-state-vaultb.json"), JSON.stringify(perVaultState, null, 2), "utf8");
+    writeFileSync(join(appConfig, `sync-state-${vaultStateKey(vaultB)}.json`), JSON.stringify(perVaultState, null, 2), "utf8");
     // Inbox 里再补一条（直接落盘；面板重扫会读到）
     writeFileSync(
       join(vaultA, "Inbox.md"),
@@ -846,7 +847,7 @@ try {
           status: [...document.querySelectorAll('.status-cell')].map((el) => el.textContent).join('|'),
         });
       })()`);
-      const stateFile = join(appConfig, "sync-state-vaultb.json");
+      const stateFile = join(appConfig, `sync-state-${vaultStateKey(vaultB)}.json`);
       const stateInfo = existsSync(stateFile)
         ? (() => {
             try {

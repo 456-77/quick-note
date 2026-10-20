@@ -437,6 +437,37 @@ console.log("\n待办模型\n");
     carryOver(undefined, undefined, "2026-09-07", "YYYY-MM-DD", now).moved === 0,
     "没有待办时安全返回",
   );
+
+  // 0.27：连着顺延几天，遗留前缀保持**首次**的日期（待办最初所属的那天）
+  const day1 = carryOver(
+    [{ id: "x", text: "写周报", done: false, updatedAt: 1 }],
+    [],
+    "2026-09-07",
+    "YYYY-MM-DD",
+    now,
+  );
+  const day2 = carryOver([], day1.to, "2026-09-08", "YYYY-MM-DD", now + 1);
+  check(
+    day2.to.some((item) => item.text === "[09-07 遗留] 写周报"),
+    "第二天再顺延：前缀仍是首次的 09-07，不是 09-08",
+  );
+  const day3 = carryOver([], day2.to, "2026-09-09", "YYYY-MM-DD", now + 2);
+  check(
+    day3.to.some((item) => item.text === "[09-07 遗留] 写周报"),
+    "第三天再顺延：前缀还是 09-07，且不会叠加",
+  );
+  // 旧数据（此前版本会叠加前缀）顺延一次后收敛为第一个前缀
+  const legacy = carryOver(
+    [{ id: "y", text: "[09-05 遗留] [09-06 遗留] 旧条目", done: false, updatedAt: 1 }],
+    [],
+    "2026-09-07",
+    "YYYY-MM-DD",
+    now,
+  );
+  check(
+    legacy.to.some((item) => item.text === "[09-05 遗留] 旧条目"),
+    "叠加的旧前缀收敛为最老的一个",
+  );
 }
 
 // ---------------------------------------------------------------- 旧数据迁移

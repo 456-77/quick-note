@@ -11,6 +11,8 @@ import HeadingLevelDialog from "./components/HeadingLevelDialog";
 import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
 import QuickCaptureDialog from "./components/QuickCaptureDialog";
+import RecentFilesDialog from "./components/RecentFilesDialog";
+import QuickTodoDialog from "./components/QuickTodoDialog";
 import AddWordDialog from "./components/AddWordDialog";
 import CaptureManager from "./components/CaptureManager";
 import ScreenshotDialog from "./components/ScreenshotDialog";
@@ -54,7 +56,7 @@ import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate"
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
 import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
-import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit } from "./lib/tags";
+import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit, tagRenameEdits } from "./lib/tags";
 import { buildCaptureLines, detectEol } from "./lib/capture";
 import { attachmentNameFor, linkTextFor } from "./lib/attachments";
 import { saveAndLink, toBase64 } from "./lib/paste";
@@ -113,6 +115,8 @@ const VAULT_KEY = "quicknote.vault";
 const FAVORITES_V2_KEY = "quicknote.favorites.v2";
 /** 收藏置顶的存储键（按仓库分桶，同收藏；0.21 用户反馈：收藏栏要能置顶）。 */
 const FAVORITES_PIN_KEY = "quicknote.favorites.pin.v2";
+/** 标签列表置顶的存储键（按仓库分桶；0.27 用户反馈：标签也要置顶+重命名）。 */
+const TAGS_PIN_KEY = "quicknote.tags.pin.v1";
 /** 固定标签页的存储键（按仓库分桶，同收藏）。 */
 const PINNED_TABS_KEY = "quicknote.ui.pinnedTabs";
 /** 目录筛选的存储键：仓库 → 被隐藏的一级目录列表（0.20 用户反馈：目录太多干扰阅读）。 */
@@ -668,27 +672,32 @@ export default function App() {
 
   const checkUpdate = useCallback(async () => {
     setUpdateCheck({ state: "checking", message: "正在检查更新…" });
-    try {
-      // 先走 updater 插件（latest.json）：发现新版本时能直接在应用内安装
-      const update = await checkViaPlugin();
-      if (update) {
-        updateRef.current = update;
-        setUpdateCheck({
-          state: "done",
-          message: `发现新版本 v${update.version}（当前 v${appVersion}），可直接更新`,
-          available: true,
-          notes: update.body ?? "",
-        });
-        return;
+    // 移动端（0.27 反馈：手机版要在应用内直接更新）不走 updater 插件路径：
+    // 插件路径拿不到 APK 直链，按钮会退化成「打开发布页」。GitHub API 路径
+    // 顺带解析 release 里的 .apk 资产（apkUrl），交给 qnAndroid 桥下载安装。
+    if (!isMobile()) {
+      try {
+        // 先走 updater 插件（latest.json）：发现新版本时能直接在应用内安装
+        const update = await checkViaPlugin();
+        if (update) {
+          updateRef.current = update;
+          setUpdateCheck({
+            state: "done",
+            message: `发现新版本 v${update.version}（当前 v${appVersion}），可直接更新`,
+            available: true,
+            notes: update.body ?? "",
+          });
+          return;
+        }
+      } catch {
+        // 插件检查失败（端点还没有 latest.json 等）——回退到 GitHub API 比较
       }
-    } catch {
-      // 插件检查失败（端点还没有 latest.json 等）——回退到 GitHub API 比较
     }
     try {
       const info = await checkForUpdate(appVersion || "0.0.0");
       setUpdateCheck(
         info.newer
-          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可到发布页下载`, url: info.url, notes: info.body, apkUrl: info.apkUrl }
+          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可在应用内更新`, url: info.url, notes: info.body, apkUrl: info.apkUrl }
           : { state: "done", message: `已是最新版本（最新发布 v${info.latest}）` },
       );
     } catch (e) {
@@ -1181,6 +1190,10 @@ export default function App() {
   // 「# 文件名」建头，与新建笔记的标题规则一致。
 
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+  /** 最近文件弹窗（0.27：类 IDEA 的 Ctrl+Shift+E）。 */
+  const [recentFilesOpen, setRecentFilesOpen] = useState(false);
+  /** 快速添加待办弹窗（0.27：Ctrl+Alt+D）。 */
+  const [quickTodoOpen, setQuickTodoOpen] = useState(false);
   /** 手动添加单词弹窗（0.26）：string = 打开并预填（可为空串），null = 关闭。 */
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
@@ -1340,6 +1353,36 @@ export default function App() {
   }>({ loading: false, tags: [], noteTags: {} });
   const [tagDashTag, setTagDashTag] = useState<string | null>(null);
   const [tagScanToken, setTagScanToken] = useState(0);
+  /** 标签列表置顶的标签名（按仓库分桶；0.27 用户反馈）。 */
+  const [pinnedTagNames, setPinnedTagNames] = useState<string[]>([]);
+
+  // 标签置顶按仓库分桶读写（与收藏置顶同一套模式）
+  useEffect(() => {
+    if (!vault) return;
+    try {
+      const raw = localStorage.getItem(TAGS_PIN_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      setPinnedTagNames(Array.isArray(map[vault]) ? map[vault] : []);
+    } catch {
+      setPinnedTagNames([]);
+    }
+  }, [vault]);
+
+  useEffect(() => {
+    if (!vault) return;
+    try {
+      const raw = localStorage.getItem(TAGS_PIN_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      map[vault] = pinnedTagNames;
+      localStorage.setItem(TAGS_PIN_KEY, JSON.stringify(map));
+    } catch {
+      // 存不进去只影响下次启动的置顶状态
+    }
+  }, [pinnedTagNames, vault]);
+
+  const toggleTagPin = useCallback((name: string) => {
+    setPinnedTagNames((prev) => (prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]));
+  }, []);
 
   useEffect(() => {
     if (leftView !== "tags" || !vault) return;
@@ -1373,12 +1416,12 @@ export default function App() {
           else byTag.set(tag, [path]);
         }
       }
-      const pinned = getSettings().autoTagName.trim();
+      const pinnedAuto = getSettings().autoTagName.trim();
       const list = [...byTag.entries()]
         .map(([name, notes]) => ({ name, notes }))
         .sort((a, b) => {
-          if (pinned && a.name === pinned) return -1;
-          if (pinned && b.name === pinned) return 1;
+          if (pinnedAuto && a.name === pinnedAuto) return -1;
+          if (pinnedAuto && b.name === pinnedAuto) return 1;
           return b.notes.length - a.notes.length || a.name.localeCompare(b.name, "zh");
         });
       setTagIndex({ loading: false, tags: list, noteTags: map });
@@ -1430,6 +1473,91 @@ export default function App() {
       }
     },
     [vault, removeNoteTag],
+  );
+
+  /**
+   * 标签列表的展示序：自动标签（「待整理」类）最前，用户置顶的标签紧随其后
+   * （0.27），其余按笔记数。派生而非重扫——置顶/取消置顶不该把全仓库再读一遍。
+   */
+  const sortedTagIndex = useMemo(() => {
+    const pinnedAuto = getSettings().autoTagName.trim();
+    const pinnedSet = new Set(pinnedTagNames);
+    const tags = [...tagIndex.tags].sort((a, b) => {
+      if (pinnedAuto && a.name === pinnedAuto) return -1;
+      if (pinnedAuto && b.name === pinnedAuto) return 1;
+      const pa = pinnedSet.has(a.name) ? 1 : 0;
+      const pb = pinnedSet.has(b.name) ? 1 : 0;
+      if (pa !== pb) return pb - pa;
+      return b.notes.length - a.notes.length || a.name.localeCompare(b.name, "zh");
+    });
+    return { ...tagIndex, tags };
+  }, [tagIndex, pinnedTagNames]);
+
+  /**
+   * 重命名标签（0.27）：对索引里带这个标签的每一篇笔记做 `#from → #to` 的
+   * 多区间替换。三种存放位置与 removeTagFromNote 同纪律：激活中的走视图
+   * （一步撤销）；后台标签改存量 EditorState 并标脏；未打开的读盘-改-写回。
+   * 全部完成后重扫标签索引；置顶状态跟着改名迁移。
+   */
+  const renameTag = useCallback(
+    async (from: string, to: string) => {
+      if (!vault || from === to) return;
+      const paths = Object.entries(tagIndex.noteTags)
+        .filter(([, tags]) => tags.includes(from))
+        .map(([path]) => path);
+      if (paths.length === 0) return;
+      let changed = 0;
+      for (const path of paths) {
+        const bumpChanged = () => {
+          changed += 1;
+        };
+        const view = viewRef.current;
+        if (view && viewOwnerRef.current === path) {
+          const edits = tagRenameEdits(view.state.doc.toString(), from, to);
+          if (edits.length > 0) {
+            view.dispatch({ changes: edits.map((edit) => ({ from: edit.at, to: edit.to, insert: edit.insert })) });
+            bumpChanged();
+          }
+          continue;
+        }
+        const stored = stateStore.current.get(path);
+        if (stored) {
+          const edits = tagRenameEdits(stored.doc.toString(), from, to);
+          if (edits.length > 0) {
+            stateStore.current.set(
+              path,
+              stored.update({ changes: edits.map((edit) => ({ from: edit.at, to: edit.to, insert: edit.insert })) }).state,
+            );
+            dirtyTabs.current.add(path);
+            bumpChanged();
+          }
+          continue;
+        }
+        try {
+          const note = await readNoteOptional(vault, path);
+          if (!note) continue;
+          const edits = tagRenameEdits(note.content, from, to);
+          if (edits.length === 0) continue;
+          let text = note.content;
+          for (let i = edits.length - 1; i >= 0; i -= 1) {
+            const edit = edits[i];
+            text = text.slice(0, edit.at) + edit.insert + text.slice(edit.to);
+          }
+          await writeNote(vault, path, text, note.hasBom);
+          bumpChanged();
+        } catch (e) {
+          setError(`重命名标签写 ${path} 失败：${e}`);
+        }
+      }
+      // 置顶状态跟着新名字走
+      setPinnedTagNames((prev) =>
+        prev.includes(from) ? prev.map((n) => (n === from ? to : n)) : prev,
+      );
+      setTagScanToken((value) => value + 1);
+      if (tagDashTag === from) setTagDashTag(to);
+      if (changed > 0) setStatus(`已把「#${from}」重命名为「#${to}」（${changed} 篇笔记）`);
+    },
+    [vault, tagIndex.noteTags, tagDashTag],
   );
 
   const refresh = useCallback(async (dir: string) => {
@@ -3847,6 +3975,14 @@ export default function App() {
       insertTime: () => insertAtCursor(moment().format("HH:mm")),
       gotoEnd: gotoDocEnd,
       quickCapture: () => setQuickCaptureOpen(true),
+      recentFiles: () => setRecentFilesOpen((value) => !value),
+      quickTodo: () => {
+        if (!vault) {
+          notice("打开仓库后才能记待办", "error");
+          return;
+        }
+        setQuickTodoOpen(true);
+      },
       captureManager: () => setCaptureManagerOpen((value) => !value),
       toggleTags: () => {
         if (!currentRef.current || !isMarkdownPath(currentRef.current.path)) {
@@ -3863,7 +3999,7 @@ export default function App() {
       },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
-    [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary],
+    [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary, vault],
   );
 
   /** 编辑器内命令的统一分发：命令面板搜到的快捷键命令（标题/列表/行内代码等）从这里走。 */
@@ -4110,6 +4246,8 @@ export default function App() {
       { id: "save", title: "保存当前笔记", hint: keyHint("save"), icon: "💾", run: shortcuts.save },
       { id: "goto-end", title: "跳到笔记末尾", hint: keyHint("gotoEnd"), icon: "⏬", run: shortcuts.gotoEnd },
       { id: "quick-capture", title: "快速笔记（收件箱）", hint: keyHint("quickCapture"), icon: "📥", run: shortcuts.quickCapture },
+      { id: "quick-todo", title: "快速添加待办…", hint: keyHint("quickTodo"), icon: "✅", run: shortcuts.quickTodo },
+      { id: "recent-files", title: "最近文件…", hint: keyHint("recentFiles"), icon: "🕘", run: shortcuts.recentFiles },
       { id: "capture-manager", title: "速记管理（收件箱整理）", hint: keyHint("captureManager"), icon: "🗂️", run: shortcuts.captureManager },
       { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: keyHint("toggleMode"), icon: "🔀", run: shortcuts.toggleMode },
       { id: "left", title: leftCollapsed ? "展开文件栏" : "收起文件栏", hint: keyHint("toggleLeft"), icon: "◧", run: shortcuts.toggleLeft },
@@ -4132,6 +4270,7 @@ export default function App() {
           "newNote", "newDiary", "newFolder", "save", "gotoEnd", "quickCapture",
           "captureManager", "toggleMode", "toggleLeft", "toggleRight", "zen",
           "syncNow", "openVaultPicker", "openSettings", "palette",
+          "recentFiles", "quickTodo",
         ]);
         const icons: Record<string, string> = {
           heading1: "#", heading2: "#", heading3: "#", heading4: "#", heading5: "#", heading6: "#",
@@ -4400,6 +4539,29 @@ export default function App() {
             setQuickCaptureOpen(false);
             setShowSettings(true);
           }}
+        />
+      )}
+
+      {/* 最近文件弹窗（0.27：类 IDEA，搜索 + 一级目录筛选） */}
+      {recentFilesOpen && (
+        <RecentFilesDialog
+          recents={recents}
+          activePath={current?.path ?? null}
+          onOpen={(path) => void openEntry(path)}
+          onClose={() => setRecentFilesOpen(false)}
+        />
+      )}
+
+      {/* 快速添加待办（0.27）：走日历面板同一套 addTodo（含前缀日期语法） */}
+      {quickTodoOpen && (
+        <QuickTodoDialog
+          dateFormat={daily.dateFormat}
+          today={daily.today}
+          onSubmit={(date, text) => {
+            daily.addTodo(date, text);
+            setStatus(`已记待办（${date}）：${text}`);
+          }}
+          onClose={() => setQuickTodoOpen(false)}
         />
       )}
 
@@ -5118,9 +5280,12 @@ export default function App() {
           {leftView === "tags" ? (
             <TagDashboard
               loading={tagIndex.loading}
-              tags={tagIndex.tags}
+              tags={sortedTagIndex.tags}
               noteTags={tagIndex.noteTags}
               activeTag={tagDashTag}
+              pinnedTags={pinnedTagNames}
+              onTogglePin={toggleTagPin}
+              onRename={(from, to) => void renameTag(from, to)}
               onPickTag={setTagDashTag}
               onBack={() => setTagDashTag(null)}
               activePath={current?.path ?? null}
