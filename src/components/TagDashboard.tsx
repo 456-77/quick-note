@@ -14,7 +14,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
-import { menuRefClampedToViewport } from "../lib/menuClamp";
+import { menuRefRightAlignedToViewport } from "../lib/menuClamp";
 import { normalizeTagName } from "../lib/tags";
 import { IconTag, IconX } from "./icons";
 
@@ -69,6 +69,51 @@ export default function TagDashboard({
     setDraft(tag);
   };
 
+  /**
+   * 行/头部共用的 ⋯ 菜单（右缘锚定到触发按钮）：详情视图会提前 return，
+   * 菜单块必须两处都能渲染，所以先拼成元素再各自引用。
+   */
+  const rowMenuElement = rowMenu ? (
+    <>
+      <div
+        className="menu-backdrop"
+        onClick={() => setRowMenu(null)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setRowMenu(null);
+        }}
+      />
+      <div
+        className="context-menu tag-dash-menu"
+        role="menu"
+        ref={menuRefRightAlignedToViewport(rowMenu.x, rowMenu.y)}
+        style={{ left: rowMenu.x, top: rowMenu.y }}
+      >
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            onTogglePin(rowMenu.tag);
+            setRowMenu(null);
+          }}
+        >
+          {pinnedTags.includes(rowMenu.tag) ? "取消置顶" : "置顶"}
+        </button>
+        <button
+          type="button"
+          role="menuitem"
+          onClick={() => {
+            const tag = rowMenu.tag;
+            setRowMenu(null);
+            startRename(tag);
+          }}
+        >
+          重命名…
+        </button>
+      </div>
+    </>
+  ) : null;
+
   const commitRename = () => {
     if (renaming === null) return;
     const next = normalizeTagName(draft);
@@ -102,21 +147,22 @@ export default function TagDashboard({
           <span className="tag-dash-name">{activeTag}</span>
           <span className="tag-dash-count">{entry?.notes.length ?? 0} 篇</span>
           <span className="spacer" />
-          <button
-            type="button"
-            className={`tag-dash-act${pinnedTags.includes(activeTag) ? " is-on" : ""}`}
-            title={pinnedTags.includes(activeTag) ? "取消置顶" : "置顶这个标签"}
-            onClick={() => onTogglePin(activeTag)}
-          >
-            📌
-          </button>
+          {/* 置顶/重命名收进 ⋯（0.29 用户反馈：详情头部不该常驻两个功能图标），
+              与标签行的行菜单同一套交互，靠 spacer 靠右。 */}
           <button
             type="button"
             className="tag-dash-act"
-            title="重命名标签（对所有笔记生效）"
-            onClick={() => startRename(activeTag)}
+            aria-label={`${activeTag} 的操作`}
+            aria-haspopup="menu"
+            aria-expanded={rowMenu?.tag === activeTag}
+            title="标签操作：置顶 / 重命名"
+            onClick={(event) => {
+              event.stopPropagation();
+              const rect = event.currentTarget.getBoundingClientRect();
+              setRowMenu({ tag: activeTag, x: rect.right, y: rect.bottom });
+            }}
           >
-            ✎
+            ⋯
           </button>
         </div>
         {renaming === activeTag && (
@@ -179,6 +225,7 @@ export default function TagDashboard({
         {(entry?.notes.length ?? 0) === 0 && !loading && (
           <div className="tree-empty">这个标签下暂时没有笔记。</div>
         )}
+        {rowMenuElement}
       </div>
     );
   }
@@ -251,46 +298,7 @@ export default function TagDashboard({
         );
       })}
 
-      {rowMenu && (
-        <>
-          <div
-            className="menu-backdrop"
-            onClick={() => setRowMenu(null)}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setRowMenu(null);
-            }}
-          />
-          <div
-            className="context-menu tag-dash-menu"
-            role="menu"
-            ref={menuRefClampedToViewport(rowMenu.x, rowMenu.y)}
-            style={{ left: rowMenu.x, top: rowMenu.y }}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                onTogglePin(rowMenu.tag);
-                setRowMenu(null);
-              }}
-            >
-              {pinnedTags.includes(rowMenu.tag) ? "取消置顶" : "置顶"}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                const tag = rowMenu.tag;
-                setRowMenu(null);
-                startRename(tag);
-              }}
-            >
-              重命名…
-            </button>
-          </div>
-        </>
-      )}
+      {rowMenuElement}
     </div>
   );
 }

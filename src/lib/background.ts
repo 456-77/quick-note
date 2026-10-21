@@ -73,9 +73,10 @@ export function sharpenFilterRef(strength: number): string {
     document.body.appendChild(svg);
   }
 
-  // 标准 3×3 锐化核：中心 1+4a，四邻 -a。a 越大边缘越硬，过 0.5 会出现
-  // 明显白边/光晕，所以滑杆 100% 也只到 0.5。
-  const a = amount * 0.5;
+  // 标准 3×3 锐化核：中心 1+4a，四邻 -a。a 越大边缘越硬，0.5 以上开始出现
+  // 可感知的白边/光晕——0.28 上限钉在 0.5，但用户把滑杆拉满仍然嫌"发虚"
+  // （0.29 反馈），放到底 0.65：白边轻微可接受，换更硬的边缘。
+  const a = amount * 0.65;
   const center = 1 + 4 * a;
   const kernel = svg.querySelector("feConvolveMatrix");
   kernel?.setAttribute(
@@ -105,13 +106,14 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   const root = document.documentElement;
   const enabled = bg.bgEnabled && bg.bgImagePath.trim().length > 0 && !!vaultPath;
 
-  let layer = document.getElementById(LAYER_ID);
   if (!enabled) {
-    layer?.remove();
+    document.getElementById(LAYER_ID)?.remove();
     root.classList.remove(ROOT_CLASS);
+    for (const name of VEIL_VARS) root.style.removeProperty(name);
     return;
   }
 
+  let layer = document.getElementById(LAYER_ID);
   if (!layer) {
     layer = document.createElement("div");
     layer.id = LAYER_ID;
@@ -141,5 +143,19 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   // 模糊会把边缘糊成透明（fixed 层从视口外取不到像素）：把层往外扩一圈，
   // inset:0 + 负 margin 会把盒子撑出视口，糊边就落在视口外。
   layer.style.margin = blur > 0 ? `${-Math.ceil(blur * 2)}px` : "";
+
+  // 界面浓度（bgSurface）：表面半透明底的浓度。CSS 里的基础值（编辑器 80%、
+  // 顶栏 82%、侧栏 66%、面板卡 76%）按滑杆等比缩放——80 就是 0.28 及以前的
+  // 默认观感，调低背景透得更多，调到 100 表面全实。上限 100 防止溢出成
+  // "比不透明还怪"的混合结果。
+  const k = clamp((bg.bgSurface ?? 80) / 80, 0, 1.25);
+  const veil = (base: number) => `${Math.min(100, base * k)}%`;
+  root.style.setProperty("--qn-veil-panel", veil(82));
+  root.style.setProperty("--qn-veil-side", veil(66));
+  root.style.setProperty("--qn-veil-editor", veil(80));
+  root.style.setProperty("--qn-veil-card", veil(76));
 }
+
+/** 界面浓度写进 html 的 CSS 变量名（关闭背景时逐一移除）。 */
+const VEIL_VARS = ["--qn-veil-panel", "--qn-veil-side", "--qn-veil-editor", "--qn-veil-card"];
 

@@ -152,6 +152,13 @@ export class SyncEngine {
   private readonly vault: string;
   private readonly state: SyncDeviceState;
   private readonly host: SyncHost;
+  /**
+   * 纯虚拟模式（0.29，单词本的账户级同步用）：仓库参数为空串、**不做任何本地
+   * 文件扫描**——同步内容只有 host.getVirtualFiles() 提供的虚拟文件，推拉走一个
+   * 专用的云端仓库名。鉴权、批量推送、增量拉取、游标/哈希记账全部与普通模式
+   * 共用一套实现。
+   */
+  private readonly virtualOnly: boolean;
 
   private intervalId: number | null = null;
   private flushTimer: number | null = null;
@@ -183,10 +190,16 @@ export class SyncEngine {
   /** 待裁决冲突扣住的路径：推送扫描与 doFlush 都跳过，防止未裁决就被自动覆盖云端。 */
   private readonly conflictHold: Set<string>;
 
-  constructor(vault: string, state: SyncDeviceState, host: SyncHost) {
+  constructor(
+    vault: string,
+    state: SyncDeviceState,
+    host: SyncHost,
+    options: { virtualOnly?: boolean } = {},
+  ) {
     this.vault = vault;
     this.state = state;
     this.host = host;
+    this.virtualOnly = options.virtualOnly ?? false;
     this.conflictHold = new Set((state.pendingConflicts ?? []).map((item) => item.path));
   }
 
@@ -252,6 +265,7 @@ export class SyncEngine {
    * 手动同步或周期扫描才会上云——网页端在那几分钟里看到的是裂图。
    */
   touchPaths(paths: string[]): void {
+    if (this.virtualOnly) return; // 纯虚拟模式没有文件事件
     if (!this.state.enabled || !this.configured) return;
     let touched = false;
     for (const path of paths) {
@@ -381,6 +395,15 @@ export class SyncEngine {
    * 拉取应用阶段认定的冲突也会写 dirty，与这里互不冲突（Map 后写覆盖）。
    */
   private async scanLocalFiles(): Promise<void> {
+    // 纯虚拟模式：没有文件系统可扫，只比对虚拟内容的哈希
+    if (this.virtualOnly) {
+      const virtual = this.host.getVirtualFiles();
+      this.virtualPaths = new Set(Object.keys(virtual));
+      for (const [path, content] of Object.entries(virtual)) {
+        if (this.state.hashes[path] !== (await sha256Hex(content))) this.dirty.set(path, "mod");
+      }
+      return;
+    }
     const result = await syncScan(this.vault, this.state.scope, this.host.getFolder());
     for (const file of result.files) {
       if (this.conflictHold.has(file.path)) continue; // 冲突待裁决，不自动推
@@ -586,8 +609,10 @@ export class SyncEngine {
     }
 
     // 附件先落地再落正文：正文里的 ![[图]] 一出现就该有图可看，不用等下一轮
-    for (const attachment of appliedAttachments.values()) {
-      await this.applyAttachment(attachment);
+    if (!this.virtualOnly) {
+      for (const attachment of appliedAttachments.values()) {
+        await this.applyAttachment(attachment);
+      }
     }
     for (const record of applied.values()) {
       await this.applyRecord(record);
@@ -604,6 +629,10 @@ export class SyncEngine {
    * doFlush、文件事件都不碰它，直到用户在冲突面板里选「用云端覆盖」或「用本地覆盖云端」。
    */
   private async applyRecord(record: RemoteRecord): Promise<void> {
+    if (this.virtualOnly && !this.virtualPaths.has(record.path)) {
+      // 纯虚拟模式的专用仓库里出现了别的路径（不该发生）：忽略，不落盘、不入冲突
+      return;
+    }
     if (this.virtualPaths.has(record.path)) {
       if (record.deleted) return;
       if (this.host.mergeVirtualFile(record.path, record.content)) {
@@ -681,6 +710,7 @@ export class SyncEngine {
    * 单条失败不拖垮整轮：记下第一个错误继续处理剩下的，最后再抛出，让状态栏如实报错。
    */
   private async flushAttachments(): Promise<void> {
+    if (this.virtualOnly) return; // 纯虚拟模式没有附件
     if (this.dirtyAttachments.size === 0 && this.missingAttachments.size === 0) return;
     const referenced = new Set(
       (await syncScanAttachments(this.vault, this.state.scope, this.host.getFolder()))

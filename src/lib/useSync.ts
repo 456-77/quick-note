@@ -33,6 +33,7 @@ import {
 } from "./sync.ts";
 import { SyncEngine, type SyncHost } from "./syncEngine.ts";
 import { TODO_SYNC_PATH } from "./todos.ts";
+import { VOCAB_SYNC_VAULT } from "./vocabSync.ts";
 
 /** 提示消息的类型（与编辑器的提示通道对齐）。 */
 type Notice = (message: string, kind?: "info" | "error") => void;
@@ -431,6 +432,8 @@ export function useSync(options: {
    * 列出云端当前用户的全部仓库（GET /api/v1/vaults，JWT）。
    * 独立于引擎：用本机存储的账号直接登录换令牌——列表页/仓库引导在
    * 未打开任何仓库时也要能枚举云端。返回 [{name, version}]。
+   * 单词本的专用云端仓（quick-note-vocab）不是笔记仓库，不进列表——
+   * 否则仓库页会把它当成可拉取的库。
    */
   const listCloudVaults = useCallback(async (): Promise<Array<{ name: string; version: number }>> => {
     const state = stateRef.current;
@@ -457,7 +460,9 @@ export function useSync(options: {
       throw new Error(`获取云端仓库列表失败（HTTP ${res.status}）`);
     }
     const parsed = JSON.parse(atob(res.bodyBase64));
-    return (parsed.data ?? []) as Array<{ name: string; version: number }>;
+    return ((parsed.data ?? []) as Array<{ name: string; version: number }>).filter(
+      (item) => item.name !== VOCAB_SYNC_VAULT,
+    );
   }, []);
 
   const syncNow = useCallback(() => {

@@ -12,6 +12,7 @@ import {
   VOCAB_FILENAME,
   addVocabEntry,
   initialVocabulary,
+  mergeVocabulary,
   parseVocabulary,
   removeVocabEntry,
   setVocabLearned,
@@ -247,6 +248,67 @@ check(VOCAB_FILENAME === "单词本.md", "单词本落在仓库根的 单词本.
     !!kiwi && kiwi.meaning === "猕猴桃" && kiwi.note === "备注" && kiwi.phonetic === "/ˈkiːwi/",
     "无空格竖线的手写行同样解析",
     JSON.stringify(kiwi),
+  );
+}
+
+// ---------------------------------------------------------------- 词库合并（0.28 迁移 / 0.29 云同步共用）
+
+// union 语义：incoming 的新词并进 base，同词保留 base 的内容
+{
+  const base = addVocabEntry(initialVocabulary(), "alpha", "2026-10-20 · 本机", "本机释义", "本机备注").content;
+  const remote = addVocabEntry(initialVocabulary(), "beta", "2026-10-21 · 手机", "手机释义").content;
+  const merged = mergeVocabulary(base, remote);
+  const parsed = parseVocabulary(merged);
+  check(
+    parsed.some((entry) => entry.word === "alpha" && entry.meaning === "本机释义" && entry.note === "本机备注"),
+    "合并：base 侧同词内容原样保留",
+    JSON.stringify(parsed),
+  );
+  check(
+    parsed.some((entry) => entry.word === "beta" && entry.meta === "2026-10-21 · 手机"),
+    "合并：incoming 的新词并进来",
+    JSON.stringify(parsed),
+  );
+  check(
+    mergeVocabulary(merged, remote) === merged,
+    "合并：幂等（同一内容再并不产生变化）",
+  );
+  check(mergeVocabulary(base, base) === base, "合并：自身并不产生变化");
+}
+
+// incoming 侧新词的「已掌握」状态随词落位
+{
+  const base = addVocabEntry(initialVocabulary(), "alpha", "m").content;
+  const remote = setVocabLearned(
+    addVocabEntry(initialVocabulary(), "gamma", "m").content,
+    "gamma",
+    true,
+  ).content;
+  const merged = parseVocabulary(mergeVocabulary(base, remote));
+  check(
+    merged.find((entry) => entry.word === "gamma")?.learned === true,
+    "合并：incoming 新词的已掌握状态保留",
+    JSON.stringify(merged),
+  );
+}
+
+// 双向合并不会丢词（云同步的核心保证：无墓碑也不丢数据）
+{
+  const a = addVocabEntry(initialVocabulary(), "alpha", "a").content;
+  const b = addVocabEntry(initialVocabulary(), "beta", "b").content;
+  const aMerged = mergeVocabulary(a, b);
+  const bMerged = mergeVocabulary(b, a);
+  const wordsOf = (content) => parseVocabulary(content).map((entry) => entry.word).sort().join(",");
+  check(
+    wordsOf(aMerged) === "alpha,beta" && wordsOf(bMerged) === "alpha,beta",
+    "合并：两端各并一次后词集一致（都不丢词）",
+    `${wordsOf(aMerged)} vs ${wordsOf(bMerged)}`,
+  );
+  check(
+    parseVocabulary(aMerged).every((entry) => parseVocabulary(bMerged).some(
+      (other) => other.word === entry.word && other.meaning === entry.meaning,
+    )),
+    "合并：新词带过来的释义一致",
   );
 }
 

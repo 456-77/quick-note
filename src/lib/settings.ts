@@ -119,6 +119,16 @@ export interface Settings {
   bgScale: number;
   /** 适配方式：cover = 铺满裁剪，contain = 完整显示。 */
   bgFit: "cover" | "contain";
+  /**
+   * 界面浓度（0–100，0.29 用户反馈"背景图片就是很淡"）。
+   *
+   * 背景透出来的程度不只由图层不透明度决定：顶栏/侧栏/编辑器卡片这些**表面**
+   * 压在背景上面，各有一层半透明底色（编辑器 80% 最厚）。这层底色此前写死在
+   * CSS 里——用户把图层不透明度拉到 100% 背景依然很淡，因为盖在上面的表面底
+   * 没得调。这个滑杆就是表面底色的浓度：80 = 维持 0.28 及以前的默认观感，
+   * 调低表面更透、背景更明显（正文可读性随之下降，由用户权衡）。
+   */
+  bgSurface: number;
   /** per-vault 背景设置（键：仓库绝对路径）。没有条目的仓库用扁平字段的旧值兜底。 */
   bgPerVault?: Record<string, BgSettings>;
 }
@@ -137,6 +147,7 @@ export type BgSettings = Pick<
   | "bgPosY"
   | "bgScale"
   | "bgFit"
+  | "bgSurface"
 >;
 
 const STORAGE_KEY = "quicknote.settings";
@@ -172,6 +183,7 @@ const DEFAULTS: Settings = {
   bgPosY: 50,
   bgScale: 100,
   bgFit: "cover",
+  bgSurface: 80,
 };
 
 function load(): Settings {
@@ -238,6 +250,7 @@ export function defaultBgSettings(): BgSettings {
     bgPosY,
     bgScale,
     bgFit,
+    bgSurface,
   } = DEFAULTS;
   return {
     bgEnabled,
@@ -251,6 +264,7 @@ export function defaultBgSettings(): BgSettings {
     bgPosY,
     bgScale,
     bgFit,
+    bgSurface,
   };
 }
 
@@ -284,6 +298,7 @@ export function bgSettingsFor(vault: string | null, settings: Settings = current
     bgPosY: settings.bgPosY,
     bgScale: settings.bgScale,
     bgFit: settings.bgFit,
+    bgSurface: settings.bgSurface ?? defaults.bgSurface,
   };
   // 全新安装（旧字段全是默认值且没图）与旧值无差别，统一走旧值兜底即可
   return legacy;

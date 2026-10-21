@@ -13,7 +13,8 @@
 // - 设置开关样式（checkbox::before 开关化）与背景图调节修复
 //   （filter 只含合法函数、scale 走 transform、模糊扩边不透明）
 // - 日历日格等高（有/无日记圆点不再改变行高）
-// - mermaid PNG 导出目标分辨率（~2x 自然尺寸，不再裸交 3x 大图给查看器缩）
+// - mermaid PNG 导出目标分辨率（~2x 自然尺寸，不再裸交 3x 大图给查看器缩；
+//   0.29 追加大图用例：长边数千的图仍按 2x 放大到 9600 上限，不再被 5600 钳到 ≤1x）
 // - 多窗口同步状态按仓库拆文件（01/02 根因）：per-vault 状态文件出现、
 //   共享 sync-state.json 退化为薄配置（无 cursor/hashes）
 
@@ -139,6 +140,17 @@ writeFileSync(
   ].join("\n"),
   "utf8",
 );
+// 大图（0.29）：48 节点的长链，viewBox 长边数千单位——验证导出按 2x 放大到
+// 9600 上限，而不是像 0.28 那样被 5600 钳到 ≤1x（用户反馈"大图按默认尺寸导出"）
+{
+  const lines = ["# 0.29 大图导出", "", "```mermaid", "flowchart LR"];
+  for (let i = 1; i <= 48; i += 1) {
+    const next = String(i + 1).padStart(2, "0");
+    lines.push(`  N${String(i).padStart(2, "0")}[节点${i}] --> N${next}[节点${i + 1}]`);
+  }
+  lines.push("```", "");
+  writeFileSync(join(vault, "qn27大图.md"), lines.join("\n"), "utf8");
+}
 // 日记（今天）：让日历里有带圆点的日子；其他格子无圆点
 writeFileSync(join(vault, `${todayStr}.md`), `# 今天\n\n日记正文。\n`, "utf8");
 // 带标签的笔记（标签行固定第 3 行）
@@ -465,52 +477,102 @@ try {
 
   // ============================================== 8. mermaid 导出目标分辨率
   {
-    // 回到笔记：左栏第 5 节切到了「标签」视图，先切回知识库，再重新打开 qn27笔记
+    // 导出断言的期望公式：与 livePreview.ts 的 exportRasterScale/exportFinalScale
+    // 同源（0.29 起：目标长边 = 2x 自然尺寸，钳 [2200, 9600]；光栅护栏 12288/80MP）。
+    const expectLong = (w, h) => {
+      const natural = Math.max(w, h);
+      let raster = 3;
+      while (raster > 1 && (natural * raster > 12288 || w * h * raster * raster > 80_000_000)) {
+        raster -= 0.5;
+      }
+      const target = Math.min(9600, Math.max(2200, natural * 2));
+      return Math.round(Math.min(natural * raster, target));
+    };
+    // 触发当前打开笔记的 PNG 导出（页面侧只做点击；产物由 Node 轮询磁盘）
+    const exportPng = async () => {
+      const clicked = await evaluate(ws, `(() => {
+        const btn = [...document.querySelectorAll('.qn-mermaid-btn')].find((b) => (b.title || '').includes('导出'));
+        if (!btn) return 'no-btn';
+        btn.click();
+        const item = [...document.querySelectorAll('.qn-mermaid-menu-item')].find((b) => b.textContent === 'PNG');
+        if (!item) return 'no-item';
+        item.click();
+        return 'ok';
+      })()`);
+      return clicked;
+    };
+    const readPngByPrefix = (prefix) => {
+      try {
+        const names = readdirSync(exportDir).filter((n) => n.startsWith(prefix) && n.endsWith(".png"));
+        if (names.length === 0) return null;
+        const buf = readFileSync(join(exportDir, names[0]));
+        return { file: names[0], w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+      } catch {
+        return null;
+      }
+    };
+    const measureViewBox = async () => {
+      const viewBox = await evaluate(ws, `(() => { const svg = document.querySelector('.cm-lp-mermaid svg'); const vb = svg ? svg.viewBox.baseVal : null; return vb ? JSON.stringify({ w: vb.width, h: vb.height }) : ''; })()`);
+      return viewBox ? JSON.parse(viewBox) : {};
+    };
+    const exportDir = join(vault, "导出");
+
+    // ---- 小图（既有用例）：17 节点，长边落在 [2200, 9600] 的 2x 段
+    // 左栏上一节（标签）切回了「知识库」视图，树行才可见
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.left-view-tab')].find((el) => el.textContent.includes('知识库')); b?.click(); return !!b; })()`);
     await waitFor(ws, `document.querySelectorAll('.tree-item').length > 0`, 10000);
     const reopened = await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn27笔记')); t?.click(); return !!t; })()`);
     const svgReady = reopened && await waitFor(ws, `!!document.querySelector('.cm-lp-mermaid svg')`, 20000);
     if (!svgReady) console.log("  (mermaid 没有重新渲染——后续导出断言会失败)");
-    // 先只量 viewBox（不把导出这种重活挂在一个 evaluate 的 Promise 里）
-    const viewBox = await evaluate(ws, `(() => { const svg = document.querySelector('.cm-lp-mermaid svg'); const vb = svg ? svg.viewBox.baseVal : null; return vb ? JSON.stringify({ w: vb.width, h: vb.height }) : ''; })()`);
-    const src = viewBox ? JSON.parse(viewBox) : {};
-    // 触发导出（页面侧只做点击；产物由 Node 轮询磁盘）
-    const clicked = await evaluate(ws, `(() => {
-      const btn = [...document.querySelectorAll('.qn-mermaid-btn')].find((b) => (b.title || '').includes('导出'));
-      if (!btn) return 'no-btn';
-      btn.click();
-      const item = [...document.querySelectorAll('.qn-mermaid-menu-item')].find((b) => b.textContent === 'PNG');
-      if (!item) return 'no-item';
-      item.click();
-      return 'ok';
-    })()`);
-    check(clicked === "ok", "触发 mermaid PNG 导出", clicked);
-    const exportDir = join(vault, "导出");
+    const src = await measureViewBox();
+    check(await exportPng() === "ok", "触发 mermaid PNG 导出（小图）");
     let png = null;
     for (let i = 0; i < 30 && !png; i += 1) {
       await sleep(500);
-      try {
-        const names = readdirSync(exportDir).filter((n) => n.endsWith(".png"));
-        if (names.length > 0) {
-          const buf = readFileSync(join(exportDir, names[0]));
-          png = { file: names[0], w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
-        }
-      } catch {}
+      png = readPngByPrefix("qn27笔记");
     }
     if (png && src.w) {
-      // 导出走的是 htmlLabels:false 的重渲染，viewBox 与页面件略有出入（±15%），
-      // 断言按「页面件尺寸」推目标区间：小图=光栅 3x 原样；大图=钳到 2x 自然尺寸
-      const natural = Math.max(src.w, src.h);
+      // 导出走的是 htmlLabels:false 的重渲染，viewBox 与页面件略有出入（±15%）
+      const expect = expectLong(src.w, src.h);
       const long = Math.max(png.w, png.h);
-      const expect = Math.min(5600, Math.max(2200, natural * 2));
-      const tolerance = expect * 0.18;
       check(
-        Math.abs(long - expect) <= tolerance,
+        Math.abs(long - expect) <= expect * 0.18,
         "mermaid PNG 目标长边 ≈ 2x 自然尺寸（预降采样，不再裸交 3x 大图）",
-        `natural=${natural} long=${long} expect≈${expect}`,
+        `natural=${Math.max(src.w, src.h)} long=${long} expect≈${expect}`,
       );
     } else {
       check(false, "mermaid PNG 导出产物与尺寸可读", `png=${JSON.stringify(png)} src=${JSON.stringify(src)}`);
+    }
+
+    // ---- 大图（0.29 用例）：48 节点，2x 自然尺寸超过 9600 → 钳到上限而不是 ≤1x
+    // 先等大图笔记的标题行真正渲染出来（点击 → openNote 异步换标签，等早了
+    // 量到的还是上一篇的 widget，导出按钮也正被拆建）
+    const bigOpened = await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn27大图')); t?.click(); return !!t; })()`);
+    const bigShown = bigOpened && await waitFor(ws, `[...document.querySelectorAll('.cm-line')].some((el) => el.textContent.includes('0.29 大图导出'))`, 15000);
+    const bigReady = bigShown && await waitFor(ws, `!!document.querySelector('.cm-lp-mermaid svg')`, 20000);
+    if (bigReady) {
+      await sleep(500);
+      const bigSrc = await measureViewBox();
+      check(await exportPng() === "ok", "触发 mermaid PNG 导出（大图）");
+      let bigPng = null;
+      for (let i = 0; i < 40 && !bigPng; i += 1) {
+        await sleep(500);
+        bigPng = readPngByPrefix("qn27大图");
+      }
+      if (bigPng && bigSrc.w) {
+        const expect = expectLong(bigSrc.w, bigSrc.h);
+        const long = Math.max(bigPng.w, bigPng.h);
+        const natural = Math.max(bigSrc.w, bigSrc.h);
+        check(
+          Math.abs(long - expect) <= expect * 0.18,
+          "mermaid 大图导出仍按 2x 放大（9600 上限，不再被 5600 钳到 ≤1x）",
+          `natural=${natural} long=${long} expect≈${expect}`,
+        );
+      } else {
+        check(false, "大图 PNG 导出产物可读", `png=${JSON.stringify(bigPng)} src=${JSON.stringify(bigSrc)}`);
+      }
+    } else {
+      check(false, "大图笔记打开且 mermaid 渲染", "qn27大图");
     }
   }
 

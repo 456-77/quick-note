@@ -236,3 +236,27 @@ export function updateVocabEntry(
   lines[fallback] = rebuilt;
   return { content: lines.join("\n"), changed: true };
 }
+
+/**
+ * 把 `incoming` 里的**新词**并进 `base`（0.28 旧库迁移与 0.29 云同步共用）：
+ * 同词保留 base 的释义/备注/状态；incoming 侧新增的词若标记「已掌握」则落进
+ * 对应小节。整体是 **union 语义——只加不删**：任何一端的词都不会被合并弄丢，
+ * 云同步靠这一点保证无墓碑的账户级同步不丢数据。
+ */
+export function mergeVocabulary(base: string, incoming: string): string {
+  const existing = new Set(
+    parseVocabulary(base).map((entry) => entry.word.toLowerCase()),
+  );
+  let content = base;
+  for (const entry of parseVocabulary(incoming)) {
+    if (existing.has(entry.word.toLowerCase())) continue;
+    const added = addVocabEntry(content, entry.word, entry.meta, entry.meaning, entry.note, entry.phonetic);
+    if (!added.added) continue;
+    content = added.content;
+    existing.add(entry.word.toLowerCase());
+    if (entry.learned) {
+      content = setVocabLearned(content, entry.word, true).content;
+    }
+  }
+  return content;
+}

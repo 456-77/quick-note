@@ -154,7 +154,11 @@ function SettingsSelect<T extends string>({
   const place = useCallback(() => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (!rect) return;
-    const width = Math.max(rect.width, 200);
+    // 菜单与触发器**右缘对齐**（left = rect.right - width）。宽度必须算死：
+    // 此前只给 minWidth，长选项（背景图的 attachments/Pasted image … 路径）
+    // 会把菜单往右撑出窗口，列表被整个裁掉（0.29 用户反馈"下拉框截断"）。
+    // 上限 440 保证长路径靠省略号收住，hover 有 title 看全文。
+    const width = Math.max(200, Math.min(Math.max(rect.width, 200), 440, rect.right - 8));
     const menuHeight = Math.min(280, options.length * 34 + 10);
     let left = rect.right - width;
     if (left < 8) left = 8;
@@ -246,7 +250,7 @@ function SettingsSelect<T extends string>({
             className="settings-select-menu"
             role="listbox"
             aria-label={ariaLabel}
-            style={{ left: anchor.left, top: anchor.top, minWidth: anchor.width }}
+            style={{ left: anchor.left, top: anchor.top, width: anchor.width }}
           >
             {options.map((option) => (
               <button
@@ -255,6 +259,7 @@ function SettingsSelect<T extends string>({
                 role="option"
                 aria-selected={option.value === value}
                 className={`settings-select-option${option.value === value ? " is-on" : ""}`}
+                title={option.label}
                 onClick={() => choose(option.value)}
               >
                 <span>{option.label}</span>
@@ -1148,7 +1153,7 @@ export default function SettingsDialog({
             label="清晰度"
             desc="锐化边缘，抵消低分辨率图片放大后的发虚。"
             keywords="背景 清晰 锐化"
-            tip="背景图被 cover 放大到窗口尺寸后，浏览器插值会让边缘发软。这里用 3×3 卷积做锐化（不是单纯提对比度）；滑杆越大边缘越硬，100% 已经足够，再大容易出现白边光晕。"
+            tip="背景图被 cover 放大到窗口尺寸后，浏览器插值会让边缘发软。这里用 3×3 卷积做锐化（不是单纯提对比度）；滑杆越大边缘越硬，拉满会有轻微白边。若整体仍觉得雾蒙蒙，多半是被界面浓度盖住了——把下面的「界面浓度」调低更直接。"
           >
             <span className="settings-slider">
               <input
@@ -1213,6 +1218,22 @@ export default function SettingsDialog({
                 onChange={(event) => saveBg({ bgScale: Number(event.target.value) })}
               />
               <span className="settings-slider-value">{bg.bgScale}%</span>
+            </span>
+          </Row>
+          <Row
+            label="界面浓度"
+            desc="顶栏/侧栏/编辑器表面底色的浓度，调低背景更透出来。"
+            keywords="背景 淡 透明 遮罩 看不见"
+            tip="背景图上盖着一层半透明的界面底色保证正文可读——「不透明度」拉满背景还是淡，就是被它盖住了（0.29 用户反馈）。80 是默认观感；调低各表面更透、背景更明显，正文可读性随之下降，按自己眼睛的舒适度取值。"
+          >
+            <span className="settings-slider">
+              <input
+                type="range" min={0} max={100} step={5}
+                value={bg.bgSurface ?? 80}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgSurface: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgSurface ?? 80}%</span>
             </span>
           </Row>
 
@@ -1528,7 +1549,7 @@ export default function SettingsDialog({
 
         <section className="settings-sec" data-sec="about" style={{ display: searching || active === "about" ? undefined : "none" }}>
           <div className="settings-block about-hero" data-keywords="版本 logo 简介">
-            <img src="/qn-icon.svg" alt="" className="about-logo" aria-hidden />
+            <img src="/qn-icon.png" alt="" className="about-logo" aria-hidden />
             <div className="about-hero-text">
               <span className="about-name">Quick Note</span>
               <span className="about-version">v{appVersion || "…"}</span>

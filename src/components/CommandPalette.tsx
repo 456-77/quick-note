@@ -7,11 +7,16 @@
  *   3. 内容 —— Rust 侧 `search_vault` 全文扫描，防抖 250ms，取每个文件的首个命中行，
  *      回车直接打开并跳到那一行。
  *
+ * 0.29 起内容检索覆盖**账户下的所有已知仓库**（当前仓库 + 最近仓库，0.24 反馈
+ * 「全局搜索，支持搜索账户下的所有仓库」）：当前仓库的结果排最前，其他仓库的
+ * 命中右侧标注仓库名；回车打开别的仓库的命中会先切仓库再开笔记。其他仓库的
+ * 条目列表（笔记名匹配用）在面板打开时拉一次，不跟着每次击键重复扫盘。
+ *
  * 面板是纯展示组件：开关由 App 控制，这样顶栏的搜索框、快捷键、Esc 都能收拢在一处。
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { readNoteOptional, searchVault, type EntryMeta, type SearchHit } from "../lib/api";
+import { listEntries, readNoteOptional, searchVault, type EntryMeta, type SearchHit } from "../lib/api";
 import { fieldVariants } from "../lib/searchVariants";
 
 export interface PaletteAction {
@@ -39,7 +44,13 @@ interface Item {
   hint?: string;
   run: () => void;
   /** 内容命中的原始数据（悬停预览用）；其他组为空。 */
-  hit?: SearchHit;
+  hit?: PaletteHit;
+}
+
+/** 内容命中（带来源仓库）：悬停预览与跨仓库打开都需要它。 */
+export interface PaletteHit extends SearchHit {
+  /** 命中来自哪个仓库（绝对路径）；当前仓库命中与 vault prop 相同。 */
+  vault: string;
 }
 
 /** 悬停预览卡展示的上下文（命中行 ±4 行）。 */
@@ -54,8 +65,12 @@ interface Props {
   onClose: () => void;
   entries: EntryMeta[];
   vault: string | null;
+  /** 账户下参与搜索的全部仓库（当前仓库第一；0.29 多仓库检索）。 */
+  vaults: string[];
   /** term 一起带回：打开笔记后用它高亮关键词（0.21 用户反馈）。 */
   onOpenNote: (path: string, line?: number, term?: string) => void;
+  /** 打开**其他仓库**的命中：先切仓库再开笔记（0.29 多仓库检索）。 */
+  onOpenNoteInVault: (vault: string, path: string, line?: number, term?: string) => void;
   actions: PaletteAction[];
   /** 「内容」结果悬停预览（设置 → 通用 → 搜索，0.21 用户反馈）。 */
   hoverPreview: boolean;
@@ -64,6 +79,13 @@ interface Props {
 const SEARCH_DEBOUNCE = 250;
 const NAME_LIMIT = 8;
 const CONTENT_LIMIT = 14;
+/** 内容检索的分仓限额：当前仓库多给，其他仓库每仓少给，防大库拖慢一轮搜索。 */
+const CONTENT_LIMIT_CURRENT = 50;
+const CONTENT_LIMIT_OTHER = 20;
+/** 其他仓库笔记名命中合计上限。 */
+const NAME_LIMIT_OTHER = 8;
+/** 参与搜索的仓库总数上限（最近仓库列表本身 ≤8，加上当前仓库天然封顶）。 */
+const MAX_SEARCH_VAULTS = 9;
 /** 上一次搜索词的落盘键（0.23 用户反馈：每次打开都要重新输入太麻烦）。 */
 const LAST_QUERY_KEY = "quicknote.palette.query";
 
@@ -117,7 +139,9 @@ export default function CommandPalette({
   onClose,
   entries,
   vault,
+  vaults,
   onOpenNote,
+  onOpenNoteInVault,
   actions,
   hoverPreview,
 }: Props) {
@@ -125,9 +149,11 @@ export default function CommandPalette({
   // 文本：直接输入即替换，想接着改也可以光标挪过去。
   const [query, setQuery] = useState(loadLastQuery);
   const [active, setActive] = useState(0);
-  const [contentHits, setContentHits] = useState<SearchHit[]>([]);
+  const [contentHits, setContentHits] = useState<PaletteHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [preview, setPreview] = useState<HoverPreview | null>(null);
+  /** 其他仓库的条目（笔记名匹配用）：面板打开时拉一次，不跟击键走。 */
+  const [otherEntries, setOtherEntries] = useState<Record<string, EntryMeta[]>>({});
   const inputRef = useRef<HTMLInputElement | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
   /** 只用于让过期的异步搜索结果作废。 */
@@ -137,6 +163,12 @@ export default function CommandPalette({
   const previewSeq = useRef(0);
   /** 鼠标离开结果列表后预览卡的宽限期：正在移向预览卡的路上不立即撤掉。 */
   const leaveTimer = useRef<number | null>(null);
+
+  /** 当前仓库之外的搜索范围（顺序 = vaults 顺序，即最近仓库的新旧序）。 */
+  const otherVaults = useMemo(
+    () => vaults.filter((item) => item !== vault).slice(0, MAX_SEARCH_VAULTS - 1),
+    [vaults, vault],
+  );
 
   const terms = useMemo(() => query.trim().toLowerCase().split(/\s+/).filter(Boolean), [query]);
   /** 原始大小写的首个词：跳转预填搜索面板时用它高亮——面板按原文预填，
@@ -181,7 +213,26 @@ export default function CommandPalette({
     setPreview(null);
   }, [terms, open, hoverPreview]);
 
-  // 全文搜索防抖；名称过滤是同步的，不在这里
+  // 其他仓库的条目列表：面板打开时拉一次（笔记名匹配用）。拉不到的仓库按空处理，
+  // 不拖垮搜索。
+  useEffect(() => {
+    if (!open || otherVaults.length === 0) {
+      setOtherEntries({});
+      return;
+    }
+    let cancelled = false;
+    void Promise.all(
+      otherVaults.map(async (item) => [item, await listEntries(item).catch(() => [] as EntryMeta[])] as const),
+    ).then((pairs) => {
+      if (cancelled) return;
+      setOtherEntries(Object.fromEntries(pairs));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, otherVaults]);
+
+  // 全文搜索防抖（当前仓库 + 其他仓库并发）；名称过滤是同步的，不在这里
   useEffect(() => {
     if (!open || !vault || terms.length === 0) {
       setContentHits([]);
@@ -193,9 +244,19 @@ export default function CommandPalette({
       const seq = (searchSeq.current += 1);
       // 传**原始大小写**的查询：Rust 侧自己小写化，但字段变体（userName ↔
       // user_name）要在原始大小写上找驼峰边界，提前小写化就丢了
-      searchVault(vault, query.trim(), 50)
-        .then((hits) => {
-          if (searchSeq.current === seq) setContentHits(hits);
+      const current = searchVault(vault, query.trim(), CONTENT_LIMIT_CURRENT)
+        .then((hits) => hits.map((hit) => ({ ...hit, vault })));
+      const others = Promise.all(
+        otherVaults.map(async (item) => {
+          const hits = await searchVault(item, query.trim(), CONTENT_LIMIT_OTHER).catch(() => []);
+          return hits.map((hit) => ({ ...hit, vault: item }));
+        }),
+      );
+      Promise.all([current, others])
+        .then(([currentHits, otherHits]) => {
+          if (searchSeq.current !== seq) return;
+          // 当前仓库的结果排最前（0.29 用户反馈），其余按最近仓库的新旧序接在后面
+          setContentHits([...currentHits, ...otherHits.flat()]);
         })
         .catch(() => {
           if (searchSeq.current === seq) setContentHits([]);
@@ -205,7 +266,7 @@ export default function CommandPalette({
         });
     }, SEARCH_DEBOUNCE);
     return () => window.clearTimeout(timer);
-  }, [open, vault, terms]);
+  }, [open, vault, otherVaults, terms, query]);
 
   const items = useMemo<Item[]>(() => {
     if (!open) return [];
@@ -248,26 +309,71 @@ export default function CommandPalette({
         });
       }
 
+      // 其他仓库的笔记名命中（0.29 多仓库检索）：排在当前仓库之后，
+      // meta 直接标注仓库名，回车先切仓库再打开
       const seen = new Set(notes.map((note) => note.path));
+      const otherNotes: Item[] = [];
+      for (const item of otherVaults) {
+        const vaultBase = item.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || item;
+        for (const note of otherEntries[item] ?? []) {
+          if (note.isDir || !note.name.toLowerCase().endsWith(".md")) continue;
+          if (!nameHits(note.name, terms)) continue;
+          otherNotes.push({
+            key: `note-v-${item}-${note.path}`,
+            group: "笔记",
+            icon: "📄",
+            title: note.name,
+            detail: note.path,
+            meta: vaultBase,
+            run: () => onOpenNoteInVault(item, note.path),
+          });
+        }
+      }
+      for (const item of otherNotes
+        .sort((a, b) => a.key.localeCompare(b.key))
+        .slice(0, NAME_LIMIT_OTHER)) {
+        out.push(item);
+      }
+
       for (const hit of contentHits.slice(0, CONTENT_LIMIT)) {
-        // 内容命中里已经是名称命中的文件不再重复列
-        if (seen.has(hit.path)) continue;
-        seen.add(hit.path);
+        // 内容命中里已经是名称命中的文件不再重复列（按仓库各自去重）
+        if (hit.vault === vault && seen.has(hit.path)) continue;
+        if (hit.vault !== vault && seen.has(`v:${hit.vault}:${hit.path}`)) continue;
+        seen.add(hit.vault === vault ? hit.path : `v:${hit.vault}:${hit.path}`);
+        const otherVault = hit.vault !== vault;
+        const vaultBase = hit.vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || hit.vault;
         out.push({
-          key: `hit-${hit.path}-${hit.line}`,
+          key: `hit-${hit.vault}-${hit.path}-${hit.line}`,
           group: "内容",
-          icon: "🔎",
+          icon: otherVault ? "🗂️" : "🔎",
           title: hit.path.slice(hit.path.lastIndexOf("/") + 1),
           detail: hit.text.trim(),
+          meta: otherVault ? vaultBase : undefined,
           // 带回首个关键词：打开后预填搜索面板高亮全文命中（0.21 用户反馈）
-          run: () => onOpenNote(hit.path, hit.line, rawFirstTerm),
+          run: otherVault
+            ? () => onOpenNoteInVault(hit.vault, hit.path, hit.line, rawFirstTerm)
+            : () => onOpenNote(hit.path, hit.line, rawFirstTerm),
           hit,
         });
       }
     }
 
     return out;
-  }, [open, actions, actions.length, entries, terms, query, rawFirstTerm, contentHits, onOpenNote]);
+  }, [
+    open,
+    actions,
+    actions.length,
+    entries,
+    terms,
+    query,
+    rawFirstTerm,
+    contentHits,
+    otherVaults,
+    otherEntries,
+    vault,
+    onOpenNote,
+    onOpenNoteInVault,
+  ]);
 
   // 结果变化时把选中项拉回范围
   useEffect(() => {
@@ -282,7 +388,7 @@ export default function CommandPalette({
   }, [active]);
 
   /** 悬停「内容」结果 300ms 后加载上下文预览；移开/悬到别组立即撤销。 */
-  const hoverContentHit = (hit: SearchHit | null) => {
+  const hoverContentHit = (hit: PaletteHit | null) => {
     if (previewTimer.current !== null) {
       window.clearTimeout(previewTimer.current);
       previewTimer.current = null;
@@ -296,7 +402,8 @@ export default function CommandPalette({
     const seq = previewSeq.current;
     previewTimer.current = window.setTimeout(() => {
       previewTimer.current = null;
-      readNoteOptional(vault, hit.path)
+      // 0.29 多仓库检索：按命中自己的仓库读（其他仓库的命中也能预览）
+      readNoteOptional(hit.vault ?? vault ?? "", hit.path)
         .then((note) => {
           if (seq !== previewSeq.current) return;
           if (!note) {

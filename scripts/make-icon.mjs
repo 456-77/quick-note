@@ -5,8 +5,14 @@
  * 方块 + 青→蓝→紫渐变的粗圆环 Q + 右下斜出的紫色尾笔。环与尾共用蓝紫强调色
  * 一族，小尺寸下只剩「一个环一条尾」，辨识度靠轮廓不靠细节。
  *
- * 4× 超采样抗锯齿，输出 1024×1024 源图；全套尺寸用 `npx tauri icon` 展开：
- *   node scripts/make-icon.mjs && npx tauri icon scripts/icon-source.png -o src-tauri/icons
+ * **0.29 起本脚本的产物不再是生效的图标源**：用户 2026-10-21 反馈「更新软件
+ * 图标」并提供渲染版方案 D（发光 Q + 闪电，深靛蓝底），`scripts/icon-source.png`
+ * 已被该图直接替换。**重跑本脚本会把它覆盖回程序化版本**——除非用户明确要回退，
+ * 否则不要执行。全套尺寸仍然用：
+ *   npx tauri icon scripts/icon-source.png -o src-tauri/icons
+ * 并把 src-tauri/icons/128x128@2x.png 拷为 public/qn-icon.png（favicon/关于页）。
+ *
+ * 4× 超采样抗锯齿，输出 1024×1024 源图。
  */
 
 import { deflateSync } from "node:zlib";

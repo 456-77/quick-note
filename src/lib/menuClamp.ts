@@ -19,3 +19,26 @@ export function menuRefClampedToViewport(x: number, y: number) {
     el.style.top = `${top}px`;
   };
 }
+
+/**
+ * 右缘锚定的菜单：菜单**右边缘**对齐锚点 x，向左展开（y 仍是菜单顶边）。
+ *
+ * 行尾 ⋯ 按钮的菜单用这个：按钮已经贴着行右缘，菜单若还从锚点向右铺，
+ * 一半掉进视口外再被夹回来，看起来像菜单"歪的"（0.29 用户反馈标签行菜单
+ * 要统一右对齐）。渲染后仍按实际尺寸夹回视口。
+ */
+export function menuRefRightAlignedToViewport(x: number, y: number) {
+  return (el: HTMLDivElement | null) => {
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    let left = x - rect.width;
+    let top = y;
+    if (left < 8) left = 8;
+    if (left + rect.width > window.innerWidth - 8) {
+      left = Math.max(8, window.innerWidth - rect.width - 8);
+    }
+    if (rect.bottom > window.innerHeight - 8) top = Math.max(8, window.innerHeight - rect.height - 8);
+    el.style.left = `${left}px`;
+    el.style.top = `${top}px`;
+  };
+}

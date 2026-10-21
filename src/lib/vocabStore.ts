@@ -15,10 +15,8 @@
 import { readAppText, readNoteOptional, writeAppText } from "./api.ts";
 import {
   VOCAB_FILENAME,
-  addVocabEntry,
   initialVocabulary,
-  parseVocabulary,
-  setVocabLearned,
+  mergeVocabulary,
 } from "./vocabulary.ts";
 
 /** 账户级单词本在应用配置目录下的文件名。 */
@@ -31,25 +29,6 @@ const migratedThisSession = new Set<string>();
 
 function vaultKey(vault: string): string {
   return vault.replace(/[\\/]+$/, "");
-}
-
-/** 合并一个仓库的旧单词本（只加新词；同词保留全局条目的内容与状态）。 */
-function mergeVaultContent(globalContent: string, localContent: string): string {
-  const existing = new Set(
-    parseVocabulary(globalContent).map((entry) => entry.word.toLowerCase()),
-  );
-  let content = globalContent;
-  for (const entry of parseVocabulary(localContent)) {
-    if (existing.has(entry.word.toLowerCase())) continue;
-    const added = addVocabEntry(content, entry.word, entry.meta, entry.meaning, entry.note, entry.phonetic);
-    if (!added.added) continue;
-    content = added.content;
-    existing.add(entry.word.toLowerCase());
-    if (entry.learned) {
-      content = setVocabLearned(content, entry.word, true).content;
-    }
-  }
-  return content;
 }
 
 async function markMigrated(vault: string): Promise<void> {
@@ -68,6 +47,16 @@ async function markMigrated(vault: string): Promise<void> {
     // 标记写不上只会导致下次再合并一遍（同词去重），不阻塞单词本使用
   }
   migratedThisSession.add(vaultKey(vault));
+}
+
+/** 单词本内容落盘后的监听（0.29 云同步据此推送；返回退订函数）。 */
+export type VocabSavedListener = (content: string) => void;
+const savedListeners = new Set<VocabSavedListener>();
+export function onVocabSaved(listener: VocabSavedListener): () => void {
+  savedListeners.add(listener);
+  return () => {
+    savedListeners.delete(listener);
+  };
 }
 
 async function migratedVaults(): Promise<string[]> {
@@ -94,7 +83,7 @@ export async function loadVocabularyContent(vault: string | null): Promise<strin
       ? await readNoteOptional(vault, VOCAB_FILENAME).catch(() => null)
       : null;
     content = local?.content ?? initialVocabulary();
-    await writeAppText(VOCAB_GLOBAL_FILE, content);
+    await saveVocabularyContent(content);
   }
 
   if (!vault) return content;
@@ -106,16 +95,29 @@ export async function loadVocabularyContent(vault: string | null): Promise<strin
     return content;
   }
   const local = await readNoteOptional(vault, VOCAB_FILENAME).catch(() => null);
-  const merged = local ? mergeVaultContent(content, local.content) : content;
+  const merged = local ? mergeVocabulary(content, local.content) : content;
   if (merged !== content) {
-    await writeAppText(VOCAB_GLOBAL_FILE, merged);
+    await saveVocabularyContent(merged);
     content = merged;
   }
   await markMigrated(vault);
   return content;
 }
 
-/** 写账户级单词本（所有仓库共用这一份）。 */
+/**
+ * 写账户级单词本（所有仓库共用这一份）。
+ *
+ * 写完通知监听者（云同步的内存缓存与推送触发都挂在这条唯一通道上）——
+ * 所以 loadVocabularyContent 里的首次创建/迁移合并也要走这里，不能直接
+ * writeAppText，否则同步缓存会停在旧内容上。
+ */
 export async function saveVocabularyContent(content: string): Promise<void> {
   await writeAppText(VOCAB_GLOBAL_FILE, content);
+  for (const listener of [...savedListeners]) {
+    try {
+      listener(content);
+    } catch {
+      // 单个监听者出错不影响其余（写盘本身已经成功）
+    }
+  }
 }

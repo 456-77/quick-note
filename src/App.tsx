@@ -73,6 +73,7 @@ import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } f
 import { closeSearchPanelIfOpen, openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
 import { VOCAB_FILENAME, addVocabEntry } from "./lib/vocabulary";
 import { loadVocabularyContent, saveVocabularyContent } from "./lib/vocabStore";
+import { onVocabRemoteChange, setVocabSyncEnabled, syncVocabNow } from "./lib/vocabSync";
 import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
@@ -838,6 +839,22 @@ export default function App() {
     },
     notice,
   });
+
+  // ---- 单词本的账户级云同步（0.29 用户反馈：daily sync 支持同步单词本）----
+  // 引擎自己管理生命周期：账号已配置且当前仓库开着同步才跑；账号配置变化会
+  // 传指纹进去重建引擎；远端词库合并进来后 bump vocabVersion 刷新单词面板。
+  const vocabCredentialsKey = `${sync.config.serverUrl}|${sync.config.username}|${sync.config.password}`;
+  useEffect(() => {
+    const configured =
+      sync.ready &&
+      !sync.stateError &&
+      sync.config.serverUrl.trim() !== "" &&
+      sync.config.username.trim() !== "" &&
+      sync.config.password !== "";
+    setVocabSyncEnabled(configured && sync.config.enabled, notice, vocabCredentialsKey);
+  }, [sync.ready, sync.stateError, sync.config, vocabCredentialsKey, notice]);
+
+  useEffect(() => onVocabRemoteChange(() => setVocabVersion((value) => value + 1)), []);
 
   // 文件监听的回调只订阅一次，所以要经 ref 读最新的控制器（它的回调每次都新建）。
   const dailyRef = useRef(daily);
@@ -3094,6 +3111,37 @@ export default function App() {
       view.focus();
     },
     [openNote, jumpToLine],
+  );
+
+  /** 最新一轮渲染的 openNoteAt：跨仓库打开在切完仓库后必须用新仓库的实例。 */
+  const openNoteAtRef = useRef(openNoteAt);
+  useEffect(() => {
+    openNoteAtRef.current = openNoteAt;
+  });
+
+  /**
+   * 打开**其他仓库**的笔记（0.29 全局搜索跨仓库命中）：先切仓库，再在新仓库的
+   * 上下文里打开并定位。openNote 捕获的是本轮渲染的 vault——切仓库后直接调用
+   * 拿到的还是旧仓库的闭包，所以要等状态提交后经 ref 调最新一轮的 openNoteAt
+   * （与启动时的 openEntryRef 同一模式）。
+   */
+  const openNoteInVault = useCallback(
+    async (target: string, path: string, line?: number, term?: string) => {
+      if (target === vault) {
+        await openNoteAt(path, line, term);
+        return;
+      }
+      await switchVault(target);
+      window.setTimeout(() => void openNoteAtRef.current(path, line, term), 120);
+    },
+    [vault, openNoteAt, switchVault],
+  );
+
+  /** 全局搜索的仓库范围（0.29）：当前仓库 + 最近仓库，当前仓库恒排第一。 */
+  const paletteVaults = useMemo(
+    () =>
+      (vault ? [vault, ...vaultRecents.filter((item) => item !== vault)] : vaultRecents).slice(0, 9),
+    [vault, vaultRecents],
   );
 
   /** 导出 PDF：渲染整篇笔记为打印视图，弹出系统打印对话框（选「另存为 PDF」）。 */
@@ -5737,7 +5785,11 @@ export default function App() {
         <button
           type="button"
           className={`status-cell sync-status is-${sync.status}`}
-          onClick={() => sync.syncNow()}
+          onClick={() => {
+            sync.syncNow();
+            // 单词本走自己的账户级引擎，手动同步时带上它
+            syncVocabNow();
+          }}
           title={
             sync.error ??
             "点一下立即同步（自动同步每 5 分钟一次，改动后 3 秒推送）"
@@ -5753,7 +5805,9 @@ export default function App() {
         onClose={() => setPaletteOpen(false)}
         entries={entries}
         vault={vault}
+        vaults={paletteVaults}
         onOpenNote={(path, line, term) => void openNoteAt(path, line, term)}
+        onOpenNoteInVault={(target, path, line, term) => void openNoteInVault(target, path, line, term)}
         actions={paletteActions}
         hoverPreview={settings.searchHoverPreview}
       />

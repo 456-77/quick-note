@@ -525,8 +525,15 @@ try {
 
   // ============================================== 9. 图标方案 D
   {
-    const svg = await evaluate(ws, `fetch('/qn-icon.svg').then((r) => r.text())`);
-    check(svg.includes("方案 D") && svg.includes("#8a52fd"), "favicon/关于页图标已是方案 D（Q 圆环 + 紫尾笔）");
+    // 0.29 起图标换成用户提供的渲染版：favicon/关于页走 qn-icon.png（PNG 全套
+    // 由 tauri icon 从 scripts/icon-source.png 生成）。0.28 的 svg 断言随之更新。
+    const pngHead = await evaluate(ws, `fetch('/qn-icon.png').then((r) => r.arrayBuffer()).then((b) => {
+      const head = new Uint8Array(b.slice(0, 4));
+      return String.fromCharCode(head[0], head[1], head[2], head[3]);
+    })`);
+    check(pngHead === "PNG", "favicon/关于页图标是 PNG（0.29 渲染版方案 D）", JSON.stringify(pngHead));
+    const html = await evaluate(ws, `fetch('/').then((r) => r.text())`);
+    check(html.includes("/qn-icon.png") && !html.includes("qn-icon.svg"), "index.html 的 favicon 指向 qn-icon.png");
   }
 
   console.log(failures === 0 ? "\n0.28 批测全部通过 ✓" : `\n共 ${failures} 项失败 ✗`);

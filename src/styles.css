@@ -4090,6 +4090,8 @@ html.qn-alt-held .cm-line {
   width: 52px;
   height: 52px;
   flex: none;
+  /* 0.29 起图标是用户提供的渲染图（PNG，方角）——界面里统一圆角观感 */
+  border-radius: 12px;
 }
 
 .about-hero-text {
@@ -5029,7 +5031,10 @@ html.qn-alt-held .cm-line {
 }
 
 /* 启用背景时，各大表面降不透明度让图透出来。
-   卡片仍保留边界与阴影，信息层级不乱。 */
+   卡片仍保留边界与阴影，信息层级不乱。
+
+   表面浓度由 --qn-veil-* 变量控制（0.29「界面浓度」滑杆，background.ts 在
+   应用背景时写入；80 = 0.28 及以前的写死观感）。变量缺席时落到原值。 */
 html.qn-bg-on body {
   background: transparent;
 }
@@ -5040,14 +5045,15 @@ html.qn-bg-on .app {
 
 /* 图层的可见度只由用户的不透明度滑杆控制（0.26 回退 0.25 的主题色遮罩：
    它把图压到 ~12% 感知透明度，不透明度滑杆形同虚设，用户反馈"几乎看不见
-   背景图片、调节设置也没有用"）。文字可读性由下面表面的半透明底保证。 */
+   背景图片、调节设置也没有用"）。文字可读性由下面表面的半透明底保证；
+   表面浓度本身 0.29 起也开放调节（--qn-veil-*，用户反馈"背景就是很淡"）。 */
 html.qn-bg-on .topbar,
 html.qn-bg-on .statusbar {
-  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  background: color-mix(in srgb, var(--panel) var(--qn-veil-panel, 82%), transparent);
 }
 
 html.qn-bg-on .sidebar {
-  background: color-mix(in srgb, var(--panel) 66%, transparent);
+  background: color-mix(in srgb, var(--panel) var(--qn-veil-side, 66%), transparent);
 }
 
 html.qn-bg-on .editor-pane,
@@ -5056,7 +5062,7 @@ html.qn-bg-on .tabbar {
 }
 
 html.qn-bg-on .editor-pane {
-  background: color-mix(in srgb, var(--surface) 80%, transparent);
+  background: color-mix(in srgb, var(--surface) var(--qn-veil-editor, 80%), transparent);
 }
 
 html.qn-bg-on .editor-host .cm-editor {
@@ -5066,7 +5072,7 @@ html.qn-bg-on .editor-host .cm-editor {
 html.qn-bg-on .sidebar .cm-editor,
 html.qn-bg-on .panel-card,
 html.qn-bg-on .calendar-card {
-  background: color-mix(in srgb, var(--surface) 76%, transparent);
+  background: color-mix(in srgb, var(--surface) var(--qn-veil-card, 76%), transparent);
 }
 
 /* ------------------------------------------------- mermaid 增强 */
@@ -6798,10 +6804,14 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 }
 
 /* 篇数只做弱提示：0.28 去掉了灰底胶囊——一排行里每行一个圆角块，
-   视觉噪声比信息量还大（用户反馈「看起来很乱」）。 */
+   视觉噪声比信息量还大（用户反馈「看起来很乱」）。
+   0.29：margin-left:auto 把篇数与行尾 ⋯ 一起推到行右缘——此前它们贴在
+   标签名后面，每行位置随名字长短漂移，用户反馈「⋯ 要统一成右对齐」
+   （与知识库文件行的 tree-size 同一招）。 */
 .tag-dash-count {
   flex: none;
   min-width: 16px;
+  margin-left: auto;
   font-size: 11px;
   color: var(--text-faint);
   text-align: right;

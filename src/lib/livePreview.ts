@@ -972,7 +972,7 @@ async function downloadDiagram(
       //    流程图）缩放比可达 4x，文字全糊。现在由浏览器
       //    imageSmoothingQuality:"high"（Lanczos 一族）一步降到 ~2 倍自然尺寸，
       //    看图软件只剩 ≤2x 的轻缩放，fit-to-window 观感明显更实。
-      // 3) 超大图限制光栅上限（边长 8192 / 64MP），避免 canvas 一次性吃几百 MB。
+      // 3) 超大图限制光栅上限（边长 12288 / 80MP），避免 canvas 一次性吃几百 MB。
       const rasterScale = exportRasterScale(exportState);
       const finalScale = exportFinalScale(exportState, rasterScale);
       const url = svgToBlobUrl(source, exportState, rasterScale);
@@ -1014,8 +1014,8 @@ function exportRasterScale(state: MermaidZoomState): number {
   let scale = 3;
   while (
     scale > 1 &&
-    (Math.max(state.naturalW, state.naturalH) * scale > 8192 ||
-      state.naturalW * state.naturalH * scale * scale > 64_000_000)
+    (Math.max(state.naturalW, state.naturalH) * scale > 12288 ||
+      state.naturalW * state.naturalH * scale * scale > 80_000_000)
   ) {
     scale -= 0.5;
   }
@@ -1024,13 +1024,18 @@ function exportRasterScale(state: MermaidZoomState): number {
 
 /**
  * PNG 导出的最终倍率：目标长边 = 自然长边的 2 倍（给查看时的缩放留余量），
- * 下限 2200（小图也保证有足够像素），上限 5600（再大文件无谓地膨胀）。
- * 永远不超过光栅倍率（放大光栅没有意义）。
+ * 下限 2200（小图也保证有足够像素），上限 9600。
+ *
+ * 0.29 修「内容很多的大图导出后模糊」（用户反馈：大图"按默认尺寸导出，并没有
+ * 放大"）：上限 5600 时代，自然长边 ≥2800 的图放大倍率就掉到 2x 以下，≥5600
+ * 的图干脆按 ≤1x 导出——内容越多的图越不放大，查看器里一放大就糊。放宽到
+ * 9600 后大图仍按 ~2x 走（9600×4800 ≈ 46MP canvas，一次性开销可接受）；
+ * 光栅护栏同步放宽（边长 12288 / 80MP）保证光栅始终喂得饱最终倍率。
  */
 function exportFinalScale(state: MermaidZoomState, rasterScale: number): number {
   const longSide = Math.max(state.naturalW, state.naturalH);
   if (longSide <= 0) return rasterScale;
-  const targetLong = Math.min(5600, Math.max(2200, longSide * 2));
+  const targetLong = Math.min(9600, Math.max(2200, longSide * 2));
   return Math.min(rasterScale, targetLong / longSide);
 }
 
