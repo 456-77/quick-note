@@ -23,7 +23,7 @@
  *   负责把它刚开的加载任务立刻销毁。
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readBinary, readNote } from "../lib/api";
@@ -35,6 +35,12 @@ interface Props {
   path: string;
   onClose: () => void;
 }
+
+/** PDF 手动缩放范围：下限防糊、上限防画布爆内存（3× A4 = 约 1800×2400 CSS px）。 */
+const PDF_ZOOM_MIN = 0.4;
+const PDF_ZOOM_MAX = 3;
+/** 单页画布的像素预算：缩放/dpr 再大也不超过它（1 页 ~32MB RGBA）。 */
+const PDF_CANVAS_PIXEL_BUDGET = 8_000_000;
 
 const KIND_LABEL: Record<string, string> = {
   pdf: "PDF 文档",
@@ -269,13 +275,39 @@ export default function FilePreview({ vault, path, onClose }: Props) {
     };
   }, [kind, imageUrl]);
 
-  /** 切换 PDF 缩放：fit 走适应宽度，数字为手动倍率（0.4–3.0，防画布爆内存）。 */
-  const changePdfZoom = (next: "fit" | number) => {
-    const clamped = next === "fit" ? "fit" : Math.min(3, Math.max(0.4, Math.round(next * 20) / 20));
+  /**
+   * 切换 PDF 缩放：fit 走适应宽度，数字为手动倍率（PDF_ZOOM_MIN–MAX，
+   * 防画布爆内存）。0.28：到上限时值保持不变——此前 300% 再点放大仍把
+   * 状态往上夹、比例数字看着涨，但页面宽度被 CSS max-width 卡住，观感没变
+   * （用户反馈）。
+   */
+  const changePdfZoom = useCallback((next: "fit" | number) => {
+    const clamped =
+      next === "fit"
+        ? "fit"
+        : Math.min(PDF_ZOOM_MAX, Math.max(PDF_ZOOM_MIN, Math.round(next * 20) / 20));
+    if (clamped !== "fit" && clamped === pdfZoomRef.current) return;
     setPdfZoom(clamped);
     pdfZoomRef.current = clamped;
     pdfZoomApplyRef.current?.(clamped === "fit" ? undefined : clamped);
-  };
+  }, []);
+
+  // Ctrl + 滚轮缩放 PDF（0.28 用户反馈）。只拦 Ctrl+wheel：普通滚轮留给
+  // 纵向翻页；listener 必须非 passive，否则 preventDefault 无效、页面会缩放。
+  useEffect(() => {
+    if (kind !== "pdf") return;
+    const host = pdfHostRef.current;
+    if (!host) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.ctrlKey || event.deltaY === 0) return;
+      event.preventDefault();
+      const current = pdfZoomRef.current === "fit" ? scaleRef.current : pdfZoomRef.current;
+      const step = event.deltaY < 0 ? 0.1 : -0.1;
+      changePdfZoom(current + step);
+    };
+    host.addEventListener("wheel", onWheel, { passive: false });
+    return () => host.removeEventListener("wheel", onWheel);
+  }, [kind, changePdfZoom]);
 
   // 视窗尺寸变化：PDF 换缩放重渲可见页、pptx 按新宽度重建（统一防抖 250ms）
   useEffect(() => {
@@ -397,6 +429,7 @@ export default function FilePreview({ vault, path, onClose }: Props) {
           // 高度交给 aspect-ratio：占位被 max-width:100% 压缩时高度跟随宽度
           // 等比缩小，窄视窗下整页可见而不是被裁掉
           host.replaceChildren();
+          host.classList.toggle("is-manual", pdfZoomRef.current !== "fit");
           for (let pageNumber = 1; pageNumber <= doc.numPages; pageNumber += 1) {
             const placeholder = document.createElement("div");
             placeholder.className = "file-preview-pdf-page is-placeholder";
@@ -424,8 +457,24 @@ export default function FilePreview({ vault, path, onClose }: Props) {
               if (cancelled || docRef.current !== docCurrent) return;
               const viewport = pdfPage.getViewport({ scale: scaleRef.current });
               const canvas = document.createElement("canvas");
-              canvas.width = viewport.width;
-              canvas.height = viewport.height;
+              // 按设备像素比出图（0.28「适应大小有点模糊」）：此前画布只按 CSS
+              // 像素渲染，在 125%/150% 缩放的屏上被浏览器再放大一次，文字发虚。
+              // 只提高**可见页**的位图分辨率，滚动离屏照样释放；再用像素预算
+              // 兜住高倍缩放（A4 3× + dpr2 会到 17M 像素/页）。
+              const cssW = Math.max(1, viewport.width);
+              const cssH = Math.max(1, viewport.height);
+              const dpr = Math.max(
+                // 超大页在高倍缩放时允许降到 1 以下：宁可让浏览器放大一点，
+                // 也不让单页画布把内存吃穿（预算优先于清晰度）
+                0.5,
+                Math.min(
+                  window.devicePixelRatio || 1,
+                  2,
+                  Math.sqrt(PDF_CANVAS_PIXEL_BUDGET / (cssW * cssH)),
+                ),
+              );
+              canvas.width = Math.round(cssW * dpr);
+              canvas.height = Math.round(cssH * dpr);
               canvas.style.width = "100%";
               canvas.style.height = "100%";
               const textDiv = document.createElement("div");
@@ -433,7 +482,11 @@ export default function FilePreview({ vault, path, onClose }: Props) {
               // pdfjs 的文字层 CSS 用 --total-scale-factor 计算字号与位移
               textDiv.style.setProperty("--total-scale-factor", String(viewport.scale));
               slot.replaceChildren(canvas, textDiv);
-              const renderTask = pdfPage.render({ canvas, viewport });
+              const renderTask = pdfPage.render({
+                canvas,
+                viewport,
+                ...(dpr > 1 ? { transform: [dpr, 0, 0, dpr, 0, 0] } : {}),
+              });
               renderTasksRef.current.set(pageNumber, renderTask);
               const textLayer = new TextLayer({
                 textContentSource: pdfPage.streamTextContent({ includeMarkedContent: true }),
@@ -502,6 +555,9 @@ export default function FilePreview({ vault, path, onClose }: Props) {
             const hostNow = pdfHostRef.current;
             if (!hostNow) return;
             const next = explicit ?? fitScale();
+            // 手动缩放时不再把页宽卡在容器宽度内（否则超过适应宽度后数字在涨、
+            // 页面不变大——正是用户反馈的现象）；改由外层横向滚动。
+            hostNow.classList.toggle("is-manual", explicit !== undefined);
             if (Math.abs(next - scaleRef.current) / scaleRef.current < 0.02) return;
             scaleRef.current = next;
             const width = Math.round(base.width * next);
@@ -632,6 +688,11 @@ export default function FilePreview({ vault, path, onClose }: Props) {
     [],
   );
 
+  // 显示的缩放取实际生效值（fit 模式下是实时算出的适应倍率）
+  const pdfScaleNow = pdfZoom === "fit" ? scaleRef.current : pdfZoom;
+  const canZoomOut = pdfScaleNow > PDF_ZOOM_MIN + 0.001;
+  const canZoomIn = pdfScaleNow < PDF_ZOOM_MAX - 0.001;
+
   return (
     <div className="file-preview" role="dialog" aria-label={`预览 ${name}`}>
       <div className="file-preview-bar">
@@ -643,26 +704,30 @@ export default function FilePreview({ vault, path, onClose }: Props) {
           <span className="file-preview-zoom" role="group" aria-label="缩放">
             <button
               type="button"
-              className="icon-btn"
-              title="缩小"
-              onClick={() => changePdfZoom((pdfZoom === "fit" ? scaleRef.current : pdfZoom) - 0.2)}
+              className="icon-btn file-preview-zoom-out"
+              aria-label="缩小"
+              title={canZoomOut ? "缩小（Ctrl+滚轮）" : "已是最小"}
+              disabled={!canZoomOut}
+              onClick={() => changePdfZoom(pdfScaleNow - 0.2)}
             >
               <IconMinus size={13} />
             </button>
-            <span className="file-preview-zoom-value" title="当前缩放">
-              {Math.round((pdfZoom === "fit" ? scaleRef.current : pdfZoom) * 100)}%
+            <span className="file-preview-zoom-value" title="当前缩放（Ctrl+滚轮可调）">
+              {Math.round(pdfScaleNow * 100)}%
             </span>
             <button
               type="button"
-              className="icon-btn"
-              title="放大"
-              onClick={() => changePdfZoom((pdfZoom === "fit" ? scaleRef.current : pdfZoom) + 0.2)}
+              className="icon-btn file-preview-zoom-in"
+              aria-label="放大"
+              title={canZoomIn ? "放大（Ctrl+滚轮）" : "已是最大"}
+              disabled={!canZoomIn}
+              onClick={() => changePdfZoom(pdfScaleNow + 0.2)}
             >
               <IconPlus size={13} />
             </button>
             <button
               type="button"
-              className={`icon-btn${pdfZoom === "fit" ? " is-on" : ""}`}
+              className={`icon-btn file-preview-zoom-fit${pdfZoom === "fit" ? " is-on" : ""}`}
               title="适应宽度"
               onClick={() => changePdfZoom("fit")}
             >

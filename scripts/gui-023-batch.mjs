@@ -92,6 +92,12 @@ const vault = join(work, "vault");
 mkdirSync(vault, { recursive: true });
 const udf = join(work, "udf");
 mkdirSync(udf, { recursive: true });
+/** 账户级单词本（0.28 起不再是仓库内的 单词本.md）。 */
+const appConfig = join(
+  process.env.APPDATA ?? join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"),
+  "com.quicknote.gui-test",
+);
+const globalVocabFile = join(appConfig, "vocabulary.md");
 
 writeFileSync(
   join(vault, "qn23字段.md"),
@@ -175,6 +181,9 @@ const connectPage = async (matchIndex = 0) => {
   return ws;
 };
 
+// 单词本现在是账户级：清掉上一批测留下的全局文件，断言才从空库开始
+rmSync(globalVocabFile, { force: true });
+rmSync(join(appConfig, "vocabulary-migrated.json"), { force: true });
 const child = spawnInstance();
 let ws = null;
 try {
@@ -557,16 +566,15 @@ try {
     await sleep(300);
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-lookup-actions button')].find((x) => x.textContent === '保存'); b?.click(); return !!b; })()`);
     await sleep(900);
-    const vocabFile = join(vault, "单词本.md");
-    let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
-    check(vocab.includes("- qn23word"), "面板输入加入单词 → 落盘 单词本.md", vocab);
+    let vocab = existsSync(globalVocabFile) ? readFileSync(globalVocabFile, "utf8") : "";
+    check(vocab.includes("- qn23word"), "面板输入加入单词 → 落盘账户级单词本", vocab);
     check(vocab.indexOf("## 待学习") < vocab.indexOf("- qn23word"), "新词落在待学习节");
     // 标记掌握：点条目 → 详情弹层 → 已掌握 → 关闭
     await evaluate(ws, `(() => { const item = Array.from(document.querySelectorAll('.vocab-item')).find((el) => el.textContent.includes('qn23word')); item?.click(); return !!item; })()`);
     await sleep(500);
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '已掌握')?.click(); return true; })()`);
     await sleep(900);
-    vocab = readFileSync(vocabFile, "utf8");
+    vocab = readFileSync(globalVocabFile, "utf8");
     const doneIdx = vocab.indexOf("## 已掌握");
     const wordIdx = vocab.indexOf("- qn23word");
     check(wordIdx >= 0 && doneIdx >= 0 && wordIdx > doneIdx, "✓ 标记后移入已掌握节", vocab);
@@ -589,8 +597,7 @@ try {
     `document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, altKey: true, bubbles: true, cancelable: true }))`,
   );
   await sleep(900);
-  const vocabFile2 = join(vault, "单词本.md");
-  const vocab2 = existsSync(vocabFile2) ? readFileSync(vocabFile2, "utf8") : "";
+  const vocab2 = existsSync(globalVocabFile) ? readFileSync(globalVocabFile, "utf8") : "";
   check(/- user_name — .* · qn23字段/.test(vocab2), "Ctrl+Alt+V 把选中的词收进单词本（带来源）", vocab2.split("\n").filter((l) => l.startsWith("- ")).join(" ; "));
   const status = await statusText(ws);
   check(/已加入单词本/.test(status), "状态栏提示已加入", status);

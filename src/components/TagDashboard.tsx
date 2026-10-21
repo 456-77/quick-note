@@ -14,8 +14,9 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { menuRefClampedToViewport } from "../lib/menuClamp";
 import { normalizeTagName } from "../lib/tags";
-import { IconChevronRight, IconTag, IconX } from "./icons";
+import { IconTag, IconX } from "./icons";
 
 export interface TagIndexEntry {
   name: string;
@@ -56,6 +57,8 @@ export default function TagDashboard({
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const renameInputRef = useRef<HTMLInputElement | null>(null);
+  /** 行尾 ⋯ 菜单：当前标签 + 锚点（视口坐标）。 */
+  const [rowMenu, setRowMenu] = useState<{ tag: string; x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (renaming !== null) renameInputRef.current?.focus({ preventScroll: true });
@@ -224,34 +227,70 @@ export default function TagDashboard({
             {renaming !== tag.name && (
               <>
                 <span className="tag-dash-count">{tag.notes.length}</span>
+                {/* 行功能收进 ⋯（与知识库文件行同一套交互）：行面上只留名字、
+                    篇数和一个次要按钮，不再挤 ✎/📌/› 三个图标（0.28 反馈
+                    「右侧 > 多余、看起来很乱」）。按钮平时不占位，悬停显形。 */}
                 <button
                   type="button"
-                  className="tag-dash-act"
-                  title="重命名标签（对所有笔记生效）"
+                  className={`tag-dash-more${rowMenu?.tag === tag.name ? " is-open" : ""}`}
+                  aria-label={`${tag.name} 的操作`}
+                  aria-haspopup="menu"
+                  aria-expanded={rowMenu?.tag === tag.name}
+                  title="标签操作：置顶 / 重命名"
                   onClick={(event) => {
                     event.stopPropagation();
-                    startRename(tag.name);
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    setRowMenu({ tag: tag.name, x: rect.right, y: rect.bottom });
                   }}
                 >
-                  ✎
+                  ⋯
                 </button>
-                <button
-                  type="button"
-                  className={`tag-dash-act${isPinned ? " is-on" : ""}`}
-                  title={isPinned ? "取消置顶" : "置顶"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onTogglePin(tag.name);
-                  }}
-                >
-                  📌
-                </button>
-                <IconChevronRight size={12} />
               </>
             )}
           </div>
         );
       })}
+
+      {rowMenu && (
+        <>
+          <div
+            className="menu-backdrop"
+            onClick={() => setRowMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setRowMenu(null);
+            }}
+          />
+          <div
+            className="context-menu tag-dash-menu"
+            role="menu"
+            ref={menuRefClampedToViewport(rowMenu.x, rowMenu.y)}
+            style={{ left: rowMenu.x, top: rowMenu.y }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                onTogglePin(rowMenu.tag);
+                setRowMenu(null);
+              }}
+            >
+              {pinnedTags.includes(rowMenu.tag) ? "取消置顶" : "置顶"}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                const tag = rowMenu.tag;
+                setRowMenu(null);
+                startRename(tag);
+              }}
+            >
+              重命名…
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }

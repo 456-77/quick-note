@@ -335,6 +335,19 @@ export const appDataPaths = () => invoke<AppDataPaths>("app_data_paths");
 export const setCustomDataDir = (path: string | null) =>
   invoke<AppDataPaths>("set_custom_data_dir", { path });
 
+/**
+ * 读应用配置目录下的文本文件（账户级数据：跨仓库共用的单词本）。
+ * 文件不存在返回 null；name 只允许纯文件名。
+ */
+export const readAppText = (name: string) => invoke<string | null>("read_app_text", { name });
+
+/** 原子写应用配置目录下的文本文件。 */
+export const writeAppText = (name: string, contents: string) =>
+  invoke<void>("write_app_text", { name, contents });
+
+/** 应用级文本文件的绝对路径（「在文件夹中显示」用）。 */
+export const appTextPath = (name: string) => invoke<string>("app_text_path_of", { name });
+
 /** 目录体积（设置 → 存储 的缓存大小展示用）。 */
 export interface DirStat {
   files: number;

@@ -27,6 +27,78 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+const SHARPEN_SVG_ID = "qn-bg-sharpen-defs";
+const SHARPEN_FILTER_ID = "qn-bg-sharpen";
+
+/**
+ * 注入/更新锐化滤镜（SVG feConvolveMatrix），返回 CSS filter 里的引用串。
+ *
+ * 背景层与设置页预览共用同一个滤镜：同一个 document 里一个 id 只能有一份，
+ * 谁先用到就由谁创建，之后只改 kernelMatrix。强度 0 时不启用（不返回引用），
+ * 免得给纯浏览场景白付一次全屏卷积。
+ */
+export function sharpenFilterRef(strength: number): string {
+  if (typeof document === "undefined") return "";
+  const amount = clamp(strength, 0, 100) / 100;
+  if (amount <= 0) return "";
+
+  let svg = document.getElementById(SHARPEN_SVG_ID) as SVGSVGElement | null;
+  if (!svg) {
+    svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.id = SHARPEN_SVG_ID;
+    // 定义型 SVG：不参与布局，也不能拦截事件
+    svg.setAttribute("width", "0");
+    svg.setAttribute("height", "0");
+    svg.setAttribute("aria-hidden", "true");
+    svg.style.position = "absolute";
+    svg.style.width = "0";
+    svg.style.height = "0";
+    svg.style.overflow = "hidden";
+    svg.style.pointerEvents = "none";
+    const filter = document.createElementNS("http://www.w3.org/2000/svg", "filter");
+    filter.id = SHARPEN_FILTER_ID;
+    // 扩大滤镜区域：负权重的 3×3 卷积会在边缘取样，默认 -10%/120% 会把
+    // 边缘一圈切掉（表现为背景图四周突然变透明）。
+    filter.setAttribute("x", "-10%");
+    filter.setAttribute("y", "-10%");
+    filter.setAttribute("width", "120%");
+    filter.setAttribute("height", "120%");
+    filter.setAttribute("color-interpolation-filters", "sRGB");
+    const kernel = document.createElementNS("http://www.w3.org/2000/svg", "feConvolveMatrix");
+    kernel.setAttribute("order", "3");
+    kernel.setAttribute("preserveAlpha", "true");
+    kernel.setAttribute("edgeMode", "duplicate");
+    filter.appendChild(kernel);
+    svg.appendChild(filter);
+    document.body.appendChild(svg);
+  }
+
+  // 标准 3×3 锐化核：中心 1+4a，四邻 -a。a 越大边缘越硬，过 0.5 会出现
+  // 明显白边/光晕，所以滑杆 100% 也只到 0.5。
+  const a = amount * 0.5;
+  const center = 1 + 4 * a;
+  const kernel = svg.querySelector("feConvolveMatrix");
+  kernel?.setAttribute(
+    "kernelMatrix",
+    `0 ${-a} 0 ${-a} ${center} ${-a} 0 ${-a} 0`,
+  );
+  return `url(#${SHARPEN_FILTER_ID})`;
+}
+
+/** 背景层/预览共用的 filter 串（顺序：模糊 → 亮度 → 对比度 → 锐化）。 */
+export function bgFilterCss(bg: BgSettings): string {
+  const blur = clamp(bg.bgBlur, 0, 50);
+  const sharpen = sharpenFilterRef(bg.bgSharpen ?? 0);
+  return [
+    blur > 0 ? `blur(${blur}px)` : "",
+    `brightness(${clamp(bg.bgBrightness, 10, 200)}%)`,
+    `contrast(${clamp(bg.bgContrast, 10, 200)}%)`,
+    sharpen,
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
+
 /** 把一张背景参数快照铺到 DOM 上。参数改变、仓库切换后都要重新调用。 */
 export function applyBackground(bg: BgSettings, vaultPath: string | null): void {
   if (typeof document === "undefined") return; // Node 测试环境没有 DOM
@@ -60,14 +132,9 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   layer.style.opacity = String(clamp(bg.bgOpacity, 0, 1));
   // filter 只放合法的 filter 函数。0.26 及之前把 scale() 塞进了 filter——它不是
   // filter 函数，整条声明被浏览器判无效丢弃，模糊/亮度/对比度跟着全部失效
-  // （0.27 用户反馈"调节不明显"的根因）。
-  layer.style.filter = [
-    blur > 0 ? `blur(${blur}px)` : "",
-    `brightness(${clamp(bg.bgBrightness, 10, 200)}%)`,
-    `contrast(${clamp(bg.bgContrast, 10, 200)}%)`,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  // （0.27 用户反馈"调节不明显"的根因）。0.28 追加锐化：低分辨率背景图被
+  // cover 放大后靠它找回边缘（用户 850×478 的图铺 1920 宽窗口）。
+  layer.style.filter = bgFilterCss(bg);
   // 缩放走 transform，锚点跟随位置滑杆：放大后拖位置才有可感的平移。
   layer.style.transform = scale !== 1 ? `scale(${scale})` : "";
   layer.style.transformOrigin = `${bg.bgPosX}% ${bg.bgPosY}%`;

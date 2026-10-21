@@ -21,7 +21,7 @@ EXE="$ROOT/src-tauri/target/release/quick-note.exe"
 PORT=9222
 FIXTURE="日记/2026-W37 周记.md"
 
-echo "=== 1/21 构建 GUI 测试专用二进制 ==="
+echo "=== 1/22 构建 GUI 测试专用二进制 ==="
 # 用独立 identifier 构建，让 WebView2 使用独立的数据目录。两个好处：
 #   · 测试不再读写你日常使用的应用配置（localStorage 里存着上次打开的仓库）
 #   · 即使本机有残留/卡死实例锁住了正式数据目录，测试照样能跑
@@ -32,7 +32,7 @@ npm run tauri build -- --no-bundle --config '{"identifier":"com.quicknote.gui-te
 echo "已构建测试变体（identifier=com.quicknote.gui-test）"
 
 echo
-echo "=== 2/21 准备测试仓库 ==="
+echo "=== 2/22 准备测试仓库 ==="
 bash scripts/make-test-vault.sh "$VAULT" > /dev/null
 bash scripts/verify-roundtrip.sh snapshot "$VAULT" > /dev/null
 
@@ -88,7 +88,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo
-echo "=== 3/21 启动应用（注入调试端口） ==="
+echo "=== 3/22 启动应用（注入调试端口） ==="
 # 用干净的 WebView 配置：localStorage 里存着上次的设置与仓库，残留会让断言不稳定。
 rm -rf "$HOME/AppData/Local/com.quicknote.gui-test" 2>/dev/null || true
 # 同步状态也要清掉。它是每台设备一份的（游标 + 各文件哈希），上一轮跑完留下的哈希
@@ -121,91 +121,96 @@ fi
 echo "应用已就绪（端口 $PORT）"
 
 echo
-echo "=== 4/21 GUI 冒烟测试 ==="
+echo "=== 4/22 GUI 冒烟测试 ==="
 node scripts/gui-smoke.mjs "$PORT"
 
 echo
-echo "=== 5/21 编辑保存路径（真实输入） ==="
+echo "=== 5/22 编辑保存路径（真实输入） ==="
 node scripts/gui-edit-save.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 6/21 Live Preview / 表格 / Mermaid / 图片 ==="
+echo "=== 6/22 Live Preview / 表格 / Mermaid / 图片 ==="
 node scripts/gui-livepreview.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 7/21 文件监听与外部改动 ==="
+echo "=== 7/22 文件监听与外部改动 ==="
 node scripts/gui-external-change.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 8/21 粘贴附件 ==="
+echo "=== 8/22 粘贴附件 ==="
 bash scripts/make-test-vault.sh "$VAULT" > /dev/null
 node scripts/gui-paste.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 9/21 文件管理：新建 / 重命名 / 删除 ==="
+echo "=== 9/22 文件管理：新建 / 重命名 / 删除 ==="
 node scripts/gui-file-manage.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 10/21 额外语法渲染与主题 ==="
+echo "=== 10/22 额外语法渲染与主题 ==="
 bash scripts/make-test-vault.sh "$VAULT" > /dev/null
 node scripts/gui-rendering.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 11/21 日记与日历（含库内配置写回） ==="
+echo "=== 11/22 日记与日历（含库内配置写回） ==="
 # 不重建仓库：上一步刚重建过，配置是干净的。gui-daily 自己备份/还原 quick-daily-note.json
 # 并清掉它创建的两篇日记。
 node scripts/gui-daily.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 12/21 多标签页与目录 ==="
+echo "=== 12/22 多标签页与目录 ==="
 node scripts/gui-tabs.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 13/21 云同步（对着桩后端跑完整往返） ==="
+echo "=== 13/22 云同步（对着桩后端跑完整往返） ==="
 # 用桩后端而不是真后端：验收要在没有网络与 Docker 的机器上跑得完；而这里要验证的
 # 恰恰是"字节怎么进怎么出"与"状态码不被吞掉"，桩比真服务器更容易构造这些边界。
 # 脚本自己起后端、自己清理创建的文件（含被墓碑删进 .trash 的那些）。
 node --experimental-strip-types --no-warnings scripts/gui-sync.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 14/21 UI 修复与新功能：居中/表格右键删行删列/设置面板/快捷键 ==="
+echo "=== 14/22 UI 修复与新功能：居中/表格右键删行删列/设置面板/快捷键 ==="
 bash scripts/make-test-vault.sh "$VAULT" > /dev/null
 node scripts/gui-uifixes.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 15/21 仓库打开方式（点最近仓库弹窗） ==="
+echo "=== 15/22 仓库打开方式（点最近仓库弹窗） ==="
 # 自己种子第二仓库并断言弹窗与切换，结束前切回原仓库（临时目录自清理）。
 node scripts/gui-openmode.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 16/21 顺延提醒 / 代码块语义色 / 快速笔记 / 标签仪表盘 ==="
+echo "=== 16/22 顺延提醒 / 代码块语义色 / 快速笔记 / 标签仪表盘 ==="
 # 自种往日待办与收件仓库，结束自清理（配置、设置、临时文件全部还原）。
 node scripts/gui-capture-and-tags.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 17/21 速记管理：标签筛选 / 批量归档 / 快速笔记弹窗 ==="
+echo "=== 17/22 速记管理：标签筛选 / 批量归档 / 快速笔记弹窗 ==="
 # 自种临时收件仓库（新旧格式混合），结束自清理（设置、features.md、临时目录还原）。
 node scripts/gui-capture-manager.mjs "$VAULT" "$PORT"
 
 echo
-echo "=== 18/21 0.23 批测：粘贴多表格/字段联动/搜索跳转红高亮/悬停预览保持/md链接/单词本/mermaid3x/跨窗口热加载 ==="
+echo "=== 18/22 0.23 批测：粘贴多表格/字段联动/搜索跳转红高亮/悬停预览保持/md链接/单词本/mermaid3x/跨窗口热加载 ==="
 # 自起实例（独立 UDF+端口+临时仓库），结束时自清理；前置是第 1 步构建的 gui-test 变体。
 node scripts/gui-023-batch.mjs 9333
 
 echo
-echo "=== 19/21 0.24 批测：搜索×表格保渲染/mermaid导出原生文本/单词面板v2/截图DPI全屏/热键仲裁加固/归档自动同步 ==="
+echo "=== 19/22 0.24 批测：搜索×表格保渲染/mermaid导出原生文本/单词面板v2/截图DPI全屏/热键仲裁加固/归档自动同步 ==="
 # 自起实例与桩后端（独立 UDF+端口+临时仓库），结束时自清理。
 node --experimental-strip-types --no-warnings scripts/gui-024-batch.mjs 9344 9355
 
 echo
-echo "=== 20/21 0.25 批测：单词面板0.25规范重排/释义自动获取(有道)/背景图遮罩/左栏页签/热键仲裁(登记表清空+进程枚举) ==="
+echo "=== 20/22 0.25 批测：单词面板0.25规范重排/释义自动获取(有道)/背景图遮罩/左栏页签/热键仲裁(登记表清空+进程枚举) ==="
 # 自起实例（独立 UDF+端口+临时仓库），结束时自清理；前置是第 1 步构建的 gui-test 变体。
 node scripts/gui-025-batch.mjs 9366
 
 echo
-echo "=== 21/21 0.27 批测：目录加粗/最近文件弹窗/快速待办/单词面板三行结构+复习/标签置顶重命名/开关样式/背景调节/日历等高/mermaid导出预降采样/多窗口同步状态拆分 ==="
+echo "=== 21/22 0.27 批测：目录加粗/最近文件弹窗/快速待办/单词面板三行结构+复习/标签置顶重命名/开关样式/背景调节/日历等高/mermaid导出预降采样/多窗口同步状态拆分 ==="
 # 自起实例（独立 UDF+端口+临时仓库），结束时自清理；前置是第 1 步构建的 gui-test 变体。
 node scripts/gui-026-batch.mjs 9377
+
+echo
+echo "=== 22/22 0.28 批测：背景预览+锐化/同步状态与禁点/标签⋯菜单/最近文件已编辑/日历数字对齐/PDF缩放上限+Ctrl滚轮/单词本账户级/方案D图标 ==="
+# 自起实例（独立 UDF+端口+临时仓库），结束时自清理；前置是第 1 步构建的 gui-test 变体。
+node --experimental-strip-types --no-warnings scripts/gui-028-batch.mjs 9388
 
 echo
 echo "关闭应用（必须先关：应用还开着的话，排队中的自动保存会把内容又写回文件）…"

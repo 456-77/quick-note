@@ -5,29 +5,38 @@
  * 不敏感），下面一排目录筛选 chip（按一级目录聚合），↑↓ 选择、Enter 打开、
  * Esc 关闭。数据来自 App 的 recents（打开顺序即新鲜度），这里不另做 IO。
  *
- * 刻意不做时间筛选：recents 只存顺序没有时间戳，伪造「今天/本周」是假数据；
- * 顺序本身已经表达了「最近」。
+ * 0.28 用户反馈「添加已编辑的筛选」：加一档「已编辑」，按文件 mtime 倒序
+ * 列出最近改过的笔记（与「最近打开」正交——只读过没改的不会出现在这里）。
+ * 数据来自 App 的文件索引 entries（每条带 modified），不另扫盘。
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { EntryMeta } from "../lib/api";
 
 /** 列表里最多展示多少条（recents 上限之外再截一层，弹窗不是文件管理器）。 */
 const LIST_LIMIT = 30;
+/** 「已编辑」来源最多取多少条（按 mtime 排序后截断）。 */
+const EDITED_LIMIT = 80;
+type Mode = "opened" | "edited";
 /** 目录筛选 chip 的上限：一级目录太多时只留笔记数最多的几个。 */
 const DIR_CHIP_LIMIT = 6;
 
 export default function RecentFilesDialog({
   recents,
+  entries,
   activePath,
   onOpen,
   onClose,
 }: {
   recents: string[];
+  /** 文件索引（「已编辑」用 mtime 排序；不含目录）。 */
+  entries: EntryMeta[];
   activePath: string | null;
   onOpen: (path: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
+  const [mode, setMode] = useState<Mode>("opened");
   const [dir, setDir] = useState<string>("");
   const [cursor, setCursor] = useState(0);
   const listRef = useRef<HTMLDivElement | null>(null);
@@ -39,11 +48,23 @@ export default function RecentFilesDialog({
 
   const dirOf = (path: string) => (path.includes("/") ? path.slice(0, path.indexOf("/")) : "");
 
-  /** 目录 chip 候选：全量 recents 里按条数聚合的一级目录（搜索词也参与）。 */
+  /** 最近编辑的笔记：按 mtime 倒序（不随「最近打开」顺序变化）。 */
+  const edited = useMemo(
+    () =>
+      entries
+        .filter((entry) => !entry.isDir)
+        .sort((a, b) => b.modified - a.modified)
+        .slice(0, EDITED_LIMIT)
+        .map((entry) => entry.path),
+    [entries],
+  );
+  const source = mode === "edited" ? edited : recents;
+
+  /** 目录 chip 候选：当前来源里按条数聚合的一级目录（搜索词也参与）。 */
   const dirChips = useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const counts = new Map<string, number>();
-    for (const path of recents) {
+    for (const path of source) {
       if (tokens.length > 0 && !tokens.every((t) => path.toLowerCase().includes(t))) continue;
       const d = dirOf(path);
       if (!d) continue;
@@ -53,20 +74,23 @@ export default function RecentFilesDialog({
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh"))
       .slice(0, DIR_CHIP_LIMIT)
       .map(([name]) => name);
-  }, [recents, query]);
+  }, [source, query]);
 
   const items = useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    let list = recents;
+    let list = source;
     if (dir) list = list.filter((path) => dirOf(path) === dir);
     if (tokens.length > 0) list = list.filter((path) => tokens.every((t) => path.toLowerCase().includes(t)));
     return list.slice(0, LIST_LIMIT);
-  }, [recents, query, dir]);
+  }, [source, query, dir]);
 
-  // 过滤条件变了，选中项回到第一条
+  // 来源/过滤条件变了：目录筛选与选中项都回到第一项
   useEffect(() => {
     setCursor(0);
-  }, [query, dir]);
+  }, [query, dir, mode]);
+  useEffect(() => {
+    setDir("");
+  }, [mode]);
 
   // 选中项滚进可视区（键盘导航到列表下部时跟着走）
   useEffect(() => {
@@ -120,6 +144,28 @@ export default function RecentFilesDialog({
             }
           }}
         />
+        <div className="recent-modes" role="tablist" aria-label="最近文件来源">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "opened"}
+            className={`recent-mode${mode === "opened" ? " is-on" : ""}`}
+            onClick={() => setMode("opened")}
+            title="按打开顺序"
+          >
+            最近打开
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "edited"}
+            className={`recent-mode${mode === "edited" ? " is-on" : ""}`}
+            onClick={() => setMode("edited")}
+            title="按最后修改时间排序（只包含被编辑过的文件）"
+          >
+            已编辑
+          </button>
+        </div>
         {dirChips.length > 0 && (
           <div className="recent-chips" role="tablist" aria-label="按目录筛选">
             <button
@@ -147,7 +193,9 @@ export default function RecentFilesDialog({
         )}
         <div className="recent-list" ref={listRef}>
           {items.length === 0 ? (
-            <div className="recent-empty">没有匹配的最近文件</div>
+            <div className="recent-empty">
+              {mode === "edited" ? "还没有编辑过的文件" : "没有匹配的最近文件"}
+            </div>
           ) : (
             items.map((path, index) => {
               const slash = path.lastIndexOf("/");

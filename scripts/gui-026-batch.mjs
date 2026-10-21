@@ -173,7 +173,13 @@ writeFileSync(
   ),
 );
 
-const vocabFile = join(vault, "单词本.md");
+/** 本机配置目录（gui-test 变体独立）。0.28 起单词本存在这里。 */
+const appConfig = join(
+  process.env.APPDATA ?? join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"),
+  "com.quicknote.gui-test",
+);
+// 种子仍是仓库内的 单词本.md（验证迁移）；断言读账户级全局文件。
+const vocabFile = join(appConfig, "vocabulary.md");
 const readVocab = () => (existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "");
 
 const spawnInstance = () =>
@@ -201,11 +207,6 @@ const connectPage = async (matchIndex = 0) => {
   return ws;
 };
 
-const appConfig = join(
-  process.env.APPDATA ?? join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"),
-  "com.quicknote.gui-test",
-);
-
 let child = null;
 let ws = null;
 
@@ -213,6 +214,9 @@ try {
   rmSync(udf, { recursive: true, force: true });
   mkdirSync(udf, { recursive: true });
   rmSync(join(appConfig, "open-vaults.json"), { force: true });
+  // 0.28 单词本账户级：清掉上一批测留下的全局文件与迁移标记，由本仓库种子迁移
+  rmSync(vocabFile, { force: true });
+  rmSync(join(appConfig, "vocabulary-migrated.json"), { force: true });
   // 0.27 起 per-vault 同步状态文件：清掉旧产物，断言全新生成
   try {
     for (const name of readdirSyncFixed()) {
@@ -345,25 +349,37 @@ try {
   {
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.left-view-tab')].find((el) => el.textContent.includes('标签')); b?.click(); return !!b; })()`);
     await waitFor(ws, `document.querySelectorAll('.tag-dash-row').length > 0`, 15000);
-    // 置顶 qn27tag
-    const pinned = await evaluate(ws, `(() => {
+    // 置顶 qn27tag（0.28 起行操作收进 ⋯ 菜单）
+    await evaluate(ws, `(() => {
       const row = [...document.querySelectorAll('.tag-dash-row')].find((el) => el.textContent.includes('qn27tag'));
-      if (!row) return 'no-row';
-      [...row.querySelectorAll('.tag-dash-act')].find((b) => b.title.includes('置顶'))?.click();
+      row?.querySelector('.tag-dash-more')?.click();
+      return !!row;
+    })()`);
+    const pinMenuReady = await waitFor(ws, `!!document.querySelector('.tag-dash-menu')`, 3000);
+    const pinned = await evaluate(ws, `(() => {
+      const btn = [...document.querySelectorAll('.tag-dash-menu button')].find((b) => b.textContent.includes('置顶'));
+      if (!btn) return 'no-menu-item';
+      btn.click();
       return 'ok';
     })()`);
     await sleep(400);
     const order = await evaluate(ws, `[...document.querySelectorAll('.tag-dash-row .tree-label')].map((el) => el.textContent).join('|')`);
     check(
-      pinned === "ok" && new RegExp("(^|\\|)qn27tag(\\||$)").test(order) && order.split("|").indexOf("qn27tag") === 0,
+      pinMenuReady && pinned === "ok" && new RegExp("(^|\\|)qn27tag(\\||$)").test(order) && order.split("|").indexOf("qn27tag") === 0,
       "置顶后 qn27tag 排到列表首位",
       `order=${order}`,
     );
     // 重命名 qn27tag → qn27renamed
     await evaluate(ws, `(() => {
       const row = [...document.querySelectorAll('.tag-dash-row')].find((el) => el.textContent.includes('qn27tag'));
-      [...row.querySelectorAll('.tag-dash-act')].find((b) => b.title.includes('重命名'))?.click();
+      row?.querySelector('.tag-dash-more')?.click();
       return !!row;
+    })()`);
+    await waitFor(ws, `!!document.querySelector('.tag-dash-menu')`, 3000);
+    await evaluate(ws, `(() => {
+      const btn = [...document.querySelectorAll('.tag-dash-menu button')].find((b) => b.textContent.includes('重命名'));
+      btn?.click();
+      return !!btn;
     })()`);
     const inputReady = await waitFor(ws, `!!document.querySelector('.tag-dash-row .tag-dash-rename-input')`, 5000);
     check(inputReady, "重命名就地输入框出现");

@@ -1,11 +1,18 @@
-<!-- 应用图标（与 src-tauri/icons 同一设计：靛蓝渐变圆角方块 + 白色闪电）。 -->
+<!-- 应用图标（与 src-tauri/icons 同一设计：方案 D · 极简 Q）。
+     深靛蓝渐变瓷砖 + 青→蓝→紫圆环 + 右下紫色尾笔。 -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <defs>
-    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#7676f2"/>
-      <stop offset="1" stop-color="#4646c2"/>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2a33b4"/>
+      <stop offset="1" stop-color="#0d1e70"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0.15" y1="0.1" x2="0.85" y2="0.9">
+      <stop offset="0" stop-color="#53c3fe"/>
+      <stop offset="0.55" stop-color="#2f7bf9"/>
+      <stop offset="1" stop-color="#8a52fd"/>
     </linearGradient>
   </defs>
-  <rect x="0" y="0" width="1024" height="1024" rx="226" fill="url(#bg)"/>
-  <path fill="#ffffff" d="M614.4 61.44 L266.24 573.44 L471.04 573.44 L389.12 962.56 L757.76 450.56 L542.72 450.56 Z"/>
+  <rect width="1024" height="1024" rx="230" fill="url(#tile)"/>
+  <circle cx="483" cy="479" r="315" fill="none" stroke="url(#ring)" stroke-width="135"/>
+  <path d="M543 563 L865 886" fill="none" stroke="#8a52fd" stroke-width="147" stroke-linecap="round"/>
 </svg>

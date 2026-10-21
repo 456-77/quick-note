@@ -1359,6 +1359,17 @@ div.tree-item:focus-visible {
   position: relative;
 }
 
+/* 手动缩放（0.28）：去掉 max-width 钳制，页面按倍率真正变大，超宽交给
+   .file-preview-body 横向滚动；左对齐，避免居中溢出的左半边滚不到。 */
+.file-preview-pdf.is-manual {
+  align-items: flex-start;
+  max-width: none;
+}
+
+.file-preview-pdf.is-manual .file-preview-pdf-page {
+  max-width: none;
+}
+
 /* ------------------------------------------------- PDF 文字选择层 */
 /*
  * pdfjs TextLayer 的宿主：把 PDF 文字以透明 span 铺在画布上，让正文/代码
@@ -2859,10 +2870,23 @@ html.qn-alt-held .cm-line {
 
 /* 日格固定高度（0.27 用户反馈）：行高此前随「有没有日记圆点」变化——
    有点的行比没点的行高出圆点那几像素，整个月历看起来一高一矮。
-   固定 34px 后所有行等高，圆点只占位不改高度。 */
+   0.28 再修：光固定格高不够——圆点仍在流内，flex 居中会把数字整体顶高，
+   有日记的日子数字位置和没日记的日子差 2~3px（用户反馈「高度还是不一致」）。
+   圆点改为绝对定位到底部，数字在格子里永远同一个位置。 */
 .cal-day {
+  position: relative;
   height: 34px;
   min-height: 34px;
+  gap: 0;
+}
+
+.cal-day .cal-dot {
+  position: absolute;
+  left: 50%;
+  bottom: 4px;
+  margin: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
 }
 
 .cal-week-cell:hover {
@@ -3651,6 +3675,7 @@ html.qn-alt-held .cm-line {
 /* 控件跨两行垂直居中：直接子级的输入/选择/控件组落右列 */
 .settings-row > input,
 .settings-row > select,
+.settings-row > .settings-select,
 .settings-row > .settings-inline,
 .settings-row > .settings-segmented,
 .settings-row > .settings-slider,
@@ -3662,10 +3687,183 @@ html.qn-alt-held .cm-line {
 /* 无说明的行：控件与标签同行居中 */
 .settings-row:not(:has(> .settings-row-desc)) > input,
 .settings-row:not(:has(> .settings-row-desc)) > select,
+.settings-row:not(:has(> .settings-row-desc)) > .settings-select,
 .settings-row:not(:has(> .settings-row-desc)) > .settings-inline,
 .settings-row:not(:has(> .settings-row-desc)) > .settings-segmented,
 .settings-row:not(:has(> .settings-row-desc)) > .settings-slider {
   grid-row: 1;
+}
+
+/* ---------------------------------------------------------- 设置下拉（0.28） */
+.settings-select {
+  position: relative;
+  display: inline-flex;
+  width: min(300px, 100%);
+  min-width: 170px;
+}
+
+/* 视觉隐藏但保留在表单里：读屏与 GUI 脚本仍按 select 找控件 */
+.settings-select-native {
+  position: absolute;
+  inset: 0;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  opacity: 0;
+  pointer-events: none;
+  flex: none !important;
+}
+
+.settings-select-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 32px;
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+
+.settings-select-trigger:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.settings-select-trigger:focus-visible,
+.settings-select-trigger.is-open {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.settings-select-trigger:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-select-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.settings-select-trigger svg {
+  flex: none;
+  color: var(--text-faint);
+  transition: transform 0.15s ease;
+}
+
+.settings-select-trigger.is-open svg {
+  transform: rotate(180deg);
+}
+
+/* 菜单走 portal，fixed 定位在触发器下方；圆角/阴影/选中态用界面 token */
+.settings-select-menu {
+  position: fixed;
+  z-index: 130;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  max-height: 280px;
+  padding: 5px;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  animation: rise-in 0.12s ease;
+}
+
+.settings-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  color: var(--text);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.settings-select-option > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-select-option:hover {
+  background: var(--hover);
+}
+
+.settings-select-option.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.settings-select-option svg {
+  flex: none;
+}
+
+/* 云同步：按钮旁的状态（0.28 用户反馈） */
+.settings-sync-actions {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.settings-sync-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  margin-left: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.settings-sync-status.is-ok {
+  color: var(--accent);
+}
+
+.settings-sync-status.is-error {
+  color: var(--danger);
+  max-width: 360px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-sync-dot {
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.75;
+}
+
+.settings-sync-status.is-busy .settings-sync-dot {
+  animation: sync-pulse 1s ease-in-out infinite;
+}
+
+@keyframes sync-pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.15); }
 }
 
 /* 搜索命中的跳转反馈：淡主题色底一闪 */
@@ -3848,30 +4046,31 @@ html.qn-alt-held .cm-line {
   margin: 2px 0 13px;
 }
 
+/* 棋盘格直接做容器底色、图片是独立子层。0.28 修：此前棋盘格是负 z-index
+   的 ::before，父元素一旦有 filter（形成层叠上下文）它就画到背景图上面，
+   整块预览只剩棋盘格——用户反馈「背景预览失效」的根因。 */
 .bg-preview {
   position: relative;
   height: 120px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background-color: var(--surface-2);
-  background-repeat: no-repeat;
+  background:
+    repeating-conic-gradient(var(--surface-3) 0% 25%, var(--surface-2) 0% 50%) 0 0 / 16px 16px;
   overflow: hidden;
 }
 
-/* 预览里垫一层棋盘格，半透明/contain 的观感能看准 */
-.bg-preview::before {
-  content: "";
+.bg-preview-img {
   position: absolute;
   inset: 0;
-  background:
-    repeating-conic-gradient(var(--surface-3) 0% 25%, var(--surface-2) 0% 50%) 0 0 / 16px 16px;
-  z-index: -1;
+  background-repeat: no-repeat;
+  pointer-events: none;
 }
 
 .bg-preview-hint {
   position: absolute;
   right: 8px;
   bottom: 6px;
+  z-index: 1;
   padding: 2px 8px;
   border-radius: 6px;
   background: rgba(0, 0, 0, 0.45);
@@ -6598,12 +6797,14 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   font-weight: 600;
 }
 
+/* 篇数只做弱提示：0.28 去掉了灰底胶囊——一排行里每行一个圆角块，
+   视觉噪声比信息量还大（用户反馈「看起来很乱」）。 */
 .tag-dash-count {
-  font-size: 11.5px;
+  flex: none;
+  min-width: 16px;
+  font-size: 11px;
   color: var(--text-faint);
-  background: var(--surface-2);
-  border-radius: 999px;
-  padding: 1px 8px;
+  text-align: right;
 }
 
 .tag-dash-row {
@@ -6643,6 +6844,46 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 .tag-dash-act:hover {
   color: var(--accent);
   background: var(--accent-soft);
+}
+
+/* 行尾 ⋯（0.28）：与知识库文件行一致——平时不占宽度，悬停/菜单打开时出现。
+   用 width:0 + overflow:hidden 而不是 opacity，避免挤窄标签名。 */
+.tag-dash-more {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 0;
+  height: 20px;
+  padding: 0;
+  overflow: hidden;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--text-faint);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  cursor: pointer;
+  opacity: 0;
+  transition: width 0.12s ease, opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.tag-dash-row:hover .tag-dash-more,
+.tag-dash-row:focus-within .tag-dash-more,
+.tag-dash-more.is-open {
+  width: 22px;
+  opacity: 1;
+}
+
+.tag-dash-more:hover,
+.tag-dash-more.is-open {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.tag-dash-menu {
+  min-width: 132px;
 }
 
 /* 置顶的标签行：文字微强调，一眼可分 */
@@ -9041,7 +9282,7 @@ button.cm-tag:hover {
   min-height: 0;
 }
 
-/* —— 搜索行（主视觉）：搜索框 + 圆形刷新钮。打开单词本.md 在「···」菜单里 —— */
+/* —— 搜索行（主视觉）：搜索框 + 圆形刷新钮。单词本位置在「···」菜单里 —— */
 .vocab-search-row {
   display: flex;
   align-items: center;
@@ -10301,6 +10542,39 @@ button.cm-tag:hover {
 
 .recent-search:focus {
   border-color: var(--accent);
+}
+
+/* 「最近打开 / 已编辑」来源切换（0.28 用户反馈添加已编辑筛选） */
+.recent-modes {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  margin: 0 2px 8px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.recent-mode {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 3px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.recent-mode:hover {
+  color: var(--text);
+}
+
+.recent-mode.is-on {
+  background: var(--surface);
+  color: var(--accent);
+  box-shadow: var(--shadow-1, 0 1px 2px rgba(0, 0, 0, 0.12));
 }
 
 .recent-chips {

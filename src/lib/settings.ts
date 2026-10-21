@@ -99,6 +99,14 @@ export interface Settings {
   bgOpacity: number;
   /** 模糊半径（px）。 */
   bgBlur: number;
+  /**
+   * 清晰度/锐化（0–100，0.28 用户反馈"背景图发虚"）。
+   *
+   * 用户选的图只有 850×478，铺到 1920 宽的窗口是 2.3 倍放大，浏览器双线性
+   * 插值必然发软；锐化用 SVG feConvolveMatrix 把边缘重新拉回来，比单纯
+   * 提对比度更接近"变清晰"的观感。默认 40：升级后不用调就能看到改善。
+   */
+  bgSharpen: number;
   /** 亮度（%）。 */
   bgBrightness: number;
   /** 对比度（%）。 */
@@ -122,6 +130,7 @@ export type BgSettings = Pick<
   | "bgImagePath"
   | "bgOpacity"
   | "bgBlur"
+  | "bgSharpen"
   | "bgBrightness"
   | "bgContrast"
   | "bgPosX"
@@ -156,6 +165,7 @@ const DEFAULTS: Settings = {
   bgImagePath: "",
   bgOpacity: 0.35,
   bgBlur: 0,
+  bgSharpen: 40,
   bgBrightness: 100,
   bgContrast: 100,
   bgPosX: 50,
@@ -216,9 +226,32 @@ export function onSettingsChange(listener: (settings: Settings) => void): () => 
 
 /** 背景参数的默认值（扁平 DEFAULTS 里 bg* 部分的同源副本）。 */
 export function defaultBgSettings(): BgSettings {
-  const { bgEnabled, bgImagePath, bgOpacity, bgBlur, bgBrightness, bgContrast, bgPosX, bgPosY, bgScale, bgFit } =
-    DEFAULTS;
-  return { bgEnabled, bgImagePath, bgOpacity, bgBlur, bgBrightness, bgContrast, bgPosX, bgPosY, bgScale, bgFit };
+  const {
+    bgEnabled,
+    bgImagePath,
+    bgOpacity,
+    bgBlur,
+    bgSharpen,
+    bgBrightness,
+    bgContrast,
+    bgPosX,
+    bgPosY,
+    bgScale,
+    bgFit,
+  } = DEFAULTS;
+  return {
+    bgEnabled,
+    bgImagePath,
+    bgOpacity,
+    bgBlur,
+    bgSharpen,
+    bgBrightness,
+    bgContrast,
+    bgPosX,
+    bgPosY,
+    bgScale,
+    bgFit,
+  };
 }
 
 /**
@@ -227,12 +260,24 @@ export function defaultBgSettings(): BgSettings {
  * 就是纯默认。仓库没开时给默认值——背景图本来就是仓库内图片，没仓库必然没有。
  */
 export function bgSettingsFor(vault: string | null, settings: Settings = current): BgSettings {
-  if (vault && settings.bgPerVault?.[vault]) return { ...settings.bgPerVault[vault] };
+  const defaults = defaultBgSettings();
+  // per-vault 条目是旧版本写下的快照，可能缺后来新增的字段（如 0.28 的
+  // bgSharpen）——先铺默认值再盖条目。不能用普通展开：条目里若是显式的
+  // `undefined`（旧 JSON 的写法），展开会把默认值又覆盖成 undefined。
+  const stored = vault ? settings.bgPerVault?.[vault] : undefined;
+  if (stored) {
+    const merged = { ...defaults } as Record<string, unknown>;
+    for (const [key, value] of Object.entries(stored)) {
+      if (value !== undefined) merged[key] = value;
+    }
+    return merged as unknown as BgSettings;
+  }
   const legacy: BgSettings = {
     bgEnabled: settings.bgEnabled,
     bgImagePath: settings.bgImagePath,
     bgOpacity: settings.bgOpacity,
     bgBlur: settings.bgBlur,
+    bgSharpen: settings.bgSharpen ?? defaults.bgSharpen,
     bgBrightness: settings.bgBrightness,
     bgContrast: settings.bgContrast,
     bgPosX: settings.bgPosX,

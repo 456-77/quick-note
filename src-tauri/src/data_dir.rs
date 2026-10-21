@@ -203,6 +203,70 @@ pub fn set_custom_data_dir(app: AppHandle, path: Option<String>) -> Result<AppDa
     paths_of(&app)
 }
 
+// ------------------------------------------------------------------ 应用级文本文件
+
+/// 应用配置目录下的一个文本文件（现在只有账户级单词本用）。
+///
+/// 只接受纯文件名：调用方传进来的是常量（vocabulary.md / vocabulary-migrated.json），
+/// 但命令是公开的 IPC 入口，仍要做一次路径穿越校验。
+fn app_text_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+    {
+        return Err(format!("非法文件名: {name}"));
+    }
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("无法定位配置目录: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建配置目录失败: {e}"))?;
+    Ok(dir.join(trimmed))
+}
+
+/// 读应用级文本文件；不存在返回 None（首次使用/迁移判断靠它）。
+#[tauri::command]
+pub fn read_app_text(app: AppHandle, name: String) -> Result<Option<String>, String> {
+    let path = app_text_path(&app, &name)?;
+    match fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("读取 {} 失败: {e}", path.display())),
+    }
+}
+
+/// 原子写入应用级文本文件（先写临时文件再改名）。
+///
+/// 多窗口同时改单词本时，直接覆盖写会让另一个窗口读到半截文件；临时名带 pid +
+/// 时间戳，两个进程不会撞名。
+#[tauri::command]
+pub fn write_app_text(app: AppHandle, name: String, contents: String) -> Result<(), String> {
+    let path = app_text_path(&app, &name)?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let temp = path.with_file_name(format!(".{name}.{}.{stamp}.tmp", std::process::id()));
+    fs::write(&temp, contents.as_bytes()).map_err(|e| format!("写入临时文件失败: {e}"))?;
+    match fs::rename(&temp, &path) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            // Windows 上目标被占用时 rename 会失败：退化成覆盖写再清临时文件
+            let result = fs::write(&path, contents.as_bytes());
+            let _ = fs::remove_file(&temp);
+            result.map_err(|e| format!("写入 {} 失败: {e}", path.display()))
+        }
+    }
+}
+
+/// 返回应用级文本文件的绝对路径（「在文件夹中显示」用）。
+#[tauri::command]
+pub fn app_text_path_of(app: AppHandle, name: String) -> Result<String, String> {
+    Ok(app_text_path(&app, &name)?.to_string_lossy().into_owned())
+}
+
 // ------------------------------------------------------------------ 缓存统计
 
 /// 目录体积（文件数 + 字节数；递归，跳过无权限/消失中的条目）。

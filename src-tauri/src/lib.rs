@@ -152,11 +152,40 @@ fn default_vault_dir(app: tauri::AppHandle) -> Option<String> {
     }
 }
 
+/// 本地绝对路径 → `file:///` URL（非 ASCII、空格等全部百分号编码）。
+///
+/// 浏览器命令行接受裸中文路径，但 URL 里出现未编码的 `#`、`?`、`%` 时会被
+/// 当成 fragment/query/转义（笔记名允许这些字符），所以必须按 URL 规则编码。
+fn file_url_for(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    let mut out = String::from("file:///");
+    for byte in normalized.trim_start_matches('/').bytes() {
+        match byte {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'~'
+            | b'/'
+            | b':' => out.push(byte as char),
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// 用无头浏览器把本地 HTML 打印成 PDF 文件。
 ///
 /// 「导出 PDF 文件」的落盘通道：前端先把笔记渲染成独立 HTML（打印样式内联、
 /// 图片为 file:/// 地址），再交由 Edge/Chrome 的 --print-to-pdf 生成。
 /// 生成完成后校验产物存在且非空。
+///
+/// 0.28 修复「浏览器没有生成 PDF 文件」：无头实例改用**独立的 user-data-dir**。
+/// 浏览器已经在运行时，headless 进程会尝试连上同一个默认配置的现存实例、
+/// 把任务丢过去后自己以 0 退出——PDF 永远不落盘（用户机器上 Edge 常驻）。
+/// 独立配置目录还顺带隔离了扩展、同步与首次运行向导。
 #[tauri::command]
 fn export_pdf_via_browser(
     browser_path: String,
@@ -166,29 +195,62 @@ fn export_pdf_via_browser(
     if !std::path::Path::new(&browser_path).is_file() {
         return Err(format!("浏览器不存在: {browser_path}"));
     }
-    let url = format!(
-        "file:///{}",
-        html_path.replace('\\', "/").trim_start_matches('/')
-    );
+    let html = std::path::Path::new(&html_path);
+    if !html.is_file() {
+        return Err(format!("导出用的 HTML 不存在: {html_path}"));
+    }
+    if let Some(parent) = std::path::Path::new(&pdf_path).parent() {
+        if !parent.as_os_str().is_empty() && !parent.is_dir() {
+            return Err(format!("导出目录不存在: {}", parent.display()));
+        }
+    }
+
+    let url = file_url_for(&html_path);
+    // 独立配置目录：pid + 毫秒时间戳命名，多窗口同时导出也不撞名
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let profile = std::env::temp_dir().join(format!(
+        "quicknote-pdf-profile-{}-{stamp}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&profile)
+        .map_err(|e| format!("创建浏览器临时配置目录失败: {e}"))?;
+    let profile_arg = format!("--user-data-dir={}", profile.to_string_lossy());
+    let print_arg = format!("--print-to-pdf={}", pdf_path);
+
     let output = std::process::Command::new(&browser_path)
         .args([
             "--headless",
             "--disable-gpu",
-            &format!("--print-to-pdf={}", pdf_path),
+            &profile_arg,
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--disable-extensions",
+            "--disable-sync",
+            "--disable-background-networking",
+            "--run-all-compositor-stages-before-draw",
+            &print_arg,
             "--no-pdf-header-footer",
             &url,
         ])
         .output()
         .map_err(|e| format!("启动浏览器失败: {e}"))?;
+    // 临时配置目录里有锁文件与缓存，用完就删；失败（被占用）不影响导出结果
+    let _ = std::fs::remove_dir_all(&profile);
+
     let pdf = std::path::Path::new(&pdf_path);
-    if !output.status.success() && !pdf.is_file() {
-        return Err(format!(
-            "浏览器导出失败: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    if !pdf.is_file() {
-        return Err("浏览器没有生成 PDF 文件".into());
+    let wrote = pdf.metadata().map(|meta| meta.len() > 0).unwrap_or(false);
+    if !wrote {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = format!("{stderr}{stdout}").trim().to_string();
+        return Err(if detail.is_empty() {
+            "浏览器没有生成 PDF 文件（无头实例可能被已运行的浏览器接管）".to_string()
+        } else {
+            format!("浏览器没有生成 PDF 文件：{detail}")
+        });
     }
     Ok(())
 }
@@ -358,6 +420,9 @@ pub fn run() {
             vault_home::storage_writable,
             data_dir::app_data_paths,
             data_dir::set_custom_data_dir,
+            data_dir::read_app_text,
+            data_dir::write_app_text,
+            data_dir::app_text_path_of,
             data_dir::dir_stat,
             data_dir::clear_webview_cache,
             data_dir::webview_cache_stat,
@@ -396,4 +461,61 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_url_for;
+
+    #[test]
+    fn file_url_encodes_unicode_space_and_url_specials() {
+        assert_eq!(
+            file_url_for(r"C:\Users\一切随缘\Temp\a b#c.html"),
+            "file:///C:/Users/%E4%B8%80%E5%88%87%E9%9A%8F%E7%BC%98/Temp/a%20b%23c.html"
+        );
+    }
+
+    #[test]
+    fn file_url_keeps_drive_colon_and_slashes() {
+        assert_eq!(file_url_for("H:/notes/x.html"), "file:///H:/notes/x.html");
+    }
+
+    /// 端到端：真调一次无头浏览器，确认 PDF 落盘（有 Edge/Chrome 才跑）。
+    ///
+    /// 用户反馈的「浏览器没有生成 PDF 文件」是 0.28 要修的核心路径；单测
+    /// 至少钉住"能启动、能写文件"，包括带中文/空格的目录。
+    #[test]
+    fn export_pdf_via_browser_writes_pdf() {
+        let candidates = [
+            "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+            "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+            "C:/Program Files/Google/Chrome/Application/chrome.exe",
+            "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+        ];
+        let Some(browser) = candidates
+            .iter()
+            .find(|path| std::path::Path::new(path).is_file())
+        else {
+            eprintln!("跳过：本机没有 Edge/Chrome");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("qn-export-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("创建测试目录");
+        let html = dir.join("导出 测试.html");
+        let pdf = dir.join("导出 测试.pdf");
+        std::fs::write(
+            &html,
+            "<!doctype html><html><head><meta charset=\"utf-8\"></head><body><h1>Quick Note</h1><p>PDF export test.</p></body></html>",
+        )
+        .expect("写 html");
+        let result = super::export_pdf_via_browser(
+            browser.to_string(),
+            html.to_string_lossy().into_owned(),
+            pdf.to_string_lossy().into_owned(),
+        );
+        let size = std::fs::metadata(&pdf).map(|meta| meta.len()).unwrap_or(0);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(result.is_ok(), "导出失败: {result:?}");
+        assert!(size > 0, "PDF 为空");
+    }
 }

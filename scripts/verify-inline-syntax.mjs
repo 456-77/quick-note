@@ -13,6 +13,7 @@ import {
   findTags,
   parseCalloutLine,
 } from "../src/lib/inlineSyntax.ts";
+import { noteTags, tagRenameEdits } from "../src/lib/tags.ts";
 
 let failures = 0;
 const check = (ok, label, detail = "") => {
@@ -125,6 +126,41 @@ check(JSON.stringify(scan(findTags, "### 三级标题")) === "[]", "多级 ATX �
 check(JSON.stringify(scan(findTags, "编号 #1 不算")) === "[]", "纯数字不算标签");
 check(JSON.stringify(scan(findTags, "[[笔记#小节]]")) === "[]", "wiki 链接里的小节标记不算标签");
 check(JSON.stringify(scan(findTags, "`#代码里`", [[0, 5]])) === "[]", "代码区域里的不算标签");
+
+// 0.28：标签索引自己也要跳过代码（此前只靠装饰层传排除区间，索引侧全扫）
+const fencedDoc = [
+  "# 笔记",
+  "",
+  "正文 #真标签",
+  "",
+  "```text",
+  "#文件识别内容",
+  "```",
+  "",
+  "行内 `#行内代码` 不算，但 #结尾标签 算",
+].join("\n");
+check(
+  JSON.stringify(noteTags(fencedDoc)) === JSON.stringify(["真标签", "结尾标签"]),
+  "标签索引跳过围栏代码块与行内代码",
+  JSON.stringify(noteTags(fencedDoc)),
+);
+check(
+  JSON.stringify(noteTags("```\n#文件识别内容\n```")) === "[]",
+  "只有代码块里出现时不算标签",
+  JSON.stringify(noteTags("```\n#文件识别内容\n```")),
+);
+check(
+  JSON.stringify(noteTags("~~~\n#围栏波浪\n~~~\n\n#正文")) === JSON.stringify(["正文"]),
+  "波浪号围栏同样跳过",
+);
+check(
+  tagRenameEdits("正文 #旧 与 `#旧` 与\n```\n#旧\n```", "旧", "新").length === 1,
+  "重命名只改正文里的标签，不动代码里的同名字符串",
+);
+check(
+  JSON.stringify(noteTags("``反引号 #不算`` 但 #算")) === JSON.stringify(["算"]),
+  "多反引号行内代码整段跳过",
+);
 // HTML 属性里的 #c00：排除区间由**调用方**传入（装饰层会把已被 HTML 接管的区间传进来）
 const htmlText = '属性 <font color="#c00">红字</font>';
 const htmlSpan = findInlineHtml(htmlText, 0, [])[0];

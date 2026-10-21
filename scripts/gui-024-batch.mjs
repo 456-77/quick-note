@@ -44,7 +44,7 @@ const cdp = (ws, method, params = {}) =>
 const evaluate = async (ws, expression) => {
   const r = await cdp(ws, "Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true });
   if (r.exceptionDetails) {
-    throw new Error(`页面内异常: ${r.exceptionDetails.text} ${r.exceptionDetails.exception?.description ?? ""}`);
+    throw new Error(`页面内异常: ${r.exceptionDetails.text} ${r.exceptionDetails.exception?.description ?? ""} expr=${expression.slice(0, 180)}`);
   }
   return r.result.value;
 };
@@ -302,6 +302,11 @@ const appConfig = join(
   "com.quicknote.gui-test",
 );
 const normalizeKey = (value) => value.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+/** 账户级单词本（0.28 起不再是仓库内的 单词本.md）。 */
+const globalVocabFile = join(appConfig, "vocabulary.md");
+// 清掉上一批测留下的单词本，计数断言（前后 +1）才稳定
+rmSync(globalVocabFile, { force: true });
+rmSync(join(appConfig, "vocabulary-migrated.json"), { force: true });
 
 const child = spawnInstance(vaultA);
 let ws = null;
@@ -549,9 +554,9 @@ try {
     await sleep(900);
     const toast1 = await evaluate(ws, `document.querySelector('.vocab-toast')?.textContent ?? ''`);
     check(String(toast1).includes("已添加到待学习"), "添加成功 Toast", String(toast1));
-    const vocabFile = join(vaultA, "单词本.md");
+    const vocabFile = globalVocabFile;
     let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
-    check(vocab.includes("- qn24word1"), "快速添加落盘 单词本.md", vocab);
+    check(vocab.includes("- qn24word1"), "快速添加落盘账户级单词本", vocab);
     // 重复添加 → 提示已存在 + 查看入口（先等第一条 Toast 消失，避免轮询命中残留）
     await waitFor(ws, `!document.querySelector('.vocab-toast')`, 5000);
     await evaluate(ws, `(() => { const t = document.querySelector('.vocab-add-toggle'); if (t) { t.click(); return true; } return !!document.querySelector('.vocab-add-input'); })()`);
@@ -654,38 +659,63 @@ try {
   } catch {
     // 拿不到期望值就跳过分辨率断言（CI 无桌面会话时的兜底）
   }
+  /**
+   * 桌面会话不可抓屏时跳过整段截图断言。
+   *
+   * CopyFromScreen 在锁屏/断开的 RDP 会话里会失败（句柄无效）——这是环境状态，
+   * 不是应用回归；verify-gui.sh 头部也写了本机屏幕捕获不可用。其他错误照常抛出，
+   * 不能拿"跳过"掩盖真实失败。
+   */
+  let captureUnavailable = false;
   if (expectW > 0) {
+    // 把 reject 收进返回值：直接 await 的话 CDP 只给 "Uncaught (in promise)"，
+    // 拿不到 Rust 侧的具体错因，也就没法区分"环境不可抓屏"和"功能坏了"。
     const shot = await evaluate(
       ws,
-      `window.__TAURI_INTERNALS__.invoke('screenshot_capture').then((s) => ({ w: s.width, h: s.height }))`,
+      `window.__TAURI_INTERNALS__.invoke('screenshot_capture').then(
+        (s) => ({ ok: true, w: s.width, h: s.height }),
+        (e) => ({ ok: false, error: String(e) }),
+      )`,
     );
-    check(
-      shot.w === expectW && shot.h === expectH,
-      `抓屏为物理分辨率（${shot.w}x${shot.h} == ${expectW}x${expectH}，DPI 虚拟化修复生效）`,
-    );
+    if (!shot.ok) {
+      if (/句柄无效|invalid handle|CopyFromScreen/i.test(String(shot.error))) {
+        captureUnavailable = true;
+        console.log(`· 跳过截图断言：当前桌面会话不可抓屏（${String(shot.error).slice(0, 80)}）`);
+      } else {
+        check(false, "抓屏命令成功返回", String(shot.error));
+      }
+    } else {
+      check(
+        shot.w === expectW && shot.h === expectH,
+        `抓屏为物理分辨率（${shot.w}x${shot.h} == ${expectW}x${expectH}，DPI 虚拟化修复生效）`,
+      );
+    }
   } else {
     console.log("· 跳过抓屏分辨率断言（未能现场取到物理分辨率）");
+    captureUnavailable = true;
   }
   // 冻结期窗口切系统全屏（覆盖任务栏），关闭后还原
-  await evaluate(ws, `window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'screenshot-hotkey' })`);
-  const overlayUp = await waitFor(ws, `!!document.querySelector('.shot-overlay')`, 15000);
-  check(overlayUp, "合成 screenshot-hotkey 打开冻结浮层");
-  if (overlayUp) {
-    const full = await waitFor(
-      ws,
-      `(() => { const sh = window.screen.height; return window.outerHeight >= sh - 2 ? window.outerHeight : false; })()`,
-      8000,
-    );
-    check(!!full, `冻结期窗口进入系统全屏（outerHeight=${await evaluate(ws, "window.outerHeight")} / screen.height=${await evaluate(ws, "window.screen.height")}）`);
-    await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))`);
-    const overlayGone = await waitFor(ws, `!document.querySelector('.shot-overlay')`, 6000);
-    check(overlayGone, "Esc 关闭冻结浮层");
-    const restored = await waitFor(
-      ws,
-      `(() => { return window.outerHeight < window.screen.height - 10; })()`,
-      8000,
-    );
-    check(restored, "关闭后窗口退出全屏（任务栏恢复）");
+  if (!captureUnavailable) {
+    await evaluate(ws, `window.__TAURI_INTERNALS__.invoke('plugin:event|emit', { event: 'screenshot-hotkey' })`);
+    const overlayUp = await waitFor(ws, `!!document.querySelector('.shot-overlay')`, 15000);
+    check(overlayUp, "合成 screenshot-hotkey 打开冻结浮层");
+    if (overlayUp) {
+      const full = await waitFor(
+        ws,
+        `(() => { const sh = window.screen.height; return window.outerHeight >= sh - 2 ? window.outerHeight : false; })()`,
+        8000,
+      );
+      check(!!full, `冻结期窗口进入系统全屏（outerHeight=${await evaluate(ws, "window.outerHeight")} / screen.height=${await evaluate(ws, "window.screen.height")}）`);
+      await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))`);
+      const overlayGone = await waitFor(ws, `!document.querySelector('.shot-overlay')`, 6000);
+      check(overlayGone, "Esc 关闭冻结浮层");
+      const restored = await waitFor(
+        ws,
+        `(() => { return window.outerHeight < window.screen.height - 10; })()`,
+        8000,
+      );
+      check(restored, "关闭后窗口退出全屏（任务栏恢复）");
+    }
   }
 
   // ---------------------------------------------- 5. 归档自动同步（0.24 反馈⑦）

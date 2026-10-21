@@ -18,7 +18,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { bgFilterCss } from "../lib/background";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
 import { clearWebviewCache, pickDirectory, listVaults, webviewCacheStat, type AppDataPaths, type DirStat } from "../lib/api";
 import { bgSettingsFor, type BgSettings, type Settings } from "../lib/settings";
@@ -29,6 +31,8 @@ import { setCapturing } from "../lib/hotkeys";
 import HotkeysPane from "./HotkeysPane";
 import {
   IconCalendarPlus,
+  IconCheck,
+  IconChevronDown,
   IconLibrary,
   IconListTree,
   IconRefresh,
@@ -114,6 +118,213 @@ function Row({
       {desc && <span className="settings-row-desc">{desc}</span>}
       {children}
     </label>
+  );
+}
+
+/**
+ * 设置里的下拉框：触发器 + 自绘菜单（0.28 用户反馈"下拉框改现代些"）。
+ *
+ * 原生 `<select>` 的弹出层由系统绘制，CSS 完全管不到——截图里那种白底高亮、
+ * 直角边框的旧式列表就是它。这里按钮与菜单都用界面自己的 token 绘制；同时
+ * **保留一个视觉隐藏的原生 select**（display 不设 none，保持可程序化赋值）：
+ * 键盘读屏与 GUI 验收脚本都还按 select 找控件、写 value、派发 change。
+ * 菜单用 portal + fixed：设置区是可滚动容器，绝对定位的菜单会被裁掉。
+ */
+function SettingsSelect<T extends string>({
+  value,
+  options,
+  onChange,
+  disabled = false,
+  className = "",
+  ariaLabel,
+}: {
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+  disabled?: boolean;
+  className?: string;
+  ariaLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const current = options.find((option) => option.value === value) ?? options[0];
+
+  const place = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const width = Math.max(rect.width, 200);
+    const menuHeight = Math.min(280, options.length * 34 + 10);
+    let left = rect.right - width;
+    if (left < 8) left = 8;
+    if (left + width > window.innerWidth - 8) left = Math.max(8, window.innerWidth - width - 8);
+    // 空间不够就翻到触发器上方，避免菜单被窗口底边截断
+    const below = rect.bottom + 6;
+    const top = below + menuHeight > window.innerHeight - 8 ? Math.max(8, rect.top - menuHeight - 6) : below;
+    setAnchor({ left, top, width });
+  }, [options.length]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onScroll = (event: Event) => {
+      // 拖动设置区滚动条时菜单会与触发器脱节，直接收起最干净
+      if (menuRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const onResize = () => setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open]);
+
+  const choose = (next: T) => {
+    setOpen(false);
+    onChange(next);
+    triggerRef.current?.focus({ preventScroll: true });
+  };
+
+  return (
+    <span className={`settings-select${className ? ` ${className}` : ""}`}>
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`settings-select-trigger${open ? " is-open" : ""}`}
+        disabled={disabled}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={() => {
+          if (open) {
+            setOpen(false);
+            return;
+          }
+          place();
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            place();
+            setOpen(true);
+          }
+        }}
+      >
+        <span className="settings-select-label">{current?.label ?? ""}</span>
+        <IconChevronDown size={12} />
+      </button>
+      {/* 原生 select（视觉隐藏）：GUI 验收与读屏仍按 select 操作 */}
+      <select
+        className="settings-select-native"
+        value={value}
+        disabled={disabled}
+        tabIndex={-1}
+        aria-label={ariaLabel}
+        onChange={(event) => onChange(event.target.value as T)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+      {open &&
+        anchor &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="settings-select-menu"
+            role="listbox"
+            aria-label={ariaLabel}
+            style={{ left: anchor.left, top: anchor.top, minWidth: anchor.width }}
+          >
+            {options.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="option"
+                aria-selected={option.value === value}
+                className={`settings-select-option${option.value === value ? " is-on" : ""}`}
+                onClick={() => choose(option.value)}
+              >
+                <span>{option.label}</span>
+                {option.value === value && <IconCheck size={12} />}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </span>
+  );
+}
+
+/**
+ * 云同步的两个动作 + 旁边的实时状态（0.28 用户反馈：点同步后旁边要显示状态，
+ * 未完成时不能重复点）。
+ *
+ * 状态直接取 useSync 的 status：引擎在真正开工前先 onStatus("syncing")，所以
+ * 点下去立刻变「同步中…」并禁用两个按钮；完成/失败再切回。状态条同时给了
+ * 上次成功时间与错因，不用再低头看状态栏。
+ */
+function SyncActions({ sync }: { sync: SyncController }) {
+  const syncing = sync.status === "syncing";
+  const time = (() => {
+    if (!sync.lastSyncAt) return "";
+    const when = new Date(sync.lastSyncAt);
+    const pad = (value: number) => String(value).padStart(2, "0");
+    return `${pad(when.getHours())}:${pad(when.getMinutes())}`;
+  })();
+  const statusText = syncing
+    ? "同步中…"
+    : sync.status === "error"
+      ? `同步失败：${sync.error ?? "未知原因"}`
+      : sync.status === "ok"
+        ? time
+          ? `已同步 ${time}`
+          : "已同步"
+        : sync.config.enabled
+          ? "等待同步"
+          : "自动同步已关闭";
+  return (
+    <div className="settings-actions settings-sync-actions">
+      <button
+        type="button"
+        className={`btn btn-primary${syncing ? " is-busy" : ""}`}
+        disabled={syncing}
+        onClick={() => sync.syncNow()}
+      >
+        {syncing ? "同步中…" : "立即同步"}
+      </button>
+      <button
+        type="button"
+        className="btn"
+        disabled={syncing}
+        onClick={() => sync.resetCursorAndSync()}
+        title="游标归零后重新全量拉取一次；本地状态异常时用它"
+      >
+        重置游标并重拉
+      </button>
+      <span
+        className={`settings-sync-status is-${sync.status}${syncing ? " is-busy" : ""}`}
+        data-sync-status={sync.status}
+        title={sync.status === "error" ? sync.error ?? "" : statusText}
+        role="status"
+        aria-live="polite"
+      >
+        <span className="settings-sync-dot" aria-hidden />
+        {statusText}
+      </span>
+    </div>
   );
 }
 
@@ -475,15 +686,15 @@ export default function SettingsDialog({
         <section className="settings-sec" data-sec="general" style={{ display: searching || active === "general" ? undefined : "none" }}>
           <Group>链接与附件</Group>
           <Row label="插入链接写法" desc="粘贴图片/文件时插入的链接格式。">
-            <select
+            <SettingsSelect
+              ariaLabel="插入链接写法"
               value={settings.linkFormat}
-              onChange={(event) =>
-                saveWithFlash({ linkFormat: event.target.value as Settings["linkFormat"] })
-              }
-            >
-              <option value="wiki">Wiki：![[图.png]]</option>
-              <option value="markdown">Markdown：![](/attachments/图.png)</option>
-            </select>
+              options={[
+                { value: "wiki", label: "Wiki：![[图.png]]" },
+                { value: "markdown", label: "Markdown：![](/attachments/图.png)" },
+              ]}
+              onChange={(value) => saveWithFlash({ linkFormat: value })}
+            />
           </Row>
           <Row
             label="粘贴时保存附件"
@@ -605,31 +816,31 @@ export default function SettingsDialog({
             desc="点最近仓库/选择其他仓库时在当前窗口还是新窗口打开。"
             tip="「每次询问」在切换仓库时弹窗让你选；勾过「记住我的选择」后会跳过询问，在这里改回「每次询问」即可恢复。目标仓库已在别的窗口开着时会直接把那个窗口切到前台。"
           >
-            <select
+            <SettingsSelect
+              ariaLabel="打开其他仓库时"
               value={settings.vaultOpenMode}
-              onChange={(event) =>
-                saveWithFlash({ vaultOpenMode: event.target.value as Settings["vaultOpenMode"] })
-              }
-            >
-              <option value="ask">每次询问（在新窗口或当前窗口打开）</option>
-              <option value="current">总是当前窗口</option>
-              <option value="newWindow">总是新窗口</option>
-            </select>
+              options={[
+                { value: "ask", label: "每次询问（在新窗口或当前窗口打开）" },
+                { value: "current", label: "总是当前窗口" },
+                { value: "newWindow", label: "总是新窗口" },
+              ]}
+              onChange={(value) => saveWithFlash({ vaultOpenMode: value })}
+            />
           </Row>
           <Row
             label="打开笔记时"
             desc="打开**没打开过**的笔记时替换当前标签还是新开标签。"
             tip="替换当前标签（Obsidian 式）标签数不增长，点文件树就像翻页；已打开过的笔记永远切回原有标签，两种模式一致。标签多时可以在标签栏上用滚轮左右滑动。"
           >
-            <select
+            <SettingsSelect
+              ariaLabel="打开笔记时"
               value={settings.openNoteMode}
-              onChange={(event) =>
-                saveWithFlash({ openNoteMode: event.target.value as Settings["openNoteMode"] })
-              }
-            >
-              <option value="replace">替换当前标签（Obsidian 式）</option>
-              <option value="newTab">新开一个标签页</option>
-            </select>
+              options={[
+                { value: "replace", label: "替换当前标签（Obsidian 式）" },
+                { value: "newTab", label: "新开一个标签页" },
+              ]}
+              onChange={(value) => saveWithFlash({ openNoteMode: value })}
+            />
           </Row>
           <Row
             label="新建/重命名时同步一级标题"
@@ -813,15 +1024,15 @@ export default function SettingsDialog({
             desc="正文渲染观感：默认 / Blue Topaz 风。"
             tip="Blue Topaz 风仿照 Obsidian 社区主题 Blue Topaz 的正文观感：彩色标题层级、蓝色标题下划线、着色表头与加重的 callout / 引用块。只影响渲染样式，不改任何文件内容；与「自定义样式」叠加生效（自定义的优先级更高）。"
           >
-            <select
+            <SettingsSelect
+              ariaLabel="Markdown 渲染风格"
               value={settings.renderStyle}
-              onChange={(event) =>
-                saveWithFlash({ renderStyle: event.target.value as Settings["renderStyle"] })
-              }
-            >
-              <option value="default">默认</option>
-              <option value="blueTopaz">Blue Topaz 风</option>
-            </select>
+              options={[
+                { value: "default", label: "默认" },
+                { value: "blueTopaz", label: "Blue Topaz 风" },
+              ]}
+              onChange={(value) => saveWithFlash({ renderStyle: value })}
+            />
           </Row>
           <Row
             label="显示行号数字"
@@ -854,57 +1065,62 @@ export default function SettingsDialog({
             desc="从当前仓库的图片里选；想用新图先拷进仓库附件目录。"
             keywords="背景 壁纸"
           >
-            <select
+            <SettingsSelect
+              ariaLabel="背景图片"
               value={bg.bgImagePath}
               disabled={!vault}
-              onChange={(event) =>
+              options={[
+                { value: "", label: "（无背景图）" },
+                ...(bg.bgImagePath && !imagePaths.includes(bg.bgImagePath)
+                  ? [{ value: bg.bgImagePath, label: `${bg.bgImagePath}（文件不在仓库里）` }]
+                  : []),
+                ...imagePaths.map((path) => ({ value: path, label: path })),
+              ]}
+              onChange={(value) =>
                 saveBg({
-                  bgImagePath: event.target.value,
+                  bgImagePath: value,
                   // 选了图顺手启用；选回「无」就一并关掉，避免开着背景却没图的悬空状态
-                  bgEnabled: event.target.value ? true : false,
+                  bgEnabled: value ? true : false,
                 })
               }
-            >
-              <option value="">（无背景图）</option>
-              {bg.bgImagePath && !imagePaths.includes(bg.bgImagePath) && (
-                <option value={bg.bgImagePath}>{bg.bgImagePath}（文件不在仓库里）</option>
-              )}
-              {imagePaths.map((path) => (
-                <option key={path} value={path}>
-                  {path}
-                </option>
-              ))}
-            </select>
+            />
           </Row>
-          {/* 背景预览：按当前参数实时渲染（0.26 规范五），开仓库且有图时出现 */}
+          {/* 背景预览：按当前参数实时渲染（0.26 规范五），开仓库且有图时出现。
+              0.28 修：棋盘格此前是 z-index:-1 的 ::before，父级一加 filter 形成
+              层叠上下文后，负层级子元素反而画在父级背景图之上，整块预览只剩
+              棋盘格（用户反馈"预览失效"）。现在棋盘格是容器底色、图片是独立
+              子层，层级写死不靠负 z-index。 */}
           {vault && bg.bgImagePath && (
             <div className="settings-block bg-preview-block" data-keywords="背景 预览">
-              <div
-                className="bg-preview"
-                style={{
-                  backgroundImage: `url("${convertFileSrc(`${vault.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`)}")`,
-                  backgroundSize: bg.bgFit === "contain" ? "contain" : "cover",
-                  backgroundPosition: `${bg.bgPosX}% ${bg.bgPosY}%`,
-                  opacity: bg.bgOpacity,
-                  // 与 background.ts 同口径：scale 不是 filter 函数，混进 filter 会整条失效
-                  filter: `blur(${bg.bgBlur}px) brightness(${bg.bgBrightness}%) contrast(${bg.bgContrast}%)`,
-                  transform: bg.bgScale !== 100 ? `scale(${bg.bgScale / 100})` : undefined,
-                  transformOrigin: `${bg.bgPosX}% ${bg.bgPosY}%`,
-                }}
-              >
+              <div className="bg-preview">
+                <div
+                  className="bg-preview-img"
+                  style={{
+                    backgroundImage: `url("${convertFileSrc(`${vault.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`)}")`,
+                    backgroundSize: bg.bgFit === "contain" ? "contain" : "cover",
+                    backgroundPosition: `${bg.bgPosX}% ${bg.bgPosY}%`,
+                    opacity: bg.bgOpacity,
+                    // 与 background.ts 同口径（含 0.28 的锐化）
+                    filter: bgFilterCss(bg),
+                    transform: bg.bgScale !== 100 ? `scale(${bg.bgScale / 100})` : undefined,
+                    transformOrigin: `${bg.bgPosX}% ${bg.bgPosY}%`,
+                  }}
+                />
                 <span className="bg-preview-hint">背景预览（实际观感以界面为准）</span>
               </div>
             </div>
           )}
           <Row label="适配方式" desc="铺满裁剪（cover）/ 完整显示（contain）。" keywords="背景">
-            <select
+            <SettingsSelect
+              ariaLabel="适配方式"
               value={bg.bgFit}
               disabled={!vault}
-              onChange={(event) => saveBg({ bgFit: event.target.value as BgSettings["bgFit"] })}
-            >
-              <option value="cover">铺满裁剪（cover）</option>
-              <option value="contain">完整显示（contain）</option>
-            </select>
+              options={[
+                { value: "cover", label: "铺满裁剪（cover）" },
+                { value: "contain", label: "完整显示（contain）" },
+              ]}
+              onChange={(value) => saveBg({ bgFit: value })}
+            />
           </Row>
           <Row label="不透明度" desc="背景图整体的可见程度。" keywords="背景 淡 透明">
             <span className="settings-slider">
@@ -926,6 +1142,22 @@ export default function SettingsDialog({
                 onChange={(event) => saveBg({ bgBlur: Number(event.target.value) })}
               />
               <span className="settings-slider-value">{bg.bgBlur}px</span>
+            </span>
+          </Row>
+          <Row
+            label="清晰度"
+            desc="锐化边缘，抵消低分辨率图片放大后的发虚。"
+            keywords="背景 清晰 锐化"
+            tip="背景图被 cover 放大到窗口尺寸后，浏览器插值会让边缘发软。这里用 3×3 卷积做锐化（不是单纯提对比度）；滑杆越大边缘越硬，100% 已经足够，再大容易出现白边光晕。"
+          >
+            <span className="settings-slider">
+              <input
+                type="range" min={0} max={100} step={5}
+                value={bg.bgSharpen}
+                disabled={!vault}
+                onChange={(event) => saveBg({ bgSharpen: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{bg.bgSharpen}%</span>
             </span>
           </Row>
           <Row label="亮度" desc="背景图的明暗。" keywords="背景">
@@ -1172,15 +1404,15 @@ export default function SettingsDialog({
             />
           </Row>
           <Row label="推送范围" desc="仅日记目录或整个仓库。">
-            <select
+            <SettingsSelect
+              ariaLabel="推送范围"
               value={sync.config.scope}
-              onChange={(event) =>
-                sync.updateConfig({ scope: event.target.value as "folder" | "vault" })
-              }
-            >
-              <option value="folder">仅日记目录</option>
-              <option value="vault">整个仓库</option>
-            </select>
+              options={[
+                { value: "folder", label: "仅日记目录" },
+                { value: "vault", label: "整个仓库" },
+              ]}
+              onChange={(value) => sync.updateConfig({ scope: value })}
+            />
           </Row>
           <Row
             label="云端仓库名"
@@ -1194,19 +1426,7 @@ export default function SettingsDialog({
               onChange={(event) => sync.updateConfig({ vaultName: event.target.value })}
             />
           </Row>
-          <div className="settings-actions">
-            <button type="button" className="btn btn-primary" onClick={() => sync.syncNow()}>
-              立即同步
-            </button>
-            <button
-              type="button"
-              className="btn"
-              onClick={() => sync.resetCursorAndSync()}
-              title="游标归零后重新全量拉取一次；本地状态异常时用它"
-            >
-              重置游标并重拉
-            </button>
-          </div>
+          <SyncActions sync={sync} />
         </section>
 
         <section className="settings-sec" data-sec="storage" style={{ display: searching || active === "storage" ? undefined : "none" }}>

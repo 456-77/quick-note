@@ -1,8 +1,10 @@
 /**
  * 单词本面板（右侧「单词」页签）。
  *
- * 数据源是仓库根的 `单词本.md`（格式见 vocabulary.ts 的文件头说明）：面板只做
- * 读取 → 解析 → 行级变换 → 写回，文件本身保持用户可手编的普通 Markdown。
+ * 数据源是**账户级**单词本（应用配置目录的 vocabulary.md，0.28 起所有仓库
+ * 共用一份；格式见 vocabulary.ts）：面板只做读取 → 解析 → 行级变换 → 写回，
+ * 文件本身保持用户可手编的普通 Markdown。旧仓库里的 单词本.md 由
+ * vocabStore.ts 一次性合并，不再参与读写。
  *
  * 0.24 按用户提示词重做（"轻量的个人单词记忆工具，快速记录 + 快速查词"）：
  *  - 搜索优先：顶部醒目搜索框（英文单词与中文释义实时过滤、回车记入最近搜索、
@@ -21,10 +23,10 @@
  */
 
 import { MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { readNoteOptional, vocabLookup, writeNote, type VocabLookup } from "../lib/api";
+import { appTextPath, vocabLookup, type VocabLookup } from "../lib/api";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { isMobile } from "../lib/platform";
 import {
-  VOCAB_FILENAME,
   addVocabEntry,
   parseVocabulary,
   removeVocabEntry,
@@ -32,6 +34,7 @@ import {
   updateVocabEntry,
   type VocabEntry,
 } from "../lib/vocabulary";
+import { VOCAB_GLOBAL_FILE, loadVocabularyContent, saveVocabularyContent } from "../lib/vocabStore";
 
 interface Props {
   vault: string | null;
@@ -39,7 +42,6 @@ interface Props {
   revision: number;
   /** 单词本代际：收词落盘 / 外部改动单词本时 bump（快捷键收词不经过编辑器）。 */
   version: number;
-  onOpen: (path: string) => void;
   notice: (message: string, kind?: "info" | "error") => void;
   /** Android 返回键消费链（App 的 backConsumeRef 在抽屉收起前先问这里）。 */
   backConsumerRef?: MutableRefObject<(() => boolean) | null>;
@@ -154,7 +156,7 @@ interface ReviewState {
 
 const LOOKUP_IDLE: LookupState = { status: "idle", result: null, manualMeaning: "", manualOpen: false };
 
-export default function VocabularyPanel({ vault, revision, version, onOpen, notice, backConsumerRef }: Props) {
+export default function VocabularyPanel({ vault, revision, version, notice, backConsumerRef }: Props) {
   const [entries, setEntries] = useState<VocabEntry[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -214,13 +216,10 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
   }, []);
 
   const reload = useCallback(async () => {
-    if (!vault) {
-      setEntries([]);
-      return;
-    }
     try {
-      const note = await readNoteOptional(vault, VOCAB_FILENAME);
-      setEntries(note ? parseVocabulary(note.content) : []);
+      // 0.28：账户级单词本，所有仓库共用；vault 只用于首次迁移旧文件
+      const content = await loadVocabularyContent(vault);
+      setEntries(parseVocabulary(content));
     } catch {
       setEntries([]);
     }
@@ -269,14 +268,13 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
   /** 行级变换的公共骨架：读 → 变换 → 写回 → 刷新列表。 */
   const mutate = useCallback(
     async (transform: (content: string) => string): Promise<boolean> => {
-      if (!vault || busy) return false;
+      if (busy) return false;
       setBusy(true);
       try {
-        const note = await readNoteOptional(vault, VOCAB_FILENAME);
-        const content = note?.content ?? "";
+        const content = await loadVocabularyContent(vault);
         const next = transform(content);
         if (next === content) return false;
-        await writeNote(vault, VOCAB_FILENAME, next, false);
+        await saveVocabularyContent(next);
         return true;
       } catch (e) {
         notice(`单词本操作失败：${e instanceof Error ? e.message : String(e)}`, "error");
@@ -304,17 +302,15 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
   /** 落盘一个新词（释义/音标来自在线查询或手动填写）。 */
   const saveWord = useCallback(
     async (word: string, meaning: string, phonetic: string) => {
-      if (!vault) return;
       setBusy(true);
       try {
-        const note = await readNoteOptional(vault, VOCAB_FILENAME);
-        const content = note?.content ?? "";
+        const content = await loadVocabularyContent(vault);
         const result = addVocabEntry(content, word, `${today()} · 手动添加`, meaning, "", phonetic);
         if (!result.added) {
           showToast("这个单词已经添加过了", { label: "查看", run: () => setDetailWord(word) });
           return;
         }
-        await writeNote(vault, VOCAB_FILENAME, result.content, false);
+        await saveVocabularyContent(result.content);
         showToast("已添加到待学习");
       } catch (e) {
         notice(`单词本操作失败：${e instanceof Error ? e.message : String(e)}`, "error");
@@ -599,7 +595,7 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
         <button
           type="button"
           className="vocab-refresh"
-          title="重新读取单词本.md"
+          title="重新读取单词本"
           aria-label="重新读取单词本"
           onClick={() => void reload()}
         >
@@ -829,17 +825,26 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
           </button>
           {moreOpen && (
             <div className="vocab-menu vocab-menu-right" role="menu" ref={menuClampRef}>
-              <button
-                type="button"
-                className="vocab-menu-item"
-                role="menuitem"
-                onClick={() => {
-                  setMoreOpen(false);
-                  onOpen(VOCAB_FILENAME);
-                }}
-              >
-                打开单词本.md
-              </button>
+              {!isMobile() && (
+                <button
+                  type="button"
+                  className="vocab-menu-item"
+                  role="menuitem"
+                  onClick={async () => {
+                    setMoreOpen(false);
+                    try {
+                      // 单词本已不在仓库里（账户级文件），给「在文件夹中显示」而不是打开笔记
+                      const path = await appTextPath(VOCAB_GLOBAL_FILE);
+                      await revealItemInDir(path);
+                    } catch (e) {
+                      notice(`打开单词本位置失败：${e instanceof Error ? e.message : String(e)}`, "error");
+                    }
+                  }}
+                  title="单词本存在本机应用数据目录，所有仓库共用"
+                >
+                  在文件夹中显示单词本
+                </button>
+              )}
               <button
                 type="button"
                 className="vocab-menu-item"
@@ -896,7 +901,7 @@ export default function VocabularyPanel({ vault, revision, version, onOpen, noti
           <p>还没有记录单词</p>
           <div className="vocab-empty-tips">
             在笔记里选中一个词按 <kbd>Ctrl+Alt+V</kbd>，或输入一个单词开始记录。
-            单词记在仓库根的「{VOCAB_FILENAME}」里，随时可手改。
+            单词本按账户共用一份（所有仓库共享，存本机），随时可手改。
           </div>
           <button
             type="button"

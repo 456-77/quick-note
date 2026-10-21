@@ -398,8 +398,17 @@ function isoWeekOf(dateStr) {
 
   // 默认值出口存在且字段齐全
   const defaults = defaultBgSettings();
-  eq(Object.keys(defaults).length, 10, "背景：默认值字段齐全");
+  eq(Object.keys(defaults).length, 11, "背景：默认值字段齐全（含 0.28 清晰度）");
   eq(defaults.bgFit, "cover", "背景：默认适配为 cover");
+  eq(defaults.bgSharpen, 40, "背景：默认清晰度 40（升级后即可见改善）");
+  // 0.27 及以前落下的 per-vault 条目没有 bgSharpen：读出来要有默认值，不能是 undefined
+  const legacyVault = "H:\\legacy-bg";
+  const legacyEntry = { ...defaults, bgSharpen: undefined };
+  eq(
+    bgSettingsFor(legacyVault, { bgPerVault: { [legacyVault]: legacyEntry } }).bgSharpen,
+    40,
+    "背景：旧 per-vault 条目缺清晰度时回落默认值",
+  );
 }
 
 console.log(`\n共 ${total} 项断言，失败 ${failures} 项`);

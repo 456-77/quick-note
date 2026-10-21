@@ -38,8 +38,8 @@ bash scripts/verify-roundtrip.sh snapshot "$VAULT" > /dev/null
 echo "基线已记录（$(($(wc -l < "$VAULT.baseline.txt"))) 个文件）"
 
 echo
-echo "=== 3/18 Rust 集成测试（往返 + 新建/重命名/删除 + 同步扫描与 HTTP 通道） ==="
-(cd src-tauri && cargo test --quiet --test roundtrip --test create --test sync)
+echo "=== 3/18 Rust 测试（单元：文件 URL 编码 + 真实 PDF 导出；集成：往返/新建/重命名/删除/同步扫描） ==="
+(cd src-tauri && cargo test --quiet --lib --test roundtrip --test create --test sync)
 
 echo
 echo "=== 4/18 导出 Rust 的换行符探测结果 ==="

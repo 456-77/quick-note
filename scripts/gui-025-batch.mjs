@@ -116,7 +116,13 @@ writeFileSync(
   "utf8",
 );
 
-const vocabFile = join(vault, "单词本.md");
+/** 本机配置目录（gui-test 变体独立）。0.28 起单词本存在这里。 */
+const appConfig = join(
+  process.env.APPDATA ?? join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"),
+  "com.quicknote.gui-test",
+);
+// 种子仍是仓库内的 单词本.md（验证迁移）；断言读账户级全局文件。
+const vocabFile = join(appConfig, "vocabulary.md");
 const readVocab = () => (existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "");
 
 const spawnInstance = (vaultDir) =>
@@ -144,12 +150,6 @@ const connectPage = async (matchIndex = 0) => {
   return ws;
 };
 
-/** 本机配置目录（gui-test 变体独立）。 */
-const appConfig = join(
-  process.env.APPDATA ?? join(process.env.USERPROFILE ?? ".", "AppData", "Roaming"),
-  "com.quicknote.gui-test",
-);
-
 let child = null;
 let ws = null;
 
@@ -158,6 +158,9 @@ try {
   rmSync(udf, { recursive: true, force: true });
   mkdirSync(udf, { recursive: true });
   rmSync(join(appConfig, "open-vaults.json"), { force: true });
+  // 账户级单词本：清空后由种子仓库迁移进来，排序/分组断言才是确定的
+  rmSync(vocabFile, { force: true });
+  rmSync(join(appConfig, "vocabulary-migrated.json"), { force: true });
 
   child = spawnInstance(vault);
   // 端口就绪 + 真页面出现
@@ -188,11 +191,11 @@ try {
   const searchRowText = await evaluate(ws, `document.querySelector('.vocab-search-row')?.textContent ?? ''`);
   check(!searchRowText.includes("打开"), "搜索行不再有「打开」按钮", searchRowText);
   check(!!(await evaluate(ws, `!!document.querySelector('.vocab-refresh')`)), "刷新为独立圆形图标钮");
-  // 「···」菜单里有 打开单词本.md
+  // 「···」菜单里有「在文件夹中显示单词本」（0.28：账户级文件不在仓库里）
   await evaluate(ws, `(() => { document.querySelector('.vocab-more-btn')?.click(); return true; })()`);
   await sleep(300);
   const moreItems = await evaluate(ws, `[...document.querySelectorAll('.vocab-menu-item')].map((b) => b.textContent)`);
-  check(moreItems.some((t) => t.includes("打开单词本.md")), "「···」菜单含 打开单词本.md", JSON.stringify(moreItems));
+  check(moreItems.some((t) => t.includes("在文件夹中显示单词本")), "「···」菜单含在文件夹中显示单词本", JSON.stringify(moreItems));
   await evaluate(ws, `(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
   await sleep(200);
   // 排序下拉：默认字母 A-Z；含最近添加

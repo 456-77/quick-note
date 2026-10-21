@@ -9,11 +9,82 @@
 
 import { findTags } from "./inlineSyntax.ts";
 
-/** 全文中出现的标签名（按出现顺序去重）。 */
+/**
+ * 代码区间的偏移范围：围栏代码块 + 行内代码（0.28 用户反馈：代码块里的
+ * `#文件识别内容` 被当成标签，标签面板里多出一堆代码片段）。
+ *
+ * 标签是正文语义，代码里的 `#` 是字符。索引、添加、删除、重命名共用这一份
+ * 判定——索引里能看到的标签，删除/重命名才动得到，反之亦然。
+ *
+ * 只处理围栏（``` / ~~~）与反引号行内代码：缩进代码块与列表缩进在文本层面
+ * 无法可靠区分，宁可把缩进里的 `#` 当标签，也不误杀正常的列表内容。
+ */
+export function codeExcludedRanges(text: string): Array<[number, number]> {
+  const ranges: Array<[number, number]> = [];
+  const lines = text.split("\n");
+  let offset = 0;
+  let fence: { char: string; length: number; start: number } | null = null;
+  for (const line of lines) {
+    if (!fence) {
+      const open = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      if (open) {
+        fence = { char: open[1][0], length: open[1].length, start: offset };
+      }
+    } else {
+      const close = /^ {0,3}(`{3,}|~{3,})\s*$/.exec(line);
+      if (close && close[1][0] === fence.char && close[1].length >= fence.length) {
+        ranges.push([fence.start, offset + line.length]);
+        fence = null;
+      }
+    }
+    offset += line.length + 1;
+  }
+  if (fence) ranges.push([fence.start, text.length]);
+
+  // 行内代码：成对的反引号（长度相同的开闭串），可以跨行。
+  // 围栏代码块内部已整段排除，这里只在围栏之外找。
+  const outside = (index: number) =>
+    ranges.every(([from, to]) => index < from || index >= to);
+  let cursor = 0;
+  while (cursor < text.length) {
+    if (!outside(cursor)) {
+      const covering = ranges.find(([from, to]) => cursor >= from && cursor < to);
+      cursor = covering ? covering[1] : cursor + 1;
+      continue;
+    }
+    const open = text.indexOf("`", cursor);
+    if (open < 0) break;
+    let openEnd = open;
+    while (text[openEnd] === "`") openEnd += 1;
+    const length = openEnd - open;
+    let scan = openEnd;
+    let closed = -1;
+    while (scan < text.length) {
+      const next = text.indexOf("`", scan);
+      if (next < 0) break;
+      let runEnd = next;
+      while (text[runEnd] === "`") runEnd += 1;
+      if (runEnd - next === length && outside(next)) {
+        closed = runEnd;
+        break;
+      }
+      scan = runEnd;
+    }
+    if (closed >= 0) {
+      ranges.push([open, closed]);
+      cursor = closed;
+    } else {
+      cursor = openEnd;
+    }
+  }
+  return ranges;
+}
+
+/** 正文里的标签（跳过代码块与行内代码），按出现顺序去重。 */
 export function noteTags(text: string): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const item of findTags(text, 0, [])) {
+  for (const item of findTags(text, 0, codeExcludedRanges(text))) {
     if (!seen.has(item.name)) {
       seen.add(item.name);
       out.push(item.name);
@@ -85,7 +156,7 @@ export function tagAddEdit(text: string, tag: string, lineBreak: string): TagEdi
  * 删空了文末标签行时把整行收掉，不留一条空尾巴。
  */
 export function tagRemoveEdit(text: string, tag: string): TagEdit | null {
-  const span = findTags(text, 0, []).find((item) => item.name === tag);
+  const span = findTags(text, 0, codeExcludedRanges(text)).find((item) => item.name === tag);
   if (!span) return null;
   let from = span.from;
   let to = span.to;
@@ -122,7 +193,7 @@ export function tagRemoveEdit(text: string, tag: string): TagEdit | null {
  */
 export function tagRenameEdits(text: string, from: string, to: string): TagEdit[] {
   if (from === to) return [];
-  return findTags(text, 0, [])
+  return findTags(text, 0, codeExcludedRanges(text))
     .filter((item) => item.name === from)
     .map((item) => ({ at: item.from, insert: `#${to}`, to: item.to }));
 }

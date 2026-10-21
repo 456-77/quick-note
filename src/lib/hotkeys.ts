@@ -58,7 +58,7 @@ export const COMMAND_KEYS: CommandKeys[] = [
   {
     id: "addWord",
     label: "加入单词本",
-    desc: "把选中的词（或光标所在词）记进仓库根的「单词本.md」，右侧面板的「单词」页签可复习",
+    desc: "把选中的词（或光标所在词）记进账户级单词本（所有仓库共用），右侧面板的「单词」页签可复习",
     group: "edit",
     keys: ["Mod-Alt-V"],
   },

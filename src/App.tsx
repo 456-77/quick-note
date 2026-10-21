@@ -71,7 +71,8 @@ import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { bgSettingsFor, getSettings, onSettingsChange, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
 import { closeSearchPanelIfOpen, openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
-import { VOCAB_FILENAME, addVocabEntry, initialVocabulary } from "./lib/vocabulary";
+import { VOCAB_FILENAME, addVocabEntry } from "./lib/vocabulary";
+import { loadVocabularyContent, saveVocabularyContent } from "./lib/vocabStore";
 import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
@@ -3869,7 +3870,7 @@ export default function App() {
 
   /**
    * 单词本（0.23 用户反馈，交互对齐 IDEA 的「保存到词典」）：把选中的词（或
-   * 光标所在词）记进仓库根的 单词本.md。重复词不重录；右侧「单词」页签翻看。
+   * 光标所在词）记进账户级单词本（所有仓库共用）。重复词不重录；右侧「单词」页签翻看。
    */
   const addWordToVocabulary = useCallback(async () => {
     const view = viewRef.current;
@@ -3886,13 +3887,9 @@ export default function App() {
     // 词统一转小写（0.26 用户反馈）：收词是"记词汇"不是"记原文"，Scenario 与
     // scenario 只留一条；去重本来就是大小写不敏感的，这里统一落盘形态
     word = word.toLowerCase();
-    if (!vaultRef.current) {
-      notice("尚未打开仓库，无法记单词", "error");
-      return;
-    }
     try {
-      const note = await readNoteOptional(vaultRef.current, VOCAB_FILENAME);
-      const content = note?.content ?? initialVocabulary();
+      // 0.28：单词本是账户级（应用配置目录，所有仓库共用），不再依赖当前仓库
+      const content = await loadVocabularyContent(vaultRef.current);
       const source = currentRef.current?.path ?? "";
       const from = source ? source.slice(source.lastIndexOf("/") + 1).replace(/\.md$/i, "") : "";
       const result = addVocabEntry(content, word, `${dailyRef.current.today} · ${from || "手动添加"}`);
@@ -3900,7 +3897,7 @@ export default function App() {
         notice(`单词本里已有「${word}」`);
         return;
       }
-      await writeNote(vaultRef.current, VOCAB_FILENAME, result.content, false);
+      await saveVocabularyContent(result.content);
       // 「单词」面板只靠编辑器文档变更刷新，收词不走编辑器——这里显式 bump
       setVocabVersion((value) => value + 1);
       notice(`已加入单词本：${word}`);
@@ -4546,6 +4543,7 @@ export default function App() {
       {recentFilesOpen && (
         <RecentFilesDialog
           recents={recents}
+          entries={entries}
           activePath={current?.path ?? null}
           onOpen={(path) => void openEntry(path)}
           onClose={() => setRecentFilesOpen(false)}
@@ -4570,12 +4568,10 @@ export default function App() {
           initialWord={addWordDialog}
           onClose={() => setAddWordDialog(null)}
           onSubmit={async (word) => {
-            if (!vaultRef.current) throw new Error("尚未打开仓库，无法记单词");
-            const note = await readNoteOptional(vaultRef.current, VOCAB_FILENAME);
-            const content = note?.content ?? initialVocabulary();
+            const content = await loadVocabularyContent(vaultRef.current);
             const result = addVocabEntry(content, word, `${dailyRef.current.today} · 手动添加`);
             if (!result.added) return `单词本里已有「${word}」`;
-            await writeNote(vaultRef.current, VOCAB_FILENAME, result.content, false);
+            await saveVocabularyContent(result.content);
             // 收词不走编辑器，显式 bump 让「单词」面板重读
             setVocabVersion((value) => value + 1);
             return `已加入单词本：${word}`;
@@ -5662,7 +5658,6 @@ export default function App() {
                 vault={vault}
                 revision={revision}
                 version={vocabVersion}
-                onOpen={(path) => void openNote(path)}
                 notice={notice}
                 backConsumerRef={vocabBackRef}
               />
