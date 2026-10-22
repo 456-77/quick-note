@@ -14,6 +14,8 @@ import QuickCaptureDialog from "./components/QuickCaptureDialog";
 import RecentFilesDialog from "./components/RecentFilesDialog";
 import QuickTodoDialog from "./components/QuickTodoDialog";
 import AddWordDialog from "./components/AddWordDialog";
+import DdlDialog from "./components/DdlDialog";
+import SplitPane from "./components/SplitPane";
 import CaptureManager from "./components/CaptureManager";
 import ScreenshotDialog from "./components/ScreenshotDialog";
 import SettingsDialog from "./components/SettingsDialog";
@@ -80,6 +82,8 @@ import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
 import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
+import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
+import { ddlNoteIntro, extractTableNames, mergeDdlIntoNote, parseDdlTables } from "./lib/ddl";
 import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
 import { fetchWeather, insertWeatherLine } from "./lib/weather";
 import { blobTypeOf, removeImageReferences } from "./lib/imageOps";
@@ -1068,6 +1072,14 @@ export default function App() {
    */
   const viewOwnerRef = useRef<string | null>(null);
   const openTabsRef = useRef<NoteContent[]>([]);
+  /**
+   * 每个标签最近一次被激活的时间戳（0.31）。closeTab 关脏标签要先 await 落盘，
+   * 挂起期间用户可能又把同一篇点开（openNote 命中存量状态直接 activateTab）——
+   * 恢复后若无脑继续关，会把「正在显示的笔记」从标签栏除名，留下编辑区有内容、
+   * 状态栏「未打开文件」的错位（0.30 用户反馈的偶发复用旧标签）。关闭流程用
+   * 开始时间对比激活时间戳即可区分「正常关闭激活标签」与「关闭中途被重开」。
+   */
+  const tabActivatedAt = useRef(new Map<string, number>());
   /** 固定标签的实时镜像：closeTab 等回调里避免为它重建闭包。 */
   const pinnedTabsRef = useRef<Set<string>>(new Set());
   const modeRef = useRef(mode);
@@ -1130,7 +1142,25 @@ export default function App() {
     if (!host) return;
     const handle = createEditor(host, EditorState.create({}));
     viewRef.current = handle.view;
+    // 阅读位置实时落库（0.31）：滚动停 800ms 记一次，读到一半关软件也有值。
+    // 切标签的捕获走 activateTab/openNote，这里兜住「一直读、没切过标签」。
+    let progressTimer: number | null = null;
+    const onScroll = () => {
+      if (progressTimer !== null) window.clearTimeout(progressTimer);
+      progressTimer = window.setTimeout(() => {
+        progressTimer = null;
+        const dir = vaultRef.current;
+        const path = viewOwnerRef.current;
+        if (!dir || !path) return;
+        const top = handle.view.scrollDOM.scrollTop;
+        scrollStore.current.set(path, top);
+        saveProgress(window.localStorage, dir, path, top);
+      }, 800);
+    };
+    handle.view.scrollDOM.addEventListener("scroll", onScroll);
     return () => {
+      if (progressTimer !== null) window.clearTimeout(progressTimer);
+      handle.view.scrollDOM.removeEventListener("scroll", onScroll);
       handle.destroy();
       viewRef.current = null;
     };
@@ -1215,6 +1245,17 @@ export default function App() {
   const [quickTodoOpen, setQuickTodoOpen] = useState(false);
   /** 手动添加单词弹窗（0.26）：string = 打开并预填（可为空串），null = 关闭。 */
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
+  /** 建表语句收录弹窗（0.31，Ctrl+Alt+L）。 */
+  const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
+  /**
+   * 分屏查看（0.31 用户反馈：标签页支持分屏）：钉在编辑区右侧的只读渲染窗格
+   * 显示的标签路径。null = 没开分屏。
+   */
+  const [splitPath, setSplitPath] = useState<string | null>(null);
+  /** 目录面板跟随「最后聚焦的窗格」（0.31）：编辑器 / 分屏窗格。 */
+  const [outlineFollow, setOutlineFollow] = useState<"editor" | "split">("editor");
+  /** 分屏文件未打开（stateStore 没有存量）时的磁盘版本快照。 */
+  const [splitDisk, setSplitDisk] = useState<{ path: string; content: string } | null>(null);
   /** 释义自动补全的串行队列：接连添加的词读-改-写不交叠（0.30）。 */
   const vocabFillChain = useRef<Promise<void>>(Promise.resolve());
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
@@ -1581,36 +1622,57 @@ export default function App() {
     [vault, tagIndex.noteTags, tagDashTag],
   );
 
-  const refresh = useCallback(async (dir: string) => {
-    const list = await listEntries(dir);
-    setEntries(list);
-
-    // 「小写文件名 → 仓库相对路径」索引，供 wiki 语法（![[图片.png]] / ![[笔记]]）解析。
-    const resources = resourcesRef.current;
-    resources.vaultPath = dir;
-    const index = resources.embedIndex;
-    index.clear();
-    const put = (key: string, path: string) => {
-      const existing = index.get(key);
-      // 同名时保留路径最短的，近似 Obsidian 的"离当前笔记最近"
-      if (!existing || path.length < existing.length) index.set(key, path);
-    };
-    for (const entry of list) {
-      if (entry.isDir) continue; // 索引只关心文件
-      const base = entry.name.toLowerCase();
-      put(base, entry.path);
-      // `[[某笔记]]` 写的是不带扩展名的名字
-      if (base.endsWith(".md")) put(base.slice(0, -3), entry.path);
+  /**
+   * 建表语句悬浮库（0.31）：读仓库内的 DDL 笔记 → 「表名 → 语句」映射塞进资源
+   * 上下文（就地改字段，同一可变对象约定）。打开仓库、DDL 笔记变化、收录弹窗
+   * 保存后都要走一遍。文件不存在/解析为空都清空映射（悬浮随之失活）。
+   */
+  const loadDdlLibrary = useCallback(async (dir: string) => {
+    try {
+      const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
+      const note = await readNoteOptional(dir, path);
+      resourcesRef.current.ddlTables = note ? parseDdlTables(note.content) : new Map();
+    } catch {
+      resourcesRef.current.ddlTables = new Map();
     }
-
-    // 代际 +1：让嵌入 widget 的 eq 判定为"不等"从而重建 DOM；渲染缓存也要清掉，
-    // 否则目标笔记改了内容、界面上还是旧的。
-    resources.generation += 1;
-    clearEmbedCache();
-
-    const view = viewRef.current;
-    if (view) requestDecorationRefresh(view);
   }, []);
+
+  const refresh = useCallback(
+    async (dir: string) => {
+      const list = await listEntries(dir);
+      setEntries(list);
+
+      // 「小写文件名 → 仓库相对路径」索引，供 wiki 语法（![[图片.png]] / ![[笔记]]）解析。
+      const resources = resourcesRef.current;
+      resources.vaultPath = dir;
+      const index = resources.embedIndex;
+      index.clear();
+      const put = (key: string, path: string) => {
+        const existing = index.get(key);
+        // 同名时保留路径最短的，近似 Obsidian 的"离当前笔记最近"
+        if (!existing || path.length < existing.length) index.set(key, path);
+      };
+      for (const entry of list) {
+        if (entry.isDir) continue; // 索引只关心文件
+        const base = entry.name.toLowerCase();
+        put(base, entry.path);
+        // `[[某笔记]]` 写的是不带扩展名的名字
+        if (base.endsWith(".md")) put(base.slice(0, -3), entry.path);
+      }
+
+      // 代际 +1：让嵌入 widget 的 eq 判定为"不等"从而重建 DOM；渲染缓存也要清掉，
+      // 否则目标笔记改了内容、界面上还是旧的。
+      resources.generation += 1;
+      clearEmbedCache();
+
+      // DDL 笔记可能在别的窗口/外部被改过，顺手重载悬浮库（读一次文件，开销小）
+      void loadDdlLibrary(dir);
+
+      const view = viewRef.current;
+      if (view) requestDecorationRefresh(view);
+    },
+    [loadDdlLibrary],
+  );
 
   /** 笔记数量（目录与非 md 文件不计入）。 */
   const noteCount = useMemo(
@@ -1709,6 +1771,7 @@ export default function App() {
       view?.dispatch({ selection: { anchor: Math.min(anchor, view.state.doc.length) } });
       stateStore.current.set(note.path, newState);
       viewOwnerRef.current = note.path;
+      tabActivatedAt.current.set(note.path, Date.now());
       staleTabs.current.delete(note.path);
       dirtyTabs.current.delete(note.path);
       setOpenTabs((prev) =>
@@ -1739,10 +1802,18 @@ export default function App() {
         stateStore.current.set(prev, view.state);
         scrollStore.current.set(prev, view.scrollDOM.scrollTop);
         if (dirtyRef.current) dirtyTabs.current.add(prev);
+        // 阅读位置落库（0.31）：切走标签时把它最后的位置持久化
+        const dir = vaultRef.current;
+        if (dir) saveProgress(window.localStorage, dir, prev, view.scrollDOM.scrollTop);
       }
       view.setState(stored);
       viewOwnerRef.current = path;
-      view.scrollDOM.scrollTop = scrollStore.current.get(path) ?? 0;
+      tabActivatedAt.current.set(path, Date.now());
+      // 会话内存量优先（刚才还在读的位置），没有再回持久化的阅读位置（0.31）
+      const dirNow = vaultRef.current;
+      view.scrollDOM.scrollTop =
+        scrollStore.current.get(path) ??
+        (dirNow ? loadProgress(window.localStorage, dirNow, path) ?? 0 : 0);
       resourcesRef.current.notePath = path;
       // 存量状态的 Compartment 是它创建那一刻的模式/主题，切回来要对齐当前选择
       applyMode(view, modeRef.current);
@@ -1780,6 +1851,7 @@ export default function App() {
     async (path: string) => {
       // 固定标签不响应任何关闭入口（中键/关闭钮已被 UI 隐藏，这里兜底逻辑入口）
       if (pinnedTabsRef.current.has(path)) return;
+      const startedAt = Date.now();
       if (dirtyTabs.current.has(path)) {
         const state = stateStore.current.get(path);
         const meta =
@@ -1795,17 +1867,25 @@ export default function App() {
           }
         }
       }
+      // await 范围内它被重新打开并激活（点关闭后又立刻点了同一篇）：放弃这次关闭。
+      // 继续关的话会把正在显示的笔记除名——编辑区有内容、状态栏却是「未打开文件」
+      // （0.30 用户反馈的偶发复用旧标签）。内容刚落过盘，标签保持打开即最新意图。
+      if ((tabActivatedAt.current.get(path) ?? 0) > startedAt) return;
       dirtyTabs.current.delete(path);
       staleTabs.current.delete(path);
       stateStore.current.delete(path);
       scrollStore.current.delete(path);
+      tabActivatedAt.current.delete(path);
       const previous = openTabsRef.current;
       const index = previous.findIndex((tab) => tab.path === path);
-      const next = previous.filter((tab) => tab.path !== path);
-      setOpenTabs(next);
-      if (activeTabRef.current === path) {
-        const neighbor = next[Math.min(Math.max(index, 0), next.length - 1)]?.path ?? null;
-        if (neighbor) {
+      // 函数式过滤：await 期间 openNote 可能已把别的标签 append 进列表，
+      // 非函数式写回会拿陈旧快照把它覆盖掉
+      setOpenTabs((prev) => prev.filter((tab) => tab.path !== path));
+      if (activeTabRef.current === path || viewOwnerRef.current === path) {
+        const next = previous.filter((tab) => tab.path !== path);
+        const neighborIndex = Math.min(Math.max(index, 0), next.length - 1);
+        const neighbor = neighborIndex >= 0 ? next[neighborIndex]?.path ?? null : null;
+        if (neighbor && stateStore.current.has(neighbor)) {
           activateTab(neighbor);
         } else {
           setActiveTab(null);
@@ -1833,6 +1913,7 @@ export default function App() {
     async (targets: string[]) => {
       const targetSet = new Set(targets);
       if (targetSet.size === 0) return;
+      const startedAt = Date.now();
       for (const path of targets) {
         if (!dirtyTabs.current.has(path)) continue;
         const state = stateStore.current.get(path);
@@ -1849,19 +1930,25 @@ export default function App() {
           }
         }
       }
+      // 落盘窗口里被重新打开并激活的标签从关闭集合里剔除（同 closeTab 的对账）
       for (const path of targets) {
+        if ((tabActivatedAt.current.get(path) ?? 0) > startedAt) targetSet.delete(path);
+      }
+      if (targetSet.size === 0) return;
+      for (const path of targetSet) {
         dirtyTabs.current.delete(path);
         staleTabs.current.delete(path);
         stateStore.current.delete(path);
         scrollStore.current.delete(path);
+        tabActivatedAt.current.delete(path);
       }
       const previous = openTabsRef.current;
       const index = previous.findIndex((tab) => tab.path === activeTabRef.current);
-      const next = previous.filter((tab) => !targetSet.has(tab.path));
-      setOpenTabs(next);
+      setOpenTabs((prev) => prev.filter((tab) => !targetSet.has(tab.path)));
       if (activeTabRef.current && targetSet.has(activeTabRef.current)) {
+        const next = previous.filter((tab) => !targetSet.has(tab.path));
         const neighbor = next[Math.min(Math.max(index, 0), next.length - 1)]?.path ?? null;
-        if (neighbor) {
+        if (neighbor && stateStore.current.has(neighbor)) {
           activateTab(neighbor);
         } else {
           setActiveTab(null);
@@ -1890,6 +1977,10 @@ export default function App() {
       );
       dirtyTabs.current.delete(current.path);
       setDirty(false);
+      // 手工编辑 DDL 笔记后，悬浮库跟着更新（0.31）
+      if (current.path === (getSettings().ddlFilePath.trim() || "数据库表DDL.md")) {
+        void loadDdlLibrary(vault);
+      }
       if (conflict) {
         // 保存即意味着用我的版本覆盖磁盘上的外部改动。
         setStatus("已保存并覆盖磁盘上的外部改动");
@@ -1901,7 +1992,7 @@ export default function App() {
     } catch (e) {
       setError(String(e));
     }
-  }, [vault, current, conflict]);
+  }, [vault, current, conflict, loadDdlLibrary]);
 
   /**
    * 处理外部改动（来自 Obsidian、同步进程或其他编辑器）。
@@ -2040,6 +2131,30 @@ export default function App() {
           });
       });
   }, [refresh, activateVault, recordVault]);
+
+  // 窗口关闭时把**本窗口**的仓库写回 VAULT_KEY（0.31）：localStorage 是所有
+  // 窗口共享的，多窗口各开各的仓库时，任何一次切仓都会改写它——下次启动恢复
+  // 的就成了「另一个窗口最后切到的仓库」而不是「最后关闭的窗口所在的仓库」
+  // （0.30 用户反馈：重开软件显示的不是上次关闭时的仓库）。beforeunload 同步
+  // 写一份；Tauri 的关闭请求事件再补一份（WebView2 销毁时 beforeunload 不保证触发）。
+  useEffect(() => {
+    const persist = () => {
+      const dir = vaultRef.current;
+      if (dir) localStorage.setItem(VAULT_KEY, dir);
+    };
+    window.addEventListener("beforeunload", persist);
+    let unlisten: (() => void) | null = null;
+    void getCurrentWindow()
+      .onCloseRequested(() => persist())
+      .then((stop) => {
+        unlisten = stop;
+      })
+      .catch(() => {});
+    return () => {
+      window.removeEventListener("beforeunload", persist);
+      unlisten?.();
+    };
+  }, []);
 
   // 自动保存：revision 每次改动递增，从而重置防抖计时。
   useEffect(() => {
@@ -2372,6 +2487,14 @@ export default function App() {
       closeSearchPanelIfOpen();
       recordRecent(path);
       if (dirtyRef.current) await saveNow();
+      // 离开当前标签前把它的滚动位置留下（readNote 分支不走 activateTab 的捕获）：
+      // 会话内存量 + 持久化阅读位置各记一份（0.31）
+      const leaving = viewOwnerRef.current;
+      if (leaving && leaving !== path && viewRef.current) {
+        const leavingTop = viewRef.current.scrollDOM.scrollTop;
+        scrollStore.current.set(leaving, leavingTop);
+        saveProgress(window.localStorage, vault, leaving, leavingTop);
+      }
       // 存量状态且文件没被外部改过：直接换上去，未保存内容与撤销历史都在
       if (stateStore.current.has(path) && !staleTabs.current.has(path)) {
         activateTab(path);
@@ -2453,8 +2576,27 @@ export default function App() {
         setActiveTab(note.path);
         viewRef.current?.setState(newState);
         viewOwnerRef.current = note.path;
-        viewRef.current?.scrollDOM.scrollTop !== undefined &&
-          (viewRef.current.scrollDOM.scrollTop = 0);
+        tabActivatedAt.current.set(note.path, Date.now());
+        // 恢复上次的阅读位置（0.31）：会话内存量优先，没有再回持久化值。
+        // 新文档 setState 后高度图还是上一篇的实测值，scrollTop 可能被
+        // 当时的最大滚动范围钳掉——等两帧真实测量落地后再校一次（同 openNoteAt）。
+        const resumeTop =
+          scrollStore.current.get(note.path) ??
+          loadProgress(window.localStorage, vault, note.path) ??
+          0;
+        const viewNow = viewRef.current;
+        if (viewNow) {
+          viewNow.scrollDOM.scrollTop = resumeTop;
+          if (resumeTop > 0) {
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                if (viewRef.current === viewNow && viewOwnerRef.current === note.path) {
+                  viewRef.current.scrollDOM.scrollTop = resumeTop;
+                }
+              }),
+            );
+          }
+        }
         setDirty(false);
         setRoundTrip(null);
         setStatus("");
@@ -2994,18 +3136,22 @@ export default function App() {
         staleTabs.current.delete(tab.path);
         stateStore.current.delete(tab.path);
         scrollStore.current.delete(tab.path);
+        tabActivatedAt.current.delete(tab.path);
+        // 文件已删，阅读位置一并清掉（关标签不清——重开还要恢复，0.31）
+        deleteProgress(window.localStorage, vault, tab.path);
       }
       if (affected.length > 0) {
-        const remaining = openTabsRef.current.filter(
-          (tab) => !affected.some((hit) => hit.path === tab.path),
-        );
-        setOpenTabs(remaining);
+        const affectedSet = new Set(affected.map((tab) => tab.path));
+        const remaining = openTabsRef.current.filter((tab) => !affectedSet.has(tab.path));
+        // 函数式过滤：deleteEntry/searchVault 的 await 窗口里 openNote 可能已把
+        // 新标签 append 进列表，非函数式写回会用陈旧快照覆盖（同 closeTab）
+        setOpenTabs((prev) => prev.filter((tab) => !affectedSet.has(tab.path)));
         if (affected.some((tab) => tab.path === activeTabRef.current)) {
           const index = openTabsRef.current.findIndex((tab) => tab.path === activeTabRef.current);
           const neighbor =
             remaining[Math.min(Math.max(index, 0), remaining.length - 1)]?.path ?? null;
           setConflict(null);
-          if (neighbor) {
+          if (neighbor && stateStore.current.has(neighbor)) {
             activateTab(neighbor);
           } else {
             setActiveTab(null);
@@ -3134,6 +3280,47 @@ export default function App() {
   useEffect(() => {
     openNoteAtRef.current = openNoteAt;
   });
+
+  // ---------------------------------------------------------------- 分屏查看（0.31）
+  //
+  // 只读渲染窗格显示另一篇（或同一篇）笔记：编辑器实时内容优先（存量 EditorState
+  // 里有未保存编辑），没打开过的标签退到磁盘版本（splitDisk）。
+
+  /** 分屏文件未在标签里打开时读一份磁盘版本。 */
+  useEffect(() => {
+    if (!vault || !splitPath || stateStore.current.has(splitPath)) {
+      setSplitDisk(null);
+      return;
+    }
+    let alive = true;
+    void readNote(vault, splitPath)
+      .then((note) => {
+        if (alive) setSplitDisk({ path: splitPath, content: note.content });
+      })
+      .catch(() => {
+        if (alive) setSplitDisk({ path: splitPath, content: "" });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [vault, splitPath]);
+
+  /** 分屏的标签被关闭（或切仓库清空标签）后分屏窗格一并收起。 */
+  useEffect(() => {
+    if (splitPath && !openTabs.some((tab) => tab.path === splitPath)) {
+      setSplitPath(null);
+      if (outlineFollow === "split") setOutlineFollow("editor");
+    }
+  }, [openTabs, splitPath, outlineFollow]);
+
+  /** 分屏窗格要渲染的全文。revision 进依赖：分屏文件正在编辑时跟随键入刷新。 */
+  const splitMarkdown = useMemo(() => {
+    if (!splitPath) return "";
+    const stored = stateStore.current.get(splitPath);
+    if (stored) return stored.doc.toString();
+    return splitDisk?.path === splitPath ? splitDisk.content : "";
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [splitPath, splitDisk, revision, openTabs]);
 
   /**
    * 打开**其他仓库**的笔记（0.29 全局搜索跨仓库命中）：先切仓库，再在新仓库的
@@ -4099,6 +4286,13 @@ export default function App() {
         const view = viewRef.current;
         setAddWordDialog(view ? captureWordTerm(view).trim() : "");
       },
+      ddlCapture: () => {
+        if (!vault) {
+          notice("打开仓库后才能收录建表语句", "error");
+          return;
+        }
+        setDdlDialogOpen(true);
+      },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
     [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary, vault],
@@ -4166,6 +4360,9 @@ export default function App() {
           return;
         case "addWordDialog":
           shortcuts.addWordDialog();
+          return;
+        case "ddlCapture":
+          shortcuts.ddlCapture();
           return;
       }
     },
@@ -4292,6 +4489,15 @@ export default function App() {
         setAddWordDialog(null);
         return;
       }
+      if (ddlDialogOpen) {
+        setDdlDialogOpen(false);
+        return;
+      }
+      if (splitPath) {
+        setSplitPath(null);
+        setOutlineFollow("editor");
+        return;
+      }
       if (renaming) {
         cancelRename();
         return;
@@ -4300,7 +4506,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, cancelRename, cancelCreate]);
+  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, ddlDialogOpen, splitPath, cancelRename, cancelCreate]);
 
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
@@ -4349,6 +4555,7 @@ export default function App() {
       { id: "goto-end", title: "跳到笔记末尾", hint: keyHint("gotoEnd"), icon: "⏬", run: shortcuts.gotoEnd },
       { id: "quick-capture", title: "快速笔记（收件箱）", hint: keyHint("quickCapture"), icon: "📥", run: shortcuts.quickCapture },
       { id: "quick-todo", title: "快速添加待办…", hint: keyHint("quickTodo"), icon: "✅", run: shortcuts.quickTodo },
+      { id: "ddl-capture", title: "收录建表语句…", hint: keyHint("ddlCapture"), icon: "🗄️", run: shortcuts.ddlCapture },
       { id: "recent-files", title: "最近文件…", hint: keyHint("recentFiles"), icon: "🕘", run: shortcuts.recentFiles },
       { id: "capture-manager", title: "速记管理（收件箱整理）", hint: keyHint("captureManager"), icon: "🗂️", run: shortcuts.captureManager },
       { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: keyHint("toggleMode"), icon: "🔀", run: shortcuts.toggleMode },
@@ -4682,6 +4889,27 @@ export default function App() {
             // 0.30：释义后台自动查询回填，弹窗不等待、可连续录入
             void autoFillVocabMeaning(word);
             return `已加入单词本：${word}，正在查询在线释义…`;
+          }}
+        />
+      )}
+
+      {/* 建表语句收录（0.31，Ctrl+Alt+L）：合并进仓库内 DDL 笔记并重载悬浮库 */}
+      {ddlDialogOpen && (
+        <DdlDialog
+          ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
+          onClose={() => setDdlDialogOpen(false)}
+          onSubmit={async (ddlText) => {
+            const dir = vaultRef.current;
+            if (!dir) throw new Error("打开仓库后才能收录建表语句");
+            const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
+            const existing = await readNoteOptional(dir, path);
+            const base = existing?.content ?? ddlNoteIntro();
+            const merged = mergeDdlIntoNote(base, ddlText);
+            await writeNote(dir, path, merged, existing?.hasBom ?? false);
+            await loadDdlLibrary(dir);
+            void refresh(dir);
+            const names = extractTableNames(ddlText);
+            return `已收录 ${names.length} 张表 → ${path}`;
           }}
         />
       )}
@@ -5159,6 +5387,16 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  onClick={() => {
+                    // 分屏查看（0.31）：同一篇再次选择 = 关闭分屏
+                    setSplitPath((prev) => (prev === tabMenu.path ? null : tabMenu.path));
+                    setTabMenu(null);
+                  }}
+                >
+                  {splitPath === tabMenu.path ? "取消分屏" : "分屏查看（只读）"}
+                </button>
+                <button
+                  type="button"
                   disabled={left.length === 0}
                   onClick={() => {
                     void closeTabsBatch(left.map((tab) => tab.path));
@@ -5506,10 +5744,32 @@ export default function App() {
               <span className="table-toolbar-hint">Tab 下一格 · 单元格可直接编辑 · 右键单元格插入/删除行列</span>
             </div>
           )}
-          <div
-            className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
-            ref={hostRef}
-          />
+          <div className="editor-main">
+            <div
+              className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
+              ref={hostRef}
+              onMouseDown={() => {
+                // 目录跟随最后聚焦的窗格（0.31 分屏）：点编辑器把大纲切回来
+                if (outlineFollow === "split") setOutlineFollow("editor");
+              }}
+            />
+            {splitPath && (
+              <SplitPane
+                title={splitPath.split("/").pop() ?? splitPath}
+                markdown={splitMarkdown}
+                revision={revision}
+                notePath={splitPath}
+                context={resourcesRef.current}
+                onClose={() => {
+                  setSplitPath(null);
+                  setOutlineFollow("editor");
+                }}
+                onPaneFocus={() => {
+                  if (outlineFollow !== "split") setOutlineFollow("split");
+                }}
+              />
+            )}
+          </div>
           {isMobile() && (
             <input
               ref={imageInputRef}
@@ -5748,13 +6008,33 @@ export default function App() {
           )}
           {rightPanel === "outline" && (
             <OutlinePanel
-              getView={() => viewRef.current}
+              getDoc={() => {
+                // 0.31 分屏：目录跟随「最后聚焦的窗格」——分屏窗格聚焦时列分屏文件
+                // 的大纲（只读，行号按 \n 口径），否则列编辑器文档。
+                // 编辑器侧必须走 sliceDoc（facet 会把换行替换成文件自己的 CRLF），
+                // doc.toString() 永远输出 \n——CRLF 笔记 split 会失效、大纲全空
+                if (outlineFollow === "split" && splitPath) {
+                  return { text: splitMarkdown, lineBreak: "\n" };
+                }
+                const view = viewRef.current;
+                if (!view) return null;
+                const state = view.state;
+                return { text: state.sliceDoc(0, state.doc.length), lineBreak: state.lineBreak };
+              }}
               revision={revision}
               // 预览 pdf/docx 等文件时编辑器还装着上一篇 md，大纲继续显示它会误导
               // （0.20 用户反馈"预览 pdf 时右侧目录还显示 md 的目录"），清空让空态接管
-              activeKey={previewPath ? null : activeTab}
-              cursorLine={cursorLine}
-              onJump={jumpToLine}
+              activeKey={previewPath ? null : outlineFollow === "split" ? splitPath : activeTab}
+              cursorLine={outlineFollow === "split" ? -1 : cursorLine}
+              onJump={(line) => {
+                // 分屏模式下点击标题：在编辑器打开分屏文件并跳到目标行（只读窗格
+                // 没有光标可放，「跳过去」的落点自然在编辑器）
+                if (outlineFollow === "split" && splitPath) {
+                  void openNoteAt(splitPath, line);
+                  return;
+                }
+                jumpToLine(line);
+              }}
             />
           )}
           {rightPanel === "stats" && (

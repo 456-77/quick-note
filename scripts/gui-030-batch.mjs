@@ -205,8 +205,15 @@ try {
 
   // ============================================== 2. 全局搜索：标题命中的文件两组都显示
   {
+    // WebView2 的 CDP Input 通道在页面就绪早期会偶发丢第一批按键（0.31 期间实测：
+    // window 捕获层都收不到 keydown），没弹起就再按一次，最多三轮
     await key(ws, { mod: CTRL, key: "k" }, "KeyK", 75);
-    await waitFor(ws, `!!document.querySelector('.palette-input')`, 5000);
+    let paletteUp = await waitFor(ws, `!!document.querySelector('.palette-input')`, 2500);
+    for (let i = 0; i < 3 && !paletteUp; i += 1) {
+      await key(ws, { mod: CTRL, key: "k" }, "KeyK", 75);
+      paletteUp = await waitFor(ws, `!!document.querySelector('.palette-input')`, 2500);
+    }
+    if (!paletteUp) throw new Error("Ctrl+K 三轮都没唤起命令面板");
     await evaluate(ws, `(() => {
       const input = document.querySelector('.palette-input');
       const set = ${nativeSet}; set(input, "qn30表");
@@ -248,7 +255,12 @@ try {
   // ============================================== 3. 添加单词自动在线释义（真网络）
   {
     await key(ws, { mod: CTRL_ALT, key: "u" }, "KeyU", 85);
-    const dialogUp = await waitFor(ws, `!!document.querySelector('.add-word-input')`, 5000);
+    let dialogUp = await waitFor(ws, `!!document.querySelector('.add-word-input')`, 2500);
+    for (let i = 0; i < 3 && !dialogUp; i += 1) {
+      // 同第 2 节：CDP Input 偶发丢键，没弹起再按
+      await key(ws, { mod: CTRL_ALT, key: "u" }, "KeyU", 85);
+      dialogUp = await waitFor(ws, `!!document.querySelector('.add-word-input')`, 2500);
+    }
     check(dialogUp, "Ctrl+Alt+U 弹出添加单词弹窗");
     await evaluate(ws, `(() => {
       const input = document.querySelector('.add-word-input');

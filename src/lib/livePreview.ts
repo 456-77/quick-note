@@ -42,6 +42,7 @@ import {
 import { renderEmbeddedNote } from "./embed.ts";
 import { openLightbox } from "./lightbox.ts";
 import { getSettings } from "./settings.ts";
+import { bindingFor, comboOf, isCapturing, isHotkeyEnabled } from "./hotkeys.ts";
 import {
   findComments,
   findHighlights,
@@ -49,6 +50,7 @@ import {
   findInlineMath,
   findTags,
   parseCalloutLine,
+  splitHighlight,
 } from "./inlineSyntax.ts";
 import { CalloutLabelWidget, HtmlWidget, isExternalUrl, mathWidgetFor } from "./markdownExtras.ts";
 import { searchNavSelection, tableSearchHighlight } from "./searchPanel.ts";
@@ -73,9 +75,11 @@ interface TextRun {
   strike: boolean;
   code: boolean;
   link: boolean;
+  /** `==高亮==`：GFM 不认识，语法树里没有节点，靠 splitHighlight 切出来。 */
+  highlight: boolean;
 }
 
-const EMPTY_FLAGS = { bold: false, italic: false, strike: false, code: false, link: false };
+const EMPTY_FLAGS = { bold: false, italic: false, strike: false, code: false, link: false, highlight: false };
 
 /** 表格解析结果。rows 是三层结构：行 → 单元格 → 文本段；raw 是单元格的原文。 */
 interface ParsedTable {
@@ -149,7 +153,36 @@ function flattenInline(
   }
 
   if (pos < parent.to) push(doc.sliceString(pos, parent.to));
-  return runs;
+  // GFM 不认识 `==`：高亮段在语法树里只是普通文本，按正则切开标上 flag
+  // （0.31 表格单元格高亮渲染；code/link 段不切，与正文排除口径一致）。
+  return expandHighlights(runs);
+}
+
+/**
+ * 把 runs 里的 `==高亮==` 从纯文本段里切出来（0.31）。
+ *
+ * 正文的高亮由 markdownExtras 按全文正则画装饰；表格单元格的富文本来自
+ * 语法树拍平，两套机制各画各的——这条函数让单元格与正文口径一致。
+ */
+function expandHighlights(runs: TextRun[]): TextRun[] {
+  let touched = false;
+  const out: TextRun[] = [];
+  for (const run of runs) {
+    if (run.code || run.link || !run.text.includes("==")) {
+      out.push(run);
+      continue;
+    }
+    const parts = splitHighlight(run.text);
+    if (parts.length === 1 && !parts[0].hit) {
+      out.push(run);
+      continue;
+    }
+    touched = true;
+    for (const part of parts) {
+      out.push(part.hit ? { ...run, text: part.text, highlight: true } : { ...run, text: part.text });
+    }
+  }
+  return touched ? out : runs;
 }
 
 /** 把文本段渲染进一个元素。 */
@@ -172,6 +205,12 @@ function appendRuns(target: HTMLElement, runs: TextRun[]): void {
 
     if (run.strike) {
       const el = document.createElement("s");
+      el.appendChild(node);
+      node = el;
+    }
+    if (run.highlight) {
+      const el = document.createElement("mark");
+      el.className = "cm-lp-highlight";
       el.appendChild(node);
       node = el;
     }
@@ -1709,7 +1748,29 @@ const cellRuns = new WeakMap<HTMLElement, TextRun[]>();
  */
 function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement): void {
   cell.addEventListener("mousedown", (event) => {
-    if (event.altKey) return;
+    if (event.altKey) {
+      // 单元格内行内代码的「快捷复制」就地完成（0.31）：此前靠放行冒泡到
+      // contentDOM 上的 altClickHandler，但单元格是独立 contenteditable 宿主，
+      // 沿途任何一环拦掉就永远复制不了——干脆在 cell 上直接命中 .cm-lp-code，
+      // stopPropagation 防止 altClickHandler 二次复制同一份。
+      if (
+        event.button === 0 &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
+      ) {
+        const chip = (event.target as HTMLElement).closest?.(".cm-lp-code");
+        if (chip) {
+          event.preventDefault();
+          event.stopPropagation();
+          view.state
+            .facet(livePreviewContext)
+            .altActions?.copyText(chip.textContent ?? "");
+          return;
+        }
+      }
+      return;
+    }
     event.stopPropagation();
   });
 
@@ -1766,6 +1827,23 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
       event.preventDefault();
       event.stopPropagation();
       toggleCellInlineCode(cell);
+      return;
+    }
+    // 快捷复制行内代码（0.31）：copyCode 的 CM keymap 挂在 contentDOM 上且要求
+    // view.hasFocus，焦点落在单元格（独立宿主）时永远进不去——在单元格自己的
+    // keydown 里对齐同一键位，光标处的行内代码就地复制。
+    if (!isCapturing() && isHotkeyEnabled("copyCode") && bindingFor("copyCode").includes(comboOf(event))) {
+      event.preventDefault();
+      event.stopPropagation();
+      const got = copyCellCodeAtCaret(cell);
+      const actions = view.state.facet(livePreviewContext).altActions;
+      if (got !== null && actions) actions.copyText(got);
+      else
+        window.dispatchEvent(
+          new CustomEvent("qn-notice", {
+            detail: { message: "光标不在行内代码里", kind: "error" },
+          }),
+        );
       return;
     }
     // 有选区时输入包裹字符（` * _ ~ = %）：包住选中文字而不是替换它——
@@ -1907,9 +1985,35 @@ function wrapCellSelection(cell: HTMLElement, opener: string, closer: string): b
   return true;
 }
 
-/** 单元格内 Ctrl+`：选中文字切行内代码（已包裹则剥掉），无选区插一对 ``。 */
-function toggleCellInlineCode(cell: HTMLElement): void {
+/**
+ * 单元格内光标处的行内代码内容（0.31 快捷复制）。
+ *
+ * 两种显示态都要照顾：渲染态里 `<code class="cm-lp-code">` 是现成元素，按 DOM
+ * 选区取祖先；原文编辑态（focus 后整格换成了带反引号的源码）没有元素可找，
+ * 在纯文本里按光标偏移找包裹它的那对反引号。都不在代码里返回 null。
+ */
+function copyCellCodeAtCaret(cell: HTMLElement): string | null {
+  const sel = window.getSelection();
+  const anchor = sel?.anchorNode;
+  if (anchor && cell.contains(anchor)) {
+    const chip =
+      anchor.nodeType === Node.ELEMENT_NODE
+        ? (anchor as HTMLElement).closest(".cm-lp-code")
+        : (anchor.parentElement?.closest(".cm-lp-code") ?? null);
+    if (chip?.textContent) return chip.textContent;
+  }
+  // 原文态：光标偏移两侧最近的反引号对
   const got = cellSelectionOffsets(cell);
+  if (!got) return null;
+  const [start, , text] = got;
+  const before = text.lastIndexOf("`", start - 1);
+  const after = text.indexOf("`", start);
+  if (before < 0 || after < 0 || before + 1 >= after) return null;
+  return text.slice(before + 1, after) || null;
+}
+
+/** 单元格内 Ctrl+`：选中文字切行内代码（已包裹则剥掉），无选区插一对 ``。 */
+function toggleCellInlineCode(cell: HTMLElement): void {  const got = cellSelectionOffsets(cell);
   if (!got) {
     document.execCommand("insertText", false, "``");
     return;

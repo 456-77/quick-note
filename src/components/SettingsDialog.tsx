@@ -902,6 +902,44 @@ export default function SettingsDialog({
             </span>
           </Row>
 
+          <Group>建表语句悬浮（0.31 新增）</Group>
+          <Row
+            label="表名悬浮预览"
+            desc="光标悬停在已收录的表名上，浮动显示该表的建表语句。"
+            tip="先把建表语句收进仓库内的 DDL 笔记（默认「数据库表DDL.md」）：Ctrl+Alt+L 弹窗粘贴 CREATE TABLE 自动识别表名，或直接在那篇笔记里手写。之后笔记里悬停表名（如 ids_check_scenario）约 0.3 秒，会弹出该表的完整建表语句，类似数据库 IDE。"
+            keywords="DDL 建表 表名 悬浮 数据库"
+          >
+            <input
+              type="checkbox"
+              checked={settings.ddlHover}
+              onChange={(event) => saveWithFlash({ ddlHover: event.target.checked })}
+            />
+          </Row>
+          <Row
+            label="DDL 笔记路径"
+            desc="收录建表语句的仓库内笔记路径。"
+            tip="仓库内相对路径。整篇笔记里的 CREATE TABLE 语句都会被扫描（说明文字随意写）；同名表以最后一次出现为准。改路径后悬浮库在下次仓库刷新/收录时切换到新文件。"
+            keywords="DDL 建表 路径"
+          >
+            <span className="settings-inline">
+              <input
+                type="text"
+                className="settings-text"
+                value={settings.ddlFilePath}
+                placeholder="数据库表DDL.md"
+                onChange={(event) => saveWithFlash({ ddlFilePath: event.target.value })}
+              />
+              <button
+                type="button"
+                className="btn btn-mini"
+                title="恢复默认路径"
+                onClick={() => saveWithFlash({ ddlFilePath: "数据库表DDL.md" })}
+              >
+                重置
+              </button>
+            </span>
+          </Row>
+
           <Group>新建与整理</Group>
           <Row
             label="新笔记自动打标签"

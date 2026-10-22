@@ -5084,6 +5084,34 @@ html.qn-bg-on .calendar-card {
   background: color-mix(in srgb, var(--surface) var(--qn-veil-card, 76%), transparent);
 }
 
+/* 0.31：背景开着时，侧栏/面板里的**控件级**深色底也要跟随浓度——此前只有
+   大表面降不透明度，导航 chips、筛选框、单词本搜索框、字母分组头仍是
+   不透明深色实心块，浅色背景上形成高对比「深色孤岛」（0.30 用户反馈的突兀），
+   深色主题配浅色背景时尤其刺眼。 */
+html.qn-bg-on .left-view,
+html.qn-bg-on .sidebar-filter,
+html.qn-bg-on .vocab-search {
+  background: color-mix(in srgb, var(--surface-2) var(--qn-veil-card, 76%), transparent);
+}
+
+html.qn-bg-on .sidebar-filter:focus-within {
+  background: color-mix(in srgb, var(--surface) var(--qn-veil-card, 76%), transparent);
+}
+
+/* 字母分组头是 sticky 定位：必须有自己的底（滚动时遮住下层词条），但改成
+   与侧栏同浓度的半透明底，而不是不透明 panel */
+html.qn-bg-on .vocab-group-letter {
+  background: color-mix(in srgb, var(--panel) var(--qn-veil-side, 66%), transparent);
+}
+
+/* 空状态（欢迎页）：此前是不透明 var(--bg)——注释里的历史 bug（空状态与上一篇
+   内容叠加透出）已由「确实没有任何标签才渲染」的条件守住，这层不再需要实底。
+   qn-bg-on 时透出背景图（0.30 用户反馈：没开笔记时中间一块纯黑，背景图唯独
+   中间不显示）。无背景时保持原样。 */
+html.qn-bg-on .editor-empty {
+  background: transparent;
+}
+
 /* ------------------------------------------------- mermaid 增强 */
 
 .cm-lp-mermaid {
@@ -10686,4 +10714,138 @@ button.cm-tag:hover {
   font-size: 10.5px;
   color: var(--text-faint);
   text-align: center;
+}
+
+/* ------------------------------------------------ 表名悬浮预览（0.31） */
+
+/* 悬浮卡：标题行 + DDL 代码体。cm-tooltip 自带边框/阴影/定位，这里只管内容 */
+.editor-host .cm-tooltip.qn-ddl-tip {
+  max-width: min(620px, 72vw);
+  padding: 0;
+  overflow: hidden;
+}
+
+.qn-ddl-tip-head {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  font-weight: 650;
+  color: var(--accent);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qn-ddl-tip-pre {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 300px;
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre;
+}
+
+/* DDL 收录弹窗的多行输入 */
+.ddl-textarea {
+  width: 100%;
+  min-height: 180px;
+  max-height: 46vh;
+  margin: 4px 0 8px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+  resize: vertical;
+}
+
+.ddl-textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* ------------------------------------------------ 分屏查看（0.31） */
+
+/* 编辑区主体：编辑器 + 可选分屏窗格横向排布 */
+.editor-main {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+}
+
+.editor-main .editor-host {
+  flex: 1;
+  min-width: 0;
+}
+
+.split-pane {
+  flex: 0 0 42%;
+  min-width: 260px;
+  max-width: 56%;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  min-height: 0;
+}
+
+html.qn-bg-on .split-pane {
+  background: color-mix(in srgb, var(--surface) var(--qn-veil-editor, 80%), transparent);
+}
+
+.split-pane-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  flex: none;
+}
+
+.split-pane-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.split-pane-badge {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+.split-pane-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 18px 40px;
+  /* 与编辑器同一阅读宽度口径 */
+  max-width: 900px;
+}
+
+.split-pane-loading {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+/* 渲染容器挂 cm-lp-embed-body 复用嵌入笔记的整套正文样式；字号行距在此微调 */
+.split-pane-body.cm-lp-embed-body {
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text);
 }

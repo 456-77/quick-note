@@ -69,6 +69,13 @@ export const COMMAND_KEYS: CommandKeys[] = [
     group: "edit",
     keys: ["Mod-Alt-U"],
   },
+  {
+    id: "ddlCapture",
+    label: "收录建表语句…",
+    desc: "弹窗粘贴 CREATE TABLE 自动识别表名，合并进仓库的 DDL 笔记；笔记里悬停已收录的表名会浮动显示建表语句（0.31）",
+    group: "edit",
+    keys: ["Mod-Alt-L"],
+  },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },
   { id: "heading2", label: "标题 2", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-2"] },

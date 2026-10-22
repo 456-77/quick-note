@@ -131,6 +131,17 @@ export interface Settings {
   bgSurface: number;
   /** per-vault 背景设置（键：仓库绝对路径）。没有条目的仓库用扁平字段的旧值兜底。 */
   bgPerVault?: Record<string, BgSettings>;
+  /**
+   * 建表语句悬浮预览（0.31）：笔记里光标悬停在已收录的表名上，浮动显示该表的
+   * CREATE TABLE 语句。表名库来自仓库内的 DDL 笔记（ddlFilePath），快捷键
+   * Ctrl+Alt+T 弹窗可粘贴建表语句收录。默认开。
+   */
+  ddlHover: boolean;
+  /**
+   * 建表语句库的笔记路径（仓库内相对路径）。整篇笔记里所有 ```sql 围栏块都会
+   * 被扫描：块里的每条 CREATE TABLE 按表名收录，悬浮时显示该条完整语句。
+   */
+  ddlFilePath: string;
 }
 
 /** 背景图的全部可调参数（扁平 bg* 字段与 per-vault 条目共用同一形状）。 */
@@ -184,6 +195,9 @@ const DEFAULTS: Settings = {
   bgScale: 100,
   bgFit: "cover",
   bgSurface: 80,
+  ddlHover: true,
+  // 仓库根的普通笔记：用户要能直接看到、手工编辑（同步也覆盖），不走隐藏目录
+  ddlFilePath: "数据库表DDL.md",
 };
 
 function load(): Settings {

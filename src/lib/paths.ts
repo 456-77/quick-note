@@ -35,6 +35,12 @@ export interface LivePreviewContext {
    * 同一套「可变引用」约定。
    */
   altActions?: AltActions;
+  /**
+   * 建表语句库（0.31）：表名（小写）→ CREATE TABLE 语句。App 打开仓库/收录
+   * 语句后就地更新；编辑器的表名悬浮预览（ddlHover 扩展）读——同一套约定。
+   * null/空 = 库没加载或没收录，悬浮不触发。
+   */
+  ddlTables?: Map<string, string>;
 }
 
 /** Alt+点击触发的动作，由 App 实现（剪贴板、资源管理器、提示）。 */

@@ -20,7 +20,8 @@
 #  14. Markdown 成对符号自动闭合的纯逻辑：补全规则、选区包裹、成长/跳出、代码语境禁用
 #  15. 列表切换 / 日记改名日期 / 待办日期前缀的纯逻辑
 #  16. 速记行格式：组装 / 解析（新格式 + 旧格式回退）/ 行级归档与加标签
-#  17. 比对基线：确认以上过程没有改动任何文件
+#  18. DDL 收录 / 阅读位置持久化 / 表格单元格高亮切分（0.31）
+#  19. 比对基线：确认以上过程没有改动任何文件
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -99,7 +100,11 @@ echo "=== 17/18 搜索变体与单词本（字段联动/单词本纯变换） ==
 node --experimental-strip-types --no-warnings scripts/verify-search-vocab.mjs
 
 echo
-echo "=== 18/18 比对基线：确认文件未被改动 ==="
+echo "=== 18/19 DDL 收录 / 阅读位置 / 高亮切分（0.31 新增纯逻辑） ==="
+node --experimental-strip-types --no-warnings scripts/verify-ddl-progress.mjs
+
+echo
+echo "=== 19/19 比对基线：确认文件未被改动 ==="
 bash scripts/verify-roundtrip.sh check "$VAULT"
 
 echo

@@ -140,6 +140,30 @@ export function findHighlights(
 }
 
 /**
+ * 把一段文本按 `==高亮==` 切成「普通段 + 命中段」（0.31 表格单元格渲染高亮用）。
+ *
+ * 表格单元格的 runs 来自 lezer 语法树拍平，GFM 不认识 `==`，正文里的高亮是
+ * 正则扫描画装饰——单元格内同一套正则在这里切 runs，两条路径口径一致。
+ * 没有命中时返回单段原文（调用方零开销透传）。
+ */
+export function splitHighlight(text: string): Array<{ text: string; hit: boolean }> {
+  const pattern = /==([^=\n](?:[^=\n]*[^=\n])?)==/g;
+  let match: RegExpExecArray | null;
+  let last = 0;
+  let found = false;
+  const out: Array<{ text: string; hit: boolean }> = [];
+  while ((match = pattern.exec(text)) !== null) {
+    found = true;
+    if (match.index > last) out.push({ text: text.slice(last, match.index), hit: false });
+    out.push({ text: match[1], hit: true });
+    last = match.index + match[0].length;
+  }
+  if (!found) return [{ text, hit: false }];
+  if (last < text.length) out.push({ text: text.slice(last), hit: false });
+  return out;
+}
+
+/**
  * 注释 `%%...%%`。
  *
  * 只处理**单行**注释：跨行的替换会覆盖换行符，而 CM6 不允许插件替换换行符
