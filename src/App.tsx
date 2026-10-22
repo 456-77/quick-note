@@ -71,7 +71,8 @@ import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { bgSettingsFor, getSettings, onSettingsChange, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
 import { closeSearchPanelIfOpen, openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
-import { VOCAB_FILENAME, addVocabEntry } from "./lib/vocabulary";
+import { VOCAB_FILENAME, addVocabEntry, updateVocabEntry } from "./lib/vocabulary";
+import { vocabLookup } from "./lib/api";
 import { loadVocabularyContent, saveVocabularyContent } from "./lib/vocabStore";
 import { onVocabRemoteChange, setVocabSyncEnabled, syncVocabNow } from "./lib/vocabSync";
 import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
@@ -1214,6 +1215,8 @@ export default function App() {
   const [quickTodoOpen, setQuickTodoOpen] = useState(false);
   /** 手动添加单词弹窗（0.26）：string = 打开并预填（可为空串），null = 关闭。 */
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
+  /** 释义自动补全的串行队列：接连添加的词读-改-写不交叠（0.30）。 */
+  const vocabFillChain = useRef<Promise<void>>(Promise.resolve());
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
   const [shareDraft, setShareDraft] = useState("");
   /** 系统分享带入的图片（base64，随弹窗提交一并落附件目录）。 */
@@ -3091,6 +3094,7 @@ export default function App() {
         return;
       }
       openSearchPanelOn(view, term);
+      let scrollPos = target.from;
       const block = toggleableBlockAt(view.state, target.from);
       if (block && target.from >= block.from && target.from <= block.to) {
         // 命中在表格/图表块里：与行号点击的「切渲染」同一招，光标挪出块
@@ -3099,6 +3103,7 @@ export default function App() {
           selection: { anchor: outside },
           effects: EditorView.scrollIntoView(block.from, { y: "center" }),
         });
+        scrollPos = block.from;
       } else {
         const at = target.text.toLowerCase().indexOf(term.toLowerCase());
         const anchor = at >= 0 ? target.from + at : target.from;
@@ -3109,6 +3114,17 @@ export default function App() {
         });
       }
       view.focus();
+      // 首次打开的笔记在 setState 后行高图还带着上一篇的实测值（文档前缀近似
+      // 被误沿用），上面的滚动按错误高度算 scrollTop，目标会停在视口外（0.30
+      // 批测：切到未打开的笔记欠滚 ~460px）。等两帧让真实测量落地，再按同一
+      // 目标校一次；期间用户切走了就不动。
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (viewRef.current === view) {
+            view.dispatch({ effects: EditorView.scrollIntoView(scrollPos, { y: "center" }) });
+          }
+        }),
+      );
     },
     [openNote, jumpToLine],
   );
@@ -3917,8 +3933,35 @@ export default function App() {
   );
 
   /**
+   * 添加单词后自动补全在线释义（0.30 用户反馈"添加单词时自动搜索在线释义"）：
+   * 收词/手动弹窗都只落词本身，保持"记完继续干活"的手感；查询在后台跑，查到
+   * 就把释义与音标回填进词条。失败不写任何东西——详情卡里的「查询在线释义」
+   * 仍可兜底。补全是读-改-写，接连添加的词串到同一条 promise 链上，写不交叠。
+   */
+  const autoFillVocabMeaning = useCallback((word: string) => {
+    vocabFillChain.current = vocabFillChain.current.then(async () => {
+      try {
+        const result = await vocabLookup(word);
+        if (!result.meaning && !result.phonetic) return;
+        const content = await loadVocabularyContent(vaultRef.current);
+        const next = updateVocabEntry(content, word, {
+          meaning: result.meaning,
+          phonetic: result.phonetic,
+        }).content;
+        if (next === content) return; // 词条已被删掉或手动改过，不强行写回
+        await saveVocabularyContent(next);
+        setVocabVersion((value) => value + 1);
+        notice(`已自动补全「${word}」在线释义`);
+      } catch (e) {
+        notice(`「${word}」在线释义查询失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+    });
+  }, [notice]);
+
+  /**
    * 单词本（0.23 用户反馈，交互对齐 IDEA 的「保存到词典」）：把选中的词（或
    * 光标所在词）记进账户级单词本（所有仓库共用）。重复词不重录；右侧「单词」页签翻看。
+   * 0.30 起落盘后自动在线补全释义（后台查询，不挡收词）。
    */
   const addWordToVocabulary = useCallback(async () => {
     const view = viewRef.current;
@@ -3948,11 +3991,12 @@ export default function App() {
       await saveVocabularyContent(result.content);
       // 「单词」面板只靠编辑器文档变更刷新，收词不走编辑器——这里显式 bump
       setVocabVersion((value) => value + 1);
-      notice(`已加入单词本：${word}`);
+      void autoFillVocabMeaning(word);
+      notice(`已加入单词本：${word}，正在查询在线释义…`);
     } catch (e) {
       notice(`加入单词本失败：${e instanceof Error ? e.message : String(e)}`, "error");
     }
-  }, [notice]);
+  }, [notice, autoFillVocabMeaning]);
 
   /**
    * 速记归档后的同步联动（0.24 用户反馈）：归档写到的仓库里开着自动同步的，
@@ -3999,6 +4043,19 @@ export default function App() {
     if (!view) return;
     view.dispatch({ selection: { anchor: view.state.doc.length }, scrollIntoView: true });
     view.focus();
+    // 长笔记滚动后，上方刚进视口的装饰件（表格/代码块 widget）会比源码行高，
+    // 内容整体下移、结尾停在视口外——两帧后装饰量完再校一次（与 openNoteAt
+    // 的首开欠滚同一根因，0.30 批测「Ctrl+End 末行可见」偶发失败抓出）。
+    // 校正只带滚动 effect，不动选区（这两帧里用户可能已经开始输入）。
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (viewRef.current === view) {
+          view.dispatch({
+            effects: EditorView.scrollIntoView(view.state.doc.length, { y: "end" }),
+          });
+        }
+      }),
+    );
   }, []);
 
   /** 快捷键动作表。命令面板按同一份文案生成动作项，这里集中定义避免两处漂移。 */
@@ -4622,7 +4679,9 @@ export default function App() {
             await saveVocabularyContent(result.content);
             // 收词不走编辑器，显式 bump 让「单词」面板重读
             setVocabVersion((value) => value + 1);
-            return `已加入单词本：${word}`;
+            // 0.30：释义后台自动查询回填，弹窗不等待、可连续录入
+            void autoFillVocabMeaning(word);
+            return `已加入单词本：${word}，正在查询在线释义…`;
           }}
         />
       )}

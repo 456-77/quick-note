@@ -61,10 +61,12 @@ const check = (ok, label, detail = "") => {
 };
 
 const nativeSet = `(el, value) => {
-  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  if (!el) return "no-el";
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
   setter.call(el, value);
-  el.dispatchEvent(new Event("input", { bubbles: true }));
+  el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? "change" : "input", { bubbles: true }));
+  return "ok";
 }`;
 
 const waitFor = async (ws, expression, timeoutMs, pollMs = 500) => {
@@ -177,13 +179,36 @@ try {
   // 等仓库载入（文件树出现）
   await waitFor(ws, `document.querySelectorAll('.tree-item').length > 0`, 30000);
 
-  // 切到单词页签（供全部面板断言复用）
+  // 切到单词页签（供全部面板断言复用）。启动后右栏布局还会动一拍，单次「查坐标
+  // → 点击」可能点偏（0.30 批测偶发：点击落空，后面全线雪崩）——整循环重试。
   const openVocabTab = async () => {
-    const pos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
-    if (!pos) return false;
-    await mouseClick(ws, pos.x, pos.y);
-    await sleep(500);
-    return !!(await evaluate(ws, `!!document.querySelector('.vocab-search')`));
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const pos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
+      if (!pos) {
+        await sleep(500);
+        continue;
+      }
+      await mouseClick(ws, pos.x, pos.y);
+      await sleep(600);
+      if (await evaluate(ws, `!!document.querySelector('.vocab-search')`)) return true;
+    }
+    const diag = await evaluate(ws, `({
+      tabs: [...document.querySelectorAll('.sidebar-tab')].map((el) => el.textContent),
+      inner: [window.innerWidth, window.innerHeight],
+      panelText: document.querySelector('.vocab-panel')?.textContent?.slice(0, 120) ?? null,
+      panelClass: document.querySelector('.vocab-panel')?.className ?? null,
+      vaultPill: document.querySelector('.vault-pill')?.textContent ?? null,
+      atTab: (() => {
+        const el = [...document.querySelectorAll('.sidebar-tab')].find((t) => t.textContent.includes('单词'));
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return { rect: [r.left, r.top, r.width, r.height], hitClass: hit?.className ?? null, hitTag: hit?.tagName ?? null, same: hit === el };
+      })(),
+      overlays: ['.menu-backdrop', '.palette-overlay', '.banner-error', '.cal-carryover'].map((s) => [s, !!document.querySelector(s)]),
+    })`).catch((e) => String(e));
+    console.log("  [diag] 点击单词页签后面板没起来：", JSON.stringify(diag));
+    return false;
   };
   check(await openVocabTab(), "右侧面板出现「单词」页签");
 

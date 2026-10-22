@@ -608,7 +608,9 @@ check(
   "渲染后不再直接显示 mermaid 围栏",
 );
 
-// 收尾围栏行应被压扁（否则每个代码块底部都会多一条空行）
+// 收尾围栏行压掉字形但仍保留一行代码的等高空行（0.30 用户反馈：代码块底部
+// 此前贴着最后一行代码、顶部却有整行高的语言签条，上下不对称）。
+// 「等高」是关键：空行高度稳定、不随字形有无变化，CM 高度图依旧准确。
 const heights = await evaluate(
   ws,
   `(() => {
@@ -623,8 +625,8 @@ const heights = await evaluate(
 );
 check(heights.hasFence, "收尾围栏行带压缩类");
 check(
-  heights.fence !== null && heights.code !== null && heights.fence < heights.code,
-  "收尾围栏行高度小于代码行（空行已压掉）",
+  heights.fence !== null && heights.code !== null && Math.abs(heights.fence - heights.code) < 2,
+  "收尾围栏行高度等于一行代码（块底等高留白，上下对称）",
   JSON.stringify(heights),
 );
 

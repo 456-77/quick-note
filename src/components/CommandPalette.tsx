@@ -12,6 +12,10 @@
  * 命中右侧标注仓库名；回车打开别的仓库的命中会先切仓库再开笔记。其他仓库的
  * 条目列表（笔记名匹配用）在面板打开时拉一次，不跟着每次击键重复扫盘。
  *
+ * 「笔记」（标题命中）与「内容」（全文命中）两组**独立展示、互不去重**——
+ * 0.30 用户反馈：标题命中的文件此前在「内容」组被压掉，少了命中行摘要与
+ * 悬停预览，找文件反而要来回换着看两组。
+ *
  * 面板是纯展示组件：开关由 App 控制，这样顶栏的搜索框、快捷键、Esc 都能收拢在一处。
  */
 
@@ -311,7 +315,6 @@ export default function CommandPalette({
 
       // 其他仓库的笔记名命中（0.29 多仓库检索）：排在当前仓库之后，
       // meta 直接标注仓库名，回车先切仓库再打开
-      const seen = new Set(notes.map((note) => note.path));
       const otherNotes: Item[] = [];
       for (const item of otherVaults) {
         const vaultBase = item.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || item;
@@ -335,11 +338,10 @@ export default function CommandPalette({
         out.push(item);
       }
 
+      // 0.30 用户反馈：标题命中的文件在「内容」组也要列出（此前为去重被压掉，
+      // 结果只有标题行能看，少了命中行摘要与悬停预览）。两组各自独立展示，
+      // 同一文件最多在两组各出现一次。
       for (const hit of contentHits.slice(0, CONTENT_LIMIT)) {
-        // 内容命中里已经是名称命中的文件不再重复列（按仓库各自去重）
-        if (hit.vault === vault && seen.has(hit.path)) continue;
-        if (hit.vault !== vault && seen.has(`v:${hit.vault}:${hit.path}`)) continue;
-        seen.add(hit.vault === vault ? hit.path : `v:${hit.vault}:${hit.path}`);
         const otherVault = hit.vault !== vault;
         const vaultBase = hit.vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || hit.vault;
         out.push({

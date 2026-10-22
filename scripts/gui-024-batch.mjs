@@ -502,7 +502,9 @@ try {
             const buf = readFileSync(pngFile);
             const width = buf.readUInt32BE(16);
             const height = buf.readUInt32BE(20);
-            const vb = /viewBox="([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"/.exec(readFileSync(svgFile, "utf8"));
+            // 根 viewBox 原点可为负（mermaid 图 bbox 从负坐标起），不容忍负号会
+            // 回退匹配到 marker 定义里的 viewBox="0 0 10 10"（0.30 踩过）
+            const vb = /viewBox="(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)"/.exec(readFileSync(svgFile, "utf8"));
             const svgW = vb ? Number(vb[3]) : null;
             const svgH = vb ? Number(vb[4]) : null;
             check(

@@ -531,7 +531,9 @@ try {
         }
         check(!!pngPath, "导出 PNG 落到导出目录", pngPath ?? "无文件");
         if (pngPath && svgPath) {
-          const vb = /viewBox="([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)"/.exec(readFileSync(svgPath, "utf8"));
+          // 根 viewBox 的原点可为负（mermaid 图 bbox 从负坐标起），字符集必须
+          // 容忍负号——否则会回退匹配到 marker 定义里的 viewBox="0 0 10 10"
+          const vb = /viewBox="(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)"/.exec(readFileSync(svgPath, "utf8"));
           const buf = readFileSync(pngPath);
           const width = buf.readUInt32BE(16);
           const height = buf.readUInt32BE(20);

@@ -1894,6 +1894,15 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   line-height: 0;
 }
 
+/* 收尾围栏（已压成空行的那一行）恢复一行代码的高度，给块底留出与顶部等厚的
+   呼吸位：顶部天然有整行高的语言签头部条，底部此前贴着最后一行代码（0.30
+   用户反馈"上下不对称"）。只挂块末行（-last），块中不会多出空行；光标进块
+   （active）时围栏显为源码、本规则不生效，顶底都是普通行，天然对称。 */
+.editor-host .cm-line.cm-lp-fence.cm-lp-codeblock-last {
+  font-size: 0.85em;
+  line-height: 1.65;
+}
+
 /* ------------------------------------------------- log 块阅读优化 */
 /*
  * 逐行装饰只允许「不影响布局」的样式（背景/颜色），margin/圆角/描边一律禁止——
