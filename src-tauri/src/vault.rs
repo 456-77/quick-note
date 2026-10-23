@@ -712,8 +712,43 @@ pub fn read_note_optional(vault: String, path: String) -> Result<Option<NoteCont
     read_note_at(&root, &path).map(Some)
 }
 
-/// 全文搜索的一个命中。
-#[derive(Serialize)]
+/// 壁纸轮换（0.32 用户需求）：列出一个**任意**目录（不在仓库里也行）下的图片
+/// 文件，返回绝对路径。只列直接子文件（不递归——壁纸目录平铺一层是常态，递归
+/// 会把缩略图缓存之类的东西也卷进来），按完整路径排序保证「顺序轮换」可预期。
+/// 扩展名白名单与浏览器可解码的静态图片格式对齐。
+#[tauri::command]
+pub fn list_dir_images(dir: String) -> Result<Vec<String>, String> {
+    let root = PathBuf::from(&dir);
+    if !root.is_dir() {
+        return Err(format!("目录不存在: {dir}"));
+    }
+    const IMAGE_EXTS: [&str; 6] = ["png", "jpg", "jpeg", "webp", "gif", "bmp"];
+    let mut out = Vec::new();
+    let entries = fs::read_dir(&root).map_err(|e| format!("读取目录失败: {e}"))?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
+            continue;
+        };
+        if IMAGE_EXTS.contains(&ext.to_lowercase().as_str()) {
+            out.push(path.to_string_lossy().to_string());
+        }
+    }
+    out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    Ok(out)
+}
+
+/// 全文搜索的一个命中。Debug 供测试断言打印。
+#[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchHit {
     pub path: String,
@@ -757,11 +792,16 @@ fn field_variants(term: &str) -> Vec<String> {
 /// 大小写不敏感的全文搜索（多关键词 AND，空格分隔；每个关键词按 [`field_variants`]
 /// 的变体"或"匹配）。
 ///
-/// 遍历仓库内全部 `.md`（跳过点开头的隐藏路径），逐行找首个命中行，每文件最多
-/// 记一次命中。个人库的量级（数百篇）在 Rust 侧全量扫描是毫秒级的，刻意不做
-/// 倒排索引——索引要处理增量失效，复杂度换不来这个量级下的收益。
+/// 遍历仓库内全部 `.md`（跳过点开头的隐藏路径），逐行找命中行，**每文件最多记
+/// `PER_FILE_HITS` 条**（0.32 用户反馈"搜不到表格中的内容"：表格行与普通行一样
+/// 参与匹配，但此前每文件只记首个命中行——首个命中常落在标题/正文上，表格行
+/// 永远没有露脸机会）。个人库的量级（数百篇）在 Rust 侧全量扫描是毫秒级的，
+/// 刻意不做倒排索引——索引要处理增量失效，复杂度换不来这个量级下的收益。
 #[tauri::command]
 pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<SearchHit>, String> {
+    /// 单个文件最多返回的命中行数：表格/重复段落里的命中也能露脸，又不至于
+    /// 一个巨型文件把整个结果列表刷屏。
+    const PER_FILE_HITS: usize = 5;
     let root = vault_root(&vault)?;
     // 变体在**原始大小写**上生成（驼峰边界依赖大写字母），再统一小写参与子串匹配
     let term_groups: Vec<Vec<String>> = query
@@ -781,7 +821,7 @@ pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<Se
     if term_groups.is_empty() {
         return Ok(Vec::new());
     }
-    let limit = limit.clamp(1, 200);
+    let limit = limit.clamp(1, 400);
 
     /** 一行的全部关键词是否都按变体命中。 */
     fn line_matches(line_lower: &str, term_groups: &[Vec<String>]) -> bool {
@@ -816,6 +856,7 @@ pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<Se
         if !line_matches(&lowered, &term_groups) {
             continue;
         }
+        let mut file_hits = 0usize;
         for (line_index, line) in content.lines().enumerate() {
             let line_lower = line.to_lowercase();
             if line_matches(&line_lower, &term_groups) {
@@ -830,7 +871,10 @@ pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<Se
                     line: line_index,
                     text,
                 });
-                break;
+                file_hits += 1;
+                if file_hits >= PER_FILE_HITS || hits.len() >= limit {
+                    break;
+                }
             }
         }
     }
@@ -1605,6 +1649,42 @@ mod tests {
         assert_eq!(field_variants("order_item_2"), vec!["order_item_2", "orderitem2"]);
         // HTTP 连续大写只按"小写→大写"边界拆（宽口径，原词兜底）
         assert_eq!(field_variants("parseHTTP"), vec!["parseHTTP", "parse_http"]);
+    }
+
+    #[test]
+    fn search_vault_returns_multiple_hits_per_file() {
+        // 0.32 用户反馈"搜不到表格中的内容"：表格行是普通文本行，本来就能匹配，
+        // 但此前每文件只记**首个**命中行——首个命中常落在标题/正文上，表格行
+        // 永远没有露脸机会。现在每文件最多 5 条。
+        let root = std::env::temp_dir().join(format!("qn-search-multihit-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::write(
+            root.join("tables.md"),
+            [
+                "# 表清单",
+                "",
+                "git commit -m \"fix\" 是常见写法",
+                "",
+                "| 命令 | 说明 |",
+                "| --- | --- |",
+                "| git commit -m | 提交 |",
+                "| curl -s -m 10 | 超时 |",
+                "",
+                "收尾再提一次 git commit -m。",
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+
+        let vault = root.to_string_lossy().to_string();
+        let hits = search_vault(vault, "-m".into(), 50).unwrap();
+        assert!(hits.len() >= 4, "表格行与正文行都返回: {:?}", hits);
+        let lines: Vec<usize> = hits.iter().map(|h| h.line).collect();
+        assert!(lines.contains(&6), "表格数据行命中在结果里: {lines:?}");
+        assert!(lines.contains(&7), "第二条表格行也在: {lines:?}");
+        assert!(lines.contains(&2) && lines.contains(&9), "正文行也保留: {lines:?}");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -266,6 +266,11 @@ function closePanel(view: EditorView): void {
   if (!panel) return;
   const el = panel;
   panel = null;
+  // panelView 必须一并清空（0.32 用户反馈"关闭搜索弹窗还是会有高亮"）：自绘
+  // 高亮器在 build() 里以 `panelView !== view` 判断要不要画——只置空 panel
+  // 的话 panelState.query 还在（跨重启持久化是刻意保留的），下笔一更新视图
+  // 高亮就又回来了。
+  panelView = null;
   el.classList.add("is-closing");
   window.setTimeout(() => el.remove(), 150);
   // 清掉**活的**查询状态：单一 EditorView 服务所有标签，不清的话上一篇的
@@ -453,6 +458,12 @@ function prefillFromSelection(view: EditorView): string {
  * `init.query !== undefined` 时改用它（跳转预填优先于选区）。
  */
 function openPanel(view: EditorView, init?: { query?: string }): void {
+  // 面板挂在别的视图上（0.32 分屏双编辑器）：面板 DOM 追加在旧视图的根节点里，
+  // 输入驱动的查询也全打到旧视图上——先关掉旧的再在新视图重建，同一时刻
+  // 面板只属于一个视图（旧的关闭路径顺带把旧视图的高亮清干净）。
+  if (panel && panelView && panelView !== view) {
+    closePanel(panelView);
+  }
   if (init && init.query !== undefined) {
     panelState.query = init.query.slice(0, PREFILL_MAX);
     refresh(view);

@@ -56,13 +56,89 @@ export function parseDdlTables(text: string): Map<string, string> {
   while ((match = CREATE_RE.exec(text)) !== null) {
     const table = match[1];
     const rest = text.slice(match.index);
-    const end = endOfStatement(rest);
-    const ddl = (end >= 0 ? rest.slice(0, end + 1) : rest.slice(0, 4000)).trim();
+    const { cut, advance } = statementSpan(rest, match[0].length);
+    const ddl = stripFenceLines(rest.slice(0, cut));
     if (table && ddl) out.set(table.toLowerCase(), ddl);
-    // 消费掉语句体再继续扫（没有分号时游标已在匹配尾部，自然前进）
-    if (end >= 0) CREATE_RE.lastIndex = match.index + end + 1;
+    // 消费掉语句体再继续扫（advance ≥ 匹配头部长度，游标永远向前）
+    CREATE_RE.lastIndex = match.index + advance;
   }
   return out;
+}
+
+const CREATE_LINE_RE = /^create\s+table\b/i;
+
+/**
+ * 语句的「硬边界」：从 from 起找最早的**围栏行**（``` 开头）或**下一条
+ * CREATE TABLE 行**的行首（返回绝对下标）。
+ *
+ * 为什么需要它（0.32 用户反馈「DDL 弹窗有多余的内容」）：粘贴的残段常没有
+ * 收口分号，`endOfStatement` 会一路吃到**别人家**语句的分号，把闭合围栏、
+ * 说明文字、甚至下一张表的 CREATE 整段吞进悬浮内容。一条建表语句里不可能
+ * 再出现一条 CREATE，围栏行也不属于语句体——它们都按语句终点处理。字符串
+ * 与 `--` 注释里的围栏/create 不算边界。找不到返回 -1。
+ */
+export function nextStatementBoundary(text: string, from: number): number {
+  let inString = false;
+  let atLineStart = true;
+  let lead = 0; // 行首已扫过的空白宽度
+  for (let i = Math.max(0, from); i < text.length; i += 1) {
+    const ch = text[i];
+    if (inString) {
+      if (ch === "'") inString = false;
+      else if (ch === "\n") {
+        atLineStart = true;
+        lead = 0;
+      }
+      continue;
+    }
+    if (ch === "\n") {
+      atLineStart = true;
+      lead = 0;
+      continue;
+    }
+    if (atLineStart) {
+      if (ch === " " || ch === "\t" || ch === "\r") {
+        lead += 1;
+        continue;
+      }
+      if (ch === "`" && text.startsWith("```", i)) return i - lead;
+      if (CREATE_LINE_RE.test(text.slice(i, i + 32))) return i - lead;
+      atLineStart = false;
+      lead = 0;
+      continue;
+    }
+    if (ch === "'") {
+      inString = true;
+      continue;
+    }
+    if (ch === "-" && text[i + 1] === "-") {
+      const nl = text.indexOf("\n", i);
+      if (nl < 0) return -1;
+      i = nl - 1; // 下一轮落在 \n 上，行首标记在那里翻
+      continue;
+    }
+  }
+  return -1;
+}
+
+/** 去掉首尾整行的围栏标记（``` / ```sql）：悬浮预览只展示语句本身。 */
+function stripFenceLines(text: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  while (lines.length > 0 && /^\s*```/.test(lines[0])) lines.shift();
+  while (lines.length > 0 && /^\s*```/.test(lines[lines.length - 1])) lines.pop();
+  return lines.join("\n").trim();
+}
+
+/**
+ * 一条 CREATE 语句的取值范围（相对语句起点）：分号收口、硬边界、4000 字
+ * 兜底三者取最早；`end` 带回游标推进量（parse 与 merge 共用同一套切法）。
+ */
+function statementSpan(text: string, headEnd: number): { cut: number; advance: number } {
+  const semi = endOfStatement(text);
+  let cut = semi >= 0 ? semi + 1 : Math.min(text.length, 4000);
+  const bound = nextStatementBoundary(text, headEnd);
+  if (bound >= 0 && bound < cut) cut = bound;
+  return { cut, advance: Math.max(cut, headEnd) };
 }
 
 /** 一段文本里出现的全部表名（保持出现顺序，去重；小写化便于匹配）。 */
@@ -107,10 +183,10 @@ export function mergeDdlIntoNote(existing: string, incoming: string): string {
   for (const [table, ddl] of fresh) {
     const at = tableAt(table, "gi").exec(text);
     if (!at) continue;
-    const end = endOfStatement(text.slice(at.index));
-    const stop = end >= 0 ? at.index + end + 1 : Math.min(at.index + 4000, text.length);
-    // 替换串用函数形式：DDL 里的 $& / $1 不能被当替换占位符解释
-    text = text.slice(0, at.index) + ddl + text.slice(stop);
+    // 替换范围与解析同源（statementSpan）：旧段没有分号时也不能吃到别人家
+    // 语句的分号——否则整段替换会吞掉后面的围栏与下一张表（0.32 修复）
+    const { advance } = statementSpan(text.slice(at.index), at[0].length);
+    text = text.slice(0, at.index) + ddl + text.slice(at.index + advance);
   }
   // 笔记里还找不到落脚点的（前面替换过的不在此列）追加到文末
   const remaining = new Map<string, string>();
@@ -132,4 +208,97 @@ export function ddlNoteIntro(): string {
     "建表语句集中收录在这里（设置里可改路径、开关悬浮预览）。笔记里光标悬停在已收录的表名上，会浮动显示该表的建表语句；Ctrl+Alt+T 弹窗可继续收录新的语句。",
     "",
   ].join("\n");
+}
+
+// -------------------------------------------------------- 悬浮配套纯函数
+//
+// 放在这个纯模块里（而不是 ddlHover.ts）：Node 侧 verify 直接断言，不必拉起
+// @codemirror/view。
+
+/** 文本里第一个已收录的表名：单元格内容可能是「ids_task、ids_task_itf」这类
+ * 复合文本，逐词试库；找不到返回 null。 */
+export function tableWordInText(text: string, tables: Map<string, string>): string | null {
+  for (const token of text.toLowerCase().split(/[^a-z0-9_$.]+/)) {
+    if (token && tables.has(token)) return token;
+  }
+  return null;
+}
+
+/** SQL 着色的 token（0.32）：kw 关键字 / str 字符串 / id 反引号标识符 / num 数字 / cmt 行注释。 */
+export interface SqlToken {
+  /** token 起点在原文中的下标（渲染按它穿插未着色的普通文本）。 */
+  from: number;
+  text: string;
+  cls: "kw" | "str" | "id" | "num" | "cmt";
+}
+
+const SQL_KEYWORDS = new Set([
+  // 语句与约束
+  "create", "table", "if", "not", "exists", "primary", "key", "unique", "foreign",
+  "references", "constraint", "default", "null", "comment", "engine", "using",
+  "auto_increment", "charset", "collate", "on", "delete", "update", "cascade",
+  "restrict", "index", "fulltext", "partition", "by", "begin", "end",
+  // 类型
+  "int", "integer", "tinyint", "smallint", "mediumint", "bigint", "decimal",
+  "numeric", "float", "double", "bit", "char", "varchar", "text", "tinytext",
+  "mediumtext", "longtext", "blob", "tinyblob", "mediumblob", "longblob",
+  "date", "datetime", "timestamp", "time", "year", "boolean", "bool", "enum",
+  "json", "serial", "real",
+  // 常见表选项值
+  "btree", "hash", "innodb", "myisam", "memory", "current_timestamp",
+  "unsigned", "zerofill", "generated", "always", "virtual", "stored", "as",
+]);
+
+/**
+ * DDL 文本 → 着色 token 序列（纯函数）。规则刻意简单：`--` 行注释、'...'
+ * 字符串、\`...\` 标识符、数字、关键字（词边界 + 大小写不敏感）；未分类的
+ * 片段不出现在结果里（DOM 渲染时按原文顺序穿插普通文本节点）。
+ */
+export function tokenizeSql(sql: string): SqlToken[] {
+  const out: SqlToken[] = [];
+  let i = 0;
+  while (i < sql.length) {
+    const ch = sql[i];
+    if (ch === "-" && sql[i + 1] === "-") {
+      let end = sql.indexOf("\n", i);
+      if (end < 0) end = sql.length;
+      out.push({ from: i, text: sql.slice(i, end), cls: "cmt" });
+      i = end;
+      continue;
+    }
+    if (ch === "'" || ch === "`") {
+      let end = sql.indexOf(ch, i + 1);
+      while (end >= 0 && sql[end - 1] === "\\") end = sql.indexOf(ch, end + 1);
+      const stop = end < 0 ? sql.length : end + 1;
+      const slice = sql.slice(i, stop);
+      const nl = slice.indexOf("\n");
+      if (nl >= 0) {
+        // 落单引号（没有同行收口）：按普通文本走
+        i += nl;
+        continue;
+      }
+      out.push({ from: i, text: slice, cls: ch === "'" ? "str" : "id" });
+      i = stop;
+      continue;
+    }
+    if (/[0-9]/.test(ch)) {
+      let end = i + 1;
+      while (end < sql.length && /[0-9a-fA-Fx.]/.test(sql[end])) end += 1;
+      out.push({ from: i, text: sql.slice(i, end), cls: "num" });
+      i = end;
+      continue;
+    }
+    if (/[A-Za-z_]/.test(ch)) {
+      let end = i + 1;
+      while (end < sql.length && /[A-Za-z0-9_$]/.test(sql[end])) end += 1;
+      const word = sql.slice(i, end);
+      if (SQL_KEYWORDS.has(word.toLowerCase())) {
+        out.push({ from: i, text: word, cls: "kw" });
+      }
+      i = end;
+      continue;
+    }
+    i += 1;
+  }
+  return out;
 }

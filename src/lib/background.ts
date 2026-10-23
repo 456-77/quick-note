@@ -104,7 +104,11 @@ export function bgFilterCss(bg: BgSettings): string {
 export function applyBackground(bg: BgSettings, vaultPath: string | null): void {
   if (typeof document === "undefined") return; // Node 测试环境没有 DOM
   const root = document.documentElement;
-  const enabled = bg.bgEnabled && bg.bgImagePath.trim().length > 0 && !!vaultPath;
+  // 壁纸轮换（0.32）：轮换当前图（绝对路径，可来自仓库外的目录）优先于仓库内
+  // 的 bgImagePath——轮换开着时背景由轮换说了算，关掉自动落回仓库内选的图。
+  const rotating = bg.bgRotateEnabled && bg.bgImageAbsPath.trim().length > 0;
+  const enabled =
+    bg.bgEnabled && (rotating || bg.bgImagePath.trim().length > 0) && !!vaultPath;
 
   if (!enabled) {
     document.getElementById(LAYER_ID)?.remove();
@@ -121,10 +125,12 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   }
   root.classList.add(ROOT_CLASS);
 
-  // 仓库内相对路径 → 绝对路径 → asset URL。背景路径是仓库内路径（与插件一致），
-  // 这里靠 vaultPath 现场拼出绝对路径；仓库没开就不显示（enabled 已挡住）。
-  const relative = bg.bgImagePath.trim().replace(/\\/g, "/");
-  const absolute = `${vaultPath!.replace(/[\\/]+$/, "")}/${relative}`;
+  // 壁纸轮换的绝对路径直接用；否则仓库内相对路径 → 绝对路径 → asset URL。
+  // 背景路径是仓库内路径（与插件一致），这里靠 vaultPath 现场拼出绝对路径；
+  // 仓库没开就不显示（enabled 已挡住）。
+  const absolute = rotating
+    ? bg.bgImageAbsPath.trim()
+    : `${vaultPath!.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`;
   const blur = clamp(bg.bgBlur, 0, 50);
   const scale = clamp(bg.bgScale, 10, 400) / 100;
   layer.style.backgroundImage = `url("${convertFileSrc(absolute)}")`;

@@ -11,7 +11,10 @@ import {
   endOfStatement,
   extractTableNames,
   mergeDdlIntoNote,
+  nextStatementBoundary,
   parseDdlTables,
+  tableWordInText,
+  tokenizeSql,
 } from "../src/lib/ddl.ts";
 import { splitHighlight } from "../src/lib/inlineSyntax.ts";
 import {
@@ -89,6 +92,87 @@ check(mergeDdlIntoNote(intro, "没有建表语句") === intro, "无可识别内�
 // 语句里的 $& 不被当替换占位符
 const dollar = mergeDdlIntoNote("", "CREATE TABLE t_money (amount varchar(8) COMMENT '$100;$&');\n\nCREATE TABLE t_money (amount varchar(9) COMMENT '$200;$&');");
 check(dollar.includes("$&") && !dollar.includes("$100;$&'),$200"), "$& 字面保留", dollar);
+
+// ------------------------------------------- 0.32 语句硬边界（围栏 / 下一 CREATE）
+//
+// 用户反馈「DDL 弹窗有多余的内容」：粘贴残段没有收口分号时，endOfStatement
+// 吃到别人家语句的分号，把围栏标记与下一张表整段吞进悬浮内容。
+
+const fenceNote = [
+  "# DDL",
+  "",
+  "```sql",
+  "CREATE TABLE `ids_task` (",
+  "  task_id bigint NOT NULL,",
+  "  `review_point` varchar(1) DEFAULT NULL COMMENT '审核点是否缺失（Y/N）',",
+  "  PRIMARY KEY (`task_id`) USING BTREE",
+  ") ENGINE=InnoDB AUTO_INCREMENT=74523 DEFAULT CHARSET=utf8mb4 COMMENT='检查任务表'",
+  "```",
+  "",
+  "```sql",
+  "CREATE TABLE `ids_task_itf` (",
+  "  itf_id bigint NOT NULL AUTO_INCREMENT,",
+  "  source_system varchar(30) NOT NULL",
+  ");",
+  "```",
+].join("\n");
+
+check(
+  nextStatementBoundary("a int;\n```sql\nCREATE TABLE b", 0) === 7,
+  "边界定位到围栏行行首",
+  String(nextStatementBoundary("a int;\n```sql\nCREATE TABLE b", 0)),
+);
+check(
+  nextStatementBoundary("a int,\ncreate table b (x int);", 0) === 7,
+  "边界定位到下一条 CREATE 行首",
+  String(nextStatementBoundary("a int,\ncreate table b (x int);", 0)),
+);
+check(nextStatementBoundary("x varchar(2) COMMENT '含```围栏' ,\ny int", 0) === -1, "字符串里的围栏不算边界");
+check(nextStatementBoundary("x int -- 注释里有 create table\n, y int", 0) === -1, "行注释里的 create 不算边界");
+
+const fenceTables = parseDdlTables(fenceNote);
+check(fenceTables.size === 2, "围栏内两条语句都收录", [...fenceTables.keys()].join(","));
+const taskDdl = fenceTables.get("ids_task") ?? "";
+check(taskDdl.startsWith("CREATE TABLE `ids_task`"), "残段语句从 CREATE 开始", taskDdl.slice(0, 40));
+check(!taskDdl.includes("```"), "悬浮内容不含围栏标记");
+check(!taskDdl.includes("ids_task_itf"), "残段语句不吞下一张表");
+check(taskDdl.includes("AUTO_INCREMENT=74523") && taskDdl.includes("COMMENT='检查任务表'"), "残段语句保留到 ENGINE 行");
+check(
+  (fenceTables.get("ids_task_itf") ?? "").endsWith(";"),
+  "有分号的语句照常收到分号",
+  fenceTables.get("ids_task_itf"),
+);
+
+// 合并不吞噬：旧段没有分号时，替换范围不能吃到下一条语句
+const unsealedNote = [
+  "```sql",
+  "CREATE TABLE a (id bigint)",
+  "```",
+  "```sql",
+  "CREATE TABLE b (id bigint);",
+  "```",
+].join("\n");
+const resealed = mergeDdlIntoNote(unsealedNote, "CREATE TABLE a (id bigint, name varchar(10));");
+check(resealed.includes("CREATE TABLE b (id bigint);"), "未收口旧段替换后下一张表完好", resealed);
+check(resealed.includes("CREATE TABLE a (id bigint, name varchar(10));"), "新段就位");
+check((resealed.match(/CREATE TABLE a/g) ?? []).length === 1, "替换后无重复段");
+
+// ------------------------------------------- 0.32 SQL 着色 token / 单元格查词
+
+const tokens = tokenizeSql("CREATE TABLE `ids_task` (task_id bigint NOT NULL DEFAULT 7 COMMENT '主键;ID' -- 行注释\n)");
+const kwTexts = tokens.filter((token) => token.cls === "kw").map((token) => token.text.toLowerCase());
+check(kwTexts.includes("create") && kwTexts.includes("table") && kwTexts.includes("bigint"), "关键字命中（大小写不敏感）", kwTexts.join(","));
+check(tokens.some((token) => token.cls === "id" && token.text === "`ids_task`"), "反引号标识符成 token");
+check(tokens.some((token) => token.cls === "str" && token.text === "'主键;ID'"), "字符串整体成 token（含分号）");
+check(tokens.some((token) => token.cls === "num" && token.text === "7"), "数字成 token");
+check(tokens.some((token) => token.cls === "cmt" && token.text === "-- 行注释"), "行注释成 token");
+const joined = tokens.map((token) => token.text).join("");
+check(joined.length > 0, "token 文本非空");
+const lib = new Map([["ids_task", "..."], ["ids_task_itf", "..."]]);
+check(tableWordInText("ids_task、ids_task_itf", lib) === "ids_task", "复合单元格命中第一个已收录表名");
+check(tableWordInText("普通中文说明", lib) === null, "无表名的单元格不命中");
+check(tableWordInText("看 ids_task_itf 详情", lib) === "ids_task_itf", "正文中混入表名也能命中");
+
 
 // ---------------------------------------------------------------- 阅读位置
 

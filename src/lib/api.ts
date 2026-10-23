@@ -387,6 +387,12 @@ export const watchVault = (vault: string) => invoke<void>("watch_vault", { vault
 /** 把仓库目录加入 asset 协议白名单，供加载库内图片。 */
 export const allowAssetDir = (vault: string) => invoke<void>("allow_asset_dir", { vault });
 
+/** 把一个任意目录（壁纸轮换目录，0.32）加入 asset 协议白名单。 */
+export const allowAssetAnyDir = (dir: string) => invoke<void>("allow_asset_any_dir", { dir });
+
+/** 列出目录下的图片文件（直接子文件，绝对路径，按路径排序）。壁纸轮换用（0.32）。 */
+export const listDirImages = (dir: string) => invoke<string[]>("list_dir_images", { dir });
+
 // ---------------- 全局截图 + OCR（仅桌面，0.20） ----------------
 
 export interface ScreenCapture {

@@ -78,6 +78,13 @@ function languageExtension(language: EditorLanguage): Extension {
 const livePreviewCompartment = new Compartment();
 
 /**
+ * 资源上下文的 Compartment（0.32 分屏）：stateStore 的存量 EditorState 会在
+ * 主编辑器与分屏编辑器之间流转，两边的 notePath 不同——上下文必须随**装它的
+ * 视图**重配（applyLivePreviewContext），否则图片/嵌入按另一篇笔记的路径解析。
+ */
+const livePreviewContextCompartment = new Compartment();
+
+/**
  * 深色标记。CodeMirror 靠它决定光标、选区等内置配色的明暗；它必须随主题重配，
  * 而语法高亮的颜色走 CSS 变量，所以不需要重配。
  */
@@ -110,14 +117,19 @@ export interface CreateEditorStateOptions {
    * 实时预览的 Markdown 装饰对 JSON/SQL/YAML 没有意义（`# 注释` 会变成标题等）。
    */
   language?: EditorLanguage;
-  onDocChanged: () => void;
-  /** Mod-S 的处理函数。用读 ref 的包装传入，避免捕获过期的闭包。 */
-  onSave?: () => void;
+  /**
+   * 文档变更回调（0.32 起带 view 参数）：同一份 EditorState 可能在主编辑器与
+   * 分屏编辑器之间流转（stateStore 共享），回调按 view 身份路由写回正确的
+   * 路径键——不带 view 的闭包会固化为创建那一刻的归属，流转后写错位置。
+   */
+  onDocChanged: (view: EditorView) => void;
+  /** Mod-S 的处理函数（同样带 view：分屏里保存走分屏的通道）。 */
+  onSave?: (view: EditorView) => void;
   /** 资源解析上下文（仓库根目录 + 当前笔记路径），用于加载库内图片。 */
   resources?: LivePreviewContext;
   /** 粘贴附件的行为配置；不传则不接管粘贴。 */
   attachment?: AttachmentOptions;
-  /** 智能文本粘贴（换行符规范化/表格转换/代码围栏）的配置；不传则不接管。 */
+  /** 智能文本粘贴（换行符规范化/表格转换/代码围栏）的配置；不传则不接管粘贴。 */
   codePaste?: CodePasteOptions;
   /** 初始是否用深色标记（光标/选区等内置配色）。 */
   dark?: boolean;
@@ -125,9 +137,9 @@ export interface CreateEditorStateOptions {
    * 光标进入/离开表格块时回调（表格工具栏的显示依据）。
    * 选区移动不触发 onDocChanged，所以要单独的通道。
    */
-  onCursorInTable?: (inside: boolean) => void;
-  /** 光标所在行变化时回调（0 基；目录面板高亮当前标题）。 */
-  onCursorLine?: (line: number) => void;
+  onCursorInTable?: (inside: boolean, view: EditorView) => void;
+  /** 光标所在行变化时回调（0 基；目录面板高亮当前标题，按 view 路由主/分屏）。 */
+  onCursorLine?: (line: number, view: EditorView) => void;
 }
 
 /**
@@ -180,8 +192,12 @@ export function createEditorState(
       autoPairExtension(language),
       EditorView.lineWrapping,
       EditorState.lineSeparator.of(separatorFor(lineEnding)),
-      livePreviewContext.of(
-        resources ?? { vaultPath: null, notePath: null, embedIndex: new Map(), generation: 0 },
+      // 资源上下文进 Compartment（0.32 分屏）：stateStore 里的存量状态装进
+      // 分屏视图时要换成分屏自己的上下文（notePath 不同），不能重建状态丢历史
+      livePreviewContextCompartment.of(
+        livePreviewContext.of(
+          resources ?? { vaultPath: null, notePath: null, embedIndex: new Map(), generation: 0 },
+        ),
       ),
       livePreviewCompartment.of(modeExtensions(effectiveMode)),
       attachment ? attachmentPaste(attachment) : [],
@@ -210,12 +226,12 @@ export function createEditorState(
         ]),
       ),
       EditorView.updateListener.of((update) => {
-        if (update.docChanged) onDocChanged();
+        if (update.docChanged) onDocChanged(update.view);
         if (onCursorInTable && (update.docChanged || update.selectionSet)) {
-          onCursorInTable(isCursorInTable(update.state));
+          onCursorInTable(isCursorInTable(update.state), update.view);
         }
         if (onCursorLine && (update.docChanged || update.selectionSet)) {
-          onCursorLine(update.state.doc.lineAt(update.state.selection.main.head).number - 1);
+          onCursorLine(update.state.doc.lineAt(update.state.selection.main.head).number - 1, update.view);
         }
       }),
       onSave ? modSKeymap(onSave) : [],
@@ -484,18 +500,23 @@ function editorToggleKeymap(): Extension {
   });
 }
 
-/** Mod-S 保存快捷键。 */
-export function modSKeymap(onSave: () => void): Extension {
+/** Mod-S 保存快捷键（onSave 带 view：主/分屏各走各的保存通道）。 */
+export function modSKeymap(onSave: (view: EditorView) => void): Extension {
   return keymap.of([
     {
       key: "Mod-s",
       preventDefault: true,
-      run: () => {
-        onSave();
+      run: (view) => {
+        onSave(view);
         return true;
       },
     },
   ]);
+}
+
+/** 换一份资源上下文（0.32 分屏：同一状态流转到另一视图时随视图重配）。 */
+export function applyLivePreviewContext(view: EditorView, ctx: LivePreviewContext): void {
+  view.dispatch({ effects: livePreviewContextCompartment.reconfigure(livePreviewContext.of(ctx)) });
 }
 
 export function createEditor(parent: HTMLElement, state: EditorState): EditorHandle {

@@ -272,12 +272,14 @@ try {
     await sleep(300);
   }
 
-  // ============================================== 4. 分屏查看 + 目录跟随
+  // ============================================== 4. 分屏编辑（0.32 双编辑器）+ 目录跟随
   {
-    // 打开对照笔记，右键它的标签「分屏查看」：同一篇左边编辑、右边渲染也是合法
-    // 场景（写作时实时预览）；目录跟随断言用它的大纲标题区分。
+    // 0.32 起分屏是并列的第二编辑器（不再是只读渲染）。同文件双开被硬性阻止
+    //（两个视图各持一份状态，最后落盘者覆盖会静默丢内容）。
     await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31对照')); t?.click(); return !!t; })()`);
     await waitFor(ws, `[...document.querySelectorAll('.cm-line')].some((el) => (el.innerText ?? '').includes('对照内容一'))`, 10000);
+
+    // 4a. 同文件守卫：右键**当前激活**的标签，「分屏编辑」必须置灰
     const opened = await evaluate(ws, `(() => {
       const tabs = [...document.querySelectorAll('.tabbar [role="tab"], .tabbar .tab')];
       const target = tabs.find((el) => (el.textContent ?? '').includes('qn31对照'));
@@ -286,40 +288,79 @@ try {
       return { ok: true };
     })()`);
     check(opened.ok, "右键标签弹菜单（找到 qn31对照 标签）", JSON.stringify(opened));
-    const menuUp = await waitFor(ws, `[...document.querySelectorAll('.context-menu button')].some((b) => (b.textContent ?? '').includes('分屏查看'))`, 5000);
-    check(menuUp, "菜单含「分屏查看（只读）」");
-    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏查看')); b?.click(); return !!b; })()`);
-    const splitUp = await waitFor(ws, `!!document.querySelector('.split-pane')`, 5000);
-    check(splitUp, "分屏窗格出现");
-    const rendered = await waitFor(ws, `(document.querySelector('.split-pane-body')?.textContent ?? '').includes('对照内容一')`, 8000);
-    check(rendered, "分屏渲染出目标笔记内容（只读视图）");
-    const badge = await evaluate(ws, `document.querySelector('.split-pane-badge')?.textContent ?? ''`);
-    check(badge.includes("只读"), "只读徽标显示", badge);
+    const guard = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); return b ? { text: b.textContent, disabled: b.disabled } : null; })()`, 5000);
+    check(!!guard && guard.text.includes("分屏编辑"), "菜单项改叫「分屏编辑」", JSON.stringify(guard));
+    check(!!guard && guard.disabled, "激活标签的同文件分屏被置灰（防双开互相覆盖，0.32）", JSON.stringify(guard));
+    await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
+    await sleep(300);
 
-    // 目录跟随：切到目录页签 → 点分屏窗格（outlineFollow=split）
+    // 4b. 打开另一篇做分屏对象：新开标签模式（localStorage 改设置 + reload）
+    await evaluate(ws, `(() => { const k='quicknote.settings'; const s=JSON.parse(localStorage.getItem(k) ?? '{}'); s.openNoteMode='newTab'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
+    await evaluate(ws, `location.reload()`);
+    await sleep(2500);
+    try { ws.close(); } catch {}
+    {
+      const list = await fetch(`http://127.0.0.1:${port}/json/list`).then((r) => r.json());
+      const page = list.find((t) => t.type === "page" && t.url.includes("tauri.localhost"));
+      ws = new WebSocket(page.webSocketDebuggerUrl);
+      await new Promise((resolve, reject) => {
+        ws.addEventListener("open", resolve, { once: true });
+        ws.addEventListener("error", () => reject(new Error("ws 重连失败")), { once: true });
+      });
+      await cdp(ws, "Page.bringToFront");
+      await waitFor(ws, `document.querySelectorAll('.tree-item').length > 0`, 20000);
+    }
+    // 主编辑器放 qn31表格（分屏对象），当前激活 qn31对照
+    await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31表格')); t?.click(); return !!t; })()`);
+    await waitFor(ws, `!!document.querySelector('.cm-lp-tablewrap')`, 8000);
+    await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31对照')); t?.click(); return !!t; })()`);
+    await waitFor(ws, `[...document.querySelectorAll('.cm-line')].some((el) => (el.innerText ?? '').includes('对照内容一'))`, 8000);
+    await evaluate(ws, `(() => {
+      const tabs = [...document.querySelectorAll('.tabbar [role="tab"], .tabbar .tab')];
+      const target = tabs.find((el) => (el.textContent ?? '').includes('qn31表格'));
+      target?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 120 }));
+      return !!target;
+    })()`);
+    const menuUp = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); return b && !b.disabled; })()`, 5000);
+    check(menuUp, "非激活标签的「分屏编辑」可点");
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); b?.click(); return !!b; })()`);
+    const splitUp = await waitFor(ws, `!!document.querySelector('.split-pane') && !!window.__qnSplitView`, 5000);
+    check(splitUp, "分屏窗格出现（第二编辑器 __qnSplitView 就绪）");
+    const splitDoc = await waitFor(ws, `(window.__qnSplitView?.state.doc.toString() ?? '').includes('重点标记')`, 8000);
+    check(splitDoc, "分屏编辑器装的是目标笔记（qn31表格 内容）");
+    const badge = await evaluate(ws, `document.querySelector('.split-pane-badge')?.textContent ?? ''`);
+    check(!badge.includes("只读"), "不再显示「只读」徽标（0.32 可编辑）", badge);
+    const mainStill = await evaluate(ws, `[...document.querySelectorAll('.editor-host .cm-line')].some((el) => (el.innerText ?? '').includes('对照内容一'))`);
+    check(mainStill, "主编辑器仍显示自己的文件（分屏不顶掉主编辑器）");
+
+    // 4c. 目录跟随：点分屏窗格 → 目录列分屏文件的大纲；点大纲项在**分屏内**跳转
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.sidebar-tab')].find((el) => (el.textContent ?? '').includes('目录')); b?.click(); return !!b; })()`);
     await evaluate(ws, `(() => { document.querySelector('.split-pane')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
     await sleep(400);
-    const outlineBefore = await evaluate(ws, `[...document.querySelectorAll('.outline-item')].map((el) => el.textContent).join('|')`);
-    check(outlineBefore.includes("甲节") && outlineBefore.includes("乙节"), "目录先列当前文档（对照）大纲", outlineBefore);
-    await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31表格')); t?.click(); return !!t; })()`);
-    await waitFor(ws, `!!document.querySelector('.cm-lp-tablewrap')`, 8000);
-    await sleep(600);
-    // 替换式打开把分屏对象（qn31对照）的标签顶掉了：分屏随标签收起、目录自动
-    // 回到编辑器文件——标签生命周期与「目录显示光标所在文件」的一致行为
-    const splitAutoGone = await waitFor(ws, `!document.querySelector('.split-pane')`, 5000);
-    check(splitAutoGone, "分屏对象的标签被替换时分屏自动收起（标签生命周期）");
-    const outlineAfterReplace = await evaluate(ws, `(() => ({ items: [...document.querySelectorAll('.outline-item')].map((el) => el.textContent).join('|'), empty: document.querySelector('.outline-empty')?.textContent ?? '' }))()`);
-    check(
-      !outlineAfterReplace.items.includes("乙节") && (outlineAfterReplace.items.includes("qn31表格") || outlineAfterReplace.empty.length > 0),
-      "目录跟随回到编辑器文件（光标所在文件）",
-      JSON.stringify(outlineAfterReplace),
-    );
+    const outlineSplit = await evaluate(ws, `[...document.querySelectorAll('.outline-item')].map((el) => el.textContent).join('|')`);
+    check(outlineSplit.includes("qn31表格") && !outlineSplit.includes("乙节"), "目录跟随分屏窗格（列分屏文件大纲）", outlineSplit);
+    await evaluate(ws, `(() => { const it = [...document.querySelectorAll('.outline-item')].find((el) => (el.textContent ?? '').includes('qn31表格')); it?.click(); return !!it; })()`);
+    await sleep(400);
+    const jump = await evaluate(ws, `(() => ({
+      splitFocused: !!(window.__qnSplitView?.contentDOM && window.__qnSplitView.contentDOM.contains(document.activeElement)),
+      splitHead: window.__qnSplitView ? window.__qnSplitView.state.selection.main.head : -1,
+      mainDoc: window.__qnView ? window.__qnView.state.doc.toString().slice(0, 30) : '',
+    }))()`);
+    check(jump.splitFocused && jump.splitHead >= 0, "点大纲项在分屏编辑器内定位（焦点进分屏，不重开文件）", JSON.stringify(jump));
+    check((jump.mainDoc ?? "").includes("qn31对照") || jump.mainDoc === "", "主编辑器文件未被覆盖（目录点击不顶掉并排文件）", jump.mainDoc);
 
-    // Esc 关分屏（已收起则直接通过）
+    // 4d. 点主编辑器 → 目录回到主文件大纲
+    await evaluate(ws, `(() => { document.querySelector('.editor-host')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
+    await sleep(400);
+    const outlineMain = await evaluate(ws, `[...document.querySelectorAll('.outline-item')].map((el) => el.textContent).join('|')`);
+    check(outlineMain.includes("甲节") && outlineMain.includes("乙节"), "点主编辑器后目录跟随回来（列主文件大纲）", outlineMain);
+
+    // 4e. Esc 关分屏
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
-    const splitGone = await waitFor(ws, `!document.querySelector('.split-pane')`, 5000);
-    check(splitGone, "Esc 可关闭分屏窗格");
+    const splitGone = await waitFor(ws, `!document.querySelector('.split-pane') && !window.__qnSplitView`, 5000);
+    check(splitGone, "Esc 可关闭分屏窗格（调试句柄一并清理）");
+    // 还原打开方式设置，避免影响后续小节
+    await evaluate(ws, `(() => { const k='quicknote.settings'; const s=JSON.parse(localStorage.getItem(k) ?? '{}'); s.openNoteMode='replace'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
   }
 
   // ============================================== 5. DDL 收录弹窗（Ctrl+Alt+L）

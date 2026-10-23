@@ -398,7 +398,7 @@ function isoWeekOf(dateStr) {
 
   // 默认值出口存在且字段齐全
   const defaults = defaultBgSettings();
-  eq(Object.keys(defaults).length, 12, "背景：默认值字段齐全（0.28 清晰度 + 0.29 界面浓度）");
+  eq(Object.keys(defaults).length, 17, "背景：默认值字段齐全（0.28 清晰度 + 0.29 界面浓度 + 0.32 轮换五项）");
   eq(defaults.bgFit, "cover", "背景：默认适配为 cover");
   eq(defaults.bgSharpen, 40, "背景：默认清晰度 40（升级后即可见改善）");
   eq(defaults.bgSurface, 80, "背景：默认界面浓度 80（与 0.28 写死观感一致）");

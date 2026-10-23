@@ -39,6 +39,8 @@ export interface PaletteAction {
 interface Item {
   key: string;
   group: string;
+  /** 组名右侧的计数徽标（「内容 · 显示 60 / 共 120 条」），只挂在组内第一条上。 */
+  groupBadge?: string;
   icon: string;
   title: string;
   /** 命中行摘要（内容搜索结果）。 */
@@ -82,10 +84,15 @@ interface Props {
 
 const SEARCH_DEBOUNCE = 250;
 const NAME_LIMIT = 8;
-const CONTENT_LIMIT = 14;
+/**
+ * 「内容」组的展示上限。0.32 用户反馈「搜索结果是不是只给了一部分」——是的：
+ * 此前显示上限 14，约一屏 9 条又没有可见滚动条，看起来就像被截断了。现在
+ * 上限拉到 60 并在组名上标出「显示 x / 共 y 条」，截断与否一眼可见。
+ */
+const CONTENT_LIMIT = 60;
 /** 内容检索的分仓限额：当前仓库多给，其他仓库每仓少给，防大库拖慢一轮搜索。 */
-const CONTENT_LIMIT_CURRENT = 50;
-const CONTENT_LIMIT_OTHER = 20;
+const CONTENT_LIMIT_CURRENT = 120;
+const CONTENT_LIMIT_OTHER = 40;
 /** 其他仓库笔记名命中合计上限。 */
 const NAME_LIMIT_OTHER = 8;
 /** 参与搜索的仓库总数上限（最近仓库列表本身 ≤8，加上当前仓库天然封顶）。 */
@@ -340,24 +347,32 @@ export default function CommandPalette({
 
       // 0.30 用户反馈：标题命中的文件在「内容」组也要列出（此前为去重被压掉，
       // 结果只有标题行能看，少了命中行摘要与悬停预览）。两组各自独立展示，
-      // 同一文件最多在两组各出现一次。
-      for (const hit of contentHits.slice(0, CONTENT_LIMIT)) {
+      // 同一文件最多在两组各出现一次。同一文件的多条命中（表格行也能露脸，
+      // 0.32）逐条列出，行号放 meta 方便对行。
+      const shown = contentHits.slice(0, CONTENT_LIMIT);
+      shown.forEach((hit, index) => {
         const otherVault = hit.vault !== vault;
         const vaultBase = hit.vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || hit.vault;
         out.push({
           key: `hit-${hit.vault}-${hit.path}-${hit.line}`,
           group: "内容",
+          groupBadge:
+            index === 0
+              ? contentHits.length > shown.length
+                ? `显示 ${shown.length} / 共 ${contentHits.length}+ 条`
+                : `共 ${contentHits.length} 条`
+              : undefined,
           icon: otherVault ? "🗂️" : "🔎",
           title: hit.path.slice(hit.path.lastIndexOf("/") + 1),
           detail: hit.text.trim(),
-          meta: otherVault ? vaultBase : undefined,
+          meta: otherVault ? `${vaultBase} · L${hit.line + 1}` : `L${hit.line + 1}`,
           // 带回首个关键词：打开后预填搜索面板高亮全文命中（0.21 用户反馈）
           run: otherVault
             ? () => onOpenNoteInVault(hit.vault, hit.path, hit.line, rawFirstTerm)
             : () => onOpenNote(hit.path, hit.line, rawFirstTerm),
           hit,
         });
-      }
+      });
     }
 
     return out;
@@ -510,7 +525,12 @@ export default function CommandPalette({
           )}
           {groups.map((group) => (
             <div key={group.name} className="palette-group">
-              <div className="palette-group-name">{group.name}</div>
+              <div className="palette-group-name">
+                {group.name}
+                {group.items[0]?.groupBadge && (
+                  <span className="palette-group-count">{group.items[0].groupBadge}</span>
+                )}
+              </div>
               {group.items.map((item) => {
                 renderIndex += 1;
                 const index = renderIndex;

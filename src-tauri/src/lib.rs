@@ -447,6 +447,8 @@ pub fn run() {
             vault::write_binary,
             watch::watch_vault,
             watch::allow_asset_dir,
+            watch::allow_asset_any_dir,
+            vault::list_dir_images,
             net::http_request,
             sync_store::sync_state_load,
             sync_store::sync_state_save,

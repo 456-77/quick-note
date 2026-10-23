@@ -224,7 +224,7 @@ try {
         name: g.querySelector('.palette-group-name')?.textContent ?? '',
         titles: [...g.querySelectorAll('.palette-item-title')].map((t) => t.textContent ?? ''),
       }));
-      const content = groups.find((g) => g.name === '内容');
+      const content = groups.find((g) => g.name.startsWith('内容'));
       return !!content && content.titles.some((t) => t.includes('qn30表格清单')) && content.titles.some((t) => t.includes('qn30纯内容'));
     })()`, 12000);
     const groups = await evaluate(ws, `(() => {
@@ -233,8 +233,9 @@ try {
         titles: [...g.querySelectorAll('.palette-item-title')].map((t) => t.textContent ?? ''),
       }));
     })()`);
-    const notes = groups.find((g) => g.name === "笔记");
-    const content = groups.find((g) => g.name === "内容");
+    // 0.32 起内容组名带计数徽标（“内容共 N 条”），按前缀匹配
+    const notes = groups.find((g) => g.name.startsWith("笔记"));
+    const content = groups.find((g) => g.name.startsWith("内容"));
     check(!!ready, "搜索出结果（两组齐备）", JSON.stringify(groups));
     check(!!notes?.titles.some((t) => t.includes("qn30表格清单")), "笔记组列出标题命中的文件", JSON.stringify(notes));
     check(

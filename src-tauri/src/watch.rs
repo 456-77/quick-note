@@ -105,3 +105,17 @@ pub fn allow_asset_dir(app: AppHandle, vault: String) -> Result<(), String> {
         .allow_directory(&root, true)
         .map_err(|e| format!("授权仓库目录失败: {e}"))
 }
+
+/// 壁纸轮换目录加入 asset 白名单（0.32 用户需求「选定壁纸图片目录定时轮换」）：
+/// 与仓库目录不同，这个目录由用户在设置里自选、可以是任意绝对路径。只授权
+/// 直接子文件（不递归），与 `vault::list_dir_images` 只列直接子文件的口径一致。
+#[tauri::command]
+pub fn allow_asset_any_dir(app: AppHandle, dir: String) -> Result<(), String> {
+    let root = PathBuf::from(&dir);
+    if !root.is_dir() {
+        return Err(format!("目录不存在: {dir}"));
+    }
+    app.asset_protocol_scope()
+        .allow_directory(&root, false)
+        .map_err(|e| format!("授权目录失败: {e}"))
+}

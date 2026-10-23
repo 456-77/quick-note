@@ -1,79 +1,70 @@
 /**
- * 分屏查看窗格（0.31 用户反馈：标签页支持分屏查看）：把一篇笔记以**只读渲染**
- * 视图钉在编辑区右侧，与正在编辑的笔记对照阅读。标签右键菜单「分屏查看」进入，
- * 窗格标题栏关闭。
+ * 分屏编辑窗格（0.31 引入只读渲染；0.32 按用户反馈改为**可编辑**）：把一篇笔记
+ * 以第二个完整编辑器钉在编辑区右侧，与主编辑器并列——两边都能编辑、都有各自
+ * 的文件内搜索（Ctrl+F）、都支持悬浮预览与表格就地编辑。
  *
- * 为什么是只读渲染而不是第二个编辑器：用户的场景是「写 A 笔记时对照 B 笔记
- * （表清单/培训文档）」——查看即阅读，渲染视图信息密度最高，也天然规避双编辑器
- * 的保存/搜索/装饰联动复杂度。内容源由 App 注入：分屏文件是激活标签时传编辑器
- * 实时内容（跟键入防抖刷新），否则传它的存量状态或磁盘版本。
+ * 职责划分：本组件只做**宿主**——挂载时创建一个空 EditorView 交给 App（onReady），
+ * 卸载时销毁并上报（onDestroy）；装什么内容（EditorState）、保存、大纲、外部
+ * 改动对账全在 App 侧（与主编辑器同一套 stateStore 机制，见 App 的分屏区）。
  *
- * 渲染管线与嵌入笔记/悬停预览同一条（markdown-it，链接不可导航），wiki 引用
- * 点击走 App 的统一 document 委托，上下文按**分屏文件**解析相对路径。
+ * 硬性不变量（App 侧保证）：分屏文件 ≠ 当前激活标签——两个视图各持一份
+ * EditorState，同一篇同时出现在两边会让"最后落盘者覆盖"悄悄丢内容。
  */
 
-import { useEffect, useMemo, useState } from "react";
-import { renderMarkdownToHtml } from "../lib/embed";
-import { EMPTY_CONTEXT, type LivePreviewContext } from "../lib/paths";
+import { useLayoutEffect, useRef } from "react";
+import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { IconX } from "./icons";
 
 export default function SplitPane({
   title,
-  markdown,
-  revision,
-  notePath,
-  context,
+  hostClass,
   onClose,
   onPaneFocus,
+  onReady,
+  onDestroy,
 }: {
   /** 窗格标题（文件名）。 */
   title: string;
-  /** 要渲染的 Markdown 全文。 */
-  markdown: string;
-  /** 内容代际：编辑中的分屏文件每击键 +1，这里据此防抖重渲染。 */
-  revision: number;
-  /** 分屏文件的仓库相对路径（资源上下文按它解析）。 */
-  notePath: string;
-  /** 资源上下文（App 的可变对象快照，notePath 已按分屏文件替换）。 */
-  context: LivePreviewContext;
+  /** 编辑区宿主的类名（is-live / is-source 随全局视图模式走）。 */
+  hostClass: string;
   onClose: () => void;
   /** 鼠标按下时上报（目录面板跟随「最后聚焦的窗格」）。 */
   onPaneFocus: () => void;
+  /** 视图创建后上报（App 由此装内容、接管保存与大纲）。 */
+  onReady: (view: EditorView) => void;
+  /** 视图销毁后上报（App 清引用）。 */
+  onDestroy: () => void;
 }) {
-  const [html, setHtml] = useState("");
+  const hostRef = useRef<HTMLDivElement | null>(null);
+  const readyRef = useRef(onReady);
+  const destroyRef = useRef(onDestroy);
+  readyRef.current = onReady;
+  destroyRef.current = onDestroy;
 
-  // 资源上下文按分屏文件解析相对路径：浅拷贝换 notePath，不动 App 的可变原件
-  const ctx = useMemo<LivePreviewContext>(
-    () => (context ? { ...context, notePath } : EMPTY_CONTEXT),
-    [context, notePath],
-  );
-
-  useEffect(() => {
-    let alive = true;
-    // 400ms 防抖：跟键入节奏刷新，不在每次击键后都跑一遍 markdown-it
-    const timer = window.setTimeout(() => {
-      if (!alive) return;
-      void renderMarkdownToHtml(markdown, ctx)
-        .then((rendered) => {
-          if (alive) setHtml(rendered);
-        })
-        .catch(() => {
-          if (alive) setHtml("");
-        });
-    }, 400);
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    // 先建空视图占位（同一帧内 App 的分屏 effect 会 setState 换上真实内容）。
+    // 调试句柄与 __qnView 同一套约定（CDP 验收脚本用）。
+    const view = new EditorView({ state: EditorState.create({}), parent: host });
+    (window as unknown as Record<string, unknown>).__qnSplitView = view;
+    readyRef.current(view);
     return () => {
-      alive = false;
-      window.clearTimeout(timer);
+      delete (window as unknown as Record<string, unknown>).__qnSplitView;
+      destroyRef.current();
+      view.destroy();
     };
-  }, [markdown, revision, ctx]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
-    <section className="split-pane" aria-label={`分屏查看 ${title}`} onMouseDown={onPaneFocus}>
+    <section className="split-pane" aria-label={`分屏编辑 ${title}`} onMouseDown={onPaneFocus}>
       <div className="split-pane-head">
         <span className="split-pane-title" title={title}>
           {title}
         </span>
-        <span className="split-pane-badge">只读</span>
+        <span className="split-pane-badge">分屏</span>
         <span className="spacer" />
         <button
           type="button"
@@ -84,16 +75,7 @@ export default function SplitPane({
           <IconX size={13} />
         </button>
       </div>
-      {html ? (
-        // markdown-it 管线 html:false 已转义原始 HTML；链接降级为 span 不可导航。
-        // 挂 cm-lp-embed-body 复用嵌入笔记的整套正文样式（标题/表格/代码块）
-        <div
-          className="split-pane-body cm-lp-embed-body"
-          dangerouslySetInnerHTML={{ __html: html }}
-        />
-      ) : (
-        <div className="split-pane-body split-pane-loading">正在渲染…</div>
-      )}
+      <div className={`split-pane-body split-editor-host ${hostClass}`} ref={hostRef} />
     </section>
   );
 }

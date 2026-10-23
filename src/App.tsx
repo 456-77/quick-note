@@ -52,11 +52,11 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetAnyDir, allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, listDirImages, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
 import { isMobile } from "./lib/platform";
 import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
-import { applyMode, applyDarkTheme, createEditor, createEditorState, type ViewMode } from "./lib/editor";
+import { applyMode, applyDarkTheme, applyLivePreviewContext, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
 import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit, tagRenameEdits } from "./lib/tags";
 import { buildCaptureLines, detectEol } from "./lib/capture";
@@ -70,7 +70,7 @@ import { applyMermaidTheme, clearMermaidCache, requestDecorationRefresh, setMerm
 import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { EMPTY_CONTEXT, absoluteInVault, resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
-import { bgSettingsFor, getSettings, onSettingsChange, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
+import { bgSettingsFor, getSettings, onSettingsChange, updateBgSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
 import { closeSearchPanelIfOpen, openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
 import { VOCAB_FILENAME, addVocabEntry, updateVocabEntry } from "./lib/vocabulary";
@@ -82,8 +82,10 @@ import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
 import { getVersion } from "@tauri-apps/api/app";
 import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
+import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
 import { ddlNoteIntro, extractTableNames, mergeDdlIntoNote, parseDdlTables } from "./lib/ddl";
+import { installDdlCellHover } from "./lib/ddlHover";
 import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
 import { fetchWeather, insertWeatherLine } from "./lib/weather";
 import { blobTypeOf, removeImageReferences } from "./lib/imageOps";
@@ -969,6 +971,9 @@ export default function App() {
       const resolved = applyTheme(getSettings().theme);
       const view = viewRef.current;
       if (view) applyDarkTheme(view, resolved === "dark");
+      // 分屏视图同步明暗（0.32 双编辑器）
+      const splitView = splitViewRef.current;
+      if (splitView) applyDarkTheme(splitView, resolved === "dark");
       // mermaid 的主题配色与导出/放大都要跟明暗一致（缓存的旧 svg 一并作废）
       applyMermaidTheme();
     };
@@ -981,6 +986,51 @@ export default function App() {
   // 参数按仓库取（bgSettingsFor）：每个仓库一份自己的背景（0.26 用户反馈）。
   useEffect(() => {
     applyBackground(bgSettingsFor(vault, settings), vault);
+  }, [settings, vault]);
+
+  // 壁纸轮换（0.32 用户需求）：目录授权 → 定时换图。写入走 updateBgSettings
+  // （bgImageAbsPath 进 per-vault 条目），上面的背景重铺 effect 跟着 settings
+  // 变化自动换图——这里只负责「到点选下一张」。每次轮换写盘都会让本 effect
+  // 重跑一遍（清旧定时器、重新列目录），目录里的增删下一轮就能被看到。
+  useEffect(() => {
+    const bg = bgSettingsFor(vault, settings);
+    if (!vault || !bg.bgRotateEnabled || !bg.bgRotateDir.trim()) return;
+    const dir = bg.bgRotateDir.trim();
+    let alive = true;
+    let stopTimer: (() => void) | null = null;
+    const pickNext = () => {
+      listDirImages(dir)
+        .then((fresh) => {
+          if (!alive || fresh.length === 0) return;
+          const next =
+            bg.bgRotateMode === "sequential"
+              ? nextSequential(fresh, bg.bgImageAbsPath)
+              : nextRandom(fresh, bg.bgImageAbsPath);
+          if (next && next !== bg.bgImageAbsPath) {
+            updateBgSettings(vault, { bgImageAbsPath: next });
+          }
+        })
+        .catch(() => {
+          // 目录被移走/拔盘：保持当前图，下个周期再试
+        });
+    };
+    // 目录在仓库外也行：先加进 asset 白名单（运行时授权，不持久化）
+    void allowAssetAnyDir(dir)
+      .then(() => (alive ? listDirImages(dir) : Promise.resolve([] as string[])))
+      .then((images) => {
+        if (!alive || images.length === 0) return;
+        // 首次开启（还没有当前图）立即选一张，不等第一个周期
+        if (!bg.bgImageAbsPath) pickNext();
+        const timer = window.setInterval(pickNext, clampRotateMinutes(bg.bgRotateMinutes) * 60_000);
+        stopTimer = () => window.clearInterval(timer);
+      })
+      .catch(() => {
+        // 授权/列目录失败：轮换静默不启动（设置页保存时已提示过目录问题）
+      });
+    return () => {
+      alive = false;
+      stopTimer?.();
+    };
   }, [settings, vault]);
 
   // 行号显示开关：gutter 的显隐走 html 类（CSS 见 styles.css 的 qn-line-numbers）。
@@ -1120,8 +1170,25 @@ export default function App() {
     dirtyRef.current = dirty;
   }, [dirty]);
 
-  const handleDocChanged = useCallback(() => {
+  /**
+   * 文档变更回调（0.32 起按 view 路由）：主编辑器与分屏编辑器共用 stateStore，
+   * 存量 EditorState 会在两边流转——写回必须跟着**发生变更的视图**走，否则在
+   * 分屏里打字会把内容写进主编辑器当前路径的键下（静默串内容）。
+   */
+  const handleDocChanged = useCallback((changed: EditorView) => {
+    if (changed === splitViewRef.current) {
+      // 分屏侧：每次文档变更都把实时 EditorState 回写 stateStore + 标脏
+      const splitPathNow = splitPathRef.current;
+      if (splitPathNow) {
+        stateStore.current.set(splitPathNow, changed.state);
+        dirtyTabs.current.add(splitPathNow);
+      }
+      setSplitDirty(true);
+      setRevision((value) => value + 1);
+      return;
+    }
     const view = viewRef.current;
+    if (changed !== view) return;
     const path = viewOwnerRef.current;
     // 每次文档变更都把**实时** EditorState 回写 stateStore：stateStore[path] 必须
     // 始终等于编辑器里的内容。此前只在切走时捕获，激活中的标签一直是打开那一刻的
@@ -1133,6 +1200,23 @@ export default function App() {
     }
     setDirty(true);
     setRevision((r) => r + 1);
+  }, []);
+
+  /** Mod-S 的统一入口：哪个视图按的保存哪边（0.32 分屏）。 */
+  const handleEditorSave = useCallback((changed: EditorView) => {
+    if (changed === splitViewRef.current) void splitSaveRef.current();
+    else void saveRef.current();
+  }, []);
+
+  /** 光标进/出表格（工具栏）：只有主编辑器有工具栏，分屏忽略。 */
+  const handleCursorInTable = useCallback((inside: boolean, changed: EditorView) => {
+    if (changed !== splitViewRef.current) setInTable(inside);
+  }, []);
+
+  /** 光标行（目录高亮）：按视图路由到主/分屏的光标行状态。 */
+  const handleCursorLine = useCallback((line: number, changed: EditorView) => {
+    if (changed === splitViewRef.current) setSplitCursorLine(line);
+    else setCursorLine(line);
   }, []);
 
   // 编辑器实例只建一次；切换文件用 setState 整体换状态——lineSeparator 是 facet，
@@ -1248,14 +1332,33 @@ export default function App() {
   /** 建表语句收录弹窗（0.31，Ctrl+Alt+L）。 */
   const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
   /**
-   * 分屏查看（0.31 用户反馈：标签页支持分屏）：钉在编辑区右侧的只读渲染窗格
-   * 显示的标签路径。null = 没开分屏。
+   * 分屏编辑（0.31 引入；0.32 按用户反馈从只读渲染改为**并列的第二编辑器**）：
+   * 钉在编辑区右侧的标签路径。null = 没开分屏。硬性不变量：分屏文件 ≠ 当前
+   * 激活标签（两个视图各持一份 EditorState，同篇双开会"最后落盘者覆盖"丢内容）。
    */
   const [splitPath, setSplitPath] = useState<string | null>(null);
   /** 目录面板跟随「最后聚焦的窗格」（0.31）：编辑器 / 分屏窗格。 */
   const [outlineFollow, setOutlineFollow] = useState<"editor" | "split">("editor");
-  /** 分屏文件未打开（stateStore 没有存量）时的磁盘版本快照。 */
-  const [splitDisk, setSplitDisk] = useState<{ path: string; content: string } | null>(null);
+  /** 分屏窗格有未保存内容（自动保存的驱动源，与主编辑器的 dirty 同构）。 */
+  const [splitDirty, setSplitDirty] = useState(false);
+  const splitDirtyRef = useRef(false);
+  useEffect(() => {
+    splitDirtyRef.current = splitDirty;
+  }, [splitDirty]);
+  /** 分屏编辑器实例（SplitPane 挂载时经 onReady 交上来）。 */
+  const splitViewRef = useRef<EditorView | null>(null);
+  const splitPathRef = useRef<string | null>(null);
+  useEffect(() => {
+    splitPathRef.current = splitPath;
+  }, [splitPath]);
+  /**
+   * 分屏编辑器的资源上下文：主上下文的可变字段（embedIndex/ddlTables/动作表）
+   * 按**引用**共享，notePath 换成分屏文件。loadDdlLibrary 更新 ddlTables 时
+   * 两边一起改（spread 拷贝存的是值快照，换 Map 不传播）。
+   */
+  const splitCtxRef = useRef<LivePreviewContext | null>(null);
+  /** 分屏光标行（目录面板跟随分屏时高亮当前标题）。 */
+  const [splitCursorLine, setSplitCursorLine] = useState(-1);
   /** 释义自动补全的串行队列：接连添加的词读-改-写不交叠（0.30）。 */
   const vocabFillChain = useRef<Promise<void>>(Promise.resolve());
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
@@ -1631,11 +1734,19 @@ export default function App() {
     try {
       const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
       const note = await readNoteOptional(dir, path);
-      resourcesRef.current.ddlTables = note ? parseDdlTables(note.content) : new Map();
+      const tables = note ? parseDdlTables(note.content) : new Map();
+      resourcesRef.current.ddlTables = tables;
+      // 分屏上下文是 spread 拷贝（notePath 不同）：换 Map 的赋值不传播，手动同步
+      if (splitCtxRef.current) splitCtxRef.current.ddlTables = tables;
     } catch {
       resourcesRef.current.ddlTables = new Map();
+      if (splitCtxRef.current) splitCtxRef.current.ddlTables = new Map();
     }
   }, []);
+
+  // 表格单元格的 DDL 悬浮（0.32 用户反馈「光标在表格内容上无法唤起弹窗」）：
+  // document 层委托，主编辑器与分屏编辑器的表格 widget 一并覆盖
+  useEffect(() => installDdlCellHover(), []);
 
   const refresh = useCallback(
     async (dir: string) => {
@@ -1759,13 +1870,13 @@ export default function App() {
         mode: isMarkdownPath(note.path) ? mode : "source",
         language: editorLanguageOf(note.path),
         onDocChanged: handleDocChanged,
-        onSave: () => void saveRef.current(),
+        onSave: handleEditorSave,
         resources: resourcesRef.current,
         attachment: attachmentOptions,
         codePaste: codePasteOptions,
         dark: resolveTheme(getSettings().theme) === "dark",
-        onCursorInTable: setInTable,
-          onCursorLine: setCursorLine,
+        onCursorInTable: handleCursorInTable,
+          onCursorLine: handleCursorLine,
       });
       view?.setState(newState);
       view?.dispatch({ selection: { anchor: Math.min(anchor, view.state.doc.length) } });
@@ -1795,6 +1906,13 @@ export default function App() {
       const view = viewRef.current;
       const stored = stateStore.current.get(path);
       if (!view || !stored) return;
+      // 分屏守卫（0.32）：激活分屏中的文件 = 主编辑器接管它，先收起分屏窗格
+      // （stateStore 里的实时状态直接接着用，不丢内容）
+      if (path === splitPathRef.current) {
+        const splitView = splitViewRef.current;
+        if (splitView) scrollStore.current.set(path, splitView.scrollDOM.scrollTop);
+        setSplitPath(null);
+      }
       // 捕获用 viewOwnerRef 而非 currentRef：后者要等渲染才对齐，重命名换键后的
       // 同步换页里它还指向旧路径——把实时状态写进死键，之后用旧名新建会复活旧内容。
       const prev = viewOwnerRef.current;
@@ -1807,6 +1925,9 @@ export default function App() {
         if (dir) saveProgress(window.localStorage, dir, prev, view.scrollDOM.scrollTop);
       }
       view.setState(stored);
+      // 存量状态可能带着分屏的上下文（分屏里编辑过的实时状态）：装进主编辑器
+      // 时换回主上下文（0.32 分屏，notePath 归属随视图走）
+      applyLivePreviewContext(view, resourcesRef.current);
       viewOwnerRef.current = path;
       tabActivatedAt.current.set(path, Date.now());
       // 会话内存量优先（刚才还在读的位置），没有再回持久化的阅读位置（0.31）
@@ -2024,6 +2145,39 @@ export default function App() {
         }
       }
 
+      // 分屏文件的外部改动（0.32 分屏可编辑）：干净就采纳磁盘版（保滚动），
+      // 有未保存编辑则提示——下次保存以本窗口为准（主编辑器的冲突横幅机制
+      // 不覆盖分屏，这里用状态栏提示 + stale 标记兜底）
+      const splitPathNow = splitPathRef.current;
+      if (splitPathNow && paths.includes(splitPathNow) && splitViewRef.current) {
+        try {
+          const freshSplit = await readNote(vault, splitPathNow);
+          const splitMeta = openTabsRef.current.find((tab) => tab.path === splitPathNow);
+          if (splitMeta && freshSplit.sha256 === splitMeta.sha256) {
+            // 自己保存的回声
+          } else if (splitDirtyRef.current) {
+            staleTabs.current.add(splitPathNow);
+            setStatus("分屏文件被外部修改，保存时以本窗口内容为准");
+          } else {
+            const splitView = splitViewRef.current;
+            const top = splitView.scrollDOM.scrollTop;
+            const adopted = createSplitState(freshSplit);
+            stateStore.current.set(splitPathNow, adopted);
+            splitView.setState(adopted);
+            applyMode(splitView, modeRef.current);
+            applyDarkTheme(splitView, resolveTheme(getSettings().theme) === "dark");
+            splitView.scrollDOM.scrollTop = top;
+            staleTabs.current.delete(splitPathNow);
+            setOpenTabs((prev) =>
+              prev.map((tab) => (tab.path === splitPathNow ? freshSplit : tab)),
+            );
+            setStatus("分屏已跟随外部改动");
+          }
+        } catch {
+          // 读失败保持现状
+        }
+      }
+
       const open = currentRef.current;
       if (!open || !paths.includes(open.path)) return;
 
@@ -2174,6 +2328,13 @@ export default function App() {
       setSelectedPath(null);
       setTagDashTag(null);
       setTreeClipboard(null);
+      // 分屏窗格先收起（0.32：视图持有旧仓库内容，stateStore 也要清）
+      splitViewRef.current = null;
+      splitPathRef.current = null;
+      splitCtxRef.current = null;
+      setSplitPath(null);
+      setSplitDirty(false);
+      setOutlineFollow("editor");
       // 换仓库必须把所有标签与编辑器一起清掉：CodeMirror 的状态还挂着上一篇的话，
       // 旧内容继续显示，下一次输入还会试图写回旧仓库的路径
       setOpenTabs([]);
@@ -2482,6 +2643,14 @@ export default function App() {
       setCaptureManagerOpen(false);
       // 已是这个标签且没有外部改动：什么都不做（重置会丢光标位置）
       if (path === activeTabRef.current && !staleTabs.current.has(path)) return;
+      // 分屏守卫（0.32）：这篇正在分屏里编辑——收起分屏窗格（内容与脏标记都在
+      // stateStore 里，主编辑器接着用），绝不双视图同篇。
+      if (path === splitPathRef.current) {
+        const splitView = splitViewRef.current;
+        if (splitView) scrollStore.current.set(path, splitView.scrollDOM.scrollTop);
+        setSplitPath(null);
+        if (outlineFollow === "split") setOutlineFollow("editor");
+      }
       // 切笔记时收起文件内搜索面板（0.23 用户反馈：搜索框只属于它打开的那篇，
       // 挂到别的笔记上会带着上一次的高亮，看起来像"搜索框坏了"）
       closeSearchPanelIfOpen();
@@ -2535,13 +2704,13 @@ export default function App() {
           mode: isMarkdownPath(note.path) ? mode : "source",
           language: editorLanguageOf(note.path),
           onDocChanged: handleDocChanged,
-          onSave: () => void saveRef.current(),
+          onSave: handleEditorSave,
           resources: resourcesRef.current,
           attachment: attachmentOptions,
           codePaste: codePasteOptions,
           dark: resolveTheme(getSettings().theme) === "dark",
-          onCursorInTable: setInTable,
-          onCursorLine: setCursorLine,
+          onCursorInTable: handleCursorInTable,
+          onCursorLine: handleCursorLine,
         });
         // 「替换当前」模式（Obsidian 默认）：新笔记顶掉当前标签的位置，标签数不增长。
         // 被顶掉的标签存量状态一并清掉，否则下次打开还会从 stateStore 里复活。
@@ -2943,6 +3112,15 @@ export default function App() {
         setActiveTab(nextPath);
         await openNote(nextPath);
       }
+      // 分屏中的文件被改名：路径键与上下文跟着换（rename 前置条件已保证
+      // 分屏 ≠ 激活标签，这里只处理分屏侧）
+      const splitNow = splitPathRef.current;
+      if (splitNow && affected(splitNow)) {
+        const nextSplit = remap(splitNow);
+        splitPathRef.current = nextSplit;
+        if (splitCtxRef.current) splitCtxRef.current.notePath = nextSplit;
+        setSplitPath(nextSplit);
+      }
     },
     [openNote, persistFavorites],
   );
@@ -3209,6 +3387,9 @@ export default function App() {
       localStorage.setItem(MODE_KEY, next);
       const view = viewRef.current;
       if (view && current) applyMode(view, next);
+      // 分屏视图同一套模式（0.32 双编辑器）
+      const splitView = splitViewRef.current;
+      if (splitView && splitPathRef.current) applyMode(splitView, next);
     },
     [current],
   );
@@ -3281,46 +3462,170 @@ export default function App() {
     openNoteAtRef.current = openNoteAt;
   });
 
-  // ---------------------------------------------------------------- 分屏查看（0.31）
+  // ---------------------------------------------------------------- 分屏编辑（0.32 双编辑器）
   //
-  // 只读渲染窗格显示另一篇（或同一篇）笔记：编辑器实时内容优先（存量 EditorState
-  // 里有未保存编辑），没打开过的标签退到磁盘版本（splitDisk）。
+  // 分屏窗格是第二个完整编辑器：状态进同一个 stateStore（按路径键），内容、
+  // 光标、撤销历史与主编辑器同一套机制；保存/自动保存、外部改动对账、大纲
+  // 跟随各自独立。约束见 splitPath 声明处：分屏文件 ≠ 激活标签（App 各打开
+  // 入口都有守卫）。
 
-  /** 分屏文件未在标签里打开时读一份磁盘版本。 */
+  /**
+   * 打开分屏的唯一入口（标签右键「分屏编辑」）。同文件守卫：分屏当前激活
+   * 标签会造成双视图同篇（最后落盘者覆盖，静默丢内容），明确拒绝。
+   */
+  const openSplit = useCallback(
+    (path: string) => {
+      if (path === splitPathRef.current) {
+        setSplitPath(null);
+        setOutlineFollow("editor");
+        return;
+      }
+      if (path === activeTabRef.current) {
+        setStatus("该文件正在编辑器中打开，换一个文件分屏（同文件双开会互相覆盖）");
+        return;
+      }
+      setSplitPath(path);
+      setOutlineFollow("split");
+    },
+    [],
+  );
+
+  /** 关闭分屏：脏内容先落盘（异步，不等 UI），滚动位置留在 scrollStore。 */
+  const closeSplit = useCallback(() => {
+    const view = splitViewRef.current;
+    const path = splitPathRef.current;
+    if (view && path) {
+      scrollStore.current.set(path, view.scrollDOM.scrollTop);
+      if (splitDirtyRef.current) void splitSaveRef.current();
+    }
+    // 搜索面板可能挂在分屏视图上（Ctrl+F 在分屏里开过）：视图即将销毁，先正常
+    // 关面板（清高亮、清 panelView），不留悬空引用
+    closeSearchPanelIfOpen();
+    setSplitPath(null);
+    setOutlineFollow("editor");
+  }, []);
+
+  /**
+   * 为分屏文件建 EditorState。回调与主编辑器**同一套**（handleDocChanged 等
+   * 都按 view 路由，见其注释）——这样 stateStore 里的同一份状态在主/分屏之间
+   * 流转时行为一致；差别只有资源上下文（notePath = 分屏文件）。
+   */
+  const createSplitState = useCallback(
+    (note: NoteContent) => {
+      const ctx: LivePreviewContext = { ...resourcesRef.current, notePath: note.path };
+      splitCtxRef.current = ctx;
+      return createEditorState(note.content, {
+        lineEnding: note.lineEnding,
+        mode: isMarkdownPath(note.path) ? mode : "source",
+        language: editorLanguageOf(note.path),
+        onDocChanged: handleDocChanged,
+        onSave: handleEditorSave,
+        resources: ctx,
+        attachment: attachmentOptions,
+        codePaste: codePasteOptions,
+        dark: resolveTheme(getSettings().theme) === "dark",
+        onCursorInTable: handleCursorInTable,
+        onCursorLine: handleCursorLine,
+      });
+    },
+    [mode, handleDocChanged, handleEditorSave, handleCursorInTable, handleCursorLine, attachmentOptions, codePasteOptions],
+  );
+
+  const splitSaveRef = useRef<() => Promise<void>>(async () => {});
+  const splitSaveNow = useCallback(async () => {
+    const view = splitViewRef.current;
+    const path = splitPathRef.current;
+    if (!view || !vault || !path) return;
+    const meta = openTabsRef.current.find((tab) => tab.path === path);
+    try {
+      const result = await writeNote(vault, path, view.state.sliceDoc(), meta?.hasBom ?? false);
+      setOpenTabs((prev) =>
+        prev.map((tab) =>
+          tab.path === path ? { ...tab, sha256: result.sha256, size: result.bytes } : tab,
+        ),
+      );
+      dirtyTabs.current.delete(path);
+      setSplitDirty(false);
+      staleTabs.current.delete(path);
+      // 分屏里编辑 DDL 笔记，悬浮库跟着更新（与主编辑器保存同一条规则）
+      if (path === (getSettings().ddlFilePath.trim() || "数据库表DDL.md")) {
+        void loadDdlLibrary(vault);
+      }
+      setStatus(result.changed ? `分屏已保存 ${result.bytes} 字节` : "分屏内容未变，未落盘");
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [vault, loadDdlLibrary]);
   useEffect(() => {
-    if (!vault || !splitPath || stateStore.current.has(splitPath)) {
-      setSplitDisk(null);
+    splitSaveRef.current = () => splitSaveNow();
+  }, [splitSaveNow]);
+
+  // 分屏自动保存：与主编辑器同一防抖节奏
+  useEffect(() => {
+    if (!splitDirty) return;
+    const timer = window.setTimeout(() => void splitSaveNow(), AUTOSAVE_DELAY);
+    return () => window.clearTimeout(timer);
+  }, [splitDirty, revision, splitSaveNow]);
+
+  /**
+   * 给分屏视图装内容：stateStore 存量优先（未保存内容/光标/撤销历史都在），
+   * 否则读盘新建。存量状态创建时的 Compartment 可能落后于当前模式/主题，
+   * 装上后对齐一次。
+   */
+  useEffect(() => {
+    const view = splitViewRef.current;
+    if (!view || !vault || !splitPath) return;
+    splitCtxRef.current = { ...resourcesRef.current, notePath: splitPath };
+    let alive = true;
+    const align = () => {
+      applyMode(view, modeRef.current);
+      applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
+      view.scrollDOM.scrollTop =
+        scrollStore.current.get(splitPath) ??
+        (vault ? loadProgress(window.localStorage, vault, splitPath) ?? 0 : 0);
+      // 新文档 setState 后高度图还是旧的，两帧真实测量落地后再校一次（同 openNote）
+      const top = view.scrollDOM.scrollTop;
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        if (splitViewRef.current === view) view.scrollDOM.scrollTop = top;
+      }));
+      setSplitDirty(dirtyTabs.current.has(splitPath));
+      setSplitCursorLine(view.state.doc.lineAt(view.state.selection.main.head).number - 1);
+    };
+    const stored = stateStore.current.get(splitPath);
+    if (stored && !staleTabs.current.has(splitPath)) {
+      view.setState(stored);
+      // 存量状态可能是在主编辑器创建的：上下文与回调都按**当前视图**重配
+      // （回调本身按 view 路由，只需换上下文）
+      applyLivePreviewContext(view, splitCtxRef.current!);
+      align();
       return;
     }
-    let alive = true;
     void readNote(vault, splitPath)
       .then((note) => {
-        if (alive) setSplitDisk({ path: splitPath, content: note.content });
+        if (!alive || splitViewRef.current !== view || splitPathRef.current !== splitPath) return;
+        staleTabs.current.delete(splitPath);
+        const state = createSplitState(note);
+        stateStore.current.set(splitPath, state);
+        view.setState(state);
+        align();
+        // 目录跟随分屏：文档源换了要重算
+        setRevision((value) => value + 1);
       })
-      .catch(() => {
-        if (alive) setSplitDisk({ path: splitPath, content: "" });
+      .catch((e) => {
+        if (alive) setError(`分屏打开失败：${e}`);
       });
     return () => {
       alive = false;
     };
-  }, [vault, splitPath]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [splitPath, vault]);
 
   /** 分屏的标签被关闭（或切仓库清空标签）后分屏窗格一并收起。 */
   useEffect(() => {
     if (splitPath && !openTabs.some((tab) => tab.path === splitPath)) {
-      setSplitPath(null);
-      if (outlineFollow === "split") setOutlineFollow("editor");
+      closeSplit();
     }
-  }, [openTabs, splitPath, outlineFollow]);
-
-  /** 分屏窗格要渲染的全文。revision 进依赖：分屏文件正在编辑时跟随键入刷新。 */
-  const splitMarkdown = useMemo(() => {
-    if (!splitPath) return "";
-    const stored = stateStore.current.get(splitPath);
-    if (stored) return stored.doc.toString();
-    return splitDisk?.path === splitPath ? splitDisk.content : "";
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [splitPath, splitDisk, revision, openTabs]);
+  }, [openTabs, splitPath, closeSplit]);
 
   /**
    * 打开**其他仓库**的笔记（0.29 全局搜索跨仓库命中）：先切仓库，再在新仓库的
@@ -4423,9 +4728,21 @@ export default function App() {
       const isNext =
         key === "f3" || ((event.ctrlKey || event.metaKey) && !event.shiftKey && key === "g");
       if (!isFind && !isNext) return;
-      const view = viewRef.current;
+      // 目标视图按焦点选（0.32 分屏双编辑器）：焦点在分屏窗格里就走分屏视图
+      // （文件内搜索面板同一时刻只属于一个视图，openPanel 会自动迁移）。
+      const focusInSplit = (() => {
+        const splitView = splitViewRef.current;
+        return !!splitView && !!splitView.dom.contains(document.activeElement);
+      })();
+      const view = (focusInSplit ? splitViewRef.current : viewRef.current) ?? viewRef.current;
       if (isNext) {
-        if (view && searchPanelFindNext(view)) event.preventDefault();
+        // F3/Ctrl+G 跟着已打开的搜索面板走（面板可能在另一个视图上）
+        let handled = false;
+        if (view) handled = searchPanelFindNext(view);
+        if (!handled && view !== viewRef.current && viewRef.current) {
+          handled = searchPanelFindNext(viewRef.current);
+        }
+        if (handled) event.preventDefault();
         return;
       }
       if (showSettings) return;
@@ -4494,8 +4811,7 @@ export default function App() {
         return;
       }
       if (splitPath) {
-        setSplitPath(null);
-        setOutlineFollow("editor");
+        closeSplit();
         return;
       }
       if (renaming) {
@@ -4506,7 +4822,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, ddlDialogOpen, splitPath, cancelRename, cancelCreate]);
+  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, ddlDialogOpen, splitPath, cancelRename, cancelCreate, closeSplit]);
 
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
@@ -5387,13 +5703,15 @@ export default function App() {
                 </button>
                 <button
                   type="button"
+                  disabled={tabMenu.path === activeTab}
+                  title={tabMenu.path === activeTab ? "该文件正在编辑器中打开，同文件双开会互相覆盖" : undefined}
                   onClick={() => {
-                    // 分屏查看（0.31）：同一篇再次选择 = 关闭分屏
-                    setSplitPath((prev) => (prev === tabMenu.path ? null : tabMenu.path));
+                    // 分屏编辑（0.31 只读 → 0.32 可编辑）：同一篇再次选择 = 关闭分屏
+                    openSplit(tabMenu.path);
                     setTabMenu(null);
                   }}
                 >
-                  {splitPath === tabMenu.path ? "取消分屏" : "分屏查看（只读）"}
+                  {splitPath === tabMenu.path ? "取消分屏" : "分屏编辑"}
                 </button>
                 <button
                   type="button"
@@ -5756,16 +6074,17 @@ export default function App() {
             {splitPath && (
               <SplitPane
                 title={splitPath.split("/").pop() ?? splitPath}
-                markdown={splitMarkdown}
-                revision={revision}
-                notePath={splitPath}
-                context={resourcesRef.current}
-                onClose={() => {
-                  setSplitPath(null);
-                  setOutlineFollow("editor");
-                }}
+                hostClass={`editor-host${mode === "live" && isMarkdownPath(splitPath) ? " is-live" : " is-source"}`}
+                onClose={closeSplit}
                 onPaneFocus={() => {
                   if (outlineFollow !== "split") setOutlineFollow("split");
+                }}
+                onReady={(view) => {
+                  splitViewRef.current = view;
+                  // 视图刚建出来还装着空状态；装载 effect（[splitPath]）随后 setState
+                }}
+                onDestroy={() => {
+                  splitViewRef.current = null;
                 }}
               />
             )}
@@ -6009,12 +6328,17 @@ export default function App() {
           {rightPanel === "outline" && (
             <OutlinePanel
               getDoc={() => {
-                // 0.31 分屏：目录跟随「最后聚焦的窗格」——分屏窗格聚焦时列分屏文件
-                // 的大纲（只读，行号按 \n 口径），否则列编辑器文档。
-                // 编辑器侧必须走 sliceDoc（facet 会把换行替换成文件自己的 CRLF），
+                // 0.32 分屏可编辑：目录跟随「最后聚焦的窗格」——分屏聚焦时列分屏
+                // 编辑器自己的文档（实时状态），否则列主编辑器文档。
+                // 两侧都必须走 sliceDoc（facet 会把换行替换成文件自己的 CRLF），
                 // doc.toString() 永远输出 \n——CRLF 笔记 split 会失效、大纲全空
                 if (outlineFollow === "split" && splitPath) {
-                  return { text: splitMarkdown, lineBreak: "\n" };
+                  const splitView = splitViewRef.current;
+                  if (!splitView) return null;
+                  return {
+                    text: splitView.state.sliceDoc(0, splitView.state.doc.length),
+                    lineBreak: splitView.state.lineBreak,
+                  };
                 }
                 const view = viewRef.current;
                 if (!view) return null;
@@ -6025,12 +6349,21 @@ export default function App() {
               // 预览 pdf/docx 等文件时编辑器还装着上一篇 md，大纲继续显示它会误导
               // （0.20 用户反馈"预览 pdf 时右侧目录还显示 md 的目录"），清空让空态接管
               activeKey={previewPath ? null : outlineFollow === "split" ? splitPath : activeTab}
-              cursorLine={outlineFollow === "split" ? -1 : cursorLine}
+              cursorLine={outlineFollow === "split" ? splitCursorLine : cursorLine}
               onJump={(line) => {
-                // 分屏模式下点击标题：在编辑器打开分屏文件并跳到目标行（只读窗格
-                // 没有光标可放，「跳过去」的落点自然在编辑器）
+                // 分屏模式下点击标题：在**分屏编辑器内**定位（0.32——此前只读时代
+                // 是在主编辑器重开该文件，会把并排的另一篇顶掉，用户明确不要）
                 if (outlineFollow === "split" && splitPath) {
-                  void openNoteAt(splitPath, line);
+                  const splitView = splitViewRef.current;
+                  if (!splitView) return;
+                  const target = splitView.state.doc.line(
+                    Math.min(Math.max(line + 1, 1), splitView.state.doc.lines),
+                  );
+                  splitView.dispatch({
+                    selection: { anchor: target.from },
+                    effects: EditorView.scrollIntoView(target.from, { y: "center" }),
+                  });
+                  splitView.focus();
                   return;
                 }
                 jumpToLine(line);

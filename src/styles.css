@@ -1553,18 +1553,25 @@ div.tree-item:focus-visible {
   background: #fff;
 }
 
-/* 图片预览：居中 + 限高，浅色衬底让透明 PNG 可见 */
+/* 图片预览：居中 + 限高，浅色衬底让透明 PNG 可见。
+   0.32 修复「底部切割图片」：此前 img 用 max-height:82vh 按视口算，宿主再用
+   min-height:60vh——预览容器比视口矮时（矮窗口、嵌入面板），图比容器高出的
+   部分被 file-preview-image-pannable 的 overflow:hidden 硬裁掉。改为宿主撑满
+   预览区、图片按**容器**高度限高。 */
 .file-preview-image {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 60vh;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 240px;
   padding: 8px;
 }
 
 .file-preview-image img {
   max-width: 100%;
-  max-height: 82vh;
+  max-height: 100%;
   border-radius: 6px;
   box-shadow: var(--shadow-2);
   background:
@@ -4922,6 +4929,15 @@ html.qn-alt-held .cm-line {
   color: var(--text-faint);
 }
 
+/* 组名右侧的计数徽标（0.32「内容 · 共 N 条」）：结果截断与否一眼可见 */
+.palette-group-count {
+  margin-left: 8px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-faint);
+}
+
 .palette-item {
   display: flex;
   align-items: center;
@@ -6761,6 +6777,44 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 .add-word-input:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* 自动释义区（0.32）：输入停顿即查、只读展示；词形+音标一行，释义折行 */
+.add-word-lookup {
+  min-height: 30px;
+  margin-top: 6px;
+  display: flex;
+  align-items: center;
+}
+
+.add-word-lookup-hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.add-word-lookup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: var(--surface);
+  max-height: 132px;
+  overflow: auto;
+}
+
+.add-word-lookup-phonetic {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.add-word-lookup-meaning {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .add-word-message {
@@ -10749,6 +10803,43 @@ button.cm-tag:hover {
   white-space: pre;
 }
 
+/* DDL 弹窗里的 SQL 着色（0.32）：配色与编辑器代码块同一套语法变量 */
+.qn-sql-kw {
+  color: var(--syn-keyword);
+  font-weight: 600;
+}
+
+.qn-sql-str {
+  color: var(--syn-string);
+}
+
+.qn-sql-id {
+  color: var(--syn-def);
+}
+
+.qn-sql-num {
+  color: var(--syn-atom);
+}
+
+.qn-sql-cmt {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+/* 表格单元格上浮出的 DDL 弹窗（0.32）：CM 的 hoverTooltip 管不到 widget 内部，
+   这一份由 document 层定位，容器样式对齐 cm-tooltip 的观感 */
+.qn-ddl-cell-tip {
+  position: fixed;
+  z-index: 80;
+  max-width: min(620px, 72vw);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+  animation: fade-in 0.12s ease;
+}
+
 /* DDL 收录弹窗的多行输入 */
 .ddl-textarea {
   width: 100%;
@@ -10829,13 +10920,13 @@ html.qn-bg-on .split-pane {
   padding: 1px 5px;
 }
 
+/* 0.32 起分屏是**可编辑**的第二编辑器（不再是渲染容器）：body 只是宿主，
+   排版细节全部复用 .editor-host 那套（is-live/is-source 由 App 传类名） */
 .split-pane-body {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  padding: 14px 18px 40px;
-  /* 与编辑器同一阅读宽度口径 */
-  max-width: 900px;
+  overflow: hidden;
+  display: flex;
 }
 
 .split-pane-loading {
@@ -10843,9 +10934,10 @@ html.qn-bg-on .split-pane {
   font-size: 12px;
 }
 
-/* 渲染容器挂 cm-lp-embed-body 复用嵌入笔记的整套正文样式；字号行距在此微调 */
-.split-pane-body.cm-lp-embed-body {
-  font-size: 13.5px;
-  line-height: 1.7;
-  color: var(--text);
+.split-editor-host {
+  flex: 1;
+  min-width: 0;
 }
+
+/* 渲染容器挂 cm-lp-embed-body 复用嵌入笔记的整套正文样式；字号行距在此微调 */
+/* 0.32 分屏改编辑器后不再挂 cm-lp-embed-body（渲染容器样式已随只读方案移除） */

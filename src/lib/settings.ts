@@ -129,6 +129,23 @@ export interface Settings {
    * 调低表面更透、背景更明显（正文可读性随之下降，由用户权衡）。
    */
   bgSurface: number;
+  /**
+   * 壁纸轮换开关（0.32 用户需求「选定壁纸图片目录，定时自动轮换」）。开启后
+   * 背景图不再来自仓库内的 bgImagePath，而是 bgRotateDir 目录里的图片按
+   * bgRotateMode（随机/顺序）每 bgRotateMinutes 分钟换一张。
+   */
+  bgRotateEnabled: boolean;
+  /** 壁纸图片目录（绝对路径；任意目录，不限于仓库内）。 */
+  bgRotateDir: string;
+  /** 轮换间隔（分钟，1–1440）。 */
+  bgRotateMinutes: number;
+  /** 轮换方式：随机挑一张（不与当前重复）或按文件名顺序下一张。 */
+  bgRotateMode: "random" | "sequential";
+  /**
+   * 轮换当前显示的图片（绝对路径）。空 = 轮换还没启动过。存在 BgSettings 里
+   * 而不是运行时内存：重启后接着上次的图继续，顺序轮换的位置也不丢。
+   */
+  bgImageAbsPath: string;
   /** per-vault 背景设置（键：仓库绝对路径）。没有条目的仓库用扁平字段的旧值兜底。 */
   bgPerVault?: Record<string, BgSettings>;
   /**
@@ -159,6 +176,11 @@ export type BgSettings = Pick<
   | "bgScale"
   | "bgFit"
   | "bgSurface"
+  | "bgRotateEnabled"
+  | "bgRotateDir"
+  | "bgRotateMinutes"
+  | "bgRotateMode"
+  | "bgImageAbsPath"
 >;
 
 const STORAGE_KEY = "quicknote.settings";
@@ -195,6 +217,11 @@ const DEFAULTS: Settings = {
   bgScale: 100,
   bgFit: "cover",
   bgSurface: 80,
+  bgRotateEnabled: false,
+  bgRotateDir: "",
+  bgRotateMinutes: 30,
+  bgRotateMode: "random",
+  bgImageAbsPath: "",
   ddlHover: true,
   // 仓库根的普通笔记：用户要能直接看到、手工编辑（同步也覆盖），不走隐藏目录
   ddlFilePath: "数据库表DDL.md",
@@ -265,6 +292,11 @@ export function defaultBgSettings(): BgSettings {
     bgScale,
     bgFit,
     bgSurface,
+    bgRotateEnabled,
+    bgRotateDir,
+    bgRotateMinutes,
+    bgRotateMode,
+    bgImageAbsPath,
   } = DEFAULTS;
   return {
     bgEnabled,
@@ -279,6 +311,11 @@ export function defaultBgSettings(): BgSettings {
     bgScale,
     bgFit,
     bgSurface,
+    bgRotateEnabled,
+    bgRotateDir,
+    bgRotateMinutes,
+    bgRotateMode,
+    bgImageAbsPath,
   };
 }
 
@@ -313,6 +350,11 @@ export function bgSettingsFor(vault: string | null, settings: Settings = current
     bgScale: settings.bgScale,
     bgFit: settings.bgFit,
     bgSurface: settings.bgSurface ?? defaults.bgSurface,
+    bgRotateEnabled: settings.bgRotateEnabled ?? defaults.bgRotateEnabled,
+    bgRotateDir: settings.bgRotateDir ?? defaults.bgRotateDir,
+    bgRotateMinutes: settings.bgRotateMinutes ?? defaults.bgRotateMinutes,
+    bgRotateMode: settings.bgRotateMode ?? defaults.bgRotateMode,
+    bgImageAbsPath: settings.bgImageAbsPath ?? defaults.bgImageAbsPath,
   };
   // 全新安装（旧字段全是默认值且没图）与旧值无差别，统一走旧值兜底即可
   return legacy;

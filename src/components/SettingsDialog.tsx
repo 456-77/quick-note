@@ -1128,18 +1128,99 @@ export default function SettingsDialog({
               }
             />
           </Row>
+          {/* 壁纸轮换（0.32 用户需求）：目录里的图定时换，随机或按文件名顺序。
+              开启后背景图来自该目录（绝对路径），上面的「背景图片」选择暂时让位；
+              关掉轮换自动落回仓库内选的图。 */}
+          <Row
+            label="壁纸轮换"
+            desc="从选定的目录定时换背景图，可随机也可按文件名顺序。"
+            tip="目录可以是电脑上的任意文件夹（不必在仓库里）。开启后背景图由轮换接管；界面浓度、模糊等参数照常生效。"
+            keywords="背景 壁纸 轮换 换图 随机 顺序"
+          >
+            <input
+              type="checkbox"
+              checked={bg.bgRotateEnabled}
+              disabled={!vault || !bg.bgRotateDir}
+              onChange={(event) => saveBg({ bgRotateEnabled: event.target.checked })}
+            />
+          </Row>
+          <Row
+            label="壁纸目录"
+            desc={bg.bgRotateDir ? bg.bgRotateDir : "选择一个放壁纸图片的文件夹（png/jpg/webp/gif/bmp）。"}
+            keywords="背景 壁纸 目录 文件夹"
+          >
+            <span className="settings-inline">
+              <button
+                type="button"
+                className="btn"
+                disabled={!vault}
+                onClick={async () => {
+                  const picked = await pickDirectory("选择壁纸图片目录");
+                  if (!picked) return;
+                  // 换目录后清掉当前图：轮换立即从头选一张新目录里的图
+                  saveBg({ bgRotateDir: picked, bgImageAbsPath: "" });
+                }}
+              >
+                选择目录…
+              </button>
+              {bg.bgRotateDir && (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => saveBg({ bgRotateDir: "", bgRotateEnabled: false, bgImageAbsPath: "" })}
+                >
+                  清除
+                </button>
+              )}
+            </span>
+          </Row>
+          <Row label="轮换间隔" desc="每隔多少分钟换一张（1–1440）。" keywords="背景 轮换 间隔 时间 分钟">
+            <input
+              type="number"
+              min={1}
+              max={1440}
+              step={1}
+              value={bg.bgRotateMinutes}
+              disabled={!vault || !bg.bgRotateDir}
+              onChange={(event) => saveBg({ bgRotateMinutes: Number(event.target.value) || 30 })}
+              onBlur={(event) => {
+                const raw = Number(event.target.value);
+                if (raw < 1 || raw > 1440 || !Number.isFinite(raw)) saveBg({ bgRotateMinutes: 30 });
+              }}
+              style={{ width: "72px" }}
+            />
+            <span style={{ marginLeft: 6, color: "var(--text-faint)" }}>分钟</span>
+          </Row>
+          <Row label="轮换方式" desc="随机挑一张（不与当前重复）或按文件名顺序下一张。" keywords="背景 轮换 随机 顺序">
+            <SettingsSelect
+              ariaLabel="轮换方式"
+              value={bg.bgRotateMode}
+              disabled={!vault || !bg.bgRotateDir}
+              options={[
+                { value: "random", label: "随机" },
+                { value: "sequential", label: "按文件名顺序" },
+              ]}
+              onChange={(value) => saveBg({ bgRotateMode: value })}
+            />
+          </Row>
           {/* 背景预览：按当前参数实时渲染（0.26 规范五），开仓库且有图时出现。
               0.28 修：棋盘格此前是 z-index:-1 的 ::before，父级一加 filter 形成
               层叠上下文后，负层级子元素反而画在父级背景图之上，整块预览只剩
               棋盘格（用户反馈"预览失效"）。现在棋盘格是容器底色、图片是独立
               子层，层级写死不靠负 z-index。 */}
-          {vault && bg.bgImagePath && (
+          {vault && (bg.bgRotateEnabled ? bg.bgImageAbsPath : bg.bgImagePath) && (
             <div className="settings-block bg-preview-block" data-keywords="背景 预览">
               <div className="bg-preview">
                 <div
                   className="bg-preview-img"
                   style={{
-                    backgroundImage: `url("${convertFileSrc(`${vault.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`)}")`,
+                    // 轮换开着预览轮换当前图（绝对路径），否则仓库内选图——与
+                    // background.ts 的取图优先级同口径
+                    backgroundImage: `url("${convertFileSrc(
+                      bg.bgRotateEnabled && bg.bgImageAbsPath
+                        ? bg.bgImageAbsPath.trim()
+                        : `${vault.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`,
+                    )}")`,
                     backgroundSize: bg.bgFit === "contain" ? "contain" : "cover",
                     backgroundPosition: `${bg.bgPosX}% ${bg.bgPosY}%`,
                     opacity: bg.bgOpacity,
