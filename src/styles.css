@@ -1162,12 +1162,54 @@ div.tree-item:focus-visible {
 .vault-menu {
   min-width: 240px;
   max-width: 380px;
+  /* 最近仓库 + 服务器仓库可能同时很长：超出视口出滚动（0.32.2） */
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
+}
+
+/* 菜单条目横排（图标 + 名字 + 右缘徽标）；vault 菜单与命令菜单共用 */
+.context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
 }
 
 .vault-menu-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 服务器仓库分组（0.32.2）：小节标题 + 已在本机徽标 */
+.vault-menu-caption {
+  padding: 4px 12px 2px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+
+/* 快捷键被其他程序系统级占用（0.32.2）：键位组标警示色 */
+.keycap-set.is-sys-conflict .keycap-group {
+  border-color: var(--warn);
+}
+
+.keycap-set.is-sys-conflict::after {
+  content: "⚠";
+  margin-left: 3px;
+  font-size: 11px;
+  color: var(--warn);
+}
+
+.vault-menu-local {
+  margin-left: auto;
+  flex: none;
+  font-size: 10px;
+  color: var(--ok);
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  border-radius: 5px;
+  padding: 0 5px;
 }
 
 .vault-menu-sep {
@@ -10878,60 +10920,85 @@ button.cm-tag:hover {
   min-width: 0;
 }
 
-.split-pane {
-  flex: 0 0 42%;
-  min-width: 260px;
-  max-width: 56%;
+/* 0.32.2 Obsidian 式分栏：右栏是一列（自己的标签栏 + 编辑器宿主），与左栏
+   （.editor-pane-col.main）同构。宽度沿用旧分屏的 42% 档。 */
+.editor-pane-col {
   display: flex;
   flex-direction: column;
-  border-left: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  flex: 1;
+  min-width: 0;
   min-height: 0;
 }
 
-html.qn-bg-on .split-pane {
+.editor-pane-col.is-split {
+  flex: 0 0 42%;
+  min-width: 260px;
+  max-width: 56%;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+}
+
+/* 分栏分界线（0.32.2）：细拖动条，hover/拖动中高亮；右栏宽度由 JS 内联控制 */
+.pane-divider {
+  flex: 0 0 5px;
+  margin: 0 -3px;
+  z-index: 3;
+  cursor: col-resize;
+  background: transparent;
+  touch-action: none;
+  position: relative;
+}
+
+.pane-divider::after {
+  content: "";
+  position: absolute;
+  inset: 0 2px;
+  border-radius: 3px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+
+.pane-divider:hover::after,
+.pane-divider:active::after {
+  background: var(--accent-soft);
+}
+
+html.qn-bg-on .editor-pane-col.is-split {
   background: color-mix(in srgb, var(--surface) var(--qn-veil-editor, 80%), transparent);
 }
 
-.split-pane-head {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding: 5px 8px 5px 12px;
+/* 右栏自己的标签栏：复用 .tabbar 的全部排版，只补一条底边线（与左栏隔开） */
+.tabbar.is-split {
   border-bottom: 1px solid var(--border-soft);
   flex: none;
 }
 
-.split-pane-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.split-pane-badge {
+.tabbar-pane-close {
   flex: none;
-  font-size: 10px;
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
   color: var(--text-faint);
-  border: 1px solid var(--border-soft);
-  border-radius: 5px;
-  padding: 1px 5px;
+  cursor: pointer;
 }
 
-/* 0.32 起分屏是**可编辑**的第二编辑器（不再是渲染容器）：body 只是宿主，
-   排版细节全部复用 .editor-host 那套（is-live/is-source 由 App 传类名） */
-.split-pane-body {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
+.tabbar-pane-close:hover {
+  background: var(--surface-2);
+  color: var(--text);
 }
 
-.split-pane-loading {
-  color: var(--text-faint);
-  font-size: 12px;
+/* 分屏装载失败提示（0.32.2：读盘重试 3 次仍失败时显示在右栏内，不再静默空白） */
+.split-pane-error {
+  padding: 18px 16px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--danger);
 }
 
 .split-editor-host {

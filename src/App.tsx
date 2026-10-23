@@ -36,6 +36,7 @@ import {
   IconFocus,
   IconFolder,
   IconFolderPlus,
+  IconCloud,
   IconLibrary,
   IconListTree,
   IconMinus,
@@ -52,7 +53,7 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetAnyDir, allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, listDirImages, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetAnyDir, allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, ensureDirectory, listDirImages, localSyncedVaults, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
 import { isMobile } from "./lib/platform";
 import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
@@ -1177,8 +1178,8 @@ export default function App() {
    */
   const handleDocChanged = useCallback((changed: EditorView) => {
     if (changed === splitViewRef.current) {
-      // 分屏侧：每次文档变更都把实时 EditorState 回写 stateStore + 标脏
-      const splitPathNow = splitPathRef.current;
+      // 右栏：每次文档变更都把实时 EditorState 回写 stateStore + 标脏
+      const splitPathNow = splitActiveRef.current;
       if (splitPathNow) {
         stateStore.current.set(splitPathNow, changed.state);
         dirtyTabs.current.add(splitPathNow);
@@ -1329,14 +1330,34 @@ export default function App() {
   const [quickTodoOpen, setQuickTodoOpen] = useState(false);
   /** 手动添加单词弹窗（0.26）：string = 打开并预填（可为空串），null = 关闭。 */
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
-  /** 建表语句收录弹窗（0.31，Ctrl+Alt+L）。 */
+  /** 建表语句收录弹窗（0.31；默认键 0.32.1 起 Ctrl+Alt+J，可改绑）。 */
   const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
   /**
-   * 分屏编辑（0.31 引入；0.32 按用户反馈从只读渲染改为**并列的第二编辑器**）：
-   * 钉在编辑区右侧的标签路径。null = 没开分屏。硬性不变量：分屏文件 ≠ 当前
-   * 激活标签（两个视图各持一份 EditorState，同篇双开会"最后落盘者覆盖"丢内容）。
+   * 分栏（0.31 只读渲染 → 0.32 双编辑器 → 0.32.2 Obsidian 式分栏）：标签栏
+   * 随窗格分成两段——左栏（主标签栏 + 主编辑器）与右栏（自己的标签栏 + 第二
+   * 编辑器），每个标签归属一组，右栏激活自己的标签。「分屏」= 把标签移到另一
+   * 组（标签唯一，天然不会同文件双开）。openTabs 仍是全部标签的唯一清单，
+   * `rightTabPaths` 只记归属右栏的那些（有序）。
    */
-  const [splitPath, setSplitPath] = useState<string | null>(null);
+  const [rightTabPaths, setRightTabPaths] = useState<string[]>([]);
+  const rightTabsRef = useRef<string[]>([]);
+  useEffect(() => {
+    rightTabsRef.current = rightTabPaths;
+  }, [rightTabPaths]);
+  /** 右栏的激活标签（null = 右栏关着；恒 ∈ rightTabPaths）。 */
+  const [splitActiveTab, setSplitActiveTab] = useState<string | null>(null);
+  const splitActiveRef = useRef<string | null>(null);
+  useEffect(() => {
+    splitActiveRef.current = splitActiveTab;
+  }, [splitActiveTab]);
+  /** 最后聚焦的窗格（0.32.2）：文件树/搜索打开新笔记落在哪一栏由它决定。 */
+  const focusedPaneRef = useRef<"main" | "split">("main");
+  /**
+   * 右栏编辑器视图的就绪代际（0.32.2 加固）：SplitPane 的 onReady 建视图后
+   * +1——装载 effect 依赖它，视图晚于激活切换创建时（挂载竞态）也能重触发，
+   * 不再出现右栏空白。
+   */
+  const [splitViewEpoch, setSplitViewEpoch] = useState(0);
   /** 目录面板跟随「最后聚焦的窗格」（0.31）：编辑器 / 分屏窗格。 */
   const [outlineFollow, setOutlineFollow] = useState<"editor" | "split">("editor");
   /** 分屏窗格有未保存内容（自动保存的驱动源，与主编辑器的 dirty 同构）。 */
@@ -1347,10 +1368,8 @@ export default function App() {
   }, [splitDirty]);
   /** 分屏编辑器实例（SplitPane 挂载时经 onReady 交上来）。 */
   const splitViewRef = useRef<EditorView | null>(null);
-  const splitPathRef = useRef<string | null>(null);
-  useEffect(() => {
-    splitPathRef.current = splitPath;
-  }, [splitPath]);
+  /** 右栏装载失败提示（null = 正常；读盘重试后仍失败时显示在右栏内）。 */
+  const [splitError, setSplitError] = useState<string | null>(null);
   /**
    * 分屏编辑器的资源上下文：主上下文的可变字段（embedIndex/ddlTables/动作表）
    * 按**引用**共享，notePath 换成分屏文件。loadDdlLibrary 更新 ddlTables 时
@@ -1359,6 +1378,68 @@ export default function App() {
   const splitCtxRef = useRef<LivePreviewContext | null>(null);
   /** 分屏光标行（目录面板跟随分屏时高亮当前标题）。 */
   const [splitCursorLine, setSplitCursorLine] = useState(-1);
+  /**
+   * 右栏宽度占比（%，28–72，默认 42）。分界线拖动调整；会话间持久化在
+   * localStorage（0.32.2 用户需求「拖动中间分界线调整左右窗口大小」）。
+   */
+  const SPLIT_RATIO_KEY = "quicknote.splitRatio";
+  const [splitPct, setSplitPct] = useState(() => {
+    try {
+      const raw = Number(localStorage.getItem(SPLIT_RATIO_KEY));
+      if (Number.isFinite(raw) && raw >= 28 && raw <= 72) return raw;
+    } catch {}
+    return 42;
+  });
+  /** 分界线拖动：pointerdown 起，move/up 挂 **window**（分界线只有 5px 宽，
+      pointer capture 在部分输入通道下不重定向——window 监听对真实鼠标与
+      合成事件都可靠）→ 按容器宽度换算比例 → up 落盘。 */
+  const paneDividerRef = useRef<HTMLDivElement | null>(null);
+  const onPaneDividerDown = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const container = event.currentTarget.parentElement;
+      if (!container) return;
+      document.body.style.userSelect = "none";
+      document.body.style.cursor = "col-resize";
+      const startX = event.clientX;
+      const startPct = splitPct;
+      const total = container.getBoundingClientRect().width || 1;
+      let latest = startPct;
+      const onMove = (move: PointerEvent) => {
+        // 右栏在右侧：向右拖 → 右栏变窄（占比减小）
+        const dxPct = ((move.clientX - startX) / total) * 100;
+        latest = Math.min(72, Math.max(28, startPct - dxPct));
+        setSplitPct(latest);
+      };
+      const onUp = () => {
+        window.removeEventListener("pointermove", onMove);
+        window.removeEventListener("pointerup", onUp);
+        document.body.style.userSelect = "";
+        document.body.style.cursor = "";
+        try {
+          localStorage.setItem(SPLIT_RATIO_KEY, String(Math.round(latest)));
+        } catch {
+          // 存不进去只影响下次启动的初始宽度
+        }
+      };
+      window.addEventListener("pointermove", onMove);
+      window.addEventListener("pointerup", onUp);
+    },
+    [splitPct],
+  );
+
+  /**
+   * 0.32.2 分栏：左右两栏各自的标签（顺序沿用 orderedOpenTabs，固定置顶对两栏
+   * 分别生效）。同步流程（右键菜单守卫等）读 rightTabsRef 拿最新值。
+   */
+  const leftTabs = useMemo(
+    () => orderedOpenTabs.filter((tab) => !rightTabPaths.includes(tab.path)),
+    [orderedOpenTabs, rightTabPaths],
+  );
+  const rightTabs = useMemo(
+    () => orderedOpenTabs.filter((tab) => rightTabPaths.includes(tab.path)),
+    [orderedOpenTabs, rightTabPaths],
+  );
   /** 释义自动补全的串行队列：接连添加的词读-改-写不交叠（0.30）。 */
   const vocabFillChain = useRef<Promise<void>>(Promise.resolve());
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
@@ -1906,12 +1987,11 @@ export default function App() {
       const view = viewRef.current;
       const stored = stateStore.current.get(path);
       if (!view || !stored) return;
-      // 分屏守卫（0.32）：激活分屏中的文件 = 主编辑器接管它，先收起分屏窗格
-      // （stateStore 里的实时状态直接接着用，不丢内容）
-      if (path === splitPathRef.current) {
-        const splitView = splitViewRef.current;
-        if (splitView) scrollStore.current.set(path, splitView.scrollDOM.scrollTop);
-        setSplitPath(null);
+      // 归属右栏的标签不在主编辑器激活（0.32.2 分栏）：路由到右栏（openNote
+      // 正常都先路由过，这里兜直连调用者）
+      if (rightTabsRef.current.includes(path)) {
+        setSplitActiveTab(path);
+        return;
       }
       // 捕获用 viewOwnerRef 而非 currentRef：后者要等渲染才对齐，重命名换键后的
       // 同步换页里它还指向旧路径——把实时状态写进死键，之后用旧名新建会复活旧内容。
@@ -2002,12 +2082,35 @@ export default function App() {
       // 函数式过滤：await 期间 openNote 可能已把别的标签 append 进列表，
       // 非函数式写回会拿陈旧快照把它覆盖掉
       setOpenTabs((prev) => prev.filter((tab) => tab.path !== path));
-      if (activeTabRef.current === path || viewOwnerRef.current === path) {
-        const next = previous.filter((tab) => tab.path !== path);
-        const neighborIndex = Math.min(Math.max(index, 0), next.length - 1);
-        const neighbor = neighborIndex >= 0 ? next[neighborIndex]?.path ?? null : null;
+      // 0.32.2 分栏：右栏标签的归属与激活同步收缩；右栏最后一个标签关掉时
+      // 右栏随之收起（视图卸载由渲染驱动）
+      const wasRight = rightTabsRef.current.includes(path);
+      if (wasRight) {
+        const rightAfter = rightTabsRef.current.filter((p) => p !== path);
+        rightTabsRef.current = rightAfter;
+        setRightTabPaths(rightAfter);
+        if (splitActiveRef.current === path) {
+          setSplitActiveTab(rightAfter.length > 0 ? rightAfter[rightAfter.length - 1] : null);
+          setSplitDirty(dirtyTabs.current.has(rightAfter[rightAfter.length - 1] ?? ""));
+        }
+      }
+      if (!wasRight && (activeTabRef.current === path || viewOwnerRef.current === path)) {
+        // 邻居只在**左栏**里找（右栏标签归右栏激活）；左栏被关空而右栏还有标签时，
+        // 把右栏标签整体搬回左栏并激活第一个（不让主编辑区悬空）
+        const nextLeft = previous.filter(
+          (tab) => tab.path !== path && !rightTabsRef.current.includes(tab.path),
+        );
+        const neighborIndex = Math.min(Math.max(index, 0), nextLeft.length - 1);
+        const neighbor = neighborIndex >= 0 ? nextLeft[neighborIndex]?.path ?? null : null;
         if (neighbor && stateStore.current.has(neighbor)) {
           activateTab(neighbor);
+        } else if (rightTabsRef.current.length > 0) {
+          const moving = rightTabsRef.current;
+          rightTabsRef.current = [];
+          setRightTabPaths([]);
+          setSplitActiveTab(null);
+          setOutlineFollow("editor");
+          if (stateStore.current.has(moving[0])) activateTab(moving[0]);
         } else {
           setActiveTab(null);
           setDirty(false);
@@ -2016,8 +2119,8 @@ export default function App() {
           viewRef.current?.setState(EditorState.create({}));
           viewOwnerRef.current = null;
         }
-      } else {
-        // 关的是后台标签，激活者不变；但 dirty 标记可能在脏集合里，同步一次显示
+      } else if (!wasRight) {
+        // 关的是左栏后台标签，激活者不变；但 dirty 标记可能在脏集合里，同步一次显示
         setDirty(dirtyTabs.current.has(activeTabRef.current ?? ""));
       }
     },
@@ -2066,11 +2169,31 @@ export default function App() {
       const previous = openTabsRef.current;
       const index = previous.findIndex((tab) => tab.path === activeTabRef.current);
       setOpenTabs((prev) => prev.filter((tab) => !targetSet.has(tab.path)));
+      // 0.32.2 分栏：右栏归属收缩 + 右栏激活的邻居（右栏空了收起）
+      const rightAfter = rightTabsRef.current.filter((p) => !targetSet.has(p));
+      const rightChanged = rightAfter.length !== rightTabsRef.current.length;
+      if (rightChanged) {
+        rightTabsRef.current = rightAfter;
+        setRightTabPaths(rightAfter);
+        if (splitActiveRef.current && targetSet.has(splitActiveRef.current)) {
+          setSplitActiveTab(rightAfter.length > 0 ? rightAfter[rightAfter.length - 1] : null);
+        }
+      }
       if (activeTabRef.current && targetSet.has(activeTabRef.current)) {
-        const next = previous.filter((tab) => !targetSet.has(tab.path));
-        const neighbor = next[Math.min(Math.max(index, 0), next.length - 1)]?.path ?? null;
+        // 邻居只在左栏里找；左栏关空而右栏还有标签 → 整体搬回左栏激活第一个
+        const nextLeft = previous.filter(
+          (tab) => !targetSet.has(tab.path) && !rightTabsRef.current.includes(tab.path),
+        );
+        const neighbor = nextLeft[Math.min(Math.max(index, 0), nextLeft.length - 1)]?.path ?? null;
         if (neighbor && stateStore.current.has(neighbor)) {
           activateTab(neighbor);
+        } else if (rightTabsRef.current.length > 0) {
+          const moving = rightTabsRef.current;
+          rightTabsRef.current = [];
+          setRightTabPaths([]);
+          setSplitActiveTab(null);
+          setOutlineFollow("editor");
+          if (stateStore.current.has(moving[0])) activateTab(moving[0]);
         } else {
           setActiveTab(null);
           setDirty(false);
@@ -2145,10 +2268,10 @@ export default function App() {
         }
       }
 
-      // 分屏文件的外部改动（0.32 分屏可编辑）：干净就采纳磁盘版（保滚动），
+      // 右栏文件的外部改动（0.32 分屏可编辑）：干净就采纳磁盘版（保滚动），
       // 有未保存编辑则提示——下次保存以本窗口为准（主编辑器的冲突横幅机制
-      // 不覆盖分屏，这里用状态栏提示 + stale 标记兜底）
-      const splitPathNow = splitPathRef.current;
+      // 不覆盖右栏，这里用状态栏提示 + stale 标记兜底）
+      const splitPathNow = splitActiveRef.current;
       if (splitPathNow && paths.includes(splitPathNow) && splitViewRef.current) {
         try {
           const freshSplit = await readNote(vault, splitPathNow);
@@ -2291,24 +2414,38 @@ export default function App() {
   // 的就成了「另一个窗口最后切到的仓库」而不是「最后关闭的窗口所在的仓库」
   // （0.30 用户反馈：重开软件显示的不是上次关闭时的仓库）。beforeunload 同步
   // 写一份；Tauri 的关闭请求事件再补一份（WebView2 销毁时 beforeunload 不保证触发）。
+  //
+  // 0.32.1「无法关闭软件」修复：Tauri 的 onCloseRequested 包装层是
+  // 处理器 → 未 preventDefault → destroy()——处理器链上任何异常都会让
+  // destroy 被跳过，窗口从此点 ✕ 没反应。两道保险：
+  //   1. 这里显式兜底 destroy（与包装层自己的 destroy 双关无害）；
+  //   2. 顶栏 ✕ 按钮直接 destroy（绕过事件链，见 window-controls）。
+  const persistVaultKey = useCallback(() => {
+    const dir = vaultRef.current;
+    if (!dir) return;
+    try {
+      localStorage.setItem(VAULT_KEY, dir);
+    } catch {
+      // 写不进去也绝不能挡住关闭
+    }
+  }, []);
   useEffect(() => {
-    const persist = () => {
-      const dir = vaultRef.current;
-      if (dir) localStorage.setItem(VAULT_KEY, dir);
-    };
-    window.addEventListener("beforeunload", persist);
+    window.addEventListener("beforeunload", persistVaultKey);
     let unlisten: (() => void) | null = null;
     void getCurrentWindow()
-      .onCloseRequested(() => persist())
+      .onCloseRequested(() => {
+        persistVaultKey();
+        void getCurrentWindow().destroy().catch(() => {});
+      })
       .then((stop) => {
         unlisten = stop;
       })
       .catch(() => {});
     return () => {
-      window.removeEventListener("beforeunload", persist);
+      window.removeEventListener("beforeunload", persistVaultKey);
       unlisten?.();
     };
-  }, []);
+  }, [persistVaultKey]);
 
   // 自动保存：revision 每次改动递增，从而重置防抖计时。
   useEffect(() => {
@@ -2328,13 +2465,16 @@ export default function App() {
       setSelectedPath(null);
       setTagDashTag(null);
       setTreeClipboard(null);
-      // 分屏窗格先收起（0.32：视图持有旧仓库内容，stateStore 也要清）
+      // 右栏先收起（0.32.2 分栏：视图持有旧仓库内容，stateStore 也要清）
       splitViewRef.current = null;
-      splitPathRef.current = null;
+      splitActiveRef.current = null;
+      rightTabsRef.current = [];
       splitCtxRef.current = null;
-      setSplitPath(null);
+      setRightTabPaths([]);
+      setSplitActiveTab(null);
       setSplitDirty(false);
       setOutlineFollow("editor");
+      focusedPaneRef.current = "main";
       // 换仓库必须把所有标签与编辑器一起清掉：CodeMirror 的状态还挂着上一篇的话，
       // 旧内容继续显示，下一次输入还会试图写回旧仓库的路径
       setOpenTabs([]);
@@ -2593,6 +2733,129 @@ export default function App() {
     [vault, switchVault, revealOpenVault],
   );
 
+  // ------------------------------------------------------------------ 云端仓库（0.32.2）
+  //
+  // 仓库下拉里列出服务器上可同步的仓库（listCloudVaults）：已在本机的（最近
+  // 仓库里目录名与云端名一致）直接打开；没有的点击后引导选择落地位置——目录
+  // 名沿用云端名（同步的 vaultName 由此对上），落地 = 空目录 + 开启同步，首轮
+  // 同步自动把云端内容全量拉下来。
+
+  const [cloudVaults, setCloudVaults] = useState<{
+    loading: boolean;
+    list: Array<{ name: string; version: number }> | null;
+    error: string | null;
+  }>({ loading: false, list: null, error: null });
+
+  // 菜单打开时拉一次（有同步账号才拉）；关闭即重置，下次打开重新取
+  useEffect(() => {
+    if (!vaultMenu) {
+      setCloudVaults({ loading: false, list: null, error: null });
+      return;
+    }
+    if (!sync.config.serverUrl || !sync.config.username || !sync.config.password) return;
+    let alive = true;
+    setCloudVaults({ loading: true, list: null, error: null });
+    sync
+      .listCloudVaults()
+      .then((list) => {
+        if (alive) setCloudVaults({ loading: false, list, error: null });
+      })
+      .catch((e) => {
+        if (alive) setCloudVaults({ loading: false, list: null, error: e instanceof Error ? e.message : String(e) });
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultMenu, sync.config.serverUrl, sync.config.username, sync.config.password]);
+
+  /**
+   * 本机同步状态里出现过的云端仓库名（0.32.2 修复「列表没过滤本地已有仓库」：
+   * 只比对最近仓库的目录名不够——Windows 反斜杠路径此前根本没切开（永远不匹配），
+   * 而且本地目录名与云端名可以不同。这里扫本机全部 sync-state*.json 的
+   * vaultName 字段，开过同步的仓库无论目录名都能识别）。菜单打开时拉一次。
+   */
+  const [localSyncedNames, setLocalSyncedNames] = useState<string[]>([]);
+  useEffect(() => {
+    if (!vaultMenu) return;
+    let alive = true;
+    localSyncedVaults()
+      .then((names) => {
+        if (alive) setLocalSyncedNames(names);
+      })
+      .catch(() => {
+        if (alive) setLocalSyncedNames([]);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [vaultMenu]);
+
+  /** 云端仓库是否已在本机：最近仓库里有同名目录（路径先归一成正斜杠再切），或
+   * 本机同步状态里出现过同名 vaultName。 */
+  const localVaultForCloud = useCallback(
+    (name: string) =>
+      vaultRecents.find(
+        (p) =>
+          (
+            p
+              .replace(/\\/g, "/")
+              .replace(/\/+$/, "")
+              .split("/")
+              .pop() ?? ""
+          ).toLowerCase() === name.toLowerCase(),
+      ),
+    [vaultRecents],
+  );
+  const cloudIsLocal = useCallback(
+    (name: string) =>
+      !!localVaultForCloud(name) ||
+      localSyncedNames.some((n) => n.toLowerCase() === name.toLowerCase()),
+    [localVaultForCloud, localSyncedNames],
+  );
+
+  /** 云端仓库里**未在本机**的那些（0.32.2 用户需求：列表过滤掉本地已有的——
+   * 已在本机的走上面的「最近仓库」组打开，不在这里重复出现）。 */
+  const cloudNotLocal = useMemo(
+    () => (cloudVaults.list ?? []).filter((item) => !cloudIsLocal(item.name)),
+    [cloudVaults.list, cloudIsLocal],
+  );
+
+  /** 落地流程：已在本机 → 直接打开；否则引导选位置 → 空目录校验 → 开同步拉全量。 */
+  const openCloudVault = useCallback(
+    async (name: string) => {
+      const local = localVaultForCloud(name);
+      if (local) {
+        setStatus(`「${name}」已在本机，直接打开`);
+        await openRecentVault(local);
+        return;
+      }
+      try {
+        const picked = await pickDirectory(`选择「${name}」的落地位置（将在其中创建同名空目录）`);
+        if (!picked) return;
+        const base = picked.replace(/[\/]+$/, "");
+        const sameName =
+          (base.split(/[\/]/).pop() ?? "").toLowerCase() === name.toLowerCase();
+        const landing = sameName ? base : `${base}/${name}`;
+        const entries = await ensureDirectory(landing);
+        if (entries > 0) {
+          setError(`落地目录不是空的（${landing}，已有 ${entries} 项）——换个空位置，避免把本地内容混进云端仓库`);
+          return;
+        }
+        setVaultMenu(null);
+        setStatus(`正在落地云端仓库「${name}」：${landing}`);
+        // 不走 enableVaultSync：它带移动端仓库门的副作用（会弹 MobileVaultGate 盖住
+        // 桌面界面）。落地 = 切到空仓库 + pendingEnableVault——等 useSync 对新仓库
+        // 加载完自动「开启同步 + 立即同步一轮」，首轮把云端内容全量拉下来。
+        await switchVault(landing);
+        setPendingEnableVault(landing);
+      } catch (e) {
+        setError(`落地云端仓库失败：${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+    [localVaultForCloud, openRecentVault, switchVault],
+  );
+
   // ------------------------------------------------------------------ 数据目录
 
   const [vaultHome, setVaultHome] = useState<string | null>(null);
@@ -2633,6 +2896,70 @@ export default function App() {
     }
   }, []);
 
+  // —— 右栏状态创建与保存通道（从分栏区前移：openNote 的右栏分支要直接引用，
+  //    声明必须早于它；其余分栏逻辑仍在「分栏」区） ——
+  /**
+   * 为右栏文件建 EditorState。回调与主编辑器**同一套**（handleDocChanged 等
+   * 都按 view 路由，见其注释）——stateStore 里的同一份状态在两栏之间流转时
+   * 行为一致；差别只有资源上下文（notePath = 右栏文件）。
+   */
+  const createSplitState = useCallback(
+    (note: NoteContent) => {
+      const ctx: LivePreviewContext = { ...resourcesRef.current, notePath: note.path };
+      splitCtxRef.current = ctx;
+      return createEditorState(note.content, {
+        lineEnding: note.lineEnding,
+        mode: isMarkdownPath(note.path) ? mode : "source",
+        language: editorLanguageOf(note.path),
+        onDocChanged: handleDocChanged,
+        onSave: handleEditorSave,
+        resources: ctx,
+        attachment: attachmentOptions,
+        codePaste: codePasteOptions,
+        dark: resolveTheme(getSettings().theme) === "dark",
+        onCursorInTable: handleCursorInTable,
+        onCursorLine: handleCursorLine,
+      });
+    },
+    [mode, handleDocChanged, handleEditorSave, handleCursorInTable, handleCursorLine, attachmentOptions, codePasteOptions],
+  );
+
+  const splitSaveRef = useRef<() => Promise<void>>(async () => {});
+  const splitSaveNow = useCallback(async () => {
+    const view = splitViewRef.current;
+    const path = splitActiveRef.current;
+    if (!view || !vault || !path) return;
+    const meta = openTabsRef.current.find((tab) => tab.path === path);
+    try {
+      const result = await writeNote(vault, path, view.state.sliceDoc(), meta?.hasBom ?? false);
+      setOpenTabs((prev) =>
+        prev.map((tab) =>
+          tab.path === path ? { ...tab, sha256: result.sha256, size: result.bytes } : tab,
+        ),
+      );
+      dirtyTabs.current.delete(path);
+      setSplitDirty(false);
+      staleTabs.current.delete(path);
+      // 右栏里编辑 DDL 笔记，悬浮库跟着更新（与主编辑器保存同一条规则）
+      if (path === (getSettings().ddlFilePath.trim() || "数据库表DDL.md")) {
+        void loadDdlLibrary(vault);
+      }
+      setStatus(result.changed ? `分屏已保存 ${result.bytes} 字节` : "分屏内容未变，未落盘");
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [vault, loadDdlLibrary]);
+  useEffect(() => {
+    splitSaveRef.current = () => splitSaveNow();
+  }, [splitSaveNow]);
+
+  // 右栏自动保存：与主编辑器同一防抖节奏
+  useEffect(() => {
+    if (!splitDirty) return;
+    const timer = window.setTimeout(() => void splitSaveNow(), AUTOSAVE_DELAY);
+    return () => window.clearTimeout(timer);
+  }, [splitDirty, revision, splitSaveNow]);
+
   const openNote = useCallback(
     async (path: string) => {
       if (!vault) return;
@@ -2641,43 +2968,55 @@ export default function App() {
       // 点笔记毫无反应，看起来像"点不动、要手动关面板"（0.20 用户反馈）。
       setPreviewPath(null);
       setCaptureManagerOpen(false);
-      // 已是这个标签且没有外部改动：什么都不做（重置会丢光标位置）
-      if (path === activeTabRef.current && !staleTabs.current.has(path)) return;
-      // 分屏守卫（0.32）：这篇正在分屏里编辑——收起分屏窗格（内容与脏标记都在
-      // stateStore 里，主编辑器接着用），绝不双视图同篇。
-      if (path === splitPathRef.current) {
-        const splitView = splitViewRef.current;
-        if (splitView) scrollStore.current.set(path, splitView.scrollDOM.scrollTop);
-        setSplitPath(null);
-        if (outlineFollow === "split") setOutlineFollow("editor");
-      }
+      // 0.32.2 分栏路由：标签唯一归属一栏——右栏的标签在右栏激活，左栏的在左栏
+      // 激活；还没有标签的新文件落在**最后聚焦的窗格**（Obsidian 语义）。
+      const isRight = rightTabsRef.current.includes(path);
+      const targetSide: "main" | "split" = isRight
+        ? "split"
+        : focusedPaneRef.current === "split" && rightTabsRef.current.length > 0
+          ? "split"
+          : "main";
+      // 已是这一栏的激活标签且没有外部改动：什么都不做（重置会丢光标位置）
+      if (targetSide === "main" && path === activeTabRef.current && !staleTabs.current.has(path)) return;
+      if (targetSide === "split" && path === splitActiveRef.current && !staleTabs.current.has(path)) return;
       // 切笔记时收起文件内搜索面板（0.23 用户反馈：搜索框只属于它打开的那篇，
       // 挂到别的笔记上会带着上一次的高亮，看起来像"搜索框坏了"）
       closeSearchPanelIfOpen();
       recordRecent(path);
-      if (dirtyRef.current) await saveNow();
-      // 离开当前标签前把它的滚动位置留下（readNote 分支不走 activateTab 的捕获）：
-      // 会话内存量 + 持久化阅读位置各记一份（0.31）
-      const leaving = viewOwnerRef.current;
-      if (leaving && leaving !== path && viewRef.current) {
-        const leavingTop = viewRef.current.scrollDOM.scrollTop;
-        scrollStore.current.set(leaving, leavingTop);
-        saveProgress(window.localStorage, vault, leaving, leavingTop);
+      // 要切走的那一栏先落盘（0.32.2：两栏各有独立的脏状态与保存通道）
+      if (targetSide === "main") {
+        if (dirtyRef.current) await saveNow();
+      } else if (splitDirtyRef.current) {
+        await splitSaveRef.current();
       }
-      // 存量状态且文件没被外部改过：直接换上去，未保存内容与撤销历史都在
+      // 离开当前标签前把它的滚动位置留下（readNote 分支不走 activateTab 的捕获）：
+      // 会话内存量 + 持久化阅读位置各记一份（0.31）。右栏的滚动由右栏装载
+      // effect 在换激活时捕获，这里只管左栏。
+      if (targetSide === "main") {
+        const leaving = viewOwnerRef.current;
+        if (leaving && leaving !== path && viewRef.current) {
+          const leavingTop = viewRef.current.scrollDOM.scrollTop;
+          scrollStore.current.set(leaving, leavingTop);
+          saveProgress(window.localStorage, vault, leaving, leavingTop);
+        }
+      }
+      /** 在目标栏激活（存量状态直接换上，未保存内容与撤销历史都在）。 */
+      const activateInSide = () => {
+        if (targetSide === "split") setSplitActiveTab(path);
+        else activateTab(path);
+      };
+      // 存量状态且文件没被外部改过：直接换上去
       if (stateStore.current.has(path) && !staleTabs.current.has(path)) {
-        activateTab(path);
+        activateInSide();
         setRoundTrip(null);
         return;
       }
       try {
         const note = await readNote(vault, path);
-        // 嵌入内容里的相对路径要相对"当前笔记"解析，所以先更新上下文
-        resourcesRef.current.notePath = note.path;
         const stored = stateStore.current.get(path);
         if (stored) {
           // 标签已存在但后台文件被外部改过：与标签里的内容对账。
-          // 一致 → 只更新 meta（保住光标）；不一致且没改过 → 采纳磁盘；改过 → 交冲突面板
+          // 一致 → 只更新 meta（保住光标）；不一致且没改过 → 采纳磁盘；改过 → 起冲突
           const local = stored.sliceDoc();
           const dirtyTab = dirtyTabs.current.has(path);
           if (local !== note.content && dirtyTab) {
@@ -2685,8 +3024,15 @@ export default function App() {
             setOpenTabs((prev) =>
               prev.map((tab) => (tab.path === path ? note : tab)),
             );
-            activateTab(path);
-            setConflict(note);
+            if (targetSide === "split") {
+              // 右栏不走左栏的冲突横幅（横幅的采纳通道固定作用于左栏）：标脏提示，
+              // 下次保存以本窗口为准（与右栏外部改动的兜底口径一致）
+              setSplitActiveTab(path);
+              setStatus("分屏文件被外部修改，保存时以本窗口内容为准");
+            } else {
+              activateTab(path);
+              setConflict(note);
+            }
             return;
           }
           if (local === note.content) {
@@ -2694,11 +3040,63 @@ export default function App() {
             setOpenTabs((prev) =>
               prev.map((tab) => (tab.path === path ? note : tab)),
             );
-            activateTab(path);
+            activateInSide();
             return;
           }
           staleTabs.current.delete(path);
         }
+        // 「替换当前」模式（Obsidian 默认）：新笔记顶掉**目标栏**激活标签的位置，
+        // 标签数不增长；被顶掉的标签存量状态一并清掉，否则下次打开还会复活。
+        // 已打开过的笔记在前面就走激活了，两种模式一致。
+        const sideActive = targetSide === "split" ? splitActiveRef.current : activeTabRef.current;
+        const replaceCurrent =
+          getSettings().openNoteMode === "replace" &&
+          sideActive !== null &&
+          sideActive !== path;
+        const previousPath = sideActive;
+        if (replaceCurrent && previousPath) {
+          stateStore.current.delete(previousPath);
+          scrollStore.current.delete(previousPath);
+          dirtyTabs.current.delete(previousPath);
+          staleTabs.current.delete(previousPath);
+        }
+        if (targetSide === "split") {
+          // 右栏新开：状态进 stateStore + 挂进右栏标签，视图装载交给右栏 effect
+          //（它读 stateStore 装内容并对齐模式/主题/滚动，创建即激活）
+          const newState = createSplitState(note);
+          stateStore.current.set(note.path, newState);
+          dirtyTabs.current.delete(path);
+          setOpenTabs((prev) => {
+            if (prev.some((tab) => tab.path === note.path)) {
+              return prev.map((tab) => (tab.path === note.path ? note : tab));
+            }
+            if (replaceCurrent && previousPath) {
+              const index = prev.findIndex((tab) => tab.path === previousPath);
+              if (index >= 0) {
+                const next = prev.slice();
+                next[index] = note;
+                return next;
+              }
+            }
+            return [...prev, note];
+          });
+          const rightBase = rightTabsRef.current;
+          const nextRight = rightBase.includes(note.path)
+            ? rightBase
+            : replaceCurrent && previousPath && rightBase.includes(previousPath)
+              ? rightBase.map((p) => (p === previousPath ? note.path : p))
+              : [...rightBase, note.path];
+          rightTabsRef.current = nextRight;
+          setRightTabPaths(nextRight);
+          splitActiveRef.current = note.path;
+          setSplitActiveTab(note.path);
+          tabActivatedAt.current.set(note.path, Date.now());
+          setSplitDirty(false);
+          setRoundTrip(null);
+          setError(null);
+          return;
+        }
+        resourcesRef.current.notePath = note.path;
         const newState = createEditorState(note.content, {
           lineEnding: note.lineEnding,
           mode: isMarkdownPath(note.path) ? mode : "source",
@@ -2712,20 +3110,6 @@ export default function App() {
           onCursorInTable: handleCursorInTable,
           onCursorLine: handleCursorLine,
         });
-        // 「替换当前」模式（Obsidian 默认）：新笔记顶掉当前标签的位置，标签数不增长。
-        // 被顶掉的标签存量状态一并清掉，否则下次打开还会从 stateStore 里复活。
-        // 已打开过的笔记在前面就走 activateTab 了，两种模式一致。
-        const replaceCurrent =
-          getSettings().openNoteMode === "replace" &&
-          activeTabRef.current !== null &&
-          activeTabRef.current !== path;
-        const previousPath = activeTabRef.current;
-        if (replaceCurrent && previousPath) {
-          stateStore.current.delete(previousPath);
-          scrollStore.current.delete(previousPath);
-          dirtyTabs.current.delete(previousPath);
-          staleTabs.current.delete(previousPath);
-        }
         stateStore.current.set(note.path, newState);
         dirtyTabs.current.delete(path);
         setOpenTabs((prev) => {
@@ -2776,7 +3160,7 @@ export default function App() {
         setError(String(e));
       }
     },
-    [vault, saveNow, handleDocChanged, mode, activateTab],
+    [vault, saveNow, handleDocChanged, mode, activateTab, createSplitState],
   );
 
   /**
@@ -3112,14 +3496,20 @@ export default function App() {
         setActiveTab(nextPath);
         await openNote(nextPath);
       }
-      // 分屏中的文件被改名：路径键与上下文跟着换（rename 前置条件已保证
-      // 分屏 ≠ 激活标签，这里只处理分屏侧）
-      const splitNow = splitPathRef.current;
-      if (splitNow && affected(splitNow)) {
-        const nextSplit = remap(splitNow);
-        splitPathRef.current = nextSplit;
-        if (splitCtxRef.current) splitCtxRef.current.notePath = nextSplit;
-        setSplitPath(nextSplit);
+      // 右栏的标签被改名：归属、激活键与上下文跟着换（标签唯一，重命名只在
+      // 它所在的那一栏生效）
+      const rightNow = rightTabsRef.current;
+      if (rightNow.some((p) => affected(p))) {
+        const nextRight = rightNow.map((p) => (affected(p) ? remap(p) : p));
+        rightTabsRef.current = nextRight;
+        setRightTabPaths(nextRight);
+        const splitNow = splitActiveRef.current;
+        if (splitNow && affected(splitNow)) {
+          const nextSplit = remap(splitNow);
+          splitActiveRef.current = nextSplit;
+          setSplitActiveTab(nextSplit);
+          if (splitCtxRef.current) splitCtxRef.current.notePath = nextSplit;
+        }
       }
     },
     [openNote, persistFavorites],
@@ -3387,9 +3777,9 @@ export default function App() {
       localStorage.setItem(MODE_KEY, next);
       const view = viewRef.current;
       if (view && current) applyMode(view, next);
-      // 分屏视图同一套模式（0.32 双编辑器）
+      // 右栏视图同一套模式（0.32 双编辑器）
       const splitView = splitViewRef.current;
-      if (splitView && splitPathRef.current) applyMode(splitView, next);
+      if (splitView && splitActiveRef.current) applyMode(splitView, next);
     },
     [current],
   );
@@ -3411,7 +3801,10 @@ export default function App() {
     async (path: string, line?: number, term?: string) => {
       await openNote(path);
       if (line === undefined) return;
-      const view = viewRef.current;
+      // 0.32.2 分栏：openNote 会把文件落到它归属/聚焦的那一栏——定位操作跟着
+      // 落位视图走（右栏的文件在右栏选区滚动），别默认左栏
+      const isRightNow = rightTabsRef.current.includes(path);
+      const view = isRightNow ? splitViewRef.current : viewRef.current;
       if (!view) return;
       const target = view.state.doc.line(
         Math.min(Math.max(line + 1, 1), view.state.doc.lines),
@@ -3447,7 +3840,7 @@ export default function App() {
       // 目标校一次；期间用户切走了就不动。
       requestAnimationFrame(() =>
         requestAnimationFrame(() => {
-          if (viewRef.current === view) {
+          if ((isRightNow ? splitViewRef.current : viewRef.current) === view) {
             view.dispatch({ effects: EditorView.scrollIntoView(scrollPos, { y: "center" }) });
           }
         }),
@@ -3462,170 +3855,158 @@ export default function App() {
     openNoteAtRef.current = openNoteAt;
   });
 
-  // ---------------------------------------------------------------- 分屏编辑（0.32 双编辑器）
+  // ---------------------------------------------------------------- 分栏（0.32.2 Obsidian 式）
   //
-  // 分屏窗格是第二个完整编辑器：状态进同一个 stateStore（按路径键），内容、
-  // 光标、撤销历史与主编辑器同一套机制；保存/自动保存、外部改动对账、大纲
-  // 跟随各自独立。约束见 splitPath 声明处：分屏文件 ≠ 激活标签（App 各打开
-  // 入口都有守卫）。
+  // 右栏 = 第二个完整编辑器 + 自己的标签栏；状态进同一个 stateStore（按路径键）。
+  // 标签唯一（一个标签只属于一栏），openTabs 仍是全部标签的唯一清单，
+  // rightTabPaths 记右栏归属——「分屏」就是把标签移到另一栏（移过去它就归那栏
+  // 的编辑器管），不存在同文件双开。
 
   /**
-   * 打开分屏的唯一入口（标签右键「分屏编辑」）。同文件守卫：分屏当前激活
-   * 标签会造成双视图同篇（最后落盘者覆盖，静默丢内容），明确拒绝。
+   * 把标签移到另一栏（标签右键「分屏到右侧 / 移回左侧」）。守卫：移走后原栏
+   * 至少留一个标签（左栏空了主编辑区就没有可显示的标签，右栏空了右栏收起）。
+   * 移走的若是原栏的激活标签，原栏激活切到相邻标签；新栏激活切到它。
    */
-  const openSplit = useCallback(
+  const moveTabAcross = useCallback(
     (path: string) => {
-      if (path === splitPathRef.current) {
-        setSplitPath(null);
-        setOutlineFollow("editor");
+      const rightNow = rightTabsRef.current;
+      if (rightNow.includes(path)) {
+        // 右 → 左：右栏少一个标签；右栏空了就收起（closeRightPane 的标签语义）。
+        // ref 立即同步：同帧内的后续判定（openNote/菜单守卫）不能再拿旧归属
+        const remaining = rightNow.filter((p) => p !== path);
+        rightTabsRef.current = remaining;
+        setRightTabPaths(remaining);
+        if (splitActiveRef.current === path) {
+          if (remaining.length === 0) setSplitActiveTab(null);
+          else {
+            // 右栏内的相邻标签：按右栏自己的顺序取后一个，没有则最后一个
+            const index = rightNow.indexOf(path);
+            setSplitActiveTab(remaining[Math.min(index, remaining.length - 1)]);
+          }
+        }
         return;
       }
-      if (path === activeTabRef.current) {
-        setStatus("该文件正在编辑器中打开，换一个文件分屏（同文件双开会互相覆盖）");
+      // 左 → 右：左栏至少留一个标签
+      const leftCount = openTabsRef.current.filter((tab) => !rightNow.includes(tab.path)).length;
+      if (leftCount <= 1) {
+        setStatus("左栏只剩这一个标签了，先再开一个才能把它移去分屏");
         return;
       }
-      setSplitPath(path);
-      setOutlineFollow("split");
+      const nextRight = [...rightNow, path];
+      rightTabsRef.current = nextRight;
+      setRightTabPaths(nextRight);
+      setSplitActiveTab(path);
+      // 移走的若正是左栏激活：左栏激活切到相邻的左栏标签（顺序同 closeTab 的取法）
+      if (activeTabRef.current === path) {
+        const leftTabs = orderedOpenTabs.filter(
+          (tab) => tab.path !== path && !rightNow.includes(tab.path),
+        );
+        if (leftTabs.length > 0) activateTab(leftTabs[0].path);
+      }
     },
-    [],
+    [activateTab, orderedOpenTabs],
   );
 
-  /** 关闭分屏：脏内容先落盘（异步，不等 UI），滚动位置留在 scrollStore。 */
-  const closeSplit = useCallback(() => {
+  /**
+   * 收起右栏（右栏标签栏的 ✕ / Esc）：右栏的标签**全部移回左栏**（不关标签、
+   * 不丢内容），右栏激活的脏内容先落盘。
+   */
+  const closeRightPane = useCallback(() => {
     const view = splitViewRef.current;
-    const path = splitPathRef.current;
+    const path = splitActiveRef.current;
     if (view && path) {
       scrollStore.current.set(path, view.scrollDOM.scrollTop);
       if (splitDirtyRef.current) void splitSaveRef.current();
     }
-    // 搜索面板可能挂在分屏视图上（Ctrl+F 在分屏里开过）：视图即将销毁，先正常
-    // 关面板（清高亮、清 panelView），不留悬空引用
+    // 搜索面板可能挂在右栏视图上：视图即将销毁，先正常关面板（清高亮、清
+    // panelView），不留悬空引用
     closeSearchPanelIfOpen();
-    setSplitPath(null);
+    rightTabsRef.current = [];
+    setRightTabPaths([]);
+    splitActiveRef.current = null;
+    setSplitActiveTab(null);
     setOutlineFollow("editor");
   }, []);
 
-  /**
-   * 为分屏文件建 EditorState。回调与主编辑器**同一套**（handleDocChanged 等
-   * 都按 view 路由，见其注释）——这样 stateStore 里的同一份状态在主/分屏之间
-   * 流转时行为一致；差别只有资源上下文（notePath = 分屏文件）。
-   */
-  const createSplitState = useCallback(
-    (note: NoteContent) => {
-      const ctx: LivePreviewContext = { ...resourcesRef.current, notePath: note.path };
-      splitCtxRef.current = ctx;
-      return createEditorState(note.content, {
-        lineEnding: note.lineEnding,
-        mode: isMarkdownPath(note.path) ? mode : "source",
-        language: editorLanguageOf(note.path),
-        onDocChanged: handleDocChanged,
-        onSave: handleEditorSave,
-        resources: ctx,
-        attachment: attachmentOptions,
-        codePaste: codePasteOptions,
-        dark: resolveTheme(getSettings().theme) === "dark",
-        onCursorInTable: handleCursorInTable,
-        onCursorLine: handleCursorLine,
-      });
-    },
-    [mode, handleDocChanged, handleEditorSave, handleCursorInTable, handleCursorLine, attachmentOptions, codePasteOptions],
-  );
 
-  const splitSaveRef = useRef<() => Promise<void>>(async () => {});
-  const splitSaveNow = useCallback(async () => {
+  /** 右栏激活标签离开时留下的滚动位置（load effect 换内容前捕获）。 */
+  const splitPrevActiveRef = useRef<string | null>(null);
+
+  /**
+   * 给右栏视图装内容：stateStore 存量优先（未保存内容/光标/撤销历史都在），
+   * 否则读盘新建（失败重试 3 次——同步/杀毒瞬时占用文件时窗口很短，一次失败
+   * 就放弃会让右栏停在空白，0.32.2 修「分屏内容为空」）。
+   *
+   * 依赖里的 splitViewEpoch：视图创建（SplitPane 挂载）晚于激活变化时靠它重触发，
+   * 不再出现「激活了右栏标签但视图还没建、effect 白跑一次、右栏永远空白」。
+   */
+  useEffect(() => {
     const view = splitViewRef.current;
-    const path = splitPathRef.current;
-    if (!view || !vault || !path) return;
-    const meta = openTabsRef.current.find((tab) => tab.path === path);
-    try {
-      const result = await writeNote(vault, path, view.state.sliceDoc(), meta?.hasBom ?? false);
-      setOpenTabs((prev) =>
-        prev.map((tab) =>
-          tab.path === path ? { ...tab, sha256: result.sha256, size: result.bytes } : tab,
-        ),
-      );
-      dirtyTabs.current.delete(path);
-      setSplitDirty(false);
-      staleTabs.current.delete(path);
-      // 分屏里编辑 DDL 笔记，悬浮库跟着更新（与主编辑器保存同一条规则）
-      if (path === (getSettings().ddlFilePath.trim() || "数据库表DDL.md")) {
-        void loadDdlLibrary(vault);
-      }
-      setStatus(result.changed ? `分屏已保存 ${result.bytes} 字节` : "分屏内容未变，未落盘");
-    } catch (e) {
-      setError(String(e));
+    if (!view || !vault || !splitActiveTab) return;
+    // 换右栏激活标签前，把上一个标签的滚动位置留下（此刻视图还是旧内容）
+    const prevActive = splitPrevActiveRef.current;
+    if (prevActive && prevActive !== splitActiveTab) {
+      scrollStore.current.set(prevActive, view.scrollDOM.scrollTop);
     }
-  }, [vault, loadDdlLibrary]);
-  useEffect(() => {
-    splitSaveRef.current = () => splitSaveNow();
-  }, [splitSaveNow]);
-
-  // 分屏自动保存：与主编辑器同一防抖节奏
-  useEffect(() => {
-    if (!splitDirty) return;
-    const timer = window.setTimeout(() => void splitSaveNow(), AUTOSAVE_DELAY);
-    return () => window.clearTimeout(timer);
-  }, [splitDirty, revision, splitSaveNow]);
-
-  /**
-   * 给分屏视图装内容：stateStore 存量优先（未保存内容/光标/撤销历史都在），
-   * 否则读盘新建。存量状态创建时的 Compartment 可能落后于当前模式/主题，
-   * 装上后对齐一次。
-   */
-  useEffect(() => {
-    const view = splitViewRef.current;
-    if (!view || !vault || !splitPath) return;
-    splitCtxRef.current = { ...resourcesRef.current, notePath: splitPath };
+    splitPrevActiveRef.current = splitActiveTab;
+    splitCtxRef.current = { ...resourcesRef.current, notePath: splitActiveTab };
+    setSplitError(null);
     let alive = true;
     const align = () => {
       applyMode(view, modeRef.current);
       applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
       view.scrollDOM.scrollTop =
-        scrollStore.current.get(splitPath) ??
-        (vault ? loadProgress(window.localStorage, vault, splitPath) ?? 0 : 0);
+        scrollStore.current.get(splitActiveTab) ??
+        (vault ? loadProgress(window.localStorage, vault, splitActiveTab) ?? 0 : 0);
       // 新文档 setState 后高度图还是旧的，两帧真实测量落地后再校一次（同 openNote）
       const top = view.scrollDOM.scrollTop;
       requestAnimationFrame(() => requestAnimationFrame(() => {
         if (splitViewRef.current === view) view.scrollDOM.scrollTop = top;
       }));
-      setSplitDirty(dirtyTabs.current.has(splitPath));
+      setSplitDirty(dirtyTabs.current.has(splitActiveTab));
       setSplitCursorLine(view.state.doc.lineAt(view.state.selection.main.head).number - 1);
     };
-    const stored = stateStore.current.get(splitPath);
-    if (stored && !staleTabs.current.has(splitPath)) {
+    const stored = stateStore.current.get(splitActiveTab);
+    // 空 doc 的存量视为无效（真实空文件从盘上读也是空，结果一致）——防脏数据
+    // 把右栏卡成空白
+    if (stored && stored.doc.length > 0 && !staleTabs.current.has(splitActiveTab)) {
       view.setState(stored);
-      // 存量状态可能是在主编辑器创建的：上下文与回调都按**当前视图**重配
-      // （回调本身按 view 路由，只需换上下文）
+      // 存量状态可能是在左栏创建的：上下文按**当前视图**重配（回调本身按 view
+      // 路由，只需换上下文）
       applyLivePreviewContext(view, splitCtxRef.current!);
       align();
       return;
     }
-    void readNote(vault, splitPath)
-      .then((note) => {
-        if (!alive || splitViewRef.current !== view || splitPathRef.current !== splitPath) return;
-        staleTabs.current.delete(splitPath);
-        const state = createSplitState(note);
-        stateStore.current.set(splitPath, state);
-        view.setState(state);
-        align();
-        // 目录跟随分屏：文档源换了要重算
-        setRevision((value) => value + 1);
-      })
-      .catch((e) => {
-        if (alive) setError(`分屏打开失败：${e}`);
-      });
+    const load = (attempt: number) => {
+      readNote(vault, splitActiveTab)
+        .then((note) => {
+          if (!alive || splitViewRef.current !== view || splitActiveRef.current !== splitActiveTab) return;
+          staleTabs.current.delete(splitActiveTab);
+          const state = createSplitState(note);
+          stateStore.current.set(splitActiveTab, state);
+          view.setState(state);
+          align();
+          // 目录跟随右栏：文档源换了要重算
+          setRevision((value) => value + 1);
+        })
+        .catch((e) => {
+          if (!alive) return;
+          if (attempt < 3) {
+            window.setTimeout(() => {
+              if (alive) load(attempt + 1);
+            }, 200);
+            return;
+          }
+          // 右栏内显式报错（0.32.2：不再静默空白）
+          setSplitError(`打开失败（重试 3 次）：${e instanceof Error ? e.message : String(e)}`);
+        });
+    };
+    load(0);
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [splitPath, vault]);
-
-  /** 分屏的标签被关闭（或切仓库清空标签）后分屏窗格一并收起。 */
-  useEffect(() => {
-    if (splitPath && !openTabs.some((tab) => tab.path === splitPath)) {
-      closeSplit();
-    }
-  }, [openTabs, splitPath, closeSplit]);
+  }, [splitActiveTab, vault, splitViewEpoch]);
 
   /**
    * 打开**其他仓库**的笔记（0.29 全局搜索跨仓库命中）：先切仓库，再在新仓库的
@@ -4810,8 +5191,8 @@ export default function App() {
         setDdlDialogOpen(false);
         return;
       }
-      if (splitPath) {
-        closeSplit();
+      if (rightTabPaths.length > 0) {
+        closeRightPane();
         return;
       }
       if (renaming) {
@@ -4822,7 +5203,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, ddlDialogOpen, splitPath, cancelRename, cancelCreate, closeSplit]);
+  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, ddlDialogOpen, rightTabPaths, cancelRename, cancelCreate, closeRightPane]);
 
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
@@ -5126,7 +5507,14 @@ export default function App() {
               type="button"
               className="win-btn win-close"
               title="关闭"
-              onClick={() => void appWindow.close()}
+              onClick={() => {
+                // 直接 destroy（0.32.1「无法关闭软件」修复）：close() 要绕一圈
+                // close-requested 事件 → JS 处理器 → destroy 的链路，链上任何
+                // 异常都会把窗口卡在「点 ✕ 没反应」。destroy 跳过事件链必关；
+                // 关闭回写 VAULT_KEY 在这里同步补一份。
+                persistVaultKey();
+                void appWindow.destroy();
+              }}
             >
               <IconX size={14} />
             </button>
@@ -5209,7 +5597,7 @@ export default function App() {
         />
       )}
 
-      {/* 建表语句收录（0.31，Ctrl+Alt+L）：合并进仓库内 DDL 笔记并重载悬浮库 */}
+      {/* 建表语句收录：合并进仓库内 DDL 笔记并重载悬浮库（默认键 Ctrl+Alt+J） */}
       {ddlDialogOpen && (
         <DdlDialog
           ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
@@ -5547,6 +5935,47 @@ export default function App() {
                   <span className="vault-menu-name">{vaultDisplayName(p)}</span>
                 </button>
               ))}
+            {/* 服务器仓库（0.32.2）：云端可同步仓库一键落地/打开 */}
+            <div className="vault-menu-sep" />
+            <div className="vault-menu-caption">服务器仓库</div>
+            {!sync.config.serverUrl || !sync.config.username || !sync.config.password ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setVaultMenu(null);
+                  setShowSettings(true);
+                }}
+                title="在设置 → 云同步里配置服务器与账号后，可以在这里直接选择云端仓库"
+              >
+                <IconCloud size={13} />
+                <span className="vault-menu-name">配置云同步后可从服务器选择仓库…</span>
+              </button>
+            ) : cloudVaults.loading ? (
+              <div className="vault-menu-empty">正在获取服务器仓库…</div>
+            ) : cloudVaults.error ? (
+              <div className="vault-menu-empty" title={cloudVaults.error}>
+                获取失败：{cloudVaults.error}
+              </div>
+            ) : (cloudVaults.list ?? []).length === 0 ? (
+              <div className="vault-menu-empty">服务器上还没有仓库</div>
+            ) : cloudNotLocal.length === 0 ? (
+              <div className="vault-menu-empty">云端的仓库都已在本机</div>
+            ) : (
+              cloudNotLocal.map((item) => (
+                <button
+                  key={item.name}
+                  type="button"
+                  title={`从服务器落地「${item.name}」到本机（选择一个空目录）`}
+                  onClick={() => {
+                    setVaultMenu(null);
+                    void openCloudVault(item.name);
+                  }}
+                >
+                  <IconCloud size={13} />
+                  <span className="vault-menu-name">{item.name}</span>
+                </button>
+              ))
+            )}
             <div className="vault-menu-sep" />
             <button
               type="button"
@@ -5703,15 +6132,25 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  disabled={tabMenu.path === activeTab}
-                  title={tabMenu.path === activeTab ? "该文件正在编辑器中打开，同文件双开会互相覆盖" : undefined}
+                  disabled={
+                    rightTabPaths.includes(tabMenu.path)
+                      ? rightTabPaths.length <= 1
+                      : openTabs.filter((tab) => !rightTabPaths.includes(tab.path)).length <= 1
+                  }
+                  title={
+                    (rightTabPaths.includes(tabMenu.path)
+                      ? rightTabPaths.length <= 1
+                      : openTabs.filter((tab) => !rightTabPaths.includes(tab.path)).length <= 1)
+                      ? "原栏至少要留一个标签"
+                      : undefined
+                  }
                   onClick={() => {
-                    // 分屏编辑（0.31 只读 → 0.32 可编辑）：同一篇再次选择 = 关闭分屏
-                    openSplit(tabMenu.path);
+                    // 0.32.2 Obsidian 式分栏：「分屏」= 把标签移到另一栏
+                    moveTabAcross(tabMenu.path);
                     setTabMenu(null);
                   }}
                 >
-                  {splitPath === tabMenu.path ? "取消分屏" : "分屏编辑"}
+                  {rightTabPaths.includes(tabMenu.path) ? "移回左侧" : "分屏到右侧"}
                 </button>
                 <button
                   type="button"
@@ -5975,11 +6414,19 @@ export default function App() {
           {/* 笔记内容**常驻挂载**（Inbox 打开时仅 CSS 隐藏）：条件卸载会让一次性
               创建的 EditorView 附着在已销毁的 host div 上，返回笔记后编辑器空白 */}
           <div className={`editor-pane-notes${captureManagerOpen ? " is-hidden" : ""}`}>
-          {openTabs.length > 0 && (
+          {/* 0.32.2 Obsidian 式分栏：标签栏随窗格分成两段——左栏管自己的标签，
+              右栏（开着时）有自己的标签栏；每个标签唯一归属一栏 */}
+          <div className="editor-main">
+            <div className="editor-pane-col">
+          {leftTabs.length > 0 && (
             <div
               className="tabbar"
               role="tablist"
               aria-label="打开的笔记"
+              onMouseDown={() => {
+                focusedPaneRef.current = "main";
+                if (outlineFollow === "split") setOutlineFollow("editor");
+              }}
               onWheel={(event) => {
                 // 标签多到溢出时，纵向滚轮横着滚标签栏（触控板 deltaX 本来就是横向的）。
                 // 不 preventDefault：这里没有别的纵向滚动可抢，React 的 wheel 监听是被动式
@@ -5989,7 +6436,7 @@ export default function App() {
                 if (delta !== 0) el.scrollLeft += delta;
               }}
             >
-              {orderedOpenTabs.map((tab) => {
+              {leftTabs.map((tab) => {
                 const isPinned = pinnedSet.has(tab.path);
                 return (
                   <div
@@ -6035,6 +6482,114 @@ export default function App() {
               })}
             </div>
           )}
+            <div
+              className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
+              ref={hostRef}
+              onMouseDown={() => {
+                // 焦点窗格与目录跟随（0.32.2 分栏）：点左栏把它记为聚焦窗格
+                focusedPaneRef.current = "main";
+                if (outlineFollow === "split") setOutlineFollow("editor");
+              }}
+            />
+            </div>
+            {rightTabs.length > 0 && (
+              <div
+                className="pane-divider"
+                ref={paneDividerRef}
+                onPointerDown={onPaneDividerDown}
+                title="拖动调整左右分栏宽度"
+                role="separator"
+                aria-orientation="vertical"
+              />
+            )}
+            {rightTabs.length > 0 && (
+              <div className="editor-pane-col is-split" style={{ flexBasis: `${splitPct}%` }}>
+                <div
+                  className="tabbar is-split"
+                  role="tablist"
+                  aria-label="分屏栏的笔记"
+                  onMouseDown={() => {
+                    focusedPaneRef.current = "split";
+                    if (outlineFollow !== "split") setOutlineFollow("split");
+                  }}
+                  onWheel={(event) => {
+                    const el = event.currentTarget;
+                    const delta =
+                      Math.abs(event.deltaY) >= Math.abs(event.deltaX) ? event.deltaY : event.deltaX;
+                    if (delta !== 0) el.scrollLeft += delta;
+                  }}
+                >
+                  {rightTabs.map((tab) => {
+                    const isPinned = pinnedSet.has(tab.path);
+                    return (
+                      <div
+                        key={tab.path}
+                        role="tab"
+                        aria-selected={tab.path === splitActiveTab}
+                        tabIndex={0}
+                        className={`tab${tab.path === splitActiveTab ? " is-active" : ""}${
+                          dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
+                        }${isPinned ? " is-pinned" : ""}`}
+                        title={isPinned ? `${tab.path}（已固定）` : tab.path}
+                        onClick={() => void openNote(tab.path)}
+                        onAuxClick={(event) => {
+                          if (event.button === 1) {
+                            event.preventDefault();
+                            if (!isPinned) void closeTab(tab.path);
+                          }
+                        }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setTabMenu({ path: tab.path, x: event.clientX, y: event.clientY });
+                        }}
+                      >
+                        <span className="tab-title">{baseName(tab.path)}</span>
+                        {!isPinned && (
+                          <button
+                            type="button"
+                            className="tab-close"
+                            aria-label={`关闭 ${baseName(tab.path)}`}
+                            title="关闭（有改动会先保存）"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void closeTab(tab.path);
+                            }}
+                          >
+                            <IconX size={11} />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <button
+                    type="button"
+                    className="tabbar-pane-close"
+                    title="收起分屏栏（标签移回左侧，Esc 也可）"
+                    aria-label="收起分屏栏"
+                    onClick={closeRightPane}
+                  >
+                    <IconX size={12} />
+                  </button>
+                </div>
+                <SplitPane
+                  hostClass={`editor-host${mode === "live" && (!splitActiveTab || isMarkdownPath(splitActiveTab)) ? " is-live" : " is-source"}`}
+                  onPaneFocus={() => {
+                    focusedPaneRef.current = "split";
+                    if (outlineFollow !== "split") setOutlineFollow("split");
+                  }}
+                  onReady={(view) => {
+                    splitViewRef.current = view;
+                    // 视图就绪代际 +1：装载 effect 据此（重）触发（0.32.2 加固）
+                    setSplitViewEpoch((n) => n + 1);
+                  }}
+                  onDestroy={() => {
+                    splitViewRef.current = null;
+                  }}
+                />
+                {splitError && <div className="split-pane-error">{splitError}</div>}
+              </div>
+            )}
+          </div>
           {inTable && current && (
             <div className="table-toolbar" aria-label="表格工具栏">
               <span className="table-toolbar-label">表格</span>
@@ -6062,33 +6617,6 @@ export default function App() {
               <span className="table-toolbar-hint">Tab 下一格 · 单元格可直接编辑 · 右键单元格插入/删除行列</span>
             </div>
           )}
-          <div className="editor-main">
-            <div
-              className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
-              ref={hostRef}
-              onMouseDown={() => {
-                // 目录跟随最后聚焦的窗格（0.31 分屏）：点编辑器把大纲切回来
-                if (outlineFollow === "split") setOutlineFollow("editor");
-              }}
-            />
-            {splitPath && (
-              <SplitPane
-                title={splitPath.split("/").pop() ?? splitPath}
-                hostClass={`editor-host${mode === "live" && isMarkdownPath(splitPath) ? " is-live" : " is-source"}`}
-                onClose={closeSplit}
-                onPaneFocus={() => {
-                  if (outlineFollow !== "split") setOutlineFollow("split");
-                }}
-                onReady={(view) => {
-                  splitViewRef.current = view;
-                  // 视图刚建出来还装着空状态；装载 effect（[splitPath]）随后 setState
-                }}
-                onDestroy={() => {
-                  splitViewRef.current = null;
-                }}
-              />
-            )}
-          </div>
           {isMobile() && (
             <input
               ref={imageInputRef}
@@ -6332,7 +6860,7 @@ export default function App() {
                 // 编辑器自己的文档（实时状态），否则列主编辑器文档。
                 // 两侧都必须走 sliceDoc（facet 会把换行替换成文件自己的 CRLF），
                 // doc.toString() 永远输出 \n——CRLF 笔记 split 会失效、大纲全空
-                if (outlineFollow === "split" && splitPath) {
+                if (outlineFollow === "split" && splitActiveTab) {
                   const splitView = splitViewRef.current;
                   if (!splitView) return null;
                   return {
@@ -6348,12 +6876,12 @@ export default function App() {
               revision={revision}
               // 预览 pdf/docx 等文件时编辑器还装着上一篇 md，大纲继续显示它会误导
               // （0.20 用户反馈"预览 pdf 时右侧目录还显示 md 的目录"），清空让空态接管
-              activeKey={previewPath ? null : outlineFollow === "split" ? splitPath : activeTab}
+              activeKey={previewPath ? null : outlineFollow === "split" ? splitActiveTab : activeTab}
               cursorLine={outlineFollow === "split" ? splitCursorLine : cursorLine}
               onJump={(line) => {
                 // 分屏模式下点击标题：在**分屏编辑器内**定位（0.32——此前只读时代
                 // 是在主编辑器重开该文件，会把并排的另一篇顶掉，用户明确不要）
-                if (outlineFollow === "split" && splitPath) {
+                if (outlineFollow === "split" && splitActiveTab) {
                   const splitView = splitViewRef.current;
                   if (!splitView) return;
                   const target = splitView.state.doc.line(

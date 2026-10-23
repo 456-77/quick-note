@@ -39,6 +39,35 @@ fn state_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join(STATE_FILE))
 }
 
+/// 本机已配置过同步的仓库的**云端仓库名**集合（0.32.2 用户需求：云端仓库列表
+/// 过滤“已在本机”的仓库）。扫描配置目录下全部 `sync-state*.json` 的 vaultName
+/// 字段（主状态 + per-vault 状态）——本地目录名与云端名不一致的仓库也能靠它
+/// 识别，比“最近仓库目录名比对”准得多。JSON 解析失败/缺字段按无贡献跳过。
+#[tauri::command]
+pub fn local_synced_vaults(app: AppHandle) -> Result<Vec<String>, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("无法定位配置目录: {e}"))?;
+    let mut out: Vec<String> = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|e| format!("读取配置目录失败: {e}"))?;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.starts_with("sync-state") || !name.ends_with(".json") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(entry.path()) else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
+        if let Some(vault_name) = value.get("vaultName").and_then(|v| v.as_str()) {
+            let trimmed = vault_name.trim();
+            if !trimmed.is_empty() && !out.iter().any(|n| n.eq_ignore_ascii_case(trimmed)) {
+                out.push(trimmed.to_string());
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// 读取同步状态。文件不存在返回 `None`（首次使用不是错误）。
 #[tauri::command]
 pub fn sync_state_load(app: AppHandle) -> Result<Option<String>, String> {

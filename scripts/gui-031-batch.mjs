@@ -272,29 +272,30 @@ try {
     await sleep(300);
   }
 
-  // ============================================== 4. 分屏编辑（0.32 双编辑器）+ 目录跟随
+  // ============================================== 4. 分栏（0.32.2 Obsidian 式）+ 目录跟随
   {
-    // 0.32 起分屏是并列的第二编辑器（不再是只读渲染）。同文件双开被硬性阻止
-    //（两个视图各持一份状态，最后落盘者覆盖会静默丢内容）。
+    // 0.32.2：标签栏随窗格分成两段，右栏有自己的标签栏；「分屏」= 把标签移到
+    // 另一栏（标签唯一，不存在同文件双开）。
     await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31对照')); t?.click(); return !!t; })()`);
     await waitFor(ws, `[...document.querySelectorAll('.cm-line')].some((el) => (el.innerText ?? '').includes('对照内容一'))`, 10000);
 
-    // 4a. 同文件守卫：右键**当前激活**的标签，「分屏编辑」必须置灰
+    // 4a. 左栏只剩一个标签：「分屏到右侧」置灰（移过去左栏就空了）
     const opened = await evaluate(ws, `(() => {
-      const tabs = [...document.querySelectorAll('.tabbar [role="tab"], .tabbar .tab')];
+      const tabs = [...document.querySelectorAll('.tabbar:not(.is-split) [role="tab"]')];
       const target = tabs.find((el) => (el.textContent ?? '').includes('qn31对照'));
       if (!target) return { ok: false, count: tabs.length, names: tabs.map((t) => t.textContent) };
       target.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 120 }));
       return { ok: true };
     })()`);
     check(opened.ok, "右键标签弹菜单（找到 qn31对照 标签）", JSON.stringify(opened));
-    const guard = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); return b ? { text: b.textContent, disabled: b.disabled } : null; })()`, 5000);
-    check(!!guard && guard.text.includes("分屏编辑"), "菜单项改叫「分屏编辑」", JSON.stringify(guard));
-    check(!!guard && guard.disabled, "激活标签的同文件分屏被置灰（防双开互相覆盖，0.32）", JSON.stringify(guard));
+    const guard = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏到右侧')); return b ? { text: b.textContent, disabled: b.disabled } : null; })()`, 5000);
+    check(!!guard, "菜单含「分屏到右侧」（0.32.2 移动语义）", JSON.stringify(guard));
+    check(!!guard && guard.disabled, "左栏只剩这一个标签时置灰（左栏至少留一个）", JSON.stringify(guard));
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
     await sleep(300);
 
-    // 4b. 打开另一篇做分屏对象：新开标签模式（localStorage 改设置 + reload）
+    // 4b. 再开一个标签，右键其中非激活标签「分屏到右侧」：右栏出现，
+    //     标签栏分成两段，各管各的（localStorage 直写设置须 reload 生效）
     await evaluate(ws, `(() => { const k='quicknote.settings'; const s=JSON.parse(localStorage.getItem(k) ?? '{}'); s.openNoteMode='newTab'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
     await evaluate(ws, `location.reload()`);
     await sleep(2500);
@@ -310,35 +311,36 @@ try {
       await cdp(ws, "Page.bringToFront");
       await waitFor(ws, `document.querySelectorAll('.tree-item').length > 0`, 20000);
     }
-    // 主编辑器放 qn31表格（分屏对象），当前激活 qn31对照
     await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31表格')); t?.click(); return !!t; })()`);
     await waitFor(ws, `!!document.querySelector('.cm-lp-tablewrap')`, 8000);
     await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31对照')); t?.click(); return !!t; })()`);
     await waitFor(ws, `[...document.querySelectorAll('.cm-line')].some((el) => (el.innerText ?? '').includes('对照内容一'))`, 8000);
     await evaluate(ws, `(() => {
-      const tabs = [...document.querySelectorAll('.tabbar [role="tab"], .tabbar .tab')];
+      const tabs = [...document.querySelectorAll('.tabbar:not(.is-split) [role="tab"]')];
       const target = tabs.find((el) => (el.textContent ?? '').includes('qn31表格'));
       target?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 120 }));
       return !!target;
     })()`);
-    const menuUp = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); return b && !b.disabled; })()`, 5000);
-    check(menuUp, "非激活标签的「分屏编辑」可点");
-    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); b?.click(); return !!b; })()`);
-    const splitUp = await waitFor(ws, `!!document.querySelector('.split-pane') && !!window.__qnSplitView`, 5000);
-    check(splitUp, "分屏窗格出现（第二编辑器 __qnSplitView 就绪）");
+    const menuOk = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏到右侧')); return b && !b.disabled; })()`, 5000);
+    check(menuOk, "左栏两个标签时「分屏到右侧」可点");
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏到右侧')); b?.click(); return !!b; })()`);
+    const splitUp = await waitFor(ws, `!!document.querySelector('.editor-pane-col.is-split') && !!window.__qnSplitView`, 5000);
+    check(splitUp, "右栏出现（第二编辑器 __qnSplitView 就绪）");
     const splitDoc = await waitFor(ws, `(window.__qnSplitView?.state.doc.toString() ?? '').includes('重点标记')`, 8000);
-    check(splitDoc, "分屏编辑器装的是目标笔记（qn31表格 内容）");
-    const badge = await evaluate(ws, `document.querySelector('.split-pane-badge')?.textContent ?? ''`);
-    check(!badge.includes("只读"), "不再显示「只读」徽标（0.32 可编辑）", badge);
-    const mainStill = await evaluate(ws, `[...document.querySelectorAll('.editor-host .cm-line')].some((el) => (el.innerText ?? '').includes('对照内容一'))`);
-    check(mainStill, "主编辑器仍显示自己的文件（分屏不顶掉主编辑器）");
+    check(splitDoc, "右栏编辑器装的是被移过去的标签（qn31表格 内容）");
+    const rightBar = await evaluate(ws, `[...document.querySelectorAll('.tabbar.is-split [role="tab"]')].map((el) => el.textContent).join('|')`);
+    check(rightBar.includes("qn31表格"), "右栏标签栏列出移过去的标签（标签栏分成两段）", rightBar);
+    const leftBar = await evaluate(ws, `[...document.querySelectorAll('.tabbar:not(.is-split) [role="tab"]')].map((el) => el.textContent).join('|')`);
+    check(leftBar.includes("qn31对照") && !leftBar.includes("qn31表格"), "左栏标签栏只剩左栏自己的标签", leftBar);
+    const mainStill = await evaluate(ws, `(window.__qnView?.state.doc.toString() ?? '').includes('对照内容一')`);
+    check(mainStill, "主编辑器仍显示左栏激活文件（不被分屏顶掉）");
 
-    // 4c. 目录跟随：点分屏窗格 → 目录列分屏文件的大纲；点大纲项在**分屏内**跳转
+    // 4c. 目录跟随：点右栏 → 目录列右栏文件的大纲；点大纲项在**右栏内**定位
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.sidebar-tab')].find((el) => (el.textContent ?? '').includes('目录')); b?.click(); return !!b; })()`);
-    await evaluate(ws, `(() => { document.querySelector('.split-pane')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
+    await evaluate(ws, `(() => { document.querySelector('.editor-pane-col.is-split .split-editor-host')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
     await sleep(400);
     const outlineSplit = await evaluate(ws, `[...document.querySelectorAll('.outline-item')].map((el) => el.textContent).join('|')`);
-    check(outlineSplit.includes("qn31表格") && !outlineSplit.includes("乙节"), "目录跟随分屏窗格（列分屏文件大纲）", outlineSplit);
+    check(outlineSplit.includes("qn31表格") && !outlineSplit.includes("乙节"), "目录跟随右栏（列右栏文件大纲）", outlineSplit);
     await evaluate(ws, `(() => { const it = [...document.querySelectorAll('.outline-item')].find((el) => (el.textContent ?? '').includes('qn31表格')); it?.click(); return !!it; })()`);
     await sleep(400);
     const jump = await evaluate(ws, `(() => ({
@@ -346,30 +348,32 @@ try {
       splitHead: window.__qnSplitView ? window.__qnSplitView.state.selection.main.head : -1,
       mainDoc: window.__qnView ? window.__qnView.state.doc.toString().slice(0, 30) : '',
     }))()`);
-    check(jump.splitFocused && jump.splitHead >= 0, "点大纲项在分屏编辑器内定位（焦点进分屏，不重开文件）", JSON.stringify(jump));
-    check((jump.mainDoc ?? "").includes("qn31对照") || jump.mainDoc === "", "主编辑器文件未被覆盖（目录点击不顶掉并排文件）", jump.mainDoc);
+    check(jump.splitFocused && jump.splitHead >= 0, "点大纲项在右栏编辑器内定位（不重开文件）", JSON.stringify(jump));
+    check((jump.mainDoc ?? "").includes("qn31对照"), "左栏文件未被覆盖（目录点击不顶掉并排文件）", jump.mainDoc);
 
-    // 4d. 点主编辑器 → 目录回到主文件大纲
-    await evaluate(ws, `(() => { document.querySelector('.editor-host')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
+    // 4d. 点左栏 → 目录回到左栏文件大纲
+    await evaluate(ws, `(() => { document.querySelector('.tabbar:not(.is-split)')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
     await sleep(400);
     const outlineMain = await evaluate(ws, `[...document.querySelectorAll('.outline-item')].map((el) => el.textContent).join('|')`);
-    check(outlineMain.includes("甲节") && outlineMain.includes("乙节"), "点主编辑器后目录跟随回来（列主文件大纲）", outlineMain);
+    check(outlineMain.includes("甲节") && outlineMain.includes("乙节"), "点左栏后目录跟随回来（列左栏文件大纲）", outlineMain);
 
-    // 4e. Esc 关分屏
+    // 4e. Esc 收起右栏：标签整体移回左栏（不丢标签）
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
-    const splitGone = await waitFor(ws, `!document.querySelector('.split-pane') && !window.__qnSplitView`, 5000);
-    check(splitGone, "Esc 可关闭分屏窗格（调试句柄一并清理）");
+    const splitGone = await waitFor(ws, `!document.querySelector('.editor-pane-col.is-split') && !window.__qnSplitView`, 5000);
+    check(splitGone, "Esc 收起右栏（调试句柄一并清理）");
+    const leftAfter = await evaluate(ws, `[...document.querySelectorAll('.tabbar:not(.is-split) [role="tab"]')].map((el) => el.textContent).join('|')`);
+    check(leftAfter.includes("qn31表格") && leftAfter.includes("qn31对照"), "右栏标签移回左栏（收起不丢标签）", leftAfter);
     // 还原打开方式设置，避免影响后续小节
     await evaluate(ws, `(() => { const k='quicknote.settings'; const s=JSON.parse(localStorage.getItem(k) ?? '{}'); s.openNoteMode='replace'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
   }
 
-  // ============================================== 5. DDL 收录弹窗（Ctrl+Alt+L）
+  // ============================================== 5. DDL 收录弹窗（默认键 Ctrl+Alt+J，0.32.2 起）
   {
     // CDP Input 偶发丢第一批按键（同 0.30 批测的兜底），没弹起再按
-    await key(ws, { mod: CTRL_ALT, key: "l" }, "KeyL", 76);
+    await key(ws, { mod: CTRL_ALT, key: "j" }, "KeyJ", 74);
     let dialogUp = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
     for (let i = 0; i < 3 && !dialogUp; i += 1) {
-      await key(ws, { mod: CTRL_ALT, key: "l" }, "KeyL", 76);
+      await key(ws, { mod: CTRL_ALT, key: "j" }, "KeyJ", 74);
       dialogUp = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
     }
     check(dialogUp, "Ctrl+Alt+L 弹出建表语句收录弹窗");

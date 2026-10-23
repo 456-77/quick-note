@@ -449,17 +449,21 @@ pub fn run() {
             watch::allow_asset_dir,
             watch::allow_asset_any_dir,
             vault::list_dir_images,
+            vault::ensure_directory,
             net::http_request,
             sync_store::sync_state_load,
             sync_store::sync_state_save,
             sync_store::sync_state_load_for,
             sync_store::sync_state_save_for,
+            sync_store::local_synced_vaults,
             #[cfg(desktop)]
             screenshot::screenshot_capture,
             #[cfg(desktop)]
             screenshot::screenshot_ocr,
             #[cfg(desktop)]
             screenshot::set_screenshot_hotkey,
+            #[cfg(desktop)]
+            screenshot::check_hotkey_conflicts,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

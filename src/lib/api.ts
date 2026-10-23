@@ -393,6 +393,25 @@ export const allowAssetAnyDir = (dir: string) => invoke<void>("allow_asset_any_d
 /** 列出目录下的图片文件（直接子文件，绝对路径，按路径排序）。壁纸轮换用（0.32）。 */
 export const listDirImages = (dir: string) => invoke<string[]>("list_dir_images", { dir });
 
+/** 确保一个任意绝对路径的目录存在（不存在则创建），返回其中直接子项数。
+ * 云端仓库落地用（0.32.2）：>0 表示非空，前端应拦下换空目录。 */
+export const ensureDirectory = (dir: string) => invoke<number>("ensure_directory", { dir });
+
+/** 本机已配置过同步的仓库的云端名集合（扫配置目录全部 sync-state*.json）。
+ * 云端仓库列表过滤「已在本机」用（0.32.2）。 */
+export const localSyncedVaults = () => invoke<string[]>("local_synced_vaults");
+
+export interface HotkeyCheck {
+  combo: string;
+  /** free / occupied / own / invalid */
+  status: string;
+}
+
+/** 试探性检测一组快捷键是否被其他程序系统级占用（注册成功即注销还原）。
+ * own 传本程序当前注册的组合（全局截图键），它们标 own 不算冲突。 */
+export const checkHotkeyConflicts = (combos: string[], own: string[]) =>
+  invoke<HotkeyCheck[]>("check_hotkey_conflicts", { combos, own });
+
 // ---------------- 全局截图 + OCR（仅桌面，0.20） ----------------
 
 export interface ScreenCapture {

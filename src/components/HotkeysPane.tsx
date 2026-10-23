@@ -11,7 +11,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { readTextFile, writeTextFile } from "../lib/api";
+import { checkHotkeyConflicts, readTextFile, writeTextFile } from "../lib/api";
+import { getSettings } from "../lib/settings";
 import {
   allBindings,
   comboOf,
@@ -72,6 +73,44 @@ export default function HotkeysPane() {
   const toastTimer = useRef<number | null>(null);
 
   useEffect(() => onHotkeysChange(() => setBindings(allBindings())), []);
+
+  /**
+   * 系统级占用检测（0.32.2 用户需求「自动检测当前电脑是否存在冲突的快捷键」）：
+   * 逐个组合试探性注册——被其他程序全局占用的组合（如 QQ「锁定」的 Ctrl+Alt+L）
+   * 本应用聚焦也收不到按键。面板打开自动跑一次，改绑后随绑定变化重跑；头部
+   * 按钮可手动刷新。own 传当前的全局截图键（本程序注册的，不算冲突）。
+   */
+  const [sysChecks, setSysChecks] = useState<Record<string, string> | null>(null);
+  const [sysDetecting, setSysDetecting] = useState(false);
+  const sysRunToken = useRef(0);
+  const runSysCheck = async () => {
+    const combos = [...new Set(allBindings().flatMap((command) => [...command.keys]))];
+    if (combos.length === 0) {
+      setSysChecks({});
+      return;
+    }
+    const token = (sysRunToken.current += 1);
+    setSysDetecting(true);
+    try {
+      const own = [getSettings().screenshotHotkey].filter(Boolean);
+      const result = await checkHotkeyConflicts(combos, own);
+      if (token !== sysRunToken.current) return;
+      setSysChecks(Object.fromEntries(result.map((item) => [item.combo.toLowerCase(), item.status])));
+      const occupied = result.filter((item) => item.status === "occupied");
+      if (occupied.length > 0) {
+        showToast(`检测到 ${occupied.length} 个快捷键被其他程序占用（标 ⚠ 的键位）`, "error");
+      }
+    } catch {
+      if (token === sysRunToken.current) setSysChecks({});
+    } finally {
+      if (token === sysRunToken.current) setSysDetecting(false);
+    }
+  };
+  // 面板打开（挂载）自动检测；绑定变化后重跑（新键位也要查）
+  useEffect(() => {
+    void runSysCheck();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bindings]);
 
   const showToast = (text: string, kind: "ok" | "error" = "ok") => {
     setToast({ text, kind });
@@ -284,7 +323,11 @@ export default function HotkeysPane() {
             <>
               {command.keys.length === 0 && <span className="hotkey-unset">未设置</span>}
               {command.keys.map((combo, index) => (
-                <span className="keycap-set" key={`${combo}-${index}`}>
+                <span
+                  className={`keycap-set${sysChecks?.[combo.toLowerCase()] === "occupied" ? " is-sys-conflict" : ""}`}
+                  key={`${combo}-${index}`}
+                  title={sysChecks?.[combo.toLowerCase()] === "occupied" ? "该组合已被其他程序在系统级占用，本软件聚焦时也收不到按键——建议改绑" : undefined}
+                >
                   <button
                     type="button"
                     className="keycap-group"
@@ -342,6 +385,15 @@ export default function HotkeysPane() {
             <span className="hotkey-subtitle">自定义 Quick Note 的键盘操作</span>
           </div>
           <div className="hotkey-head-actions">
+            <button
+              type="button"
+              className="hotkey-action"
+              onClick={() => void runSysCheck()}
+              disabled={sysDetecting}
+              title="检测各快捷键是否被其他程序在系统级占用（被占的按键本软件收不到）"
+            >
+              {sysDetecting ? "检测中…" : "检测系统占用"}
+            </button>
             <button
               type="button"
               className="hotkey-action"

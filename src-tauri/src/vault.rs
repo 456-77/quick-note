@@ -712,8 +712,22 @@ pub fn read_note_optional(vault: String, path: String) -> Result<Option<NoteCont
     read_note_at(&root, &path).map(Some)
 }
 
-/// 壁纸轮换（0.32 用户需求）：列出一个**任意**目录（不在仓库里也行）下的图片
-/// 文件，返回绝对路径。只列直接子文件（不递归——壁纸目录平铺一层是常态，递归
+/// 云端仓库落地（0.32.2 用户需求）：确保一个**任意绝对路径**的目录存在
+/// （不存在则连同父目录一起创建）。返回目录内的直接子项数——落地到非空目录
+/// 会把本地内容与云端混起来（首轮同步会把本地已有文件全部推上云端），前端
+/// 拿到 >0 就拦下让用户换空目录。
+#[tauri::command]
+pub fn ensure_directory(dir: String) -> Result<usize, String> {
+    let path = PathBuf::from(&dir);
+    if !path.is_dir() {
+        fs::create_dir_all(&path).map_err(|e| format!("创建目录失败: {e}"))?;
+        return Ok(0);
+    }
+    let count = fs::read_dir(&path).map_err(|e| format!("读取目录失败: {e}"))?.count();
+    Ok(count)
+}
+
+/// 壁纸轮换（0.32 用户需求）：列出一个**任意**目录（不在仓库里也行）下的图片/// 文件，返回绝对路径。只列直接子文件（不递归——壁纸目录平铺一层是常态，递归
 /// 会把缩略图缓存之类的东西也卷进来），按完整路径排序保证「顺序轮换」可预期。
 /// 扩展名白名单与浏览器可解码的静态图片格式对齐。
 #[tauri::command]
@@ -1684,6 +1698,22 @@ mod tests {
         assert!(lines.contains(&6), "表格数据行命中在结果里: {lines:?}");
         assert!(lines.contains(&7), "第二条表格行也在: {lines:?}");
         assert!(lines.contains(&2) && lines.contains(&9), "正文行也保留: {lines:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ensure_directory_creates_and_counts() {
+        // 0.32.2 云端仓库落地：不存在则创建（含父目录）返回 0；已存在返回子项数
+        let root = std::env::temp_dir().join(format!("qn-ensure-dir-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let target = root.join("nested/云仓A");
+        assert_eq!(ensure_directory(target.to_string_lossy().to_string()).unwrap(), 0);
+        assert!(target.is_dir());
+        // 空目录再查还是 0
+        assert_eq!(ensure_directory(target.to_string_lossy().to_string()).unwrap(), 0);
+        fs::write(target.join("a.md"), "x").unwrap();
+        fs::write(target.join("b.md"), "y").unwrap();
+        assert_eq!(ensure_directory(target.to_string_lossy().to_string()).unwrap(), 2);
         let _ = fs::remove_dir_all(&root);
     }
 

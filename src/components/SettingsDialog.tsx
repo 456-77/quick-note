@@ -906,7 +906,7 @@ export default function SettingsDialog({
           <Row
             label="表名悬浮预览"
             desc="光标悬停在已收录的表名上，浮动显示该表的建表语句。"
-            tip="先把建表语句收进仓库内的 DDL 笔记（默认「数据库表DDL.md」）：Ctrl+Alt+L 弹窗粘贴 CREATE TABLE 自动识别表名，或直接在那篇笔记里手写。之后笔记里悬停表名（如 ids_check_scenario）约 0.3 秒，会弹出该表的完整建表语句，类似数据库 IDE。"
+            tip="先把建表语句收进仓库内的 DDL 笔记（默认「数据库表DDL.md」）：快捷键（默认 Ctrl+Alt+J）弹窗粘贴 CREATE TABLE 自动识别表名，或直接在那篇笔记里手写。之后笔记里悬停表名（如 ids_check_scenario）约 0.3 秒，会弹出该表的完整建表语句，类似数据库 IDE。"
             keywords="DDL 建表 表名 悬浮 数据库"
           >
             <input

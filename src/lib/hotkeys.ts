@@ -72,9 +72,9 @@ export const COMMAND_KEYS: CommandKeys[] = [
   {
     id: "ddlCapture",
     label: "收录建表语句…",
-    desc: "弹窗粘贴 CREATE TABLE 自动识别表名，合并进仓库的 DDL 笔记；笔记里悬停已收录的表名会浮动显示建表语句（0.31）",
+    desc: "弹窗粘贴 CREATE TABLE 自动识别表名，合并进仓库的 DDL 笔记；笔记里悬停已收录的表名会浮动显示建表语句。按了没反应多半是组合键被其他软件全局占用（QQ 的「锁定」默认就是 Ctrl+Alt+L），在这里改绑即可",
     group: "edit",
-    keys: ["Mod-Alt-L"],
+    keys: ["Mod-Alt-J"],
   },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },

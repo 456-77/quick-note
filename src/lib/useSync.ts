@@ -435,7 +435,15 @@ export function useSync(options: {
    * 单词本的专用云端仓（quick-note-vocab）不是笔记仓库，不进列表——
    * 否则仓库页会把它当成可拉取的库。
    */
-  const listCloudVaults = useCallback(async (): Promise<Array<{ name: string; version: number }>> => {
+  /** base64 → UTF-8 字符串（atob 只做 Latin-1 字节串，中文必须重解码）。 */
+function decodeBase64Utf8(base64: string): string {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+
+const listCloudVaults = useCallback(async (): Promise<Array<{ name: string; version: number }>> => {
     const state = stateRef.current;
     if (!state.serverUrl || !state.username || !state.password) {
       throw new Error("未配置同步账号");
@@ -450,7 +458,7 @@ export function useSync(options: {
     if (login.status !== 200) {
       throw new Error(`登录失败（HTTP ${login.status}），请检查账号密码`);
     }
-    const token = (JSON.parse(atob(login.bodyBase64)).data?.accessToken) as string;
+    const token = (JSON.parse(decodeBase64Utf8(login.bodyBase64)).data?.accessToken) as string;
     const res = await httpRequest({
       method: "GET",
       url: `${base}/api/v1/vaults`,
@@ -459,7 +467,9 @@ export function useSync(options: {
     if (res.status !== 200) {
       throw new Error(`获取云端仓库列表失败（HTTP ${res.status}）`);
     }
-    const parsed = JSON.parse(atob(res.bodyBase64));
+    // atob 得到的是“每字符一字节”的 Latin-1 串：中文仓库名会变成 mojibake，
+    // 必须按 UTF-8 字节重新解码（0.32.2 修——云端中文仓库名在下拉里全是乱码）
+    const parsed = JSON.parse(decodeBase64Utf8(res.bodyBase64));
     return ((parsed.data ?? []) as Array<{ name: string; version: number }>).filter(
       (item) => item.name !== VOCAB_SYNC_VAULT,
     );

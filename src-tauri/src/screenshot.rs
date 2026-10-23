@@ -253,3 +253,67 @@ pub fn set_screenshot_hotkey(app: tauri::AppHandle, hotkey: Option<String>) -> R
     }
     Ok(true)
 }
+
+/// 一个组合键的系统占用检测结果（0.32.2 用户需求：快捷键面板自动检测冲突）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotkeyCheck {
+    pub combo: String,
+    /// free = 无人占用；occupied = 被其他程序注册（应用收不到按键）；
+    /// own = 本程序（或本程序的其他窗口）已注册；invalid = 无法解析的组合。
+    pub status: String,
+}
+
+/// 试探性检测一组快捷键是否被**系统级**占用（RegisterHotKey）：逐个注册，
+/// 成功说明空闲（立即注销还原），失败说明有程序占着——被占的组合即使本应用
+/// 聚焦也收不到按键（QQ「锁定」占 Ctrl+Alt+L 就是这类）。own 里是本程序当前
+/// 注册的组合（全局截图键），它们报 already registered 属正常，标 own 不算
+/// 冲突。同步命令（主线程）：RegisterHotKey 的线程要求，与 set_screenshot_
+/// hotkey 同一约束。不碰已有注册：只对被测组合单独 register/unregister。
+#[tauri::command]
+pub fn check_hotkey_conflicts(
+    app: tauri::AppHandle,
+    combos: Vec<String>,
+    own: Vec<String>,
+) -> Result<Vec<HotkeyCheck>, String> {
+    use tauri_plugin_global_shortcut::GlobalShortcutExt;
+    let manager = app.global_shortcut();
+    let own_set: Vec<String> = own
+        .into_iter()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut out = Vec::new();
+    for combo in combos {
+        let trimmed = combo.trim().to_string();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if own_set.contains(&trimmed.to_lowercase()) {
+            out.push(HotkeyCheck { combo: trimmed, status: "own".into() });
+            continue;
+        }
+        let parsed: tauri_plugin_global_shortcut::Shortcut = match trimmed.to_lowercase().parse() {
+            Ok(shortcut) => shortcut,
+            Err(_) => {
+                out.push(HotkeyCheck { combo: trimmed, status: "invalid".into() });
+                continue;
+            }
+        };
+        match manager.register(parsed) {
+            Ok(()) => {
+                // 还原：检测不留副作用
+                let _ = manager.unregister(parsed);
+                out.push(HotkeyCheck { combo: trimmed, status: "free".into() });
+            }
+            Err(e) => {
+                let already = format!("{e}").to_lowercase().contains("already registered");
+                out.push(HotkeyCheck {
+                    combo: trimmed,
+                    status: if already { "own".into() } else { "occupied".into() },
+                });
+            }
+        }
+    }
+    Ok(out)
+}

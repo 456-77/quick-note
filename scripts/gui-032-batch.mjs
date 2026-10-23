@@ -226,10 +226,10 @@ try {
     await openNoteFromTree(ws, "qn32表格");
     await waitFor(ws, `!!document.querySelector('.cm-lp-tablewrap')`, 8000);
     // Ctrl+Alt+L 收录弹窗（CDP 偶发丢第一批按键，带重试）
-    await key(ws, { mod: CTRL_ALT, key: "l" }, "KeyL", 76);
+    await key(ws, { mod: CTRL_ALT, key: "j" }, "KeyJ", 74);
     let dialogUp = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
     for (let i = 0; i < 3 && !dialogUp; i += 1) {
-      await key(ws, { mod: CTRL_ALT, key: "l" }, "KeyL", 76);
+      await key(ws, { mod: CTRL_ALT, key: "j" }, "KeyJ", 74);
       dialogUp = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
     }
     check(dialogUp, "Ctrl+Alt+L 弹出收录弹窗");
@@ -315,16 +315,16 @@ try {
     await openNoteFromTree(ws, "qn32表格");
     await waitFor(ws, `!!document.querySelector('.cm-lp-tablewrap')`, 8000);
     await evaluate(ws, `(() => {
-      const tabs = [...document.querySelectorAll('.tabbar [role="tab"], .tabbar .tab')];
+      const tabs = [...document.querySelectorAll('.tabbar:not(.is-split) [role="tab"]')];
       const target = tabs.find((el) => (el.textContent ?? '').includes('qn32分屏'));
       target?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 400, clientY: 120 }));
       return !!target;
     })()`);
-    const menuOk = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); return b && !b.disabled; })()`, 5000);
-    check(menuOk, "qn32分屏 标签的「分屏编辑」可点");
-    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏')); b?.click(); return !!b; })()`);
+    const menuOk = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏到右侧')); return b && !b.disabled; })()`, 5000);
+    check(menuOk, "qn32分屏 标签的「分屏到右侧」可点（0.32.2 移动语义）");
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏到右侧')); b?.click(); return !!b; })()`);
     const splitReady = await waitFor(ws, `!!window.__qnSplitView && (window.__qnSplitView.state.doc.toString() ?? '').includes('分屏初始内容')`, 8000);
-    check(splitReady, "分屏编辑器装上目标笔记");
+    check(splitReady, "右栏编辑器装上被移过去的标签");
 
     // 4a. 分屏内输入（模拟一次文档事务）→ 自动保存 1.2s 落盘
     const dispatched = await evaluate(ws, `(() => { const v = window.__qnSplitView; if (!v) return false; const doc = v.state.doc.toString(); const at = doc.indexOf('分屏初始内容'); v.dispatch({ changes: { from: at, insert: '【已编辑】' } }); return true; })()`);
@@ -344,22 +344,22 @@ try {
     // 4b. 分屏内 Ctrl+F：面板挂分屏视图；关闭后高亮清干净（0.32 修复）
     await evaluate(ws, `window.__qnSplitView.focus()`);
     await evaluate(ws, `window.__qnSplitView.contentDOM.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', code: 'KeyF', ctrlKey: true, bubbles: true, cancelable: true }))`);
-    const panelInSplit = await waitFor(ws, `!!document.querySelector('.split-pane .qn-search')`, 5000);
+    const panelInSplit = await waitFor(ws, `!!document.querySelector('.editor-pane-col.is-split .qn-search')`, 5000);
     check(panelInSplit, "Ctrl+F 在分屏视图上打开搜索面板");
     if (panelInSplit) {
-      await evaluate(ws, `(() => { const i = document.querySelector('.split-pane .qn-search .qn-search-input'); const set = ${nativeSet}; set(i, '分屏'); return true; })()`);
-      const hl = await waitFor(ws, `document.querySelectorAll('.split-pane .cm-searchMatch').length > 0`, 5000);
+      await evaluate(ws, `(() => { const i = document.querySelector('.editor-pane-col.is-split .qn-search .qn-search-input'); const set = ${nativeSet}; set(i, '分屏'); return true; })()`);
+      const hl = await waitFor(ws, `document.querySelectorAll('.editor-pane-col.is-split .cm-searchMatch').length > 0`, 5000);
       check(hl, "分屏内命中高亮出现");
       // Esc 关面板（面板自己的 Esc 处理）
-      await evaluate(ws, `(() => { const i = document.querySelector('.split-pane .qn-search .qn-search-input'); i?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return true; })()`);
-      const panelGone = await waitFor(ws, `!document.querySelector('.split-pane .qn-search')`, 5000);
+      await evaluate(ws, `(() => { const i = document.querySelector('.editor-pane-col.is-split .qn-search .qn-search-input'); i?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return true; })()`);
+      const panelGone = await waitFor(ws, `!document.querySelector('.editor-pane-col.is-split .qn-search')`, 5000);
       check(panelGone, "Esc 关闭分屏搜索面板");
-      const residue = await waitFor(ws, `document.querySelectorAll('.split-pane .cm-searchMatch').length === 0`, 5000);
-      check(residue, "关闭面板后高亮清干净（0.32 修复残留高亮）", await evaluate(ws, `document.querySelectorAll('.split-pane .cm-searchMatch').length`));
+      const residue = await waitFor(ws, `document.querySelectorAll('.editor-pane-col.is-split .cm-searchMatch').length === 0`, 5000);
+      check(residue, "关闭面板后高亮清干净（0.32 修复残留高亮）", await evaluate(ws, `document.querySelectorAll('.editor-pane-col.is-split .cm-searchMatch').length`));
     }
     // Esc 关分屏
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
-    const splitGone = await waitFor(ws, `!document.querySelector('.split-pane')`, 5000);
+    const splitGone = await waitFor(ws, `!document.querySelector('.editor-pane-col.is-split')`, 5000);
     check(splitGone, "Esc 关闭分屏窗格");
     await evaluate(ws, `(() => { const k='quicknote.settings'; const s=JSON.parse(localStorage.getItem(k) ?? '{}'); s.openNoteMode='replace'; localStorage.setItem(k, JSON.stringify(s)); return true; })()`);
   }

@@ -138,13 +138,16 @@ function buildQuery(): SearchQuery {
 
 /** 把当前查询同步给 CM（驱动查找替换命令）。 */
 function applyQuery(view: EditorView): void {
-  // setSearchQuery 的效果类型不接受 null：空查询用「永不匹配」的哨兵清除高亮
+  // setSearchQuery 的效果类型不接受 null：空查询用「永不匹配」的哨兵清除高亮。
+  // epoch 必须在 dispatch **之前**自增：插件的 update 在 dispatch 的调用栈内
+  // 同步执行，读到旧 epoch 会判定“无变化”跳过高亮重建——输入后高亮要等
+  // 下一次文档/选区变化才出现（不动就不亮）。0.32.2 修，双编辑器让它稳定复现
+  queryEpoch += 1;
   view.dispatch({
     effects: setSearchQuery.of(
       panelState.query ? buildQuery() : new SearchQuery({ search: "\u0000a^" }),
     ),
   });
-  queryEpoch += 1;
 }
 
 // ---------------------------------------------------------------- 命中高亮
@@ -276,10 +279,11 @@ function closePanel(view: EditorView): void {
   // 清掉**活的**查询状态：单一 EditorView 服务所有标签，不清的话上一篇的
   // 命中高亮会原样挂在下一篇上（0.23 用户反馈"搜索框只属于它打开的那篇"）。
   // panelState.query 保留（跨重启持久化），重开面板时重新应用。
+  // epoch 先自增再 dispatch（顺序说明见 applyQuery）
+  queryEpoch += 1;
   view.dispatch({
     effects: setSearchQuery.of(new SearchQuery({ search: "\u0000a^" })),
   });
-  queryEpoch += 1;
   view.contentDOM?.focus();
 }
 
