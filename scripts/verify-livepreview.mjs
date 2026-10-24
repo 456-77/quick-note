@@ -18,6 +18,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { buildLivePreviewDecorations, computeBlockDecorations } from "../src/lib/livePreview.ts";
 import { prepareEmbedMarkdown, sliceSection } from "../src/lib/embed.ts";
@@ -701,6 +702,32 @@ check(externalUrlAt(urlState, doc.indexOf("普通项目一")) === null, "普通�
 check(
   externalUrlAt(urlState, doc.indexOf("attachments/pic.png")) === null,
   "本地图片路径不会被当成外部链接",
+);
+
+// ============================================================ 阅读态（0.33.0 批C）
+console.log("\n场景 F：阅读态（editable=false）——光标落行不显源码（停点2 反馈回归）\n");
+const readingState = EditorState.create({
+  doc,
+  selection: { anchor: doc.indexOf("[外链]") + 2 },
+  extensions: [markdown({ base: markdownLanguage }), EditorView.editable.of(false)],
+});
+const F = { items: collect(buildLivePreviewDecorations(readingState, 0, doc.length)) };
+check(
+  hidesWithin(F.items, "](https://example.com/normal)").length === 1,
+  "阅读态光标落在链接文字上：`](url)` 标记仍隐藏（点击行不该裸露源码）",
+);
+check(hidesWithin(F.items, "**粗体**").length === 2, "阅读态：粗体 `**` 标记照常隐藏");
+check(hidesWithin(F.items, "# 语法覆盖").length === 1, "阅读态：标题 `#` 照常隐藏");
+// 对照组：编辑态（editable 缺省 true）光标行的 url 不隐藏——LivePreview 行为不回归
+const editCursorState = EditorState.create({
+  doc,
+  selection: { anchor: doc.indexOf("[外链]") + 2 },
+  extensions: [markdown({ base: markdownLanguage })],
+});
+const G = { items: collect(buildLivePreviewDecorations(editCursorState, 0, doc.length)) };
+check(
+  hidesWithin(G.items, "](https://example.com/normal)").length === 0,
+  "对照组：编辑态光标行仍显源码（LivePreview 既有行为不回归）",
 );
 
 console.log(failures === 0 ? "\nLive Preview 装饰层验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);

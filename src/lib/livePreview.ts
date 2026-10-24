@@ -2536,18 +2536,26 @@ export function buildLivePreviewDecorations(
   to: number,
   resources: LivePreviewContext = EMPTY_CONTEXT,
 ): DecorationSet {
+  // 0.33.0 批C：阅读态（EditorView.editable=false，移动端默认）永远不显示
+  // 行内源码——点击放光标不是"编辑意图"，被点的行不该退化成 Markdown 原文
+  // （用户实测：阅读态点链接，整行裸露 [文字](url)）。editable=false 时视为
+  // 没有任何活动行/光标。
+  const editing = state.facet(EditorView.editable);
   const activeLines = new Set<number>();
-  for (const range of state.selection.ranges) {
-    const a = state.doc.lineAt(range.from).number;
-    const b = state.doc.lineAt(range.to).number;
-    for (let n = a; n <= b; n += 1) activeLines.add(n);
+  if (editing) {
+    for (const range of state.selection.ranges) {
+      const a = state.doc.lineAt(range.from).number;
+      const b = state.doc.lineAt(range.to).number;
+      for (let n = a; n <= b; n += 1) activeLines.add(n);
+    }
   }
   const ctx: BuildContext = {
     state,
     activeLines,
     touched: (from, to) =>
-      state.selection.ranges.some((range) => range.from <= to && range.to >= from),
+      editing && state.selection.ranges.some((range) => range.from <= to && range.to >= from),
     cursorIn: (from, to) =>
+      editing &&
       state.selection.ranges.some((range) => range.empty && range.from >= from && range.to <= to),
   };
 
@@ -3228,7 +3236,12 @@ export function livePreviewExtension() {
           const forced = update.transactions.some((tr) =>
             tr.effects.some((effect) => effect.is(refreshDecorations)),
           );
-          if (update.docChanged || update.selectionSet || update.viewportChanged || forced) {
+          // editable 切换（0.33.0 批C 阅读/编辑分离）不带 doc/selection 变化，
+          // 但行内源码显隐完全依赖它——不补这一条，进出阅读态后装饰停留在旧形态
+          const editableFlipped =
+            update.startState.facet(EditorView.editable) !==
+            update.state.facet(EditorView.editable);
+          if (update.docChanged || update.selectionSet || update.viewportChanged || forced || editableFlipped) {
             this.decorations = decorationsFor(update.view);
           }
         }

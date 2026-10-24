@@ -35,11 +35,11 @@ import {
   IconChevronDown,
   IconLibrary,
   IconListTree,
+  IconChevronLeft,
   IconRefresh,
   IconSearch,
   IconSettings,
   IconSparkles,
-  IconX,
 } from "./icons";
 
 type SectionId = "general" | "appearance" | "daily" | "sync" | "storage" | "shortcuts" | "about";
@@ -627,6 +627,7 @@ export default function SettingsDialog({
         <div className="settings-nav-head">
           <span className="settings-nav-title">设置{searching ? "" : ` / ${SECTIONS.find((s) => s.id === active)?.label ?? ""}`}</span>
           {savedFlash && <span className="settings-saved">已保存</span>}
+          {/* 0.33.0 停点3：关闭入口也用 ‹（移动端习惯），不用 × */}
           <button
             type="button"
             className="icon-btn settings-close"
@@ -634,7 +635,7 @@ export default function SettingsDialog({
             title="关闭设置（Esc）"
             aria-label="关闭设置"
           >
-            <IconX size={13} />
+            <IconChevronLeft size={15} />
           </button>
         </div>
         <div className="settings-search">
@@ -674,18 +675,13 @@ export default function SettingsDialog({
       <div className="settings-body" ref={bodyRef} onClick={onBodyClick}>
         {/* 移动端详情页头：返回分类列表 + 关闭（桌面 CSS 隐藏） */}
         <div className="settings-mobile-head">
-          <button type="button" className="settings-back" onClick={() => setMobileDetail(false)}>
-            ‹ 设置
+          {/* 0.33.0 停点3 反馈：返回用 ‹ 图标（移动端习惯），纯图标不叠文字；
+              关闭设置的 × 只留在一级页头部——二级页出现两个叉/箭头会混淆
+              返回与关闭 */}
+          <button type="button" className="settings-back" onClick={() => setMobileDetail(false)} aria-label="返回设置目录">
+            <IconChevronLeft size={20} />
           </button>
           <span className="settings-mobile-title">{SECTIONS.find((sec) => sec.id === active)?.label}</span>
-          <button
-            type="button"
-            className="icon-btn settings-close"
-            onClick={onClose}
-            aria-label="关闭设置"
-          >
-            <IconX size={13} />
-          </button>
         </div>
         {/* 顺序即 DOM 顺序：gui 验收依赖「第一个 checkbox 是粘贴开关」，不要调整分区先后。 */}
         <section className="settings-sec" data-sec="general" style={{ display: searching || active === "general" ? undefined : "none" }}>
@@ -1087,6 +1083,27 @@ export default function SettingsDialog({
               onChange={(event) => saveWithFlash({ showLineNumbers: event.target.checked })}
             />
           </Row>
+          {/* 0.33.0 批C：移动端字号缩放（阅读/编辑分离配套）。仅手机端渲染——
+              桌面 --qn-edit-scale 恒缺省 1，本行不出现 */}
+          {mobilePick && (
+            <Row
+              label="字体大小"
+              desc="编辑器正文与标题整体缩放，仅手机端生效（85%～130%）。"
+              keywords="字号 缩放 正文大小"
+            >
+              <span className="settings-slider">
+                <input
+                  type="range"
+                  min={0.85}
+                  max={1.3}
+                  step={0.05}
+                  value={settings.mobileFontScale || 1}
+                  onChange={(event) => saveWithFlash({ mobileFontScale: Number(event.target.value) })}
+                />
+                <span className="settings-slider-value">{Math.round((settings.mobileFontScale || 1) * 100)}%</span>
+              </span>
+            </Row>
+          )}
 
           <Group>全局背景（每仓库一份，存本机）</Group>
           {!vault && <p className="settings-hint">打开仓库后才能选择与预览背景图片（图片来自仓库内部）。</p>}

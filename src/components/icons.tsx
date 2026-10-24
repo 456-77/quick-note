@@ -29,6 +29,11 @@ export const IconChevronRight = ({ size, className }: IconProps) => (
   <svg {...base(size, className)}><path d="m9 18 6-6-6-6" /></svg>
 );
 
+/* 0.33.0 停点3：移动端二级页返回（习惯的 ‹ 形箭头） */
+export const IconChevronLeft = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}><path d="m15 18-6-6 6-6" /></svg>
+);
+
 export const IconChevronDown = ({ size, className }: IconProps) => (
   <svg {...base(size, className)}><path d="m6 9 6 6 6-6" /></svg>
 );
@@ -156,6 +161,14 @@ export const IconEye = ({ size, className }: IconProps) => (
 
 export const IconCode = ({ size, className }: IconProps) => (
   <svg {...base(size, className)}><path d="m16 18 6-6-6-6" /><path d="m8 6-6 6 6 6" /></svg>
+);
+
+/* 0.33.0 批C：移动端顶栏「编辑」入口（阅读/编辑分离模型） */
+export const IconPenLine = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M12 20h9" />
+    <path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.838a.5.5 0 0 1-.62-.62l.838-2.872a2 2 0 0 1 .506-.854z" />
+  </svg>
 );
 
 export const IconMinus = ({ size, className }: IconProps) => (

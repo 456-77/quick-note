@@ -41,13 +41,17 @@ export interface MobileVaultGateProps {
   onOpen: (path: string) => void;
   /** 浮层形态的关闭按钮；嵌入形态不传。 */
   onClose?: () => void;
-  /** 当前开启了同步的云端仓库名（列表里对应目录名的卡片显示徽标）；null = 没开。 */
-  syncActiveVaultName: string | null;
+  /** 逐仓库查询同步是否开启。0.33.0 停点1 反馈：同步状态是按仓库拆分的，
+      单值「当前同步仓库名」表达不了多仓库同时开启——A 仓库开了同步、再点
+      B 的「开启同步」后 A 卡片会退回按钮态，用户看不出哪些仓库真的开着。 */
+  isVaultSyncEnabled: (path: string) => Promise<boolean>;
   /**
    * 卡片上的「开启同步」：App 侧先 switchVault(该仓库) 再开同步再回列表——
    * 同步状态是单仓库模型（游标/哈希跟仓库走），必须切过去才能正确启用。
+   * （App 的实现是异步链，resolve 时 enabled 可能尚未落盘，状态徽标由
+   * 本组件延迟补查追上。）
    */
-  onEnableSync: (path: string, name: string) => void;
+  onEnableSync: (path: string, name: string) => Promise<void>;
   /** 同步账号是否已配置（未配置时不显示同步开关，卡片只给引导文案）。 */
   syncConfigured: boolean;
   /** 引导第三步：保存同步账号信息（server/username/password）。跳过则不调。 */
@@ -67,7 +71,7 @@ export interface MobileVaultGateProps {
 export function MobileVaultGate({
   onOpen,
   onClose,
-  syncActiveVaultName,
+  isVaultSyncEnabled,
   onEnableSync,
   syncConfigured,
   onConfigureSync,
@@ -96,10 +100,27 @@ export function MobileVaultGate({
   /** 云端仓库列表（账号配置后自动拉取；本地已有 → 标记）。 */
   const [cloudVaults, setCloudVaults] = useState<Array<{ name: string; version: number }> | null>(null);
   const [cloudError, setCloudError] = useState<string | null>(null);
+  /** 「重新加载」按钮的触发器（§十二：失败给轻量提示+重试，不动同步逻辑）。 */
+  const [cloudTick, setCloudTick] = useState(0);
   const [pullingName, setPullingName] = useState<string | null>(null);
   const [serverDraft, setServerDraft] = useState("");
   const [userDraft, setUserDraft] = useState("");
   const [passDraft, setPassDraft] = useState("");
+  /** 每仓库的同步开启状态（已开启仓库的路径集合）。
+      0.33.0 停点1：逐仓库查 enabledForVault，多选同步时同样按它显示徽标。 */
+  const [syncOnPaths, setSyncOnPaths] = useState<Set<string>>(new Set());
+
+  const refreshSyncOn = useCallback(async () => {
+    const entries = await Promise.all(
+      vaults.map(async (v) => [v.path, await isVaultSyncEnabled(v.path).catch(() => false)] as const),
+    );
+    setSyncOnPaths(new Set(entries.filter(([, on]) => on).map(([path]) => path)));
+  }, [vaults, isVaultSyncEnabled]);
+
+  // 仓库列表或查询函数变化时重查；点「开启同步」后的延迟补查也走这里
+  useEffect(() => {
+    void refreshSyncOn();
+  }, [refreshSyncOn]);
 
   /** 桥（MainActivity 注入；桌面/旧包没有）。 */
   const bridge = (): Record<string, CallableFunction> | null =>
@@ -205,10 +226,20 @@ export function MobileVaultGate({
     return () => {
       cancelled = true;
     };
-  }, [syncConfigured, listCloudVaults]);
+  }, [syncConfigured, listCloudVaults, cloudTick]);
 
-  /** 拉取一个云端仓库到本地（目录已存在直接同步）。 */
-  const pullVault = async (name: string) => {
+  /** 点「开启同步」后追状态：App 侧是「切仓库→等 sync.ready→updateConfig」的
+      异步链，onEnableSync resolve 时 enabled 可能尚未落盘——延迟两轮补查，
+      让状态徽标尽快追上（0.33.0 停点1 反馈「点了开启同步状态没变」）。 */
+  const enableSyncAndRefresh = async (path: string, name: string) => {
+    await onEnableSync(path, name).catch(() => {});
+    for (const ms of [800, 2500]) {
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      void refreshSyncOn();
+    }
+  };
+
+  /** 拉取一个云端仓库到本地（目录已存在直接同步）。 */  const pullVault = async (name: string) => {
     if (!name || pullingName || !home) return;
     setError(null);
     setPullingName(name);
@@ -359,27 +390,31 @@ export function MobileVaultGate({
   return (
     <div className="mv-gate">
       <div className="mv-gate-head">
-        <h2>仓库</h2>
+        {/* 0.33.0 批B（需求 §八）：头部两行——标题行（仓库 + 多选同步 + 关闭）
+            与路径行（全宽省略）。多选同步从下方独立按钮收进头部。 */}
+        <div className="mv-gate-title">
+          <h2>仓库</h2>
+          {syncConfigured && vaults.length > 0 && (
+            <button
+              type="button"
+              className="btn btn-ghost mv-multi-toggle"
+              onClick={() => {
+                setMultiMode((v) => !v);
+                setSelected(new Set());
+              }}
+            >
+              {multiMode ? "取消多选" : "多选同步"}
+            </button>
+          )}
+          {onClose && (
+            <button type="button" className="btn btn-ghost mv-close" onClick={onClose}>
+              关闭
+            </button>
+          )}
+        </div>
         <span className="mv-home" title={home}>{home}</span>
-        {onClose && (
-          <button type="button" className="btn btn-ghost mv-close" onClick={onClose}>
-            关闭
-          </button>
-        )}
       </div>
       {error && <p className="mv-error">{error}</p>}
-      {syncConfigured && vaults.length > 0 && (
-        <button
-          type="button"
-          className="btn btn-ghost mv-multi-toggle"
-          onClick={() => {
-            setMultiMode((v) => !v);
-            setSelected(new Set());
-          }}
-        >
-          {multiMode ? "取消多选" : "多选同步"}
-        </button>
-      )}
       {syncBatchLabel && <p className="mv-hint">{syncBatchLabel}</p>}
       {!syncBatchLabel && syncFailedPaths.length > 0 && (
         <button
@@ -391,12 +426,19 @@ export function MobileVaultGate({
         </button>
       )}
       <div className="mv-list">
-        {vaults.length === 0 && <p className="mv-lede">基础目录下还没有仓库。新建一个，或把电脑端的仓库文件夹放进来（USB / 网盘同步均可）。</p>}
+        {/* 0.33.0 停点1 第三轮（仓库页 UI 规范）：空状态给明确引导而非长段文案 */}
+        {vaults.length === 0 && (
+          <div className="mv-empty">
+            <p className="mv-empty-title">还没有仓库</p>
+            <p className="mv-empty-sub">创建一个仓库开始记录你的笔记</p>
+          </div>
+        )}
         {vaults.map((v) => (
           <button
             type="button"
             key={v.path}
-            className={`mv-card${syncActiveVaultName && syncActiveVaultName === v.name ? " is-syncing" : ""}${multiMode && selected.has(v.path) ? " is-picked" : ""}`}
+            title={v.name}
+            className={`mv-card${multiMode && selected.has(v.path) ? " is-picked" : ""}`}
             onClick={() => {
               if (multiMode) {
                 setSelected((prev) => {
@@ -410,34 +452,42 @@ export function MobileVaultGate({
               onOpen(v.path);
             }}
           >
+            {/* 0.33.0 停点1 第四轮：名称完整换行显示（用户两轮反馈都不接受截断，
+                单行/两行省略都退回）；状态标签并入 meta 行右侧。图标必须
+                flex:none——SVG 在 flex 行里默认可被长文本压缩变形 */}
             <span className="mv-card-name">
-              <IconFolder size={15} /> {v.name}
+              <IconFolder size={16} />
+              <span className="mv-card-name-text">{v.name}</span>
             </span>
-            <span className="mv-card-meta">
-              {v.noteCount} 篇 · {formatWhen(v.lastModified)}
-            </span>
-            {syncActiveVaultName && syncActiveVaultName === v.name && (
-              <span className="mv-badge">⟳ 同步开启</span>
-            )}
-            {syncConfigured && syncActiveVaultName !== v.name && (
-              <span
-                className="mv-sync-toggle"
-                role="button"
-                tabIndex={0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onEnableSync(v.path, v.name);
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.stopPropagation();
-                    onEnableSync(v.path, v.name);
-                  }
-                }}
-              >
-                开启同步
+            <div className="mv-card-meta">
+              <span className="mv-card-meta-text">
+                {v.noteCount} 篇 · {formatWhen(v.lastModified)}
               </span>
-            )}
+              {syncOnPaths.has(v.path) ? (
+                <span className="mv-state">
+                  <i className="mv-dot is-sync" />
+                  同步开启
+                </span>
+              ) : syncConfigured ? (
+                <span
+                  className="mv-sync-toggle"
+                  role="button"
+                  tabIndex={0}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void enableSyncAndRefresh(v.path, v.name);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.stopPropagation();
+                      void enableSyncAndRefresh(v.path, v.name);
+                    }
+                  }}
+                >
+                  开启同步
+                </span>
+              ) : null}
+            </div>
           </button>
         ))}
       </div>
@@ -478,13 +528,15 @@ export function MobileVaultGate({
           <button type="button" className="btn btn-ghost" onClick={() => setCreating(false)}>取消</button>
         </div>
       ) : (
-        <div className="editor-empty-actions">
-          <button type="button" className="btn" onClick={() => setCreating(true)}>
+        /* §五：新建仓库=独立居中的次级按钮（描边轻填充、≥44dp 触控）；
+           「更改基础目录」退为弱化的文字链接 */
+        <div className="mv-actions">
+          <button type="button" className="mv-new-vault" onClick={() => setCreating(true)}>
             <IconPlus size={14} /> 新建仓库
           </button>
           <button
             type="button"
-            className="btn btn-ghost"
+            className="mv-change-home"
             onClick={() => {
               // 改基础目录 = 清指针回引导页（引导页有授权探测与建议目录输入）
               void import("../lib/api").then((m) => m.vaultHomeClear()).then(() => reload());
@@ -496,30 +548,49 @@ export function MobileVaultGate({
       )}
       {syncConfigured && (
         <div className="mv-pull">
-          <p className="mv-pull-title">云端仓库（点击拉取到本地，含全部笔记）：</p>
-          {cloudError && <p className="mv-hint">云端列表获取失败：{cloudError}</p>}
-          {cloudVaults === null && !cloudError && <p className="mv-hint">正在获取云端仓库列表…</p>}
-          {cloudVaults?.length === 0 && <p className="mv-hint">云端还没有仓库：先在某个仓库上开启同步，它就会出现在这里。</p>}
+          {/* 0.33.0 停点1 第三轮（仓库页 UI 规范 §六/§七/§十一/§十二）：
+              行=名称(单行) + 状态点辅助信息 + 右侧统一尺寸操作钮（打开/拉取
+              语义分明）；空态给短文案；失败给轻量提示+重新加载 */}
+          <p className="mv-pull-title">云端仓库</p>
+          {cloudError && (
+            <div className="mv-cloud-error">
+              <span>云端仓库加载失败</span>
+              <button type="button" className="btn btn-ghost" onClick={() => setCloudTick((t) => t + 1)}>
+                重新加载
+              </button>
+            </div>
+          )}
+          {cloudVaults === null && !cloudError && <p className="mv-empty-sub">正在获取云端仓库列表…</p>}
+          {cloudVaults?.length === 0 && (
+            <div className="mv-empty">
+              <p className="mv-empty-title">暂无云端仓库</p>
+              <p className="mv-empty-sub">在某个仓库上开启同步后，它会出现在这里</p>
+            </div>
+          )}
           {cloudVaults?.map((cv) => {
             const local = vaults.find((v) => v.name === cv.name);
+            const pulling = pullingName === cv.name;
             return (
-              <button
-                key={cv.name}
-                type="button"
-                className="mv-card mv-card-cloud"
-                disabled={pullingName !== null}
-                onClick={() => (local ? onOpen(local.path) : void pullVault(cv.name))}
-              >
-                <span className="mv-card-name">
-                  <IconFolder size={15} /> {cv.name}
-                </span>
-                <span className="mv-card-meta">
-                  {local ? `已在本地 · ${local.noteCount} 篇（点按打开）` : `云端版本 ${cv.version} · 点按拉取`}
-                </span>
-                {!local && (
-                  <span className="mv-sync-toggle">{pullingName === cv.name ? "拉取中…" : "拉取到本地"}</span>
-                )}
-              </button>
+              <div key={cv.name} className="mv-cloud-row">
+                <div className="mv-cloud-main">
+                  <span className="mv-cloud-name">
+                    <IconFolder size={16} />
+                    <span className="mv-cloud-name-text" title={cv.name}>{cv.name}</span>
+                  </span>
+                  <span className="mv-cloud-meta">
+                    <i className={`mv-dot${local ? " is-local" : pulling ? " is-pulling" : " is-cloud"}`} />
+                    {local ? `已在本地 · ${local.noteCount} 篇` : `云端版本 ${cv.version}`}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn mv-cloud-btn"
+                  disabled={pullingName !== null}
+                  onClick={() => (local ? onOpen(local.path) : void pullVault(cv.name))}
+                >
+                  {pulling ? "拉取中" : local ? "打开" : "拉取"}
+                </button>
+              </div>
             );
           })}
         </div>

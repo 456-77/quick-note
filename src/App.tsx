@@ -29,6 +29,7 @@ import {
   IconCalendar,
   IconCalendarPlus,
   IconChart,
+  IconCheck,
   IconClock,
   IconCode,
   IconCopy,
@@ -42,6 +43,7 @@ import {
   IconMinus,
   IconPanelLeft,
   IconPanelRight,
+  IconPenLine,
   IconPin,
   IconPlus,
   IconSave,
@@ -57,7 +59,7 @@ import { allowAssetAnyDir, allowAssetDir, appDataPaths, copyEntry, copyExternalI
 import { isMobile } from "./lib/platform";
 import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent } from "./lib/api";
-import { applyMode, applyDarkTheme, applyLivePreviewContext, createEditor, createEditorState, type ViewMode } from "./lib/editor";
+import { applyDarkTheme, applyEditable, applyLivePreviewContext, applyMode, createEditor, createEditorState, type ViewMode } from "./lib/editor";
 import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
 import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit, tagRenameEdits } from "./lib/tags";
 import { buildCaptureLines, detectEol } from "./lib/capture";
@@ -251,6 +253,18 @@ export default function App() {
   const [mode, setMode] = useState<ViewMode>(() =>
     localStorage.getItem(MODE_KEY) === "source" ? "source" : "live",
   );
+  /**
+   * 移动端阅读/编辑分离（0.33.0 批C）：打开笔记默认阅读态（EditorView.editable
+   * 重配为 false，任务勾选/链接/复制照常）；点顶栏「编辑」进编辑态（解禁 +
+   * 聚焦弹键盘 + 工具栏）；编辑区点一下进沉浸阅读（上下栏滑出，body.m-zen），
+   * 顶部热区点回。打开/切换笔记一律回阅读态、栏可见。桌面不参与。
+   */
+  const [mobileEdit, setMobileEdit] = useState(false);
+  const [mobileZen, setMobileZen] = useState(false);
+  const mobileEditRef = useRef(false);
+  useEffect(() => {
+    mobileEditRef.current = mobileEdit;
+  }, [mobileEdit]);
   const [settings, setSettings] = useState<Settings>(getSettings);
   const [showSettings, setShowSettings] = useState(false);
   /** 正在新建的类型；null 表示输入行未展开。diary = 按日期命名的新日记。 */
@@ -707,7 +721,16 @@ export default function App() {
       const info = await checkForUpdate(appVersion || "0.0.0");
       setUpdateCheck(
         info.newer
-          ? { state: "done", message: `发现新版本 v${info.latest}（当前 v${appVersion}），可在应用内更新`, url: info.url, notes: info.body, apkUrl: info.apkUrl }
+          ? {
+              state: "done",
+              message: `发现新版本 v${info.latest}（当前 v${appVersion}），可在应用内更新`,
+              // available 不能漏（0.33.0 用户反馈：手机上检查到新版本却没有更新
+              // 按钮——GitHub 路径漏设它，设置页按钮与更新提示条都按它渲染）
+              available: true,
+              url: info.url,
+              notes: info.body,
+              apkUrl: info.apkUrl,
+            }
           : { state: "done", message: `已是最新版本（最新发布 v${info.latest}）` },
       );
     } catch (e) {
@@ -1225,7 +1248,11 @@ export default function App() {
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-    const handle = createEditor(host, EditorState.create({}));
+    // 0.33.0 停点3：空状态直接禁编辑——这个裸 create 不带 editableCompartment，
+    // applyEditable 的重配对它无效（装真笔记前它一直可编辑），空仓库时点击
+    // 正文会聚焦出光标+软键盘（真机实测图2）。装载真笔记换上的状态自带
+    // Compartment，重配恢复正常。桌面同样禁（空状态本就不接受输入）。
+    const handle = createEditor(host, EditorState.create({ extensions: [EditorView.editable.of(false)] }));
     viewRef.current = handle.view;
     // 阅读位置实时落库（0.31）：滚动停 800ms 记一次，读到一半关软件也有值。
     // 切标签的捕获走 activateTab/openNote，这里兜住「一直读、没切过标签」。
@@ -3333,6 +3360,9 @@ export default function App() {
     setCreateFolderOverride(folder);
     setDraft("");
     setError(null);
+    // 0.33.0 停点3：移动端输入行在文件抽屉顶部——抽屉收着时点「新建笔记/
+    // 今日日记」毫无可见反馈（真机实测）。顺手展开抽屉让输入行进入视野。
+    if (isMobile()) setLeftCollapsed(false);
   }, []);
 
   const cancelCreate = useCallback(() => {
@@ -3359,6 +3389,8 @@ export default function App() {
       }
       cancelCreate();
       await openDaily(daily.today, name);
+      // 0.33.0 停点3：与新建笔记一致——打开后收抽屉
+      if (isMobile()) setLeftCollapsed(true);
       return;
     }
     try {
@@ -3385,6 +3417,8 @@ export default function App() {
         await refresh(vault);
         // 新建后直接打开，省掉再去树里找一次
         await openNote(path);
+        // 0.33.0 停点3：移动端创建走的抽屉，打开笔记后收掉，别让文件树挡正文
+        if (isMobile()) setLeftCollapsed(true);
       } else {
         const path = await createFolder(vault, createFolderOverride || createTargetFolder(), name);
         cancelCreate();
@@ -3783,6 +3817,74 @@ export default function App() {
     },
     [current],
   );
+
+  // ---------------- 移动端阅读/编辑分离（0.33.0 批C） ----------------
+
+  /** 顶栏「编辑」：解禁输入 + 聚焦弹键盘（工具栏由 body.m-editing 显示）。 */
+  const enterMobileEdit = useCallback(() => {
+    setMobileEdit(true);
+    setMobileZen(false);
+    const view = viewRef.current;
+    if (view) {
+      applyEditable(view, true);
+      view.focus();
+    }
+  }, []);
+
+  /** 工具栏「✓ 完成」：收键盘 + 回阅读态（保持沉浸与否由用户接下来点哪决定）。 */
+  const exitMobileEdit = useCallback(() => {
+    const view = viewRef.current;
+    const path = viewOwnerRef.current;
+    if (view) {
+      view.contentDOM.blur();
+      applyEditable(view, false);
+      // 回写缓存：编辑态期间的 dispatch/自动保存会把 editable=true 的状态存进
+      // stateStore，完成后若不回写，「再点同一篇笔记」的重装载（activateTab 是
+      // 命令式 setState，activeTab 不变、重配 effect 不跑）会把可编辑态带回来
+      if (path) stateStore.current.set(path, view.state);
+    }
+    setMobileEdit(false);
+  }, []);
+
+  // body 类：m-editing（工具栏显隐）/ m-zen（上下栏滑出）
+  useEffect(() => {
+    if (!isMobile()) return;
+    document.body.classList.toggle("m-editing", mobileEdit);
+    document.body.classList.toggle("m-zen", mobileZen);
+  }, [mobileEdit, mobileZen]);
+
+  // 打开/切换笔记 = 回阅读态、栏可见（阅读是移动端的默认姿态）
+  useEffect(() => {
+    if (!isMobile()) return;
+    setMobileEdit(false);
+    setMobileZen(false);
+  }, [activeTab]);
+
+  // 可编辑性集中重配：装载（view.setState 先于 React setState 执行）与
+  // mobileEdit 切换都经这里——stateStore 缓存的状态 editable 初值恒 true，
+  // 阅读态下换装任何存量状态后都要重新压成 false
+  useEffect(() => {
+    if (!isMobile()) return;
+    const view = viewRef.current;
+    if (view) applyEditable(view, mobileEditRef.current);
+  }, [mobileEdit, activeTab]);
+
+  // 编辑器字号缩放（仅移动端消费；桌面 --qn-edit-scale 恒缺省 1）
+  useEffect(() => {
+    if (!isMobile()) return;
+    document.documentElement.style.setProperty(
+      "--qn-edit-scale",
+      String(settings.mobileFontScale || 1),
+    );
+  }, [settings.mobileFontScale]);
+
+  // 沉浸进出伴随容器高度变化：过渡结束后补一次测量，防高度图陈旧导致
+  // 行号/点击整体漂移（CM6 异步变高必须 requestMeasure 的铁律）
+  useEffect(() => {
+    if (!mobileZen) return;
+    const timer = window.setTimeout(() => viewRef.current?.requestMeasure(), 320);
+    return () => window.clearTimeout(timer);
+  }, [mobileZen]);
 
   const changeRightPanel = useCallback((next: "daily" | "outline" | "stats" | "vocab") => {
     setRightPanel(next);
@@ -5385,14 +5487,19 @@ export default function App() {
             </button>
           )}
           {isMobile() ? (
-            /* 移动端：两个文字段合成一个互切图标钮，省下一半顶栏宽度 */
+            /* 0.33.0 批C：视图模式（live/源码）移动端退场——阅读/编辑分离模型：
+               打开即阅读，这里只留「编辑」入口；编辑态固定 live 所见即所得。
+               停点2 反馈修正：再点一次=完成（toggle 退出，不再只认工具栏 ✓）；
+               没打开笔记时禁用（空编辑器不该弹光标和键盘） */
             <button
               type="button"
-              className="seg mode-toggle"
-              onClick={() => changeMode(mode === "live" ? "source" : "live")}
-              title={mode === "live" ? "切换到源码（Ctrl+E）" : "切换到实时预览（Ctrl+E）"}
+              className={`seg mode-toggle${mobileEdit ? " is-on" : ""}`}
+              onClick={() => (mobileEdit ? exitMobileEdit() : enterMobileEdit())}
+              disabled={!current}
+              title={mobileEdit ? "完成编辑" : "编辑这篇笔记"}
+              aria-pressed={mobileEdit}
             >
-              {mode === "live" ? <IconEye size={14} /> : <IconCode size={14} />}
+              {mobileEdit ? <IconCheck size={16} /> : <IconPenLine size={16} />}
             </button>
           ) : (
             <div className="mode-switch" role="group" aria-label="视图模式">
@@ -5692,9 +5799,9 @@ export default function App() {
                 setVaultGateOpen(false);
                 void switchVault(p);
               }}
-              onEnableSync={(p) => void enableVaultSync(p)}
+              onEnableSync={enableVaultSync}
               syncConfigured={Boolean(sync.config.serverUrl)}
-              syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
+              isVaultSyncEnabled={(p) => syncRef.current?.enabledForVault(p) ?? Promise.resolve(false)}
               onConfigureSync={(server, username, password) =>
                 sync.updateConfig({ serverUrl: server, username, password })
               }
@@ -6489,6 +6596,9 @@ export default function App() {
                 // 焦点窗格与目录跟随（0.32.2 分栏）：点左栏把它记为聚焦窗格
                 focusedPaneRef.current = "main";
                 if (outlineFollow === "split") setOutlineFollow("editor");
+                // 0.33.0 批C：阅读态点正文 = 进沉浸阅读（上下栏滑出，最大化阅读
+                // 空间）；编辑态点击不受影响（正常放置光标）
+                if (isMobile() && !mobileEditRef.current && !mobileZen) setMobileZen(true);
               }}
             />
             </div>
@@ -6670,6 +6780,19 @@ export default function App() {
               >
                 📷
               </button>
+              {/* 0.33.0 批C：编辑态唯一的退出入口——收键盘回阅读态（不回退
+                  沉浸与否，由用户接下来点哪决定） */}
+              <button
+                type="button"
+                className="mobile-md-done"
+                title="完成编辑"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  exitMobileEdit();
+                }}
+              >
+                <IconCheck size={15} />
+              </button>
             </div>
           )}
           {previewPath && vault && (
@@ -6682,9 +6805,9 @@ export default function App() {
               <div className="editor-empty">
                 <MobileVaultGate
                   onOpen={(p) => void switchVault(p)}
-                  onEnableSync={(p) => void enableVaultSync(p)}
+                  onEnableSync={enableVaultSync}
                   syncConfigured={Boolean(sync.config.serverUrl)}
-                  syncActiveVaultName={sync.config.enabled ? sync.vaultName : null}
+                  isVaultSyncEnabled={(p) => syncRef.current?.enabledForVault(p) ?? Promise.resolve(false)}
                   onConfigureSync={(server, username, password) =>
                     sync.updateConfig({ serverUrl: server, username, password })
                   }
@@ -6913,6 +7036,17 @@ export default function App() {
         </aside>
         )}
       </div>
+
+      {/* 移动端沉浸阅读（0.33.0 批C）：阅读态点正文后上下栏滑出，顶部留一条
+          热区（带轻微渐隐提示）点一下唤回顶栏与底栏 */}
+      {isMobile() && mobileZen && !mobileEdit && (
+        <div
+          className="m-zen-peek"
+          role="button"
+          aria-label="显示顶部与底部栏"
+          onClick={() => setMobileZen(false)}
+        />
+      )}
 
       {/* 移动端底部导航：文件树 / 快速笔记 / 面板（桌面无此元素）。
           三键互斥：点任何一键先收掉全部抽屉与弹层（设置/命令面板/速记弹窗），

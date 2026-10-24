@@ -1796,6 +1796,10 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   margin-left: max(24px, (100cqw - 900px) / 2);
   margin-right: 24px;
   caret-color: var(--accent);
+  /* 0.33.0 批C 字号缩放：基准 16px 是本条规则生效前的实测值（CM6 默认主题
+     的 monospace 字号）；桌面 --qn-edit-scale 恒缺省 1，观感零变化。标题/行高
+     等 em 系定义随之等比跟随 */
+  font-size: calc(16px * var(--qn-edit-scale, 1));
 }
 
 .cm-cursor {
@@ -8511,27 +8515,38 @@ button.cm-tag:hover {
   align-items: center;
   justify-content: center;
   min-height: 60vh;
-  padding: 20px;
-  gap: 10px;
+  /* 0.33.0 停点1 第三轮（§二）：顶部紧凑，减少无意义留白 */
+  padding: 14px 16px 20px;
+  gap: 9px;
   text-align: center;
 }
 
+/* 0.33.0 批B（需求 §八）：头部两行——标题行（仓库 + 多选同步 + 关闭）与
+   路径行（全宽省略）；多选同步不再是列表上方游离的独立按钮 */
 .mv-gate-head {
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
   width: 100%;
   max-width: 560px;
 }
 
-.mv-gate-head h2 {
+.mv-gate-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mv-gate-title h2 {
   margin: 0;
+  margin-right: auto;
 }
 
 .mv-home {
-  flex: 1;
+  width: 100%;
   font-size: 12px;
-  opacity: 0.6;
+  color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -8581,13 +8596,19 @@ button.cm-tag:hover {
   margin: 8px 0;
 }
 
+/* ---- 本地仓库卡（0.33.0 停点1 第三轮规范 §三）：三行——名称 / 辅助信息 /
+   同步状态小标签。圆角 12、弱边框、轻表面，整卡可点（:active 轻缩放） */
 .mv-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  /* button 的 UA 默认样式带 align-items:flex-start——flex 列的子行会全部
+     收缩到内容宽（0.33.0 停点1 第五轮「状态标签没右对齐」根因：meta 行收缩，
+     flex:1 无从伸展）。显式 stretch 让名称/meta 占满卡宽，状态才能真正推右 */
+  align-items: stretch;
+  gap: 3px;
   text-align: left;
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-radius: 12px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.08));
   background: var(--bg-panel, rgba(255, 255, 255, 0.03));
@@ -8596,7 +8617,8 @@ button.cm-tag:hover {
 }
 
 .mv-card:active {
-  transform: scale(0.99);
+  transform: scale(0.985);
+  background: var(--surface-2);
 }
 
 .mv-card-name {
@@ -8604,22 +8626,33 @@ button.cm-tag:hover {
   align-items: center;
   gap: 8px;
   font-weight: 600;
+  font-size: 14px;
+  min-width: 0;
 }
 
+/* 图标禁止被压缩：SVG 在 flex 行里默认 flex-shrink:1，长名会把图标压小压歪
+   （0.33.0 停点1「长名时文件夹图标变小」根因，image-view 实测约缩到 60%） */
+.mv-card-name > svg,
+.mv-cloud-name > svg {
+  flex: none;
+}
+
+/* 辅助信息行（0.33.0 停点1 第四轮）：左=数量/时间（可省略），右=同步状态
+   标签——用户要求状态与 meta 同行且右对齐 */
 .mv-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
-  opacity: 0.55;
+  color: var(--text-faint);
 }
 
-.mv-badge {
-  position: absolute;
-  top: 10px;
-  right: 12px;
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(108, 140, 255, 0.16);
-  color: #8ea6ff;
+.mv-card-meta-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mv-create {
@@ -8646,6 +8679,205 @@ button.cm-tag:hover {
   margin: 6px 0 0;
 }
 
+/* 本地卡名称：完整换行显示（0.33.0 停点1 第四轮——用户两轮反馈都不接受
+   任何截断，单行/两行省略全部退回）；长英文串用 anywhere 断行防撑破 */
+.mv-card-name-text {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* 同步状态小标签（§三/§九 四级）：紫系轻量，不是按钮；meta 行内右侧 */
+.mv-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  font-size: 11.5px;
+  color: var(--accent);
+}
+
+/* 状态点（§七）：轻量色点区分，不用高饱和大色块 */
+.mv-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-faint);
+}
+
+.mv-dot.is-sync {
+  background: var(--accent);
+}
+
+.mv-dot.is-local {
+  background: var(--ok);
+}
+
+.mv-dot.is-cloud {
+  background: var(--text-faint);
+}
+
+.mv-dot.is-pulling {
+  background: var(--accent);
+  animation: mv-dot-pulse 1s ease-in-out infinite;
+}
+
+@keyframes mv-dot-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+/* 空状态（§十一）与云端加载失败（§十二：轻量提示 + 重新加载） */
+.mv-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 26px 0 18px;
+  text-align: center;
+}
+
+.mv-empty-title {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.mv-empty-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.mv-cloud-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--danger-border, #5b3238);
+  background: var(--danger-soft);
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+/* §五：新建仓库=独立居中次级按钮（描边轻填充、≥44dp 触控、明显间距）；
+   「更改基础目录」退为弱化文字链接 */
+.mv-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 2px;
+}
+
+.mv-new-vault {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 22px;
+  border-radius: 12px;
+  border: 1px solid var(--accent-soft);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mv-new-vault:active {
+  transform: scale(0.97);
+}
+
+.mv-change-home {
+  border: 0;
+  background: transparent;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-faint);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+
+/* ---- 0.33.0 批B（需求 §八）：云端仓库列表行 ----
+   0.32.2 真机「拉取按钮与文字重叠」根因：整卡是 button，内部再叠「拉取到
+   本地」伪按钮 span，挤压即压字。重构为列表行：名称弹性省略 + 版本号三级
+   文字 + 右侧固定宽真按钮，flex 布局永不重叠；按钮文案切换（拉取/拉取中/
+   打开）不跳动。 */
+.mv-cloud-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  /* mv-gate 是 align-items:center 的 column flex，子项不声明宽度会 shrink-to-fit
+     成 max-content 撑破卡片（诊断实测 594px > 卡片 354px）——占满容器宽 */
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface);
+}
+
+.mv-cloud-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+}
+
+.mv-cloud-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: 13.5px;
+  /* flex item 默认 min-width:auto（=min-content），长 nowrap 文本会撑破整行，
+     省略号永远轮不到——显式放开收缩（0.33.0 批B 真机「长名不省略」根因） */
+  min-width: 0;
+}
+
+.mv-cloud-name-text {
+  /* 完整换行显示（0.33.0 停点1 第四轮，与本地卡一致） */
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.mv-cloud-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* 拉取/打开是本区唯一主操作（§一 紫蓝只给主要按钮）：轻紫底 + 紫字，
+   固定宽保证文案切换（拉取/拉取中/打开）不跳动；§十 触控 ≥44dp */
+.mv-cloud-btn {
+  flex: none;
+  width: 84px;
+  min-height: 44px;
+  padding: 0;
+  justify-content: center;
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent-strong);
+}
+
 /* ==================== A2：移动端布局（触屏 + 窄屏） ==================== */
 /* 判定口径：hover:none + pointer:coarse（触摸设备）。与 isMobile()（UA）配合，
    CSS 管呈现形态，React 管交互入口。 */
@@ -8669,9 +8901,11 @@ button.cm-tag:hover {
 /* 移动端骨架：侧栏抽屉化 + 底部导航。900px 以下且触屏生效；
    桌面窄窗口（有鼠标）保持现有挤压布局不变。 */
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* 0.33.0 批D：底栏高度统一变量（46→54，触控舒适），下缘安全区各处引用 */
   .app {
+    --m-nav-h: 54px;
     /* 底部导航占位（含手势条安全区） */
-    padding-bottom: calc(46px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(var(--m-nav-h) + env(safe-area-inset-bottom, 0px));
   }
 
   /* 桌面窗口概念全部退场；顶栏的左右栏开关与底栏重复，也退场 */
@@ -8693,7 +8927,7 @@ button.cm-tag:hover {
   .sidebar-right {
     position: fixed;
     top: 48px;
-    bottom: calc(46px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(var(--m-nav-h, 54px) + env(safe-area-inset-bottom, 0px));
     width: min(80vw, 330px) !important;
     min-width: 0 !important;
     z-index: 70;
@@ -8747,7 +8981,7 @@ button.cm-tag:hover {
     left: 0;
     right: 0;
     bottom: 0;
-    height: calc(46px + env(safe-area-inset-bottom, 0px));
+    height: calc(var(--m-nav-h, 54px) + env(safe-area-inset-bottom, 0px));
     padding-bottom: env(safe-area-inset-bottom, 0px);
     display: flex;
     align-items: stretch;
@@ -8762,6 +8996,10 @@ button.cm-tag:hover {
     align-items: center;
     justify-content: center;
     gap: 2px;
+    /* 0.33.0 批D（需求 §四）：按钮本体留边，选中态画一块极轻的紫色圆角
+       背景（不用大色块），触控区仍是整个 54px 高的格子 */
+    margin: 5px 6px;
+    border-radius: 12px;
     border: 0;
     background: transparent;
     color: var(--text-dim);
@@ -8770,6 +9008,7 @@ button.cm-tag:hover {
   }
   .mobile-nav button.is-on {
     color: var(--accent, #8ea6ff);
+    background: var(--accent-soft);
   }
 }
 
@@ -8781,7 +9020,7 @@ button.cm-tag:hover {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(46px + env(safe-area-inset-bottom, 0px));
+    bottom: calc(var(--m-nav-h, 54px) + env(safe-area-inset-bottom, 0px));
     height: 42px;
     display: flex;
     align-items: stretch;
@@ -8805,7 +9044,10 @@ button.cm-tag:hover {
   }
 }
 
-/* 设置面板全屏化：桌面尺寸固定 860px，移动端占满视口（顶部安全区留白） */
+/* 设置面板全屏化：桌面尺寸固定 860px，移动端占满视口。0.33.0 停点3 第四轮：
+   面板不再自带 env() 顶部留白——那会把状态栏条留在面板内、位于二级吸顶头
+   上方，滚动内容仍能从缝里露出（真机复测截图实测）；安全区改由二级头 /
+   一级导航各自的 padding 承担，吸顶头从屏幕最顶一路盖下来 */
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
   .settings-panel {
     position: fixed !important;
@@ -8815,7 +9057,6 @@ button.cm-tag:hover {
     height: 100% !important;
     border: 0 !important;
     border-radius: 0 !important;
-    padding-top: env(safe-area-inset-top, 0px);
     animation: none;
   }
 }
@@ -8906,20 +9147,60 @@ button.cm-tag:hover {
     padding: 7px 12px;
   }
 
-  /* 行布局：桌面是 label 118px 固定列 + 控件同行；手机放不下，长说明文字
-     会在 118px 列里溢出并与右列控件交错重叠（真机截图的「文字分割」）。
-     改为 label 独占一行、控件第二行。 */
+  /* 行布局（0.33.0 批B 按需求 §九重做，用户拍板混合规则）：
+     桌面是 grid（左列标签+说明、右列控件），手机上宽控件（下拉 min-width:170px、
+     滑杆）会把 minmax(0,1fr) 的标签列压到近 0——标签竖排成「一列字」，即
+     0.32.2 真机「背景图片文字被挤成一列」的根因。A2 第五批加的 flex-wrap
+     对 grid 无效，当时并未真正修掉。移动端整体覆盖为 flex 三段式：
+       行1 = 标签(弹性) + 短控件（开关/下拉/分段钮，右侧）
+       行2 = 说明文字（全宽，弱化）
+       行3 = 长控件（滑杆/文本输入，全宽）
+     排列靠 order：控件默认排在标签后（DOM 里 desc 在控件前面，不拨序会插中间）。 */
   .settings-row {
+    display: flex;
     flex-wrap: wrap;
-    row-gap: 6px;
+    align-items: center;
+    column-gap: 12px;
+    row-gap: 7px;
   }
-  .settings-row > span {
-    width: 100%;
+  .settings-row > span:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
   }
-  .settings-row > input:not([type="checkbox"]),
-  .settings-row > select {
+  .settings-row > input[type="checkbox"],
+  .settings-row > select,
+  .settings-row > .settings-select,
+  .settings-row > .settings-inline,
+  .settings-row > .settings-segmented,
+  .settings-row > kbd {
+    order: 1;
+  }
+  .settings-row > .settings-row-desc {
+    order: 2;
+    flex-basis: 100%;
+  }
+  .settings-row > .settings-slider,
+  .settings-row > input:not([type="checkbox"]) {
+    order: 3;
     width: 100%;
     flex: 1 1 100%;
+  }
+  /* 下拉同行但要能收缩（桌面 min-width:170px 在 390dp 下太占） */
+  .settings-row > .settings-select {
+    min-width: 120px;
+    flex: 1 1 140px;
+  }
+  .settings-row > select {
+    width: auto;
+    flex: 1 1 120px;
+  }
+  /* 滑杆全宽后，轨道从桌面固定 160px 改为撑满剩余宽度 */
+  .settings-row > .settings-slider {
+    min-width: 0;
+  }
+  .settings-row .settings-slider input[type="range"] {
+    width: 100%;
+    flex: 1 1 auto;
   }
 }
 
@@ -8988,9 +9269,8 @@ button.cm-tag:hover {
     flex: none;
   }
   .mv-sync-toggle {
-    position: absolute;
-    right: 12px;
-    bottom: 10px;
+    /* 0.33.0 停点1：改常规流（mv-card-meta 行内右侧），不再绝对定位 */
+    flex: none;
     font-size: 11.5px;
     padding: 3px 10px;
     border-radius: 999px;
@@ -9023,7 +9303,8 @@ button.cm-tag:hover {
 /* 批量同步：多选态与操作条 */
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
   .mv-multi-toggle {
-    align-self: flex-end;
+    /* 0.33.0 批B 移进 mv-gate-title 后不再需要 flex-end（原是列表上方
+       独立按钮在 column 容器里靠右）；行内由 h2 的 margin-right:auto 推右 */
     padding: 4px 10px;
     font-size: 12.5px;
   }
@@ -9059,9 +9340,13 @@ button.cm-tag:hover {
     margin-top: 10px;
   }
   .mv-pull-title {
-    font-size: 12.5px;
-    opacity: 0.7;
+    /* 0.33.0 停点1 第三轮（§九）：小节标题左对齐、弱化为层级标记 */
+    font-size: 12px;
+    font-weight: 650;
+    letter-spacing: 0.05em;
+    color: var(--text-dim);
     margin: 0 0 6px;
+    text-align: left;
   }
 }
 
@@ -9079,11 +9364,13 @@ button.cm-tag:hover {
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
 
   /* ---------- 一、视觉规范统一 ---------- */
-  /* 三层背景：页面 --bg / 卡片 --panel / 输入 --surface；圆角两档 10/14；
-     强调色只用于选中、主按钮、焦点。 */
+  /* 三层背景：页面 --bg / 卡片 --panel / 输入 --surface；圆角两档 10/16
+     （0.33.0 §十一 卡片统一 14~18dp：lg 档 14→16）；强调色只用于选中、
+     主按钮、焦点。--m-card-pad：卡片内边距基准（0.33.0 批E 各页面消费）。 */
   .app {
     --m-radius: 10px;
-    --m-radius-lg: 14px;
+    --m-radius-lg: 16px;
+    --m-card-pad: 16px;
     --m-accent: var(--accent);
   }
   .mobile-nav,
@@ -9106,14 +9393,19 @@ button.cm-tag:hover {
     border-radius: var(--m-radius);
   }
 
-  /* ---------- 二、顶部栏：52px 高、44dp 触控、pill 即标题 ---------- */
+  /* ---------- 二、顶部栏（0.33.0 批D：52→48px 收敛、图标钮 44dp 触控、
+      右侧图标组右对齐——searchbox 在移动端隐藏后 topbar-end 失去推力，
+      图标聚在中部偏左，image-view 实测确认） ---------- */
   .topbar {
-    height: 52px;
+    height: 48px;
     gap: 4px;
   }
+  .topbar .topbar-end {
+    margin-left: auto;
+  }
   .topbar .icon-btn {
-    width: 42px;
-    height: 42px;
+    width: 44px;
+    height: 44px;
     border-radius: 10px;
   }
   .vault-pill {
@@ -9230,14 +9522,34 @@ button.cm-tag:hover {
     width: 100%;
     align-items: stretch;
     gap: 2px;
-    padding: 8px 10px;
+    /* 0.33.0 停点3 第四轮：面板不再留 env 顶距，一级页的状态栏条由导航
+       自己的 padding 承担（详情页归 .settings-mobile-head 管） */
+    padding: calc(8px + env(safe-area-inset-top, 0px)) 10px 8px;
     overflow: hidden;
     -webkit-mask-image: none;
     mask-image: none;
   }
+  /* 0.33.0 停点3（image-view 实测一级头 64px / 二级头 90px 差 40%）：两级头部
+     统一 56px 容器高、16px 标题、左对齐；二级头返回改纯 ‹ 图标（40dp 触控），
+     × 只留在一级头（关闭设置）；sticky 保留但补内容顶距，滚动内容不再贴着
+     头部下缘「穿底」。
+     第三轮追加（用户截图反馈）：桌面基础的 space-between 在关闭钮 order:-1
+     之后把两个元素分家成「‹ 贴最左、标题贴最右」，改 flex-start 才是真正的
+     「‹ 标题」并排靠左 */
   .settings-nav-head {
     width: 100%;
-    height: 40px;
+    height: 48px;
+    justify-content: flex-start;
+  }
+  /* 0.33.0 停点3 第三轮：关闭钮（‹）挪到标题左侧——右侧放 ‹ 反直觉
+     （用户反馈），返回/关闭的箭头就该在最左；桌面顺序不变 */
+  .settings-nav-head .settings-close {
+    order: -1;
+    margin-right: 2px;
+    margin-left: -6px;
+  }
+  .settings-nav-title {
+    font-size: 16px;
   }
   .settings-search {
     display: none;
@@ -9252,35 +9564,49 @@ button.cm-tag:hover {
     border-radius: var(--m-radius);
     white-space: normal;
   }
-  /* 详情页头 + 分类项的「›」 */
+  /* 详情页头。0.33.0 停点3 第四轮（用户真机复测反馈）：头部必须**从屏幕最顶
+     一路盖下来**——状态栏条由头部自己的 padding-top: env(safe-area-inset-top)
+     承担（面板不再留 env 顶距），滚动内容与头部之间从此没有任何可视缝隙。
+     sticky top 保持 0；height 用 calc 补回 env，保证 ‹ 标题行仍在安全区下方
+     的 56px 内容盒里居中（box-sizing: border-box）；底边框做明确分隔 */
   .settings-mobile-head {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 8px 10px 10px;
+    gap: 4px;
+    height: calc(56px + env(safe-area-inset-top, 0px));
+    padding: env(safe-area-inset-top, 0px) 10px 0 2px;
     border-bottom: 1px solid var(--border-soft);
+    background: var(--panel);
     position: sticky;
     top: 0;
-    background: var(--panel);
-    z-index: 3;
+    z-index: 5;
   }
   .settings-back {
     border: 0;
     background: transparent;
     color: var(--accent);
-    font-size: 14.5px;
-    padding: 8px 6px;
+    width: 40px;
+    height: 40px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     cursor: pointer;
   }
   .settings-mobile-title {
     flex: 1;
     font-weight: 650;
-    font-size: 15px;
-    text-align: center;
+    font-size: 16px;
+    text-align: left;
   }
-  .settings-mobile-head .settings-close {
-    width: 36px;
-    height: 36px;
+  /* 内容顶距挪到分区上（0.33.0 停点3 第四轮，桌面模拟实测）：body 自己的
+     padding-top 会把 sticky 头包含块的顶边一起压下去，头部最多只能吸到
+     padding 之内——顶部永远留一条 padding 高的缝，滚动内容正好从那里露出。
+     body 顶距必须为 0，呼吸感由可见分区的 margin-top 提供 */
+  .settings-panel.is-detail .settings-body {
+    padding-top: 0;
+  }
+  .settings-panel.is-detail .settings-sec {
+    margin-top: 12px;
   }
   .settings-nav-item::after {
     content: "›";
@@ -9353,30 +9679,8 @@ button.cm-tag:hover {
     max-width: 100%;
   }
 
-  /* ---------- 七、仓库卡片：紧凑 + 层级 ---------- */
-  .mv-card {
-    padding: 11px 14px;
-    gap: 2px;
-  }
-  .mv-card-name {
-    font-size: 15px;
-  }
-  .mv-card-meta {
-    font-size: 11.5px;
-  }
-  .mv-sync-toggle {
-    font-size: 12px;
-    padding: 5px 12px;
-  }
-  .mv-badge {
-    font-size: 11px;
-  }
-  /* 新建仓库退为次级 */
-  .mv-gate .editor-empty-actions .btn:not(.btn-ghost) {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-  }
+  /* ---------- 七、仓库卡片（0.33.0 停点1 第三轮起基准样式即移动端实际——
+     mv 组件只在移动端渲染，这里不再叠字号/内边距覆盖，避免双源漂移） ---------- */
 
   /* ---------- 八、编辑器：工具栏横滚、正文留白微调 ---------- */
   .mobile-md-toolbar {
@@ -9406,6 +9710,123 @@ button.cm-tag:hover {
   .icon-btn {
     min-width: 40px;
     min-height: 40px;
+  }
+}
+
+/* ==================== 0.33.0 批A：移动端设计令牌与反馈基建 ====================
+   2026-10-24「安卓软件界面优化」§二（四级文字）/§十一（卡片规格）/§十三（交互
+   反馈）。作用域铁律（用户拍板 Q1=A）：本节只在移动端媒体查询内，桌面零变化。
+   主题分支用 html[data-theme=...]——theme.ts 恒写入具体 light/dark，无兜底态。 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* §二 四级文字：一级/二级/三级沿用全局 --text/--text-dim/--text-faint，
+     新增第四级「占位符」——比 faint 更弱，用于输入框占位与非重点信息。
+     定义在 html 级保证 body 下直接挂载的弹层（速记等）也能继承。 */
+  html[data-theme="light"] {
+    --text-placeholder: #a8aeb9;
+  }
+  html[data-theme="dark"] {
+    --text-placeholder: #4a4e5c;
+  }
+
+  /* 占位符统一走四级色。各组件的 ::placeholder 是带类名的局部定义
+     （.sidebar-filter/.palette-input 等八处，特异性压得过元素选择器），
+     移动端用 !important 一把覆盖：不用逐点追改，新增组件也自动跟随 */
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--text-placeholder) !important;
+  }
+
+  /* §一/§十三 顶栏的顶部晕染（--bg-glow 喂给 topbar 的 radial-gradient）
+     移动端撤掉——克制、无发光感的生产力气质 */
+  :root,
+  html[data-theme="dark"] {
+    --bg-glow: transparent;
+  }
+
+  /* §十三 按压反馈补齐（.btn/.mini-btn/.icon-btn/.cal-day 的 :active 均已有）：
+     底栏三键=轻缩放；列表行=按压底色（整行缩放会晃眼）。
+     选中态（.is-active 等）特异性更高，按压时不会被盖掉。 */
+  .mobile-nav button:active {
+    transform: scale(0.95);
+  }
+  .tree-item:active,
+  .vocab-item:active {
+    background: var(--hover);
+  }
+}
+
+/* ==================== 0.33.0 批C：移动端阅读/编辑分离 ====================
+   模型（用户拍板 Q6）：打开笔记默认阅读态（CM6 editable=false，勾选/链接/复制
+   照常）；点正文进沉浸（body.m-zen：顶栏高度收 0 + 底栏滑出 + 底部占位归零，
+   带过渡）；顶栏「编辑」钮进编辑态（body.m-editing：Markdown 工具栏显示），
+   工具栏「✓ 完成」回阅读。沉浸时顶部留一条热区唤回上下栏。 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .topbar {
+    transition: height 0.22s ease, padding 0.22s ease;
+  }
+  body.m-zen .topbar {
+    height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+    box-shadow: none;
+  }
+  .mobile-nav {
+    transition: transform 0.22s ease;
+  }
+  body.m-zen .mobile-nav {
+    transform: translateY(calc(100% + env(safe-area-inset-bottom, 0px)));
+  }
+  body.m-zen .app {
+    padding-bottom: 0;
+  }
+
+  /* Markdown 工具栏只在编辑态出现（原为常驻 + 键盘避让） */
+  body:not(.m-editing) .mobile-md-toolbar {
+    display: none;
+  }
+  /* 停点2：没打开笔记时编辑钮禁用（空编辑器不弹光标/键盘） */
+  .topbar .mode-toggle:disabled {
+    opacity: 0.4;
+  }
+  .mobile-md-done {
+    color: var(--accent);
+    flex: 0 0 auto;
+    min-width: 52px;
+  }
+
+  /* 沉浸唤回热区：顶部一条轻微渐隐的透明带（28px，安全区之上） */
+  .m-zen-peek {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: calc(28px + env(safe-area-inset-top, 0px));
+    z-index: 90;
+    cursor: pointer;
+    background: linear-gradient(rgba(0, 0, 0, 0.28), transparent);
+  }
+}
+
+/* ==================== 0.33.0 批E：页面细节（需求 §五/§六） ==================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* §五 文件树：选中行轻紫背景（全局已有）+ 左侧 2.5px 紫指示条 */
+  .tree-file.is-active,
+  .tree-dir.is-selected {
+    box-shadow: inset 2.5px 0 0 var(--accent);
+  }
+  /* §六 日历：日记/待办卡与月历之间拉开明确的垂直间距（卡片区间隔） */
+  .cal-daynotes {
+    margin-top: 12px;
+  }
+
+  /* 浅色目检（批F）：压掉浏览器默认的黑色 focus outline（浅色页上是一圈
+     突兀深描边），统一为紫色细边 */
+  .settings-row input:focus,
+  .settings-row select:focus,
+  .mv-create input:focus {
+    outline: none;
+    border-color: var(--accent);
   }
 }
 
@@ -9967,6 +10388,9 @@ button.cm-tag:hover {
   align-items: center;
   gap: 6px;
   min-height: 0;
+  /* 0.33.0 批E：释义挪进行 2 后，桌面用 flex-basis:100% 让它换行独占——
+     视觉与原第三行完全一致（桌面零变化），移动端媒体查询里改同行省略 */
+  flex-wrap: wrap;
 }
 
 .vocab-item-phonetic {
@@ -9997,6 +10421,8 @@ button.cm-tag:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 桌面：行 2 内换行独占（= 原第三行）；移动端覆盖为同行 */
+  flex-basis: 100%;
 }
 
 .vocab-item.is-learned .vocab-item-word {
@@ -10491,6 +10917,14 @@ button.cm-tag:hover {
 
   .vocab-item-meaning {
     font-size: 13px;
+    /* 0.33.0 批E（§七）：与音标同行、超出省略——条目两行紧凑 */
+    flex-basis: auto;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .vocab-item-line2 {
+    flex-wrap: nowrap;
   }
 
   .vocab-status {

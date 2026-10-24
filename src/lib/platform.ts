@@ -6,10 +6,13 @@
  * 桌面 WebView2 / WKWebView 不含；比 `platform()`（异步）适合启动即分支的场景。
  */
 export function isMobile(): boolean {
+  // Node 单测环境没有 navigator（settings 等纯模块也被 verify 脚本直接 import）
+  if (typeof navigator === "undefined") return false;
   return /android|iphone|ipad|ipod/i.test(navigator.userAgent);
 }
 
 /** 悬停交互是否存在（移动端触摸屏没有 hover，⋯菜单/工具栏要走长按或常驻按钮）。 */
 export function hasHover(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
   return window.matchMedia("(hover: hover)").matches;
 }

@@ -90,6 +90,25 @@ const livePreviewContextCompartment = new Compartment();
  */
 const darkCompartment = new Compartment();
 
+/**
+ * 编辑开关（0.33.0 批C 阅读/编辑分离）：移动端默认阅读态。用
+ * EditorView.editable（视图层禁输入）而不是 state.readOnly——任务勾选等
+ * widget 的程序 dispatch、选区复制、链接点击在 editable=false 下全部照常。
+ * 桌面恒 true；值随 EditorState 进 stateStore 缓存，装载后由 App 统一重配。
+ */
+const editableCompartment = new Compartment();
+
+/** 重配某个视图的可编辑性（不重建状态，撤销历史与光标保留）。 */
+export function applyEditable(view: EditorView, editable: boolean): void {
+  // 防御：状态里没有本 Compartment 时（App 的空状态裸 create）reconfigure 会
+  // 抛错——空状态自带静态 editable.of(false)，这里跳过即可，别让 effect 崩
+  try {
+    view.dispatch({ effects: editableCompartment.reconfigure(EditorView.editable.of(editable)) });
+  } catch {
+    /* 空状态：静态已禁编辑，无需重配 */
+  }
+}
+
 const modeExtensions = (mode: ViewMode): Extension[] =>
   // 需要整块替换的内容（表格、mermaid 图）必须由 StateField 提供，
   // 因为 CM6 不允许插件产生块级装饰。所以这里同时挂上装饰插件与 StateField。
@@ -182,6 +201,8 @@ export function createEditorState(
       basicSetup,
       syntaxTheme,
       darkCompartment.of(EditorView.darkTheme.of(dark === true)),
+      // 0.33.0 批C：初值恒可编辑；移动端由 App 装载后按阅读/编辑态重配
+      editableCompartment.of(EditorView.editable.of(true)),
       // GFM（表格、任务列表）+ 围栏代码块语法高亮。
       // 语言包由 @codemirror/language-data 动态按需加载，不进入主包。
       languageExtension(language),

@@ -5,6 +5,7 @@
  * 事件回调里，拿不到 React 的 props，它需要一个"总是读到最新值"的入口。
  */
 
+import { isMobile } from "./platform.ts";
 import type { ThemeMode } from "./theme.ts";
 
 export interface Settings {
@@ -159,6 +160,11 @@ export interface Settings {
    * 被扫描：块里的每条 CREATE TABLE 按表名收录，悬浮时显示该条完整语句。
    */
   ddlFilePath: string;
+  /**
+   * 编辑器字号缩放（0.33.0 批C）：仅移动端消费（桌面 CSS 变量恒 1），
+   * 0.85~1.3，写入 html 的 --qn-edit-scale，正文/标题/行高等 em 系全部跟随。
+   */
+  mobileFontScale: number;
 }
 
 /** 背景图的全部可调参数（扁平 bg* 字段与 per-vault 条目共用同一形状）。 */
@@ -225,6 +231,7 @@ const DEFAULTS: Settings = {
   ddlHover: true,
   // 仓库根的普通笔记：用户要能直接看到、手工编辑（同步也覆盖），不走隐藏目录
   ddlFilePath: "数据库表DDL.md",
+  mobileFontScale: 1,
 };
 
 function load(): Settings {
@@ -301,7 +308,10 @@ export function defaultBgSettings(): BgSettings {
   return {
     bgEnabled,
     bgImagePath,
-    bgOpacity,
+    /* 0.33.0 批F（需求 §十）：移动端新仓库的默认不透明度降到 15%——手机屏
+       窄、内容贴脸，35% 的桌面默认观感会抢正文（已存过 per-vault 记录的
+       仓库不受影响，走的还是自己的值） */
+    bgOpacity: isMobile() ? 0.15 : bgOpacity,
     bgBlur,
     bgSharpen,
     bgBrightness,
@@ -340,7 +350,12 @@ export function bgSettingsFor(vault: string | null, settings: Settings = current
   const legacy: BgSettings = {
     bgEnabled: settings.bgEnabled,
     bgImagePath: settings.bgImagePath,
-    bgOpacity: settings.bgOpacity,
+    /* 0.33.0 批F：扁平不透明度仍是出厂默认（用户从未动过滑杆）时，落到
+       defaultBgSettings 的平台默认——移动端 15%、桌面 35%；用户调过的值
+       （≠默认）原样保留。副作用：故意设成 0.35 的移动端用户会被当成
+       未动过，可接受（滑杆再拖一下就写 per-vault 了） */
+    bgOpacity:
+      settings.bgOpacity === DEFAULTS.bgOpacity ? defaults.bgOpacity : settings.bgOpacity,
     bgBlur: settings.bgBlur,
     bgSharpen: settings.bgSharpen ?? defaults.bgSharpen,
     bgBrightness: settings.bgBrightness,

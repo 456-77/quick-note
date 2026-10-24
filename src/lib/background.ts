@@ -17,6 +17,7 @@
  */
 
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { isMobile } from "./platform";
 import type { BgSettings } from "./settings.ts";
 
 const LAYER_ID = "qn-bg-layer";
@@ -154,12 +155,19 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   // 顶栏 82%、侧栏 66%、面板卡 76%）按滑杆等比缩放——80 就是 0.28 及以前的
   // 默认观感，调低背景透得更多，调到 100 表面全实。上限 100 防止溢出成
   // "比不透明还怪"的混合结果。
+  // 0.33.0 停点1 用户反馈：移动端按桌面基准半透明，抽屉/面板下的空状态文字
+  // 与背景图会透出来叠在列表上（模拟器截图实证）。手机屏窄、面板贴脸，
+  // 可读性优先——移动端基准整体提到接近不透明，仅保留一丝氛围；滑杆仍在
+  // 各自基准上等比缩放，需求 §十「不同壁纸下都必须保持可读性」。
   const k = clamp((bg.bgSurface ?? 80) / 80, 0, 1.25);
+  const bases = isMobile()
+    ? { panel: 97, side: 96, editor: 94, card: 95 }
+    : { panel: 82, side: 66, editor: 80, card: 76 };
   const veil = (base: number) => `${Math.min(100, base * k)}%`;
-  root.style.setProperty("--qn-veil-panel", veil(82));
-  root.style.setProperty("--qn-veil-side", veil(66));
-  root.style.setProperty("--qn-veil-editor", veil(80));
-  root.style.setProperty("--qn-veil-card", veil(76));
+  root.style.setProperty("--qn-veil-panel", veil(bases.panel));
+  root.style.setProperty("--qn-veil-side", veil(bases.side));
+  root.style.setProperty("--qn-veil-editor", veil(bases.editor));
+  root.style.setProperty("--qn-veil-card", veil(bases.card));
 }
 
 /** 界面浓度写进 html 的 CSS 变量名（关闭背景时逐一移除）。 */

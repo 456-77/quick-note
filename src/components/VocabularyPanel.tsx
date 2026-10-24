@@ -944,8 +944,9 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
                       {entry.learned ? "已掌握" : "待学习"}
                     </button>
                   </div>
-                  {/* 第二行：音标 + 发音按钮（系统没有语音合成就整行不渲染，规范 §四） */}
-                  {(entry.phonetic || SPEECH_OK) && (
+                  {/* 第二行：音标 + 发音 + 释义（0.33.0 批E 需求 §七：三行压两行，
+                      释义同行省略截断，条目更紧凑；全空则省略整行） */}
+                  {(entry.phonetic || entry.meaning || SPEECH_OK) && (
                     <div className="vocab-item-line2">
                       {entry.phonetic && <span className="vocab-item-phonetic">{entry.phonetic}</span>}
                       {SPEECH_OK && (
@@ -961,10 +962,9 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
                           🔊
                         </button>
                       )}
+                      {entry.meaning && <span className="vocab-item-meaning">{entry.meaning}</span>}
                     </div>
                   )}
-                  {/* 第三行：简短释义；没有就省略整行（条目高度允许不一致，规范 §四） */}
-                  {entry.meaning && <div className="vocab-item-meaning">{entry.meaning}</div>}
                 </div>
               ))}
             </div>
