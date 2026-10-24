@@ -269,6 +269,89 @@ try {
     }))()`);
     check(!done.editing && done.editable === "false", "批C：✓ 完成 → 回阅读态（重新禁编辑）");
 
+    // 0.33.1 用户反馈「显示的是源码，切换编辑模式也没用」：mode=source（历史版本
+    // 切过，持久化在 localStorage）时阅读态也显示源码——阅读态必须恒 live 渲染，
+    // 编辑态尊重已选模式。持久化 source + 重载（模拟老用户存量状态）；顺带种子
+    // 标签词表（quicknote.tags.v2 按仓库路径分桶，给后面的建议面板断言用）
+    await evaluate(
+      ws,
+      `localStorage.setItem('quicknote.mode', 'source'); localStorage.setItem('quicknote.tags.v2', JSON.stringify({ ${JSON.stringify(vault)}: ['git', '部署', '海亮', '问题', '已解决'] })); location.reload(); true`,
+    );
+    await sleep(2500);
+    await waitFor(ws, `!!document.querySelector('.editor-host .cm-content')`, 15000);
+    // 重载后应用回空状态（不自动重开笔记）——先点开一篇再断言
+    await evaluate(
+      ws,
+      `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.offsetParent !== null); t?.click(); return !!t; })()`,
+    );
+    await waitFor(ws, `!!document.querySelector('.tree-file.is-active')`, 10000);
+    await sleep(800);
+    const readingLive = await evaluate(ws, `(() => ({
+      editing: document.body.classList.contains('m-editing'),
+      editable: document.querySelector('.editor-host .cm-content')?.getAttribute('contenteditable'),
+      rendered: !!document.querySelector('.editor-host .cm-line.cm-lp-heading'),
+      rawHash: (document.querySelector('.editor-host .cm-content .cm-line')?.textContent ?? '').trimStart().startsWith('#'),
+      mode: localStorage.getItem('quicknote.mode'),
+    }))()`);
+    check(
+      !readingLive.editing && readingLive.editable === "false" && readingLive.rendered && !readingLive.rawHash,
+      `0.33.1：mode=${readingLive.mode} 时阅读态仍 live 渲染（标题装饰=${readingLive.rendered}，无裸 #=${!readingLive.rawHash}）`,
+    );
+    // 编辑态：mode=source 时编辑态显示原文（尊重命令面板/快捷键的选择）
+    await evaluate(ws, `document.querySelector('header.topbar .mode-toggle')?.click()`);
+    await sleep(500);
+    const srcEdit = await evaluate(ws, `(() => ({
+      editing: document.body.classList.contains('m-editing'),
+      rendered: !!document.querySelector('.editor-host .cm-line.cm-lp-heading'),
+    }))()`);
+    check(srcEdit.editing && !srcEdit.rendered, `0.33.1：mode=source 编辑态显示原文（无标题装饰=${!srcEdit.rendered}）`);
+    await evaluate(ws, `document.querySelector('header.topbar .mode-toggle')?.click()`);
+    await sleep(300);
+    await evaluate(ws, `localStorage.setItem('quicknote.mode', 'live')`);
+
+    // 0.33.1 用户反馈「标签列表透图」：.menu-backdrop 原为纯点击层无底色，
+    // 移动端补遮罩——开着标签弹窗时 backdrop 必须有实际底色
+    await evaluate(
+      ws,
+      `(() => { [...document.querySelectorAll('header.topbar button')].find((b) => (b.title || '').startsWith('标签') || (b.title || '') === '添加标签')?.click(); return true; })()`,
+    );
+    await sleep(400);
+    const tagScrim = await evaluate(ws, `(() => {
+      const bd = document.querySelector('.menu-backdrop');
+      if (!bd) return { open: false, bg: "" };
+      return { open: !!document.querySelector('.tag-popover'), bg: getComputedStyle(bd).backgroundColor };
+    })()`);
+    check(
+      tagScrim.open && tagScrim.bg !== "rgba(0, 0, 0, 0)",
+      `0.33.1：标签弹窗遮罩有底色（${tagScrim.bg}，原纯点击层=全透）`,
+    );
+    // 0.33.1：自绘标签建议面板替代原生 datalist（安卓 WebView 渲染成透图列表）
+    // ——▼ 展开全量词表，实底面板、点选即上标签
+    await evaluate(ws, `document.querySelector('.tag-popover-caret')?.click()`);
+    await sleep(300);
+    const suggest = await evaluate(ws, `(() => {
+      const p = document.querySelector('.tag-popover-suggest');
+      if (!p) return { open: false, bg: "", items: 0 };
+      return { open: true, bg: getComputedStyle(p).backgroundColor, items: p.querySelectorAll('button').length };
+    })()`);
+    check(
+      suggest.open && suggest.items >= 3 && suggest.bg !== "rgba(0, 0, 0, 0)",
+      `0.33.1：标签建议自绘面板（${suggest.items} 项，bg=${suggest.bg}，替代原生 datalist）`,
+    );
+    const chipAdded = await evaluate(ws, `(() => {
+      const btn = [...document.querySelectorAll('.tag-popover-suggest button')].find((b) => b.textContent.includes('部署'));
+      btn?.click();
+      return !!btn;
+    })()`);
+    await sleep(300);
+    const chipOk = await evaluate(
+      ws,
+      `!!document.querySelector('.tag-popover-chips')?.textContent.includes('#部署')`,
+    );
+    check(chipAdded && chipOk, "0.33.1：点选建议直接上标签（#部署 芯片出现）");
+    await evaluate(ws, `document.querySelector('.menu-backdrop')?.click()`);
+    await sleep(300);
+
     // 回归（模拟器实测抓出）：完成后「再点同一篇笔记」走 activateTab 命令式
     // 重装载，activeTab 不变、重配 effect 不跑——缓存若残留编辑态版本会把
     // editable=true 带回来。exitMobileEdit 已回写缓存，这里验证
@@ -347,9 +430,10 @@ try {
   await screenshot(ws, join(work, "01-main-dark.png"));
 
   // ------------------------------------------------ 设置：外观分区（批B 三段式）
+  // 0.33.1 主页重构后顶栏第一个 icon-btn 是主页图标——搜索钮按 title 精确定位
   await evaluate(
     ws,
-    `(() => { const b = [...document.querySelectorAll('header.topbar button.icon-btn')].find((el) => el.offsetParent !== null); b?.click(); return !!b; })()`,
+    `(() => { const b = [...document.querySelectorAll('header.topbar button.icon-btn')].find((el) => (el.title || '').includes('全局搜索')); b?.click(); return !!b; })()`,
   );
   const paletteOk = await waitFor(ws, `!!document.querySelector('.palette-overlay')`, 8000);
   check(paletteOk, "命令面板打开（顶栏搜索钮）");
@@ -494,13 +578,13 @@ try {
   // 基础目录指针已在 spawn 前预写；浮层 gate 是新 mount 实例，mount 时即读到列表形态
   await evaluate(ws, `(() => { const x = [...document.querySelectorAll('.settings-panel button')].find((b) => b.offsetParent && (b.textContent.trim() === '×' || b.textContent.includes('关闭'))); x?.click(); return true; })()`);
   await sleep(400);
-  await evaluate(ws, `document.querySelector('header.topbar .vault-pill')?.click()`);
-  const gateOk = await waitFor(ws, `!!document.querySelector('.mv-overlay .mv-gate-head')`, 8000);
+  await evaluate(ws, `document.querySelector('header.topbar .vault-home-btn')?.click()`);
+  const gateOk = await waitFor(ws, `!!document.querySelector('.vault-home-page .mv-gate-head')`, 8000);
   check(gateOk, "仓库页打开且为列表形态（vault-pill 直达）");
 
   const headLayout = await evaluate(ws, `(() => {
-    const title = document.querySelector('.mv-overlay .mv-gate-title');
-    const home = document.querySelector('.mv-overlay .mv-home');
+    const title = document.querySelector('.vault-home-page .mv-gate-title');
+    const home = document.querySelector('.vault-home-page .mv-home');
     if (!title || !home) return { found: false };
     const tr = title.getBoundingClientRect();
     const hr = home.getBoundingClientRect();
@@ -510,7 +594,7 @@ try {
 
   // 注入假云端行：验证 flex 布局下按钮固定宽不重叠、长名单行省略、图标不被压小
   const cloudRow = await evaluate(ws, `(() => {
-    const gate = document.querySelector('.mv-overlay .mv-gate');
+    const gate = document.querySelector('.vault-home-page .mv-gate');
     if (!gate) return { found: false };
     const row = document.createElement('div');
     row.className = 'mv-cloud-row';
@@ -546,7 +630,7 @@ try {
 
   // 停点1 第四轮：名称完整换行 + 状态标签并入 meta 行右对齐
   const cardCheck = await evaluate(ws, `(() => {
-    const list = document.querySelector('.mv-overlay .mv-list');
+    const list = document.querySelector('.vault-home-page .mv-list');
     if (!list) return { found: false };
     const card = document.createElement('button');
     card.className = 'mv-card';
@@ -602,10 +686,10 @@ try {
     lightThemeState.media && lightThemeState.ph !== "",
     `批A：浅色下 --text-placeholder 有值（${lightThemeState.ph}；媒体=${lightThemeState.media}）`,
   );
-  // 再开一次设置截图
+  // 再开一次设置截图（0.33.1 主页图标是第一个 icon-btn——搜索钮按 title 精确定位）
   await evaluate(
     ws,
-    `(() => { const b = [...document.querySelectorAll('header.topbar button.icon-btn')].find((el) => el.offsetParent !== null); b?.click(); return !!b; })()`,
+    `(() => { const b = [...document.querySelectorAll('header.topbar button.icon-btn')].find((el) => (el.title || '').includes('全局搜索')); b?.click(); return !!b; })()`,
   );
   await waitFor(ws, `!!document.querySelector('.palette-overlay')`, 8000);
   await evaluate(

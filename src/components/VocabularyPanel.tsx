@@ -100,20 +100,30 @@ function addedAt(entry: VocabEntry): string {
 }
 
 /**
- * 系统语音合成可用才显示发音按钮（规范：没有发音资源时不显示无效按钮）。
- * WebView2 自带 en-US 语音；Android WebView 也支持 speechSynthesis。
+ * 0.33.1 用户反馈「添加发音功能」：安卓 WebView 根本没有 speechSynthesis
+ * （QNTest 实测 `in window === false`），此前按钮用 SPEECH_OK 门控——真机上
+ * 从不渲染、也永远无声。改走**有道 dictvoice 音频**（查释义同源，网络可达性
+ * 已被释义查询验证），Audio 播放失败再退 Web Speech（桌面 WebView2 自带
+ * en-US 语音）。按钮不再做能力门控——音频路径不依赖本地语音引擎。
  */
-const SPEECH_OK = typeof window !== "undefined" && "speechSynthesis" in window;
-
-/** 朗读一个单词（列表行、详情、复习卡共用）。失败静默——按钮只在能力存在时渲染。 */
 function speakWord(word: string) {
+  const tts = () => {
+    try {
+      window.speechSynthesis?.cancel();
+      const utterance = new SpeechSynthesisUtterance(word);
+      utterance.lang = "en-US";
+      window.speechSynthesis?.speak(utterance);
+    } catch {
+      // 语音引擎瞬时不可用就算了
+    }
+  };
   try {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(word);
-    utterance.lang = "en-US";
-    window.speechSynthesis.speak(utterance);
+    const audio = new Audio(
+      `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(word)}&type=2`,
+    );
+    audio.play().catch(tts);
   } catch {
-    // 语音引擎瞬时不可用就算了
+    tts();
   }
 }
 
@@ -946,10 +956,10 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
                   </div>
                   {/* 第二行：音标 + 发音 + 释义（0.33.0 批E 需求 §七：三行压两行，
                       释义同行省略截断，条目更紧凑；全空则省略整行） */}
-                  {(entry.phonetic || entry.meaning || SPEECH_OK) && (
+                  {(entry.phonetic || entry.meaning) && (
                     <div className="vocab-item-line2">
                       {entry.phonetic && <span className="vocab-item-phonetic">{entry.phonetic}</span>}
-                      {SPEECH_OK && (
+                      {
                         <button
                           type="button"
                           className="vocab-item-speak"
@@ -961,7 +971,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
                         >
                           🔊
                         </button>
-                      )}
+                      }
                       {entry.meaning && <span className="vocab-item-meaning">{entry.meaning}</span>}
                     </div>
                   )}
@@ -1095,7 +1105,7 @@ function VocabReview({
             </div>
             <div className="vocab-review-word">
               {entry.word}
-              {SPEECH_OK && (
+              {
                 <button
                   type="button"
                   className="vocab-detail-speak"
@@ -1104,7 +1114,7 @@ function VocabReview({
                 >
                   🔊
                 </button>
-              )}
+              }
             </div>
             {review.revealed ? (
               <div className="vocab-review-answer">
@@ -1167,7 +1177,6 @@ function VocabDetail({
     setPhonetic(entry.phonetic);
   }, [entry.word, entry.meaning, entry.note, entry.phonetic]);
 
-  const canSpeak = SPEECH_OK;
   const speak = () => speakWord(entry.word);
 
   return (
@@ -1177,11 +1186,9 @@ function VocabDetail({
       <div className="vocab-detail" role="dialog" aria-label={`单词详情：${entry.word}`}>
         <div className="vocab-detail-head">
           <span className="vocab-detail-word">{entry.word}</span>
-          {canSpeak && (
-            <button type="button" className="vocab-detail-speak" title="朗读发音" onClick={speak}>
-              🔊
-            </button>
-          )}
+          <button type="button" className="vocab-detail-speak" title="朗读发音" onClick={speak}>
+            🔊
+          </button>
           <span className={`vocab-status${entry.learned ? " is-learned" : ""}`}>
             <span className="vocab-status-dot" aria-hidden>{entry.learned ? "✓" : "●"}</span>
             {entry.learned ? "已掌握" : "待学习"}

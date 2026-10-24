@@ -8,7 +8,7 @@ import {
   vaultHomeSetFromPath,
   type VaultInfo,
 } from "../lib/api";
-import { IconCalendarPlus, IconFolder, IconPlus, IconSparkles } from "./icons";
+import { IconCalendarPlus, IconFolder, IconPlus, IconSettings, IconSparkles, IconX } from "./icons";
 
 /**
  * 移动端仓库入口：基础目录未设置时是**引导页**，设置后是**仓库列表页**。
@@ -66,11 +66,15 @@ export interface MobileVaultGateProps {
   onRetrySyncFailed: () => void;
   /** 枚举云端当前用户的全部仓库（账号已配置时调用）。 */
   listCloudVaults: () => Promise<Array<{ name: string; version: number }>>;
+  /** 0.33.1 主页重构：打开设置（主页顶栏齿轮；无仓库打开时主页是唯一界面，
+      设置只能从这里进）。不传则不渲染齿轮。 */
+  onOpenSettings?: () => void;
 }
 
 export function MobileVaultGate({
   onOpen,
   onClose,
+  onOpenSettings,
   isVaultSyncEnabled,
   onEnableSync,
   syncConfigured,
@@ -106,6 +110,8 @@ export function MobileVaultGate({
   const [serverDraft, setServerDraft] = useState("");
   const [userDraft, setUserDraft] = useState("");
   const [passDraft, setPassDraft] = useState("");
+  /** 卡片 ⋯ 菜单打开中的仓库路径（移除仓库入口）。 */
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   /** 每仓库的同步开启状态（已开启仓库的路径集合）。
       0.33.0 停点1：逐仓库查 enabledForVault，多选同步时同样按它显示徽标。 */
   const [syncOnPaths, setSyncOnPaths] = useState<Set<string>>(new Set());
@@ -181,6 +187,29 @@ export function MobileVaultGate({
     void reload();
   };
 
+  /** 被移除（隐藏）的仓库：0.33.1 用户反馈「添加删除仓库功能」——仅从列表
+      移除、**文件保留在磁盘**（不做危险的真实删除）；localStorage 持久。 */
+  const hiddenPaths = (): string[] => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("quicknote.vaults.hidden") ?? "[]");
+      return Array.isArray(raw) ? raw.filter((p) => typeof p === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const removeVaultFromList = (path: string) => {
+    try {
+      localStorage.setItem(
+        "quicknote.vaults.hidden",
+        JSON.stringify([...new Set([...hiddenPaths(), path])]),
+      );
+    } catch {
+      // 存不进去就只隐藏本轮
+    }
+    setMenuFor(null);
+    void reload();
+  };
+
   const reload = useCallback(async () => {
     setError(null);
     const got = await vaultHomeGet().catch((e) => {
@@ -196,7 +225,8 @@ export function MobileVaultGate({
       setError(String(e));
       return [] as VaultInfo[];
     });
-    setVaults(list);
+    const hidden = new Set(hiddenPaths());
+    setVaults(list.filter((v) => !hidden.has(v.path)));
   }, []);
 
   useEffect(() => {
@@ -406,9 +436,21 @@ export function MobileVaultGate({
               {multiMode ? "取消多选" : "多选同步"}
             </button>
           )}
+          {/* 0.33.1 主页重构：设置入口（无仓库打开时主页是唯一界面）；关闭改 ✕ */}
+          {onOpenSettings && (
+            <button
+              type="button"
+              className="icon-btn mv-settings"
+              title="设置"
+              aria-label="设置"
+              onClick={onOpenSettings}
+            >
+              <IconSettings size={16} />
+            </button>
+          )}
           {onClose && (
-            <button type="button" className="btn btn-ghost mv-close" onClick={onClose}>
-              关闭
+            <button type="button" className="btn btn-ghost mv-close" onClick={onClose} aria-label="返回仓库">
+              <IconX size={15} />
             </button>
           )}
         </div>
@@ -488,9 +530,52 @@ export function MobileVaultGate({
                 </span>
               ) : null}
             </div>
+            {/* 0.33.1 用户反馈「添加删除仓库功能」：⋯ 菜单（仅从列表移除，文件
+                保留在磁盘）；span role=button——button 里不能嵌 button */}
+            {!multiMode && (
+              <span
+                role="button"
+                tabIndex={0}
+                className="mv-card-more"
+                title="仓库操作"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuFor(v.path);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.stopPropagation();
+                    setMenuFor(v.path);
+                  }
+                }}
+              >
+                ⋯
+              </span>
+            )}
           </button>
         ))}
       </div>
+      {/* 卡片 ⋯ 菜单（0.33.1）：移除仓库 = 仅从列表移除、文件保留在磁盘 */}
+      {menuFor && (
+        <>
+          <div className="menu-backdrop" onClick={() => setMenuFor(null)} />
+          <div className="mv-card-menu" role="menu">
+            <div className="mv-card-menu-name">
+              {vaults.find((v) => v.path === menuFor)?.name ?? menuFor}
+            </div>
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => removeVaultFromList(menuFor)}
+            >
+              移除仓库（保留文件）
+            </button>
+            <button type="button" role="menuitem" onClick={() => setMenuFor(null)}>
+              取消
+            </button>
+          </div>
+        </>
+      )}
       {multiMode && (
         <div className="mv-batch-bar">
           <button

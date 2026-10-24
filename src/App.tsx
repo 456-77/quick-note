@@ -38,6 +38,7 @@ import {
   IconFolder,
   IconFolderPlus,
   IconCloud,
+  IconHome,
   IconLibrary,
   IconListTree,
   IconMinus,
@@ -265,6 +266,17 @@ export default function App() {
   useEffect(() => {
     mobileEditRef.current = mobileEdit;
   }, [mobileEdit]);
+  /**
+   * 移动端生效视图模式（0.33.1 用户反馈「显示的是源码，切换编辑模式也没用」）：
+   * mode 持久化在 localStorage，工具栏 </> 切过 source 后**阅读态也显示源码**，
+   * 而「编辑」toggle 只切 editable 不切 mode——怎么切都是源码。阅读态恒 live
+   * 渲染（勾选/链接/复制照常），编辑态尊重工具栏选择的 live/source。桌面不
+   * 参与，原样返回。
+   */
+  const effectiveViewMode = useCallback(
+    (m: ViewMode): ViewMode => (isMobile() && !mobileEditRef.current ? "live" : m),
+    [],
+  );
   const [settings, setSettings] = useState<Settings>(getSettings);
   const [showSettings, setShowSettings] = useState(false);
   /** 正在新建的类型；null 表示输入行未展开。diary = 按日期命名的新日记。 */
@@ -917,12 +929,14 @@ export default function App() {
       setPaletteOpen(false);
       return true;
     }
-    if (vaultGateOpen) {
-      setVaultGateOpen(false);
-      return true;
-    }
+    // 0.33.1 主页重构：设置盖在主页之上（z 85>84）——back 先关设置再关主页，
+    // 顺序与视觉层叠一致（主页开着时按返回：先回仓库界面，再按才关仓库页）
     if (showSettings) {
       setShowSettings(false);
+      return true;
+    }
+    if (vaultGateOpen) {
+      setVaultGateOpen(false);
       return true;
     }
     // 单词面板的内层状态（详情/添加/搜索）视觉上盖在抽屉内容之上，先于抽屉关闭
@@ -1000,6 +1014,18 @@ export default function App() {
       if (splitView) applyDarkTheme(splitView, resolved === "dark");
       // mermaid 的主题配色与导出/放大都要跟明暗一致（缓存的旧 svg 一并作废）
       applyMermaidTheme();
+      // 系统栏配色（0.33.1 用户反馈「顶部/底部颜色要和系统面板匹配」）：
+      // edge-to-edge 下系统栏条纹透出原生 windowBackground，与应用表面不一致
+      // 就是黑条——把 --panel 表面色和图标深浅同步给原生（桥见 MainActivity
+      // setChromeBackground）。桌面无此桥，静默跳过
+      if (isMobile()) {
+        const panel = getComputedStyle(document.documentElement).getPropertyValue("--panel").trim();
+        if (panel) {
+          (window as unknown as {
+            qnAndroid?: { setChromeBackground?: (color: string, dark: boolean) => void };
+          }).qnAndroid?.setChromeBackground?.(panel, resolved === "dark");
+        }
+      }
     };
     sync();
     const unwatch = watchSystemTheme(sync);
@@ -1975,7 +2001,7 @@ export default function App() {
       resourcesRef.current.notePath = note.path;
       const newState = createEditorState(note.content, {
         lineEnding: note.lineEnding,
-        mode: isMarkdownPath(note.path) ? mode : "source",
+        mode: isMarkdownPath(note.path) ? effectiveViewMode(modeRef.current) : "source",
         language: editorLanguageOf(note.path),
         onDocChanged: handleDocChanged,
         onSave: handleEditorSave,
@@ -2044,7 +2070,7 @@ export default function App() {
         (dirNow ? loadProgress(window.localStorage, dirNow, path) ?? 0 : 0);
       resourcesRef.current.notePath = path;
       // 存量状态的 Compartment 是它创建那一刻的模式/主题，切回来要对齐当前选择
-      applyMode(view, modeRef.current);
+      applyMode(view, effectiveViewMode(modeRef.current));
       applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
       requestDecorationRefresh(view);
       setInTable(isCursorInTable(view.state));
@@ -2314,7 +2340,7 @@ export default function App() {
             const adopted = createSplitState(freshSplit);
             stateStore.current.set(splitPathNow, adopted);
             splitView.setState(adopted);
-            applyMode(splitView, modeRef.current);
+            applyMode(splitView, effectiveViewMode(modeRef.current));
             applyDarkTheme(splitView, resolveTheme(getSettings().theme) === "dark");
             splitView.scrollDOM.scrollTop = top;
             staleTabs.current.delete(splitPathNow);
@@ -2936,7 +2962,7 @@ export default function App() {
       splitCtxRef.current = ctx;
       return createEditorState(note.content, {
         lineEnding: note.lineEnding,
-        mode: isMarkdownPath(note.path) ? mode : "source",
+        mode: isMarkdownPath(note.path) ? effectiveViewMode(modeRef.current) : "source",
         language: editorLanguageOf(note.path),
         onDocChanged: handleDocChanged,
         onSave: handleEditorSave,
@@ -3126,7 +3152,7 @@ export default function App() {
         resourcesRef.current.notePath = note.path;
         const newState = createEditorState(note.content, {
           lineEnding: note.lineEnding,
-          mode: isMarkdownPath(note.path) ? mode : "source",
+          mode: isMarkdownPath(note.path) ? effectiveViewMode(modeRef.current) : "source",
           language: editorLanguageOf(note.path),
           onDocChanged: handleDocChanged,
           onSave: handleEditorSave,
@@ -3810,10 +3836,10 @@ export default function App() {
       setMode(next);
       localStorage.setItem(MODE_KEY, next);
       const view = viewRef.current;
-      if (view && current) applyMode(view, next);
-      // 右栏视图同一套模式（0.32 双编辑器）
+      if (view && current) applyMode(view, effectiveViewMode(next));
+      // 右栏视图同一套模式（0.32 双编辑器；右栏仅桌面，包装无副作用）
       const splitView = splitViewRef.current;
-      if (splitView && splitActiveRef.current) applyMode(splitView, next);
+      if (splitView && splitActiveRef.current) applyMode(splitView, effectiveViewMode(next));
     },
     [current],
   );
@@ -3862,12 +3888,17 @@ export default function App() {
 
   // 可编辑性集中重配：装载（view.setState 先于 React setState 执行）与
   // mobileEdit 切换都经这里——stateStore 缓存的状态 editable 初值恒 true，
-  // 阅读态下换装任何存量状态后都要重新压成 false
+  // 阅读态下换装任何存量状态后都要重新压成 false。
+  // 0.33.1：阅读态还要把视图模式压成 live（effectiveViewMode）——mode=source
+  // 持久时阅读态显示源码正是「切编辑也没用」的另一半；编辑态恢复用户选择。
   useEffect(() => {
     if (!isMobile()) return;
     const view = viewRef.current;
-    if (view) applyEditable(view, mobileEditRef.current);
-  }, [mobileEdit, activeTab]);
+    if (!view) return;
+    applyEditable(view, mobileEditRef.current);
+    applyMode(view, effectiveViewMode(modeRef.current));
+    requestDecorationRefresh(view);
+  }, [mobileEdit, activeTab, mode, effectiveViewMode]);
 
   // 编辑器字号缩放（仅移动端消费；桌面 --qn-edit-scale 恒缺省 1）
   useEffect(() => {
@@ -4055,7 +4086,7 @@ export default function App() {
     setSplitError(null);
     let alive = true;
     const align = () => {
-      applyMode(view, modeRef.current);
+      applyMode(view, effectiveViewMode(modeRef.current));
       applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
       view.scrollDOM.scrollTop =
         scrollStore.current.get(splitActiveTab) ??
@@ -5435,28 +5466,37 @@ export default function App() {
             <IconSparkles size={15} className="brand-mark" />
             <span>Quick Note</span>
           </div>
-          <button
-            type="button"
-            className={`vault-pill${vaultMenu ? " is-open" : ""}`}
-            onClick={(event) => {
-              if (isMobile()) {
-                // 移动端：仓库 pill 直达仓库列表页，且先收掉一切浮层——
-                // 不给「设置上叠列表、列表上叠抽屉」这类堆叠状态机会
+          {isMobile() ? (
+            /* 0.33.1 主页重构：仓库名 pill 换成主页图标——主页承接仓库切换/
+               同步状态/远程仓库；打开前先收拢一切浮层（原 pill 直达逻辑） */
+            <button
+              type="button"
+              className="icon-btn vault-home-btn"
+              onClick={() => {
                 setShowSettings(false);
                 setPaletteOpen(false);
                 setQuickCaptureOpen(false);
                 setLeftCollapsed(true);
                 setRightCollapsed(true);
                 setVaultGateOpen(true);
-                return;
-              }
-              const rect = event.currentTarget.getBoundingClientRect();
-              setVaultMenu({ x: rect.left, y: rect.bottom + 6 });
-            }}
-            title={vault ?? "点击选择仓库（最近的仓库会列在下拉里）"}
-          >
-            {vaultName ?? "未选择仓库"}
-          </button>
+              }}
+              title="仓库主页：查看同步状态与远程仓库"
+            >
+              <IconHome size={16} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className={`vault-pill${vaultMenu ? " is-open" : ""}`}
+              onClick={(event) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                setVaultMenu({ x: rect.left, y: rect.bottom + 6 });
+              }}
+              title={vault ?? "点击选择仓库（最近的仓库会列在下拉里）"}
+            >
+              {vaultName ?? "未选择仓库"}
+            </button>
+          )}
         </div>
 
         <button
@@ -5790,12 +5830,21 @@ export default function App() {
         </>
       )}
 
-      {/* 移动端仓库页（浮层）：从仓库下拉/命令面板进入 */}
-      {vaultGateOpen && (
-        <div className="mv-overlay" onClick={(e) => { if (e.target === e.currentTarget) setVaultGateOpen(false); }}>
-          <div className="mv-overlay-card">
+      {/* 0.33.1 主页重构：移动端 = 全屏仓库主页（覆盖层——仓库界面保持挂载，
+          「保留现场」：再进同一仓库直达原位）；桌面保持原浮层卡片 */}
+      {vaultGateOpen &&
+        (isMobile() ? (
+          <div className="vault-home-page">
             <MobileVaultGate
+              /* 0.33.1 用户反馈：主页不要关闭按钮——点仓库名（含当前仓库）就
+                  是返回方式；设置从齿轮进且不销毁主页（关设置回到主页） */
+              onOpenSettings={() => setShowSettings(true)}
               onOpen={(p) => {
+                // 同一仓库 = 仅返回现场；不同仓库 = 切换后返回
+                if (vault && sameVaultPath(p, vault)) {
+                  setVaultGateOpen(false);
+                  return;
+                }
                 setVaultGateOpen(false);
                 void switchVault(p);
               }}
@@ -5812,15 +5861,41 @@ export default function App() {
               listCloudVaults={sync.listCloudVaults}
             />
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="mv-overlay" onClick={(e) => { if (e.target === e.currentTarget) setVaultGateOpen(false); }}>
+            <div className="mv-overlay-card">
+              <MobileVaultGate
+                onClose={() => setVaultGateOpen(false)}
+                onOpen={(p) => {
+                  setVaultGateOpen(false);
+                  void switchVault(p);
+                }}
+                onEnableSync={enableVaultSync}
+                syncConfigured={Boolean(sync.config.serverUrl)}
+                isVaultSyncEnabled={(p) => syncRef.current?.enabledForVault(p) ?? Promise.resolve(false)}
+                onConfigureSync={(server, username, password) =>
+                  sync.updateConfig({ serverUrl: server, username, password })
+                }
+                onSyncSelected={(paths) => syncSelectedVaults(paths)}
+                syncBatchLabel={syncBatchLabel}
+                syncFailedPaths={syncFailedPaths}
+                onRetrySyncFailed={() => void syncSelectedVaults(syncFailedPaths)}
+                listCloudVaults={sync.listCloudVaults}
+              />
+            </div>
+          </div>
+        ))}
 
       <SettingsDialog
         open={showSettings}
         onClose={() => setShowSettings(false)}
         settings={settings}
         applySettings={applySettings}
-        vault={vault}
+        /* 0.33.1 用户反馈：主页打开的设置**只显示全局设置**（按仓库的分区与
+            区块整体隐藏，不是禁用态），且关设置回到主页——主页开着时以无仓库
+            视角渲染 */
+        vault={vaultGateOpen ? null : vault}
+        globalOnly={vaultGateOpen}
         imagePaths={vaultImages}
         daily={daily}
         sync={sync}
@@ -6327,38 +6402,9 @@ export default function App() {
             if (target.closest(".tree-file")) setLeftCollapsed(true);
           }}
         >
-          <div className="panel-head">
-            <span className="panel-title">知识库</span>
-            <span className="panel-count" title="仓库内笔记数">{noteCount}</span>
-            <span className="spacer" />
-            <button
-              type="button"
-              className="icon-btn"
-              disabled={!vault}
-              onClick={() => beginCreate("diary")}
-              title="新建今天的日记（按日期命名）"
-            >
-              <IconCalendarPlus size={15} />
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              disabled={!vault}
-              onClick={() => beginCreate("folder")}
-              title="新建文件夹"
-            >
-              <IconFolderPlus size={15} />
-            </button>
-            <button
-              type="button"
-              className="icon-btn"
-              disabled={!vault}
-              onClick={() => beginCreate("note")}
-              title="新建笔记（Ctrl+N）"
-            >
-              <IconPlus size={15} />
-            </button>
-          </div>
+          {/* 0.33.1 用户反馈：功能选项（视图页签）与新建按钮行上下互换——页签
+              在顶（样式向右侧面板的 .sidebar-tabs 看齐），标题行在下；新建
+              笔记/日记/文件夹只在知识库视图显示（收藏/最近/标签用不到） */}
           <div className="left-view" role="tablist" aria-label="导航视图">
             <button
               type="button"
@@ -6401,6 +6447,44 @@ export default function App() {
               <IconTag size={13} />
               标签
             </button>
+          </div>
+          <div className="panel-head">
+            <span className="panel-title">
+              {leftView === "files" ? "知识库" : leftView === "favorites" ? "收藏" : leftView === "recents" ? "最近" : "标签"}
+            </span>
+            {leftView === "files" && (
+              <>
+                <span className="panel-count" title="仓库内笔记数">{noteCount}</span>
+                <span className="spacer" />
+                <button
+                  type="button"
+                  className="icon-btn"
+                  disabled={!vault}
+                  onClick={() => beginCreate("diary")}
+                  title="新建今天的日记（按日期命名）"
+                >
+                  <IconCalendarPlus size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  disabled={!vault}
+                  onClick={() => beginCreate("folder")}
+                  title="新建文件夹"
+                >
+                  <IconFolderPlus size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  disabled={!vault}
+                  onClick={() => beginCreate("note")}
+                  title="新建笔记（Ctrl+N）"
+                >
+                  <IconPlus size={15} />
+                </button>
+              </>
+            )}
           </div>
           {leftView === "files" && (
             <div className="sidebar-filter">
@@ -6802,8 +6886,11 @@ export default function App() {
               短暂错位时（替换式打开的中间帧），这层会叠在上一篇内容上透出 */}
           {!current && openTabs.length === 0 && (
             isMobile() && !vault ? (
-              <div className="editor-empty">
+              /* 0.33.1 主页重构：无仓库时主页就是软件主页面（全屏，设置从
+                  这里的齿轮进）；桌面空状态不变 */
+              <div className="vault-home-page">
                 <MobileVaultGate
+                  onOpenSettings={() => setShowSettings(true)}
                   onOpen={(p) => void switchVault(p)}
                   onEnableSync={enableVaultSync}
                   syncConfigured={Boolean(sync.config.serverUrl)}

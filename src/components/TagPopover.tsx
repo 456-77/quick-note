@@ -29,6 +29,8 @@ export function splitTagInput(input: string): string[] {
 
 export default function TagPopover({ tags, vocabulary, onAdd, onRemove, onClose }: TagPopoverProps) {
   const [draft, setDraft] = useState("");
+  /** ▼ 展开全量词表（不输入也看得到）；输入时按包含过滤。 */
+  const [showAll, setShowAll] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -51,6 +53,16 @@ export default function TagPopover({ tags, vocabulary, onAdd, onRemove, onClose 
     () => vocabulary.filter((tag) => !tags.includes(tag)).slice(0, 200),
     [vocabulary, tags],
   );
+
+  // 0.33.1 用户反馈「下拉选项透图」：原先用原生 <datalist>，安卓 WebView 把它
+  // 渲染成不可控的半透明列表（样式无法覆盖、点几次 ▼ 都透）。改自绘建议面板：
+  // 实底、紧凑行、限高滚动；输入时按包含过滤，▼ 展开全量，点击直接上标签
+  const filtered = useMemo(() => {
+    const q = draft.trim().toLowerCase();
+    const base = q ? suggestions.filter((tag) => tag.toLowerCase().includes(q)) : suggestions;
+    return base.slice(0, 30);
+  }, [suggestions, draft]);
+  const panelOpen = showAll || draft.trim() !== "";
 
   const submit = () => {
     const names = splitTagInput(draft);
@@ -84,30 +96,54 @@ export default function TagPopover({ tags, vocabulary, onAdd, onRemove, onClose 
           </div>
         )}
         {tags.length === 0 && <div className="tag-popover-empty">还没有标签</div>}
-        <input
-          ref={inputRef}
-          className="tagbar-input tag-popover-input"
-          type="text"
-          list="qn-tag-vocabulary"
-          value={draft}
-          placeholder="可一次贴多个：工作, 记录 或 学习/前端"
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              submit();
-            }
-            if (event.key === "Escape") {
-              event.preventDefault();
-              onClose();
-            }
-          }}
-        />
-        <datalist id="qn-tag-vocabulary">
-          {suggestions.map((tag) => (
-            <option key={tag} value={tag} />
-          ))}
-        </datalist>
+        <div className="tag-popover-inputrow">
+          <input
+            ref={inputRef}
+            className="tagbar-input tag-popover-input"
+            type="text"
+            value={draft}
+            placeholder="可一次贴多个：工作, 记录 或 学习/前端"
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                submit();
+              }
+              if (event.key === "Escape") {
+                event.preventDefault();
+                onClose();
+              }
+            }}
+          />
+          <button
+            type="button"
+            className={`tag-popover-caret${panelOpen && filtered.length > 0 ? " is-open" : ""}`}
+            aria-label="展开标签词表"
+            title="展开标签词表"
+            onClick={() => setShowAll((value) => !value)}
+          >
+            ▼
+          </button>
+        </div>
+        {panelOpen && filtered.length > 0 && (
+          <div className="tag-popover-suggest" role="listbox" aria-label="标签词表">
+            {filtered.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                role="option"
+                aria-label={`添加标签 #${tag}`}
+                onClick={() => {
+                  onAdd(tag);
+                  setDraft("");
+                  inputRef.current?.focus();
+                }}
+              >
+                #{tag}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="tag-popover-hint">Enter 添加 · 逗号或空格分隔可批量 · Esc 关闭</div>
       </div>
     </>

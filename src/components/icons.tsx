@@ -111,6 +111,14 @@ export const IconPanelRight = ({ size, className }: IconProps) => (
   </svg>
 );
 
+/* 0.33.1 主页重构：顶栏仓库名 pill 在移动端换成主页图标 */
+export const IconHome = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <path d="M3 10.5 12 3l9 7.5" />
+    <path d="M5 9.5V21h5v-6h4v6h5V9.5" />
+  </svg>
+);
+
 export const IconCalendar = ({ size, className }: IconProps) => (
   <svg {...base(size, className)}>
     <path d="M8 2v4" /><path d="M16 2v4" />

@@ -1310,6 +1310,10 @@ class TableWidget extends WidgetType {
   toDOM(view: EditorView) {
     const wrap = document.createElement("div");
     wrap.className = "cm-lp-tablewrap";
+    // 0.33.1 用户反馈：阅读态点表格会进源码+弹表格工具栏——阅读态（移动端
+    // 默认）整张表是纯展示：单元格不可编辑、无＋行/＋列、点击不进结构菜单，
+    // 但保留原生文字选择（复制仍可用）
+    const editable = view.state.facet(EditorView.editable);
     // 块起点随单元格写回不变，重建后凭它找回同一张表（导航聚焦、提交前冲刷都用它）
     wrap.dataset.tblFrom = String(this.from);
 
@@ -1335,8 +1339,9 @@ class TableWidget extends WidgetType {
         if (runs && this.hl) applySearchHighlight(el, this.hl);
         const align = this.align[index];
         if (align) el.style.textAlign = align;
-        // 就地编辑：WebView2 基于 Chromium，支持 plaintext-only（粘贴自动去格式）
-        el.contentEditable = "plaintext-only";
+        // 就地编辑：WebView2 基于 Chromium，支持 plaintext-only（粘贴自动去格式）；
+        // 阅读态关掉编辑宿主（纯展示）
+        el.contentEditable = editable ? "plaintext-only" : "false";
         el.spellcheck = false;
         // 右键结构菜单的委托靠这个类识别单元格
         el.classList.add(TABLE_CELL_CLASS);
@@ -1347,7 +1352,7 @@ class TableWidget extends WidgetType {
         // 单元格源码原文：聚焦含行内样式的单元格时切换到原文编辑（见 attachCellEvents）
         el.dataset.raw = this.rawRows[rowIndex]?.[index] ?? "";
         if (runs) cellRuns.set(el, runs);
-        attachCellEvents(view, wrap, el);
+        if (editable) attachCellEvents(view, wrap, el);
         tr.appendChild(el);
       }
       return tr;
@@ -1499,10 +1504,17 @@ class TableWidget extends WidgetType {
       }
     });
 
-    // 点击表格空白处保持渲染：不把光标放进源码。单元格内的按下事件已在
-    // attachCellEvents 里 stopPropagation，不会走到这里。
-    // Alt+点击要放行：行内代码的「快捷复制」挂在 contentDOM 上（altClickHandler），
-    // 在这里吞掉就等于宣布表格里的行内代码永远复制不了。
+    // 0.33.1：阅读态**也必须拦**——放行会让 CM 把光标放进表格范围，块级装饰
+    // 退回源码 + 表格工具栏弹出（真机实测）；代价是阅读态表格文字不能划选。
+    // 触摸路径走 pointerdown（capture）：取消 pointerdown 会一并抑制合成
+    // mousedown/click，触摸滚动（touch-action）不受影响；鼠标路径走 mousedown
+    const swallowPointer = (event: PointerEvent) => {
+      if (event.altKey || editable) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    table.addEventListener("pointerdown", swallowPointer, true);
+    wrap.addEventListener("pointerdown", swallowPointer, true);
     table.addEventListener("mousedown", (event) => {
       if (event.altKey) return;
       event.preventDefault();
@@ -1514,9 +1526,13 @@ class TableWidget extends WidgetType {
       event.stopPropagation();
     });
 
-    // 双击单元格之外的空白退回源码（进阶编辑入口）；
+    // 双击单元格之外的空白退回源码（进阶编辑入口，仅编辑态）；
     // 单元格内的双击是原生选词，不触发
     wrap.addEventListener("dblclick", (event) => {
+      if (!editable) {
+        event.stopPropagation();
+        return;
+      }
       if ((event.target as HTMLElement).closest("td,th")) {
         event.stopPropagation();
         return;
@@ -1537,27 +1553,30 @@ class TableWidget extends WidgetType {
 
     // 底部「＋ 行」/ 右缘「＋ 列」：点击行为走 document 级委托
     // （见 ensureTableOpsDelegate）——按钮会随 widget 重建，挂自身不可靠。
-    const addRow = document.createElement("button");
-    addRow.type = "button";
-    addRow.className = "cm-tb-addrow";
-    addRow.textContent = "＋ 行";
-    addRow.title = "在末尾添加一行";
-    addRow.addEventListener("mousedown", (event) => event.preventDefault());
-    wrap.appendChild(addRow);
+    // 0.33.1：阅读态不渲染结构按钮（纯展示）
+    if (editable) {
+      const addRow = document.createElement("button");
+      addRow.type = "button";
+      addRow.className = "cm-tb-addrow";
+      addRow.textContent = "＋ 行";
+      addRow.title = "在末尾添加一行";
+      addRow.addEventListener("mousedown", (event) => event.preventDefault());
+      wrap.appendChild(addRow);
 
-    const addCol = document.createElement("button");
-    addCol.type = "button";
-    addCol.className = "cm-tb-addcol";
-    addCol.textContent = "＋";
-    addCol.title = "在末尾添加一列";
-    addCol.addEventListener("mousedown", (event) => event.preventDefault());
-    wrap.appendChild(addCol);
+      const addCol = document.createElement("button");
+      addCol.type = "button";
+      addCol.className = "cm-tb-addcol";
+      addCol.textContent = "＋";
+      addCol.title = "在末尾添加一列";
+      addCol.addEventListener("mousedown", (event) => event.preventDefault());
+      wrap.appendChild(addCol);
 
-    // 「＋ 行 / ＋ 列」点击与右键结构菜单都走 document 级委托
-    // （同一套委托理由：widget 会随结构变化整体重建，挂自身不可靠）。
-    ensureTableOpsDelegate();
-    ensureTableContextMenuDelegate();
-    tableOps.set(wrap, { view });
+      // 「＋ 行 / ＋ 列」点击与右键结构菜单都走 document 级委托
+      // （同一套委托理由：widget 会随结构变化整体重建，挂自身不可靠）。
+      ensureTableOpsDelegate();
+      ensureTableContextMenuDelegate();
+      tableOps.set(wrap, { view });
+    }
 
     return wrap;
   }
@@ -1586,6 +1605,8 @@ function ensureTableOpsDelegate(): void {
     const wrap = btn.closest(".cm-lp-tablewrap") as HTMLElement | null;
     const info = wrap ? tableOps.get(wrap) : undefined;
     if (!info) return;
+    // 0.33.1：阅读态拦截（存量 widget 的按钮残留在 DOM 里的兜底）
+    if (!info.view.state.facet(EditorView.editable)) return;
     event.stopPropagation();
     withFlushedCellEdit(info.view, wrap as HTMLElement, (block) =>
       addRowBtn

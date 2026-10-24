@@ -210,7 +210,7 @@ export function useSync(options: {
                 username: snapshot.username,
                 password: snapshot.password,
                 scope: snapshot.scope,
-                vaultName: snapshot.vaultName,
+                // 0.33.1：vaultName 不进共享配置——它按仓库走各自的状态文件
                 refreshToken: snapshot.refreshToken,
                 enabledByVault: { ...(shared.enabledByVault ?? {}), ...snapshot.enabledByVault },
               },
@@ -271,6 +271,9 @@ export function useSync(options: {
         }
         // 共享配置（旧的单份状态或新的薄配置文件）里的账号级字段优先：
         // 配置在任何窗口改都要全局生效，不能被某个仓库的旧文件盖回去。
+        // 0.33.1：vaultName **不再**在此列——云端仓库名本就每仓库一个
+        // （用户反馈「切换仓库显示的都是测试」：共享值把所有仓库都强推成
+        // 同一个云端仓库，还造成多仓库同步进同一个云端库的数据混淆）。
         if (sharedText) {
           try {
             const shared = normalizeSyncState(JSON.parse(sharedText) as Partial<SyncDeviceState>);
@@ -278,13 +281,24 @@ export function useSync(options: {
             if (shared.username !== "") next.username = shared.username;
             if (shared.password !== "") next.password = shared.password;
             next.scope = shared.scope;
-            if (shared.vaultName !== "") next.vaultName = shared.vaultName;
             if (next.refreshToken === "" && shared.refreshToken !== "") {
               next.refreshToken = shared.refreshToken;
             }
             next.enabledByVault = { ...shared.enabledByVault, ...next.enabledByVault };
           } catch {
             // 共享配置解析失败：保留 per-vault（或默认）状态即可
+          }
+          // 一次性清洗：旧版本把共享 vaultName 强推进了每个仓库的状态文件
+          //（典型残留：测试时设的「测试」）。每仓库首次加载时清空，回落到
+          // 仓库文件夹名；之后各仓库在设置里各自设置云端仓库名
+          const migrateKey = `quicknote.sync.vaultNameMigrated.${normalizeVaultKey(vault)}`;
+          if (!window.localStorage.getItem(migrateKey)) {
+            next.vaultName = "";
+            try {
+              window.localStorage.setItem(migrateKey, "1");
+            } catch {
+              // localStorage 不可用就每次加载都清洗（结果一致）
+            }
           }
         }
         if (!sameVaultPath(next.vault, vault)) {

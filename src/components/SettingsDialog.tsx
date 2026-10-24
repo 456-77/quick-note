@@ -75,6 +75,10 @@ interface Props {
   /** 移动端仓库基础目录（null = 未设置/桌面端）；onOpenVaultPage 弹出仓库列表页。 */
   vaultHome: string | null;
   onOpenVaultPage: () => void;
+  /** 0.33.1 用户反馈：主页打开的设置**只提供全局设置**——按仓库的分区
+      （日记与附件）与区块（外观的全局背景、云同步的按仓库字段）整体隐藏，
+      而不是渲染成禁用/提示态。 */
+  globalOnly?: boolean;
   customCssDraft: string;
   onCustomCssChange: (value: string) => void;
   appVersion: string;
@@ -380,6 +384,7 @@ export default function SettingsDialog({
   onClearDataDir,
   vaultHome,
   onOpenVaultPage,
+  globalOnly = false,
   customCssDraft,
   onCustomCssChange,
   appVersion,
@@ -652,7 +657,7 @@ export default function SettingsDialog({
             }}
           />
         </div>
-        {SECTIONS.map((section) => (
+        {SECTIONS.filter((section) => !(globalOnly && section.id === "daily")).map((section) => (
           <button
             key={section.id}
             type="button"
@@ -1105,6 +1110,10 @@ export default function SettingsDialog({
             </Row>
           )}
 
+          {/* 0.33.1：globalOnly 下隐藏按仓库的区块（全局背景每仓库一份）与
+              按仓库的行（云端仓库名、同步动作操作当前仓库） */}
+          {!globalOnly && (
+          <>
           <Group>全局背景（每仓库一份，存本机）</Group>
           {!vault && <p className="settings-hint">打开仓库后才能选择与预览背景图片（图片来自仓库内部）。</p>}
           <Row
@@ -1372,7 +1381,8 @@ export default function SettingsDialog({
               <span className="settings-slider-value">{bg.bgSurface ?? 80}%</span>
             </span>
           </Row>
-
+          </>
+          )}
           <Group>自定义样式</Group>
           <div className="settings-block">
             <textarea
@@ -1391,6 +1401,9 @@ export default function SettingsDialog({
           </div>
         </section>
 
+        {/* 0.33.1：globalOnly（主页入口）下整个分区隐藏——日记目录/模板/提醒
+            全是按仓库的设置 */}
+        {!globalOnly && (
         <section className="settings-sec" data-sec="daily" style={{ display: searching || active === "daily" ? undefined : "none" }}>
           <Group>附件</Group>
           <Row
@@ -1526,6 +1539,7 @@ export default function SettingsDialog({
             附件、日记与提醒配置写入库内 {DAILY_CONFIG_FILE}，与 Obsidian 插件共用。
           </p>
         </section>
+        )}
 
         <section className="settings-sec" data-sec="sync" style={{ display: searching || active === "sync" ? undefined : "none" }}>
           <Group>云同步（本机设置，不会写进仓库）</Group>
@@ -1571,6 +1585,10 @@ export default function SettingsDialog({
               onChange={(value) => sync.updateConfig({ scope: value })}
             />
           </Row>
+          {/* 0.33.1：globalOnly 下隐藏——云端仓库名是按仓库的字段、同步动作
+              操作当前仓库（主页视角没有当前仓库） */}
+          {!globalOnly && (
+          <>
           <Row
             label="云端仓库名"
             desc="留空即用仓库文件夹名。"
@@ -1584,6 +1602,8 @@ export default function SettingsDialog({
             />
           </Row>
           <SyncActions sync={sync} />
+          </>
+          )}
         </section>
 
         <section className="settings-sec" data-sec="storage" style={{ display: searching || active === "storage" ? undefined : "none" }}>

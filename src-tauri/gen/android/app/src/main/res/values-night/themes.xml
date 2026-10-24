@@ -1,6 +1,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Theme.quick_note" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- 0.33.1：系统栏区域透出 windowBackground，取应用深色表面色（panel 变量）
+             否则真机顶/底出现黑条；运行时 JS 桥再按主题同步 -->
+        <item name="android:windowBackground">#14151A</item>
     </style>
 </resources>

@@ -720,7 +720,8 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 10px 6px;
+  /* 0.33.1 用户反馈：与上方页签行间距太大——收紧上下留白 */
+  padding: 5px 10px 4px;
   flex: none;
 }
 
@@ -743,12 +744,12 @@ kbd {
 
 /* 左栏视图切换：知识库 / 收藏 / 最近 */
 .left-view {
+  /* 0.33.1 用户反馈：展示效果向右侧面板的功能选项（.sidebar-tabs）看齐——
+     同款分段选项卡（去容器底色胶囊） */
   display: flex;
-  gap: 2px;
+  gap: 4px;
   margin: 0 10px 6px;
-  padding: 2px;
-  border-radius: 9px;
-  background: var(--surface-2);
+  padding: 8px 10px 6px;
   flex: none;
 }
 
@@ -757,14 +758,14 @@ kbd {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
   min-height: 28px;
-  padding: 4px 2px;
+  padding: 5px 0;
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
   border: 0;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
@@ -6127,6 +6128,61 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   font-size: 12.5px;
 }
 
+/* 0.33.1 用户反馈「下拉选项透图」：原生 <datalist> 在安卓 WebView 渲染成
+   半透明且样式不可控的列表——改自绘建议面板（实底/紧凑行/限高滚动），
+   ▼ 钮替代原生箭头；输入时过滤，点击直接上标签 */
+.tag-popover-inputrow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.tag-popover-inputrow .tag-popover-input {
+  flex: 1;
+  min-width: 0;
+}
+.tag-popover-caret {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  cursor: pointer;
+}
+.tag-popover-caret.is-open {
+  color: var(--accent, #8ea6ff);
+}
+.tag-popover-suggest {
+  margin-top: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+}
+.tag-popover-suggest button {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.tag-popover-suggest button + button {
+  border-top: 1px solid var(--border-soft);
+}
+.tag-popover-suggest button:hover,
+.tag-popover-suggest button:active {
+  background: var(--hover, rgba(127, 127, 127, 0.15));
+}
+
 .tag-popover-hint {
   margin-top: 6px;
   font-size: 11px;
@@ -8901,11 +8957,14 @@ button.cm-tag:hover {
 /* 移动端骨架：侧栏抽屉化 + 底部导航。900px 以下且触屏生效；
    桌面窄窗口（有鼠标）保持现有挤压布局不变。 */
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 0.33.0 批D：底栏高度统一变量（46→54，触控舒适），下缘安全区各处引用 */
+  /* 0.33.0 批D：底栏高度统一变量（46→54，触控舒适）。0.33.1：全部不再叠
+     env(safe-area-inset-*)——系统栏 insets 由 MainActivity 原生 margin 让出，
+     而 vivo 等机型的 WebView 里 env 仍虚报（真机实测 top/bottom 各 ~25-50px），
+     CSS 再补一次就是双重留白（设置页顶部大空白、底栏虚高的根因） */
   .app {
     --m-nav-h: 54px;
-    /* 底部导航占位（含手势条安全区） */
-    padding-bottom: calc(var(--m-nav-h) + env(safe-area-inset-bottom, 0px));
+    /* 底部导航占位 */
+    padding-bottom: var(--m-nav-h);
   }
 
   /* 桌面窗口概念全部退场；顶栏的左右栏开关与底栏重复，也退场 */
@@ -8927,7 +8986,7 @@ button.cm-tag:hover {
   .sidebar-right {
     position: fixed;
     top: 48px;
-    bottom: calc(var(--m-nav-h, 54px) + env(safe-area-inset-bottom, 0px));
+    bottom: var(--m-nav-h, 54px);
     width: min(80vw, 330px) !important;
     min-width: 0 !important;
     z-index: 70;
@@ -8981,8 +9040,7 @@ button.cm-tag:hover {
     left: 0;
     right: 0;
     bottom: 0;
-    height: calc(var(--m-nav-h, 54px) + env(safe-area-inset-bottom, 0px));
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    height: var(--m-nav-h, 54px);
     display: flex;
     align-items: stretch;
     background: var(--panel);
@@ -9020,7 +9078,7 @@ button.cm-tag:hover {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: calc(var(--m-nav-h, 54px) + env(safe-area-inset-bottom, 0px));
+    bottom: var(--m-nav-h, 54px);
     height: 42px;
     display: flex;
     align-items: stretch;
@@ -9445,9 +9503,11 @@ button.cm-tag:hover {
     border-radius: 8px;
     font-size: 15px;
   }
-  /* 分类 tab（知识库/收藏/最近/标签）触控加高 */
+  /* 分类 tab（知识库/收藏/最近/标签）触控加高。0.33.1 用户反馈四个 tab 在
+     手机上溢出截断（标签被裁一半）——水平 padding 10→4、允许收缩 */
   .sidebar-left .left-view-tab {
-    padding: 9px 10px;
+    padding: 9px 4px;
+    min-width: 0;
   }
   .sidebar-left .sidebar-filter {
     padding: 8px 10px;
@@ -9468,7 +9528,7 @@ button.cm-tag:hover {
     max-height: 86vh;
     display: flex;
     flex-direction: column;
-    padding: 14px 16px calc(12px + env(safe-area-inset-bottom, 0px));
+    padding: 14px 16px 12px;
     border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
     border: 0;
     border-top: 1px solid var(--border);
@@ -9522,9 +9582,9 @@ button.cm-tag:hover {
     width: 100%;
     align-items: stretch;
     gap: 2px;
-    /* 0.33.0 停点3 第四轮：面板不再留 env 顶距，一级页的状态栏条由导航
-       自己的 padding 承担（详情页归 .settings-mobile-head 管） */
-    padding: calc(8px + env(safe-area-inset-top, 0px)) 10px 8px;
+    /* 0.33.1：env(safe-area-inset-top) 移除——原生 margin 已让出状态栏，
+       vivo WebView 里 env 虚报再补一次 = 一级页顶部 ~50px 双重空白 */
+    padding: 8px 10px 8px;
     overflow: hidden;
     -webkit-mask-image: none;
     mask-image: none;
@@ -9564,17 +9624,17 @@ button.cm-tag:hover {
     border-radius: var(--m-radius);
     white-space: normal;
   }
-  /* 详情页头。0.33.0 停点3 第四轮（用户真机复测反馈）：头部必须**从屏幕最顶
-     一路盖下来**——状态栏条由头部自己的 padding-top: env(safe-area-inset-top)
-     承担（面板不再留 env 顶距），滚动内容与头部之间从此没有任何可视缝隙。
-     sticky top 保持 0；height 用 calc 补回 env，保证 ‹ 标题行仍在安全区下方
-     的 56px 内容盒里居中（box-sizing: border-box）；底边框做明确分隔 */
+  /* 详情页头。0.33.0 停点3 第四轮：标题**固定顶部**（sticky top:0，滚动内容
+     从头部下缘消失）；底边框做明确分隔。0.33.1：env(safe-area-inset-top)
+     padding 移除——状态栏条由 MainActivity 原生 margin 让出并经
+     qnAndroid.setChromeBackground 染成应用色，vivo WebView 里 env 虚报
+     （~50px），头部再补一次就是用户截图里的「顶部大空白」 */
   .settings-mobile-head {
     display: flex;
     align-items: center;
     gap: 4px;
-    height: calc(56px + env(safe-area-inset-top, 0px));
-    padding: env(safe-area-inset-top, 0px) 10px 0 2px;
+    height: 56px;
+    padding: 0 10px 0 2px;
     border-bottom: 1px solid var(--border-soft);
     background: var(--panel);
     position: sticky;
@@ -9775,7 +9835,7 @@ button.cm-tag:hover {
     transition: transform 0.22s ease;
   }
   body.m-zen .mobile-nav {
-    transform: translateY(calc(100% + env(safe-area-inset-bottom, 0px)));
+    transform: translateY(100%);
   }
   body.m-zen .app {
     padding-bottom: 0;
@@ -9795,13 +9855,13 @@ button.cm-tag:hover {
     min-width: 52px;
   }
 
-  /* 沉浸唤回热区：顶部一条轻微渐隐的透明带（28px，安全区之上） */
+  /* 沉浸唤回热区：顶部一条轻微渐隐的透明带（28px） */
   .m-zen-peek {
     position: fixed;
     top: 0;
     left: 0;
     right: 0;
-    height: calc(28px + env(safe-area-inset-top, 0px));
+    height: 28px;
     z-index: 90;
     cursor: pointer;
     background: linear-gradient(rgba(0, 0, 0, 0.28), transparent);
@@ -10862,7 +10922,7 @@ button.cm-tag:hover {
     width: 100%;
     max-height: 72vh;
     border-radius: 18px 18px 0 0;
-    padding: 14px 16px calc(14px + env(safe-area-inset-bottom, 0px));
+    padding: 14px 16px 14px;
   }
 
   .vocab-item {
@@ -10917,14 +10977,12 @@ button.cm-tag:hover {
 
   .vocab-item-meaning {
     font-size: 13px;
-    /* 0.33.0 批E（§七）：与音标同行、超出省略——条目两行紧凑 */
-    flex-basis: auto;
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-
-  .vocab-item-line2 {
-    flex-wrap: nowrap;
+    /* 0.33.1 用户反馈：音标和发音按钮同一行、释义换行完整显示——两行式里
+       长音标被折行、释义截断可读性差，恢复与桌面同款的三行式 */
+    flex-basis: 100%;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
   }
 
   .vocab-status {
@@ -11442,3 +11500,167 @@ html.qn-bg-on .editor-pane-col.is-split {
 
 /* 渲染容器挂 cm-lp-embed-body 复用嵌入笔记的整套正文样式；字号行距在此微调 */
 /* 0.32 分屏改编辑器后不再挂 cm-lp-embed-body（渲染容器样式已随只读方案移除） */
+
+/* ==================== 0.33.1 真机反馈修复 ==================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* 用户反馈「大部分按钮点击后背景颜色会闪一下」：安卓 WebView 默认的
+     tap 高亮层与 ：active 底色叠加成闪色——关掉原生高亮，反馈交给 ：active */
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* 用户反馈「设置的一级页面背景颜色要和二级背景颜色一致」：一级导航底色
+     surface-2 与二级正文 panel 不一致——统一 panel */
+  .settings-nav {
+    background: var(--panel);
+  }
+
+  /* 移除仓库（0.33.1 用户反馈）：卡片右上 ⋯ → 菜单（仅从列表移除，文件
+      保留在磁盘） */
+  .mv-card {
+    position: relative;
+  }
+  .mv-card-more {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    color: var(--text-faint);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .mv-card-menu {
+    position: fixed;
+    left: 50%;
+    bottom: calc(var(--m-nav-h) + 16px);
+    transform: translateX(-50%);
+    z-index: 90;
+    width: min(320px, calc(100vw - 32px));
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: var(--shadow-2);
+    overflow: hidden;
+  }
+  .mv-card-menu-name {
+    padding: 10px 14px 6px;
+    font-size: 12px;
+    color: var(--text-faint);
+    word-break: break-all;
+  }
+  .mv-card-menu button {
+    display: block;
+    width: 100%;
+    padding: 12px 14px;
+    border: 0;
+    border-top: 1px solid var(--border-soft);
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    font-size: 13.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .mv-card-menu button:hover,
+  .mv-card-menu button:active {
+    background: var(--hover, rgba(127, 127, 127, 0.15));
+  }
+
+  /* 用户反馈「快捷键设置页面元素布局有问题」：.hotkey-head-row 不换行，
+     四个操作钮把标题文字挤成一字一列——移动端标题行独立、按钮行换行 */
+  .hotkey-head-row {
+    flex-wrap: wrap;
+  }
+  .hotkey-head-text {
+    flex: 1 1 100%;
+  }
+  .hotkey-head-actions {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  /* 用户反馈「标签列表会出现透图问题」：.menu-backdrop 原本是纯点击层
+     （没有底色），标签弹窗背后的页面全亮度可见，手机上感知为「内容从弹窗
+     里透出来」。移动端给所有共用该 backdrop 的浮层（标签/右键菜单/速记/
+     DDL/仓库菜单…）补一层标准遮罩；桌面不动（鼠标场景不需要） */
+  .menu-backdrop {
+    background: rgba(8, 9, 14, 0.55);
+  }
+
+  /* 用户反馈「输入内容时会保持底部功能栏」：键盘弹出时隐藏底栏（开关类由
+     MainActivity 的 insets 监听切换到 html.qn-ime-open），编辑区直达键盘
+     上缘；Markdown 工具栏保留并落到键盘上缘，抽屉底部同样收上去 */
+  html.qn-ime-open .mobile-nav {
+    display: none;
+  }
+  html.qn-ime-open .app {
+    padding-bottom: 0;
+  }
+  html.qn-ime-open .mobile-md-toolbar {
+    bottom: 0;
+  }
+  html.qn-ime-open .sidebar-left,
+  html.qn-ime-open .sidebar-right {
+    bottom: 0;
+  }
+
+  /* 用户反馈「单词弹窗被截断了」：详情底弹层挂右栏抽屉的层叠上下文里
+     （z-260 出不了 z-70 的父级），底部被底栏（z-80）压住——整体抬到底栏
+     之上，高度上限同步扣减 */
+  .vocab-detail {
+    margin-bottom: var(--m-nav-h, 54px);
+    max-height: calc(72vh - var(--m-nav-h, 54px));
+  }
+
+  /* 用户反馈「内容展示区域两边空白太大」：桌面 24px 边距 + 900px 阅读宽度
+     居中在手机上没有意义，收到 10px；行号 gutter 让位 47→40px */
+  .cm-scroller {
+    padding: 8px 10px 34vh;
+  }
+  .editor-host .cm-scroller > .cm-content {
+    margin-left: 10px;
+    margin-right: 10px;
+  }
+  html.qn-line-numbers .editor-host .cm-scroller > .cm-content {
+    margin-left: 40px;
+  }
+
+  /* 主页重构（0.33.1 用户需求）：仓库主页 = 全屏页面，覆盖在保持挂载的仓库
+     界面之上（保留现场——再进同一仓库直达原位）；无仓库打开时它就是软件
+     主页面（设置从头部齿轮进）。桌面仍走 .mv-overlay 卡片 */
+  .vault-home-page {
+    position: fixed;
+    inset: 0;
+    /* 0.33.1：低于设置面板（85）——主页上开设置不销毁主页，关设置回到主页 */
+    z-index: 84;
+    background: var(--panel);
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    /* 入场动画（用户反馈页面切换要有动画）：淡入+上滑，不用缩放（拉伸感） */
+    animation: home-in 0.2s ease;
+  }
+  @keyframes home-in {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .vault-home-page .mv-gate {
+    min-height: 100%;
+    padding-bottom: calc(var(--m-nav-h) + 8px);
+    /* 0.33.1 用户反馈：主页打开「像被上下拉伸」+ 滑动时顶栏向下移——卡片形态
+       的垂直居中（justify-content:center）在全屏页上是祸根：内容超高时居中
+       溢出让顶部不可达、sticky 头钉在裁剪位。主页是页面，顶对齐铺满 */
+    justify-content: flex-start;
+    align-items: stretch;
+  }
+  /* 头部吸顶：列表滚动时标题行/关闭钮常驻 */
+  .vault-home-page .mv-gate-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--panel);
+    padding-top: 6px;
+  }
+}

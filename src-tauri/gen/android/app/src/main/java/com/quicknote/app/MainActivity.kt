@@ -1,6 +1,7 @@
 package com.quicknote.app
 
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -15,6 +16,7 @@ import androidx.core.content.FileProvider
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import java.io.File
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -120,6 +122,12 @@ class MainActivity : TauriActivity() {
         WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
       )
       val ime: Insets = insets.getInsets(WindowInsetsCompat.Type.ime())
+      // 0.33.1 用户反馈「输入内容时会保持底部功能栏」：键盘弹出时给前端一个
+      // 开关类，CSS 据此隐藏底栏（Markdown 工具栏保留），编辑区直达键盘上缘
+      webView.evaluateJavascript(
+        "document.documentElement.classList.toggle('qn-ime-open', ${ime.bottom > 0})",
+        null,
+      )
       val lp = webView.layoutParams
       if (lp is ViewGroup.MarginLayoutParams) {
         lp.setMargins(
@@ -183,6 +191,29 @@ class MainActivity : TauriActivity() {
    * 约定），网络 IO 直接做，回调 UI 用 mainHandler。
    */
   inner class UpdateBridge {
+    /**
+     * 系统栏区域配色（0.33.1 用户反馈「顶部和底部的颜色要和系统面板相匹配」）：
+     * edge-to-edge 下 WebView 用 margin 让出系统栏区域，条纹透出的是 decorView
+     * 的 windowBackground（默认主题色与应用表面不一致，真机上表现为黑条）。
+     * JS 侧主题变化时把应用表面色（--panel）同步过来；dark 同时控制状态栏/
+     * 导航栏图标的深浅，避免深色条上出现深色图标。
+     */
+    @JavascriptInterface
+    fun setChromeBackground(color: String, dark: Boolean) {
+      mainHandler.post {
+        try {
+          val c = Color.parseColor(color)
+          window.decorView.setBackgroundColor(c)
+          window.statusBarColor = c
+          window.navigationBarColor = c
+          val controller = WindowInsetsControllerCompat(window, window.decorView)
+          controller.isAppearanceLightStatusBars = !dark
+          controller.isAppearanceLightNavigationBars = !dark
+        } catch (_: Exception) {
+        }
+      }
+    }
+
     /** 是否已拥有「所有文件访问」授权（真值 = 主存储可写探测，与 Rust probe 同哲学）。 */
     @JavascriptInterface
     fun canAccessAllFiles(): Boolean {
