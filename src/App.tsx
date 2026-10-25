@@ -8210,6 +8210,7 @@ export default function App() {
         actions={paletteActions}
         hoverPreview={settings.searchHoverPreview}
         seed={paletteOpen ? paletteSeedRef.current : ""}
+        contentLimit={settings.paletteContentLimit}
       />
 
       <WeekReviewDialog

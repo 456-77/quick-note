@@ -82,17 +82,17 @@ interface Props {
   hoverPreview: boolean;
   /** 打开面板时带入的初始搜索词（编辑器选中文本，0.34.2 用户反馈）。 */
   seed?: string;
+  /** 「内容」组一次展示的文件数（设置项，0.34.3；滚到底自动追加下一页）。 */
+  contentLimit: number;
 }
 
 const SEARCH_DEBOUNCE = 250;
 const NAME_LIMIT = 8;
 /**
- * 「内容」组的展示上限。0.32 起拉到 60 并在组名上标出「显示 x / 共 y 条」。
- * 0.34.2 起结果**按文件聚合**——一个文件一行（0.34.2 用户反馈：同一文件此前
- * 逐条列出刷屏，应只出现一次、进笔记后用文件内搜索看所有命中），60 行能覆盖
- * 的文件数比命中行数多得多，徽标同步改为「共 y 个文件 · n 处」口径。
+ * 「内容」组的展示上限走设置项 `paletteContentLimit`（0.34.3 用户需求：默认
+ * 60、可调 20–300，滚到底部自动追加下一页；键盘走到页尾也预扩一页）。0.32
+ * 起在组名上标「显示 x / 共 y 个文件」，截断与否一眼可见。
  */
-const CONTENT_LIMIT = 60;
 /** 内容检索的分仓限额（按文件计）：当前仓库多给，其他仓库每仓少给，防大库拖慢一轮搜索。 */
 const CONTENT_LIMIT_CURRENT = 150;
 const CONTENT_LIMIT_OTHER = 50;
@@ -159,11 +159,15 @@ export default function CommandPalette({
   actions,
   hoverPreview,
   seed,
+  contentLimit,
 }: Props) {
   // 保留上一次的搜索词（会话内不重置，跨重启落盘 localStorage）。打开时全选
   // 文本：直接输入即替换，想接着改也可以光标挪过去。
   const [query, setQuery] = useState(loadLastQuery);
   const [active, setActive] = useState(0);
+  const limit = Math.max(10, contentLimit);
+  /** 已展示的文件行数：滚到底部/键盘走到页尾各追加一页（0.34.3）。 */
+  const [shownCount, setShownCount] = useState(limit);
   const [contentHits, setContentHits] = useState<PaletteHit[]>([]);
   const [searching, setSearching] = useState(false);
   const [preview, setPreview] = useState<HoverPreview | null>(null);
@@ -196,6 +200,11 @@ export default function CommandPalette({
     const set = new Set<string>([...terms, ...rawWords.flatMap((word) => fieldVariants(word).map((v) => v.toLowerCase()))]);
     return [...set];
   }, [query, terms]);
+
+  // 上限设置变化或新一轮结果到达：分页位置归零
+  useEffect(() => {
+    setShownCount(limit);
+  }, [limit, contentHits]);
 
   // 打开时聚焦；关闭时清掉残留的悬停预览。搜索词按上面的策略保留。
   // 0.34.2 用户反馈「选中内容后再打开全局搜索自动搜索选中内容」：编辑器里有
@@ -288,6 +297,26 @@ export default function CommandPalette({
     return () => window.clearTimeout(timer);
   }, [open, vault, otherVaults, terms, query]);
 
+  // 展示顺序：其他仓库有命中时，当前仓库首页最多占一半（0.34.2 用户反馈
+  // 「搜其他库只搜到文件名」——常见字命中会把其他仓库挤出一整页），其余的
+  // 当前仓库命中排到后续分页；其他仓库没有命中时不压缩当前仓库。
+  const displayOrder = useMemo(() => {
+    if (!vault) return contentHits;
+    const currentRows = contentHits.filter((hit) => hit.vault === vault);
+    const otherRows = contentHits.filter((hit) => hit.vault !== vault);
+    if (otherRows.length === 0) return contentHits;
+    const cap = Math.floor(limit / 2);
+    return [...currentRows.slice(0, cap), ...otherRows, ...currentRows.slice(cap)];
+  }, [contentHits, vault, limit]);
+
+  // 滚到底部自动追加下一页（0.34.3 用户需求）
+  const onListScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 48) {
+      setShownCount((value) => Math.min(value + limit, displayOrder.length));
+    }
+  };
+
   const items = useMemo<Item[]>(() => {
     if (!open) return [];
     const out: Item[] = [];
@@ -358,18 +387,9 @@ export default function CommandPalette({
       // 结果只有标题行能看，少了命中行摘要与悬停预览）。两组各自独立展示。
       // 0.34.2 用户反馈：同一文件只出现一次（此前逐条命中刷屏），完整命中数
       // 放 meta，点击打开笔记并预填文件内搜索——所有命中在笔记里高亮可跳。
-      // 0.34.2 第二批反馈「搜其他库中的内容，还是只搜索到文件名」：常见字（如
-      // 「的」）会让当前仓库的文件把 60 行展示上限全占掉，其他仓库的命中永远
-      // 排不进来——当前仓库最多占一半，剩下让给其他仓库（按最近仓库序）。
-      const currentCap =
-        contentHits.some((hit) => hit.vault !== vault) ? Math.floor(CONTENT_LIMIT / 2) : CONTENT_LIMIT;
-      const currentRows = contentHits.filter((hit) => hit.vault === vault);
-      const otherRows = contentHits.filter((hit) => hit.vault !== vault);
-      const shown = [
-        ...currentRows.slice(0, currentCap),
-        ...otherRows.slice(0, CONTENT_LIMIT - Math.min(currentRows.length, currentCap)),
-      ];
-      const truncated = contentHits.length > shown.length;
+      // 展示顺序见 displayOrder（其他仓库有命中时当前仓库首页占一半）。
+      const shown = displayOrder.slice(0, shownCount);
+      const truncated = displayOrder.length > shown.length;
       const totalHits = contentHits.reduce((sum, hit) => sum + hit.count, 0);
       const totalHitsLabel = totalHits > 999 ? "999+" : String(totalHits);
       shown.forEach((hit) => {
@@ -405,6 +425,8 @@ export default function CommandPalette({
     query,
     rawFirstTerm,
     contentHits,
+    displayOrder,
+    shownCount,
     otherVaults,
     otherEntries,
     vault,
@@ -522,6 +544,10 @@ export default function CommandPalette({
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault();
+                // 键盘走到分页尾部前三行时先扩一页（与滚动追加同口径）
+                if (active + 3 >= shownCount && shownCount < displayOrder.length) {
+                  setShownCount((value) => Math.min(value + limit, displayOrder.length));
+                }
                 setActive((value) => Math.min(value + 1, items.length - 1));
               } else if (event.key === "ArrowUp") {
                 event.preventDefault();
@@ -538,7 +564,7 @@ export default function CommandPalette({
           <kbd className="palette-kbd">Esc</kbd>
         </div>
 
-        <div className="palette-list" ref={listRef} onMouseLeave={scheduleLeaveGrace}>
+        <div className="palette-list" ref={listRef} onMouseLeave={scheduleLeaveGrace} onScroll={onListScroll}>
           {items.length === 0 && (
             <div className="palette-empty">
               {searching ? "正在搜索…" : terms.length === 0 ? "输入以搜索，↑↓ 选择，回车打开" : "没有匹配的结果"}

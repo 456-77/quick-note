@@ -135,6 +135,18 @@ try {
   });
   await cdp(ws, "Page.bringToFront");
 
+  // 等应用文档真正就绪：target 的 url 已是 tauri.localhost 时，document 可能
+  // 还在过渡（about:blank → 应用页），此时 localStorage 抛 SecurityError
+  // （0.5 轮已知坑，0.34.3 门禁实测踩中一次）——探针稳定后再继续
+  for (let i = 0; i < 30; i += 1) {
+    const docReady = await evaluate(
+      ws,
+      `(() => { try { localStorage.getItem('__qn_probe'); return location.host === 'tauri.localhost' && document.readyState !== 'loading'; } catch { return false; } })()`,
+    ).catch(() => false);
+    if (docReady) break;
+    await sleep(500);
+  }
+
   // 移动仿真三件套 + 深色主题预置，然后整页重载让 React 以移动分支重新挂载
   await cdp(ws, "Network.setUserAgentOverride", { userAgent: ANDROID_UA });
   await cdp(ws, "Emulation.setDeviceMetricsOverride", {
@@ -641,10 +653,12 @@ try {
     check(switchRow.descBelow, "批B：说明文字位于标题下方全宽行");
   }
 
-  // 断言：滑杆行 = 滑杆独占一行（top 大于标题 top）
+  // 断言：滑杆行 = 滑杆独占一行（top 大于标题 top）。
+  // 0.34.3 起「通用」分区也有了滑杆（内容结果展示上限）——只取**当前可见**
+  // 的滑杆行（未显示分区的行 offsetParent 为 null、量出来全是 0）
   const sliderRow = await evaluate(ws, `(() => {
     const row = [...document.querySelectorAll('.settings-panel .settings-row')]
-      .find((r) => r.querySelector('.settings-slider'));
+      .find((r) => r.querySelector('.settings-slider') && r.offsetParent !== null);
     if (!row) return { found: false };
     const label = row.querySelector(':scope > span:first-child');
     const slider = row.querySelector('.settings-slider');

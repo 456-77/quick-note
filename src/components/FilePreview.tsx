@@ -645,11 +645,14 @@ export default function FilePreview({ vault, path, onClose }: Props) {
         }
 
         if (kind === "spreadsheet") {
-          const XLSX = await import("xlsx");
-          const workbook = XLSX.read(bytes, { type: "array" });
-          const list = workbook.SheetNames.map((sheetName) => ({
-            name: sheetName,
-            html: DOMPurify.sanitize(XLSX.utils.sheet_to_html(workbook.Sheets[sheetName])),
+          // 0.34.3 内存轮（M5 改动二）：解析搬进一次性 Worker，用完即 terminate
+          // ——SheetJS 的模块底数（~8–15MB）不再常驻主线程。DOMPurify 依赖
+          // DOM，消毒留在主线程。
+          const { parseXlsxInWorker } = await import("../lib/xlsxWorkerHost");
+          const parsed = await parseXlsxInWorker(data.base64);
+          const list = parsed.map((sheet) => ({
+            name: sheet.name,
+            html: DOMPurify.sanitize(sheet.html),
           }));
           if (cancelled) return;
           setSheets(list);

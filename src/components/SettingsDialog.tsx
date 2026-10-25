@@ -879,6 +879,22 @@ export default function SettingsDialog({
             />
           </Row>
           <Row
+            label="内容结果展示上限"
+            desc="全局搜索的内容结果一次显示的文件数，滚到底部自动追加下一批。"
+            keywords="搜索 数量 上限 分页 滚动"
+          >
+            <span className="settings-slider">
+              <input
+                type="range" min={20} max={300} step={10}
+                value={settings.paletteContentLimit}
+                onChange={(event) =>
+                  saveWithFlash({ paletteContentLimit: Number(event.target.value) })
+                }
+              />
+              <span className="settings-slider-value">{settings.paletteContentLimit} 个文件</span>
+            </span>
+          </Row>
+          <Row
             label="搜索高亮颜色"
             desc="文件内搜索与全局搜索命中高亮的颜色。"
             keywords="颜色 红色 高亮 background"

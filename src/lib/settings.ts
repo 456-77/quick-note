@@ -79,6 +79,12 @@ export interface Settings {
    */
   searchHoverPreview: boolean;
   /**
+   * 命令面板「内容」结果一次显示的文件数（0.34.3 用户需求：上限可在设置里
+   * 调、滚到底部自动追加下一批）。面板每次按键都重渲染且未做虚拟滚动，上限
+   * 仍然存在，只是默认从 60 变成可调（20–300）。
+   */
+  paletteContentLimit: number;
+  /**
    * 搜索命中高亮的颜色（0.26 用户反馈"高亮颜色可以在设置中进行设置"）。
    * #RRGGBB；文件内搜索面板（cm-searchMatch）、渲染表格内的命中、全局搜索
    * 跳转高亮都从 CSS 变量 --qn-hit 取色。默认红（0.23 用户指定的醒目红）。
@@ -210,6 +216,7 @@ const DEFAULTS: Settings = {
   exportFolder: "导出",
   vaultOpenMode: "ask",
   searchHoverPreview: true,
+  paletteContentLimit: 60,
   searchHitColor: "#ff5252",
   bgEnabled: false,
   bgImagePath: "",

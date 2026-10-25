@@ -308,27 +308,38 @@ const globalVocabFile = join(appConfig, "vocabulary.md");
 rmSync(globalVocabFile, { force: true });
 rmSync(join(appConfig, "vocabulary-migrated.json"), { force: true });
 
-const child = spawnInstance(vaultA);
+let child = spawnInstance(vaultA);
 let ws = null;
 let backend = null;
 try {
-  let portReady = false;
-  for (let i = 0; i < 45 && !portReady; i += 1) {
-    await sleep(1000);
-    portReady = await fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false);
-  }
-  if (!portReady) throw new Error("调试端口未就绪");
+  // 0.34.3 加固：偶发「端口通但界面 60 次不出」（上一批测实例的 WebView2 残留
+  // 抢占调试端口/首启竞态）——杀掉换新实例再等一轮，两次都失败才判失败。
   let booted = false;
-  for (let i = 0; i < 60 && !booted; i += 1) {
-    ws = await connectPage(0).catch(() => null);
-    if (!ws) continue;
-    booted = await evaluate(
-      ws,
-      `(() => { try { return !!document.querySelector('.vault-pill') && document.querySelectorAll('.tree-item').length > 0; } catch { return false; } })()`,
-    ).catch(() => false);
-    if (!booted) {
-      ws.close();
-      ws = null;
+  for (let attempt = 0; attempt < 2 && !booted; attempt += 1) {
+    if (attempt > 0) {
+      try {
+        child.kill();
+      } catch {}
+      await sleep(2500);
+      child = spawnInstance(vaultA);
+    }
+    let portReady = false;
+    for (let i = 0; i < 45 && !portReady; i += 1) {
+      await sleep(1000);
+      portReady = await fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false);
+    }
+    if (!portReady) continue;
+    for (let i = 0; i < 60 && !booted; i += 1) {
+      ws = await connectPage(0).catch(() => null);
+      if (!ws) continue;
+      booted = await evaluate(
+        ws,
+        `(() => { try { return !!document.querySelector('.vault-pill') && document.querySelectorAll('.tree-item').length > 0; } catch { return false; } })()`,
+      ).catch(() => false);
+      if (!booted) {
+        ws.close();
+        ws = null;
+      }
     }
   }
   check(booted, "应用就绪（临时仓库已打开）");
