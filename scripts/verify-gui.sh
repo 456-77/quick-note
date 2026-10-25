@@ -95,7 +95,12 @@ rm -rf "$HOME/AppData/Local/com.quicknote.gui-test" 2>/dev/null || true
 # 同步状态也要清掉。它是每台设备一份的（游标 + 各文件哈希），上一轮跑完留下的哈希
 # 会让"首次同步应当把全部笔记推上去"这类断言莫名其妙地失败。
 # 注意它**不在仓库里**——里面有服务端密码与令牌。
+# 0.34.0 补：按仓库拆分的 `sync-state-<key>.json` 也必须清——0.29 步给 test-vault
+# 配过的同步（固定路径 key）会残留在 per-vault 文件里，下一轮套件的**前置步骤**
+# （gui-livepreview 等）一启动就继承"已启用同步"，批测改文件触发自动同步打
+# 不存在的桩服务器 → 云同步失败横幅（.banner-error）+ 后台重试扰动滚动断言。
 rm -f "$APPDATA/com.quicknote.gui-test/sync-state.json" 2>/dev/null || true
+rm -f "$APPDATA/com.quicknote.gui-test"/sync-state-*.json 2>/dev/null || true
 WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=$PORT" \
   "$EXE" "$VAULT" > /dev/null 2>&1 &
 

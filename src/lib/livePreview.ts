@@ -558,6 +558,7 @@ function mermaidInitOptions(): {
   startOnLoad: false;
   securityLevel: "strict";
   theme: "neutral" | "dark";
+  htmlLabels: false;
 } {
   return {
     startOnLoad: false,
@@ -565,6 +566,12 @@ function mermaidInitOptions(): {
     // 笔记内容可能来自别处，loose 等于允许注入。
     securityLevel: "strict",
     theme: document.documentElement.dataset.theme === "dark" ? "dark" : "neutral",
+    // 0.34.0：页面渲染也关 htmlLabels（顶层键才生效，理由同下方导出注释）——
+    // WebView2 155.0.4283.62 起 foreignObject 排版回归：标签量测出 ~33800 的
+    // 虚胖 viewBox、foreignObject 实际 0×0，整张图缩成空卡片（用户可见，桌面
+    // 与安卓同中）。htmlLabels:false 走原生 SVG 文本排版，导出路径同配置在
+    // 新运行时下已验证正常，顺带页面与导出物观感完全一致。
+    htmlLabels: false,
   };
 }
 

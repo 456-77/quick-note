@@ -69,12 +69,15 @@ export interface MobileVaultGateProps {
   /** 0.33.1 主页重构：打开设置（主页顶栏齿轮；无仓库打开时主页是唯一界面，
       设置只能从这里进）。不传则不渲染齿轮。 */
   onOpenSettings?: () => void;
+  /** 0.34.0 对齐 Obsidian 仓库管理页（图5）：页顶品牌块显示的版本号。 */
+  appVersion?: string;
 }
 
 export function MobileVaultGate({
   onOpen,
   onClose,
   onOpenSettings,
+  appVersion,
   isVaultSyncEnabled,
   onEnableSync,
   syncConfigured,
@@ -419,6 +422,15 @@ export function MobileVaultGate({
   // ---------------- 仓库列表页 ----------------
   return (
     <div className="mv-gate">
+      {/* 0.34.0 对齐 Obsidian 仓库管理页（图5）：页顶居中品牌块。
+          只加标识不改功能布局——0.33.1 的 13 节规范刚过用户验收 */}
+      <div className="mv-brand">
+        <span className="mv-brand-logo">
+          <IconSparkles size={22} />
+        </span>
+        <span className="mv-brand-name">Quick Note</span>
+        {appVersion && <span className="mv-brand-version">Version {appVersion}</span>}
+      </div>
       <div className="mv-gate-head">
         {/* 0.33.0 批B（需求 §八）：头部两行——标题行（仓库 + 多选同步 + 关闭）
             与路径行（全宽省略）。多选同步从下方独立按钮收进头部。 */}

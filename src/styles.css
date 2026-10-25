@@ -8954,43 +8954,34 @@ button.cm-tag:hover {
   }
 }
 
-/* 移动端骨架：侧栏抽屉化 + 底部导航。900px 以下且触屏生效；
-   桌面窄窗口（有鼠标）保持现有挤压布局不变。 */
+/* 移动端骨架：侧栏抽屉化 + 浮动药丸（0.34.0 Obsidian 化：顶栏/底部导航退场）。
+   900px 以下且触屏生效；桌面窄窗口（有鼠标）保持现有挤压布局不变。 */
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 0.33.0 批D：底栏高度统一变量（46→54，触控舒适）。0.33.1：全部不再叠
-     env(safe-area-inset-*)——系统栏 insets 由 MainActivity 原生 margin 让出，
-     而 vivo 等机型的 WebView 里 env 仍虚报（真机实测 top/bottom 各 ~25-50px），
-     CSS 再补一次就是双重留白（设置页顶部大空白、底栏虚高的根因） */
-  .app {
-    --m-nav-h: 54px;
-    /* 底部导航占位 */
-    padding-bottom: var(--m-nav-h);
-  }
+  /* 0.34.0：底部导航退场，--m-nav-h 占位制废除（抽屉/工具条改贴屏幕边）。
+     0.33.1：全部不再叠 env(safe-area-inset-*)——系统栏 insets 由 MainActivity
+     原生 margin 让出，而 vivo 等机型的 WebView 里 env 仍虚报（真机实测
+     top/bottom 各 ~25-50px），CSS 再补一次就是双重留白 */
 
-  /* 桌面窗口概念全部退场；顶栏的左右栏开关与底栏重复，也退场 */
-  .window-controls,
-  .topbar .icon-btn[title^="窗口置顶"],
-  .topbar .icon-btn[title^="专注模式"],
-  .topbar .icon-btn[title^="文件栏"],
-  .topbar .icon-btn[title^="侧栏"],
-  .topbar .brand,
-  .topbar-search,
-  .searchbox,
+  /* 状态栏（文件路径/字节数等桌面信息）移动端不显示；空状态末位的
+     「打开其他仓库」幽灵键同理（仓库切换走抽屉底部的仓库切换器） */
   .statusbar,
   .editor-empty-actions .btn-ghost:last-child {
     display: none;
   }
 
-  /* 侧栏 → 抽屉：浮在内容上，不再挤压编辑区 */
+  /* 侧栏 → 抽屉：0.34.1 用户反馈改为**全屏**（Obsidian 移动端同款——抽屉
+     盖满整屏，关闭走系统返回/点文件/仓库切换）。上下贴屏幕边（系统栏仍由
+     原生 margin 让出） */
   .sidebar-left,
   .sidebar-right {
     position: fixed;
-    top: 48px;
-    bottom: var(--m-nav-h, 54px);
-    width: min(80vw, 330px) !important;
+    top: 0;
+    bottom: 0;
+    width: 100vw !important;
+    max-width: 100vw !important;
     min-width: 0 !important;
     z-index: 70;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    box-shadow: none;
     opacity: 1;
   }
   .sidebar-left {
@@ -9004,13 +8995,13 @@ button.cm-tag:hover {
   /* 收起时整体移出屏幕（保留现有 left-collapsed 类语义），过渡跟随展开 */
   .body.left-collapsed > .sidebar-left {
     transform: translateX(-105%);
-    width: min(80vw, 330px) !important;
+    width: 100vw !important;
     opacity: 1;
     pointer-events: none;
   }
   .body.right-collapsed > .sidebar-right {
     transform: translateX(105%);
-    width: min(80vw, 330px) !important;
+    width: 100vw !important;
     opacity: 1;
     pointer-events: none;
   }
@@ -9024,49 +9015,14 @@ button.cm-tag:hover {
   /* 抽屉背后的遮罩 */
   .drawer-backdrop {
     position: fixed;
-    inset: 48px 0 0 0;
+    inset: 0;
     z-index: 65;
     background: rgba(0, 0, 0, 0.42);
   }
 
-  /* 边缘的 » 恢复钮在抽屉模型下多余（顶栏有汉堡、底栏有入口） */
+  /* 边缘的 » 恢复钮在抽屉模型下多余（药丸/边缘手势负责开合） */
   .sidebar-restore {
     display: none;
-  }
-
-  /* 底部导航 */
-  .mobile-nav {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    height: var(--m-nav-h, 54px);
-    display: flex;
-    align-items: stretch;
-    background: var(--panel);
-    box-shadow: 0 -1px 0 var(--border-soft);
-    z-index: 80;
-  }
-  .mobile-nav button {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 2px;
-    /* 0.33.0 批D（需求 §四）：按钮本体留边，选中态画一块极轻的紫色圆角
-       背景（不用大色块），触控区仍是整个 54px 高的格子 */
-    margin: 5px 6px;
-    border-radius: 12px;
-    border: 0;
-    background: transparent;
-    color: var(--text-dim);
-    font-size: 10.5px;
-    cursor: pointer;
-  }
-  .mobile-nav button.is-on {
-    color: var(--accent, #8ea6ff);
-    background: var(--accent-soft);
   }
 }
 
@@ -9078,7 +9034,8 @@ button.cm-tag:hover {
     position: fixed;
     left: 0;
     right: 0;
-    bottom: var(--m-nav-h, 54px);
+    /* 0.34.0：底部导航退场，工具栏直接贴屏底 */
+    bottom: 0;
     height: 42px;
     display: flex;
     align-items: stretch;
@@ -9431,7 +9388,6 @@ button.cm-tag:hover {
     --m-card-pad: 16px;
     --m-accent: var(--accent);
   }
-  .mobile-nav,
   .mobile-md-toolbar,
   .quick-capture,
   .mv-overlay-card {
@@ -9451,28 +9407,8 @@ button.cm-tag:hover {
     border-radius: var(--m-radius);
   }
 
-  /* ---------- 二、顶部栏（0.33.0 批D：52→48px 收敛、图标钮 44dp 触控、
-      右侧图标组右对齐——searchbox 在移动端隐藏后 topbar-end 失去推力，
-      图标聚在中部偏左，image-view 实测确认） ---------- */
-  .topbar {
-    height: 48px;
-    gap: 4px;
-  }
-  .topbar .topbar-end {
-    margin-left: auto;
-  }
-  .topbar .icon-btn {
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
-  }
-  .vault-pill {
-    max-width: 40vw;
-    height: 40px;
-    padding: 0 14px;
-    font-size: 14px;
-    font-weight: 650;
-  }
+  /* ---------- 二、顶部栏：0.34.0 起移动端无常驻顶栏（浮动药丸替代），
+      顶栏规则整段退场；桌面样式不受本媒体查询影响 ---------- */
 
   /* ---------- 四、文件列表：52dp 行高、弱描边选中、文件名为主 ---------- */
   .sidebar-left .tree-item {
@@ -9756,15 +9692,12 @@ button.cm-tag:hover {
     height: 42px;
   }
 
-  /* ---------- 十、键盘避让：键盘弹出时隐藏底栏（工具栏贴键盘） ---------- */
-  body.kbd-open .mobile-nav {
+  /* ---------- 十、键盘避让：键盘弹出时隐藏底部工具条（编辑工具栏贴键盘） ---------- */
+  body.kbd-open .m-bottom-bar {
     display: none;
   }
   body.kbd-open .mobile-md-toolbar {
     bottom: 0;
-  }
-  body.kbd-open .app {
-    padding-bottom: 0;
   }
   /* 触控目标下限：一切小图标钮 ≥40px */
   .icon-btn {
@@ -9804,9 +9737,9 @@ button.cm-tag:hover {
   }
 
   /* §十三 按压反馈补齐（.btn/.mini-btn/.icon-btn/.cal-day 的 :active 均已有）：
-     底栏三键=轻缩放；列表行=按压底色（整行缩放会晃眼）。
+     浮动药丸=轻缩放；列表行=按压底色（整行缩放会晃眼）。
      选中态（.is-active 等）特异性更高，按压时不会被盖掉。 */
-  .mobile-nav button:active {
+  .m-pill:active {
     transform: scale(0.95);
   }
   .tree-item:active,
@@ -9817,36 +9750,33 @@ button.cm-tag:hover {
 
 /* ==================== 0.33.0 批C：移动端阅读/编辑分离 ====================
    模型（用户拍板 Q6）：打开笔记默认阅读态（CM6 editable=false，勾选/链接/复制
-   照常）；点正文进沉浸（body.m-zen：顶栏高度收 0 + 底栏滑出 + 底部占位归零，
-   带过渡）；顶栏「编辑」钮进编辑态（body.m-editing：Markdown 工具栏显示），
-   工具栏「✓ 完成」回阅读。沉浸时顶部留一条热区唤回上下栏。 */
+   照常）；点正文进沉浸（body.m-zen：浮动药丸与底条滑出，带过渡）；「编辑」
+   钮进编辑态（body.m-editing：Markdown 工具栏显示），工具栏「✓ 完成」回阅读。
+   沉浸时顶部留一条热区唤回上下栏。 */
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .topbar {
-    transition: height 0.22s ease, padding 0.22s ease;
+  body.m-zen .m-top-pills {
+    transform: translateY(-140%);
+    opacity: 0;
+    pointer-events: none;
   }
-  body.m-zen .topbar {
-    height: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-    overflow: hidden;
-    box-shadow: none;
-  }
-  .mobile-nav {
-    transition: transform 0.22s ease;
-  }
-  body.m-zen .mobile-nav {
-    transform: translateY(100%);
-  }
-  body.m-zen .app {
-    padding-bottom: 0;
+  body.m-zen .m-bottom-bar {
+    transform: translateX(-50%) translateY(160%);
+    opacity: 0;
+    pointer-events: none;
   }
 
-  /* Markdown 工具栏只在编辑态出现（原为常驻 + 键盘避让） */
+  /* Markdown 工具栏只在编辑态出现（原为常驻 + 键盘避让）；编辑态底条让位 */
   body:not(.m-editing) .mobile-md-toolbar {
     display: none;
   }
-  /* 停点2：没打开笔记时编辑钮禁用（空编辑器不弹光标/键盘） */
-  .topbar .mode-toggle:disabled {
+  body.m-editing .m-bottom-bar {
+    transform: translateX(-50%) translateY(160%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  /* 停点2：没打开笔记时编辑钮禁用（空编辑器不弹光标/键盘）——0.34.0 起是
+     右上药丸里的编辑键 */
+  .m-pill:disabled {
     opacity: 0.4;
   }
   .mobile-md-done {
@@ -9855,17 +9785,7 @@ button.cm-tag:hover {
     min-width: 52px;
   }
 
-  /* 沉浸唤回热区：顶部一条轻微渐隐的透明带（28px） */
-  .m-zen-peek {
-    position: fixed;
-    top: 0;
-    left: 0;
-    right: 0;
-    height: 28px;
-    z-index: 90;
-    cursor: pointer;
-    background: linear-gradient(rgba(0, 0, 0, 0.28), transparent);
-  }
+  /* 0.34.1：沉浸唤回热区（.m-zen-peek）已删除——点正文双向 toggle */
 }
 
 /* ==================== 0.33.0 批E：页面细节（需求 §五/§六） ==================== */
@@ -11534,7 +11454,8 @@ html.qn-bg-on .editor-pane-col.is-split {
   .mv-card-menu {
     position: fixed;
     left: 50%;
-    bottom: calc(var(--m-nav-h) + 16px);
+    /* 0.34.0：底部导航退场，⋯ 菜单直接悬在屏底上方 */
+    bottom: 16px;
     transform: translateX(-50%);
     z-index: 90;
     width: min(320px, calc(100vw - 32px));
@@ -11593,12 +11514,6 @@ html.qn-bg-on .editor-pane-col.is-split {
   /* 用户反馈「输入内容时会保持底部功能栏」：键盘弹出时隐藏底栏（开关类由
      MainActivity 的 insets 监听切换到 html.qn-ime-open），编辑区直达键盘
      上缘；Markdown 工具栏保留并落到键盘上缘，抽屉底部同样收上去 */
-  html.qn-ime-open .mobile-nav {
-    display: none;
-  }
-  html.qn-ime-open .app {
-    padding-bottom: 0;
-  }
   html.qn-ime-open .mobile-md-toolbar {
     bottom: 0;
   }
@@ -11606,13 +11521,16 @@ html.qn-bg-on .editor-pane-col.is-split {
   html.qn-ime-open .sidebar-right {
     bottom: 0;
   }
+  /* 0.34.0：底部导航退场，键盘弹出时底部工具条一并藏（编辑工具栏贴键盘） */
+  html.qn-ime-open .m-bottom-bar {
+    display: none;
+  }
 
   /* 用户反馈「单词弹窗被截断了」：详情底弹层挂右栏抽屉的层叠上下文里
-     （z-260 出不了 z-70 的父级），底部被底栏（z-80）压住——整体抬到底栏
-     之上，高度上限同步扣减 */
+     （z-260 出不了 z-70 的父级）。0.34.0 起无底栏，直接贴屏底 */
   .vocab-detail {
-    margin-bottom: var(--m-nav-h, 54px);
-    max-height: calc(72vh - var(--m-nav-h, 54px));
+    margin-bottom: 0;
+    max-height: 72vh;
   }
 
   /* 用户反馈「内容展示区域两边空白太大」：桌面 24px 边距 + 900px 阅读宽度
@@ -11648,7 +11566,7 @@ html.qn-bg-on .editor-pane-col.is-split {
   }
   .vault-home-page .mv-gate {
     min-height: 100%;
-    padding-bottom: calc(var(--m-nav-h) + 8px);
+    padding-bottom: 8px;
     /* 0.33.1 用户反馈：主页打开「像被上下拉伸」+ 滑动时顶栏向下移——卡片形态
        的垂直居中（justify-content:center）在全屏页上是祸根：内容超高时居中
        溢出让顶部不可达、sticky 头钉在裁剪位。主页是页面，顶对齐铺满 */
@@ -11662,5 +11580,571 @@ html.qn-bg-on .editor-pane-col.is-split {
     z-index: 2;
     background: var(--panel);
     padding-top: 6px;
+  }
+}
+
+/* ==================== 0.34.0 移动端 Obsidian 化壳层 ====================
+   参考 Obsidian mobile 1.12（用户提供的五张真机截图）：无常驻顶栏/底栏，
+   顶部两颗浮动药丸 + 底部浮动工具条 + 底部 sheet（动作菜单/标签页/仓库切换）
+   + 左抽屉分区化（文件列表/搜索/标签/单词本/日历 + 动作行 + 分区卡 + 仓库底行）
+   + 右抽屉只留 大纲/统计 + 边缘滑动手势。z 序总表：
+   drawer-backdrop 65 < 抽屉 70 < 药丸/底条 75 < vault-home 84 < settings 85
+   < sheet 86 < m-zen-peek 90。桌面零变化（本块整体在移动端媒体查询内）。 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* 移动端标签栏隐藏：标签的唯一入口是底条 [N] 标签页 sheet（含分栏标签） */
+  .tabbar {
+    display: none !important;
+  }
+
+  /* ---------- 顶部浮动药丸：左=抽屉开关，右=编辑toggle+⋮（图1） ---------- */
+  .m-top-pills {
+    position: fixed;
+    top: 10px;
+    left: 12px;
+    right: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 75;
+    pointer-events: none;
+    transition: transform 0.22s ease, opacity 0.22s ease;
+  }
+  .m-top-pills > * {
+    pointer-events: auto;
+  }
+  /* 药丸：不透明面板底 + 胶囊圆角（Obsidian 深灰药丸的令牌化版本）。
+     button UA 默认 align-items:flex-start，flex 容器必须显式居中 */
+  .m-pill {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 42px;
+    height: 42px;
+    padding: 0 12px;
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    background: var(--panel);
+    color: var(--text-dim);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+    cursor: pointer;
+  }
+  .m-pill.is-on {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent-soft);
+  }
+  /* 右上药丸组：编辑 toggle 与 ⋮ 同处一颗胶囊（图1 的「书+⋮」组） */
+  .m-pill-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 0 4px;
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    background: var(--panel);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  }
+  .m-pill-group .m-pill {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  .m-pill-group .m-pill.is-on {
+    background: var(--accent-soft);
+  }
+
+  /* ---------- 底部浮动工具条：‹ › 搜索 ＋ [N] ☰（图1） ---------- */
+  .m-bottom-bar {
+    position: fixed;
+    left: 50%;
+    bottom: 12px;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 6px;
+    border: 1px solid var(--border-soft);
+    border-radius: 999px;
+    background: var(--panel);
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
+    z-index: 75;
+    transition: transform 0.22s ease, opacity 0.22s ease;
+    max-width: calc(100vw - 24px);
+  }
+  .m-bottom-bar .m-pill {
+    min-width: 42px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+  /* [N] 标签数：方形徽标感（图1 的圆角方块），脏时缀一个点 */
+  .m-bottom-bar .m-tabcount {
+    position: relative;
+    min-width: 38px;
+    border-radius: 12px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: 15px;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+  }
+  .m-bottom-bar .m-tabcount.is-dirty::after {
+    content: "";
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* ---------- 底部 sheet：grabber + 行列表（图2 动作菜单 / [N] / 仓库 radio） ---------- */
+  .m-sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 86;
+    background: rgba(0, 0, 0, 0.45);
+  }
+  .m-sheet {
+    position: fixed;
+    left: 10px;
+    right: 10px;
+    bottom: 10px;
+    z-index: 86;
+    background: var(--panel);
+    border: 1px solid var(--border-soft);
+    border-radius: 24px;
+    padding: 6px 8px 10px;
+    max-height: 72vh;
+    overflow-y: auto;
+    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+    animation: m-sheet-in 0.18s ease;
+  }
+  @keyframes m-sheet-in {
+    from { opacity: 0; transform: translateY(24px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .m-sheet-grabber {
+    width: 36px;
+    height: 4px;
+    border-radius: 999px;
+    background: var(--text-faint);
+    opacity: 0.55;
+    margin: 4px auto 6px;
+  }
+  .m-sheet-title {
+    padding: 4px 14px 8px;
+    font-size: 13px;
+    color: var(--text-faint);
+  }
+  .m-sheet-empty {
+    padding: 18px 14px 22px;
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 13.5px;
+  }
+  .m-sheet-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    width: 100%;
+    min-height: 50px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 14px;
+    background: transparent;
+    color: var(--text);
+    font-size: 15px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .m-sheet-row + .m-sheet-row {
+    margin-top: 1px;
+  }
+  .m-sheet-row svg {
+    flex: 0 0 auto;
+    color: var(--text-dim);
+  }
+  .m-sheet-row:active {
+    background: var(--hover);
+  }
+  .m-sheet-row:disabled {
+    color: var(--text-faint);
+    opacity: 0.55;
+  }
+  .m-sheet-row.is-dirty {
+    color: var(--accent);
+  }
+  .m-sheet-row.is-dirty svg {
+    color: var(--accent);
+  }
+
+  /* 仓库 radio sheet（图4）：大行 + 右侧单选圈，行间 hairline */
+  .m-vault-sheet .m-vault-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 58px;
+    padding: 0 14px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 16px;
+    text-align: left;
+    cursor: pointer;
+    border-radius: 14px;
+  }
+  .m-vault-sheet .m-vault-row + .m-vault-row {
+    border-top: 1px solid var(--border-soft);
+    border-top-left-radius: 0;
+    border-top-right-radius: 0;
+  }
+  .m-vault-sheet .m-vault-row:active {
+    background: var(--hover);
+  }
+  .m-vault-name {
+    flex: 1;
+    min-width: 0;
+    /* 长仓库名完整换行（用户拍板：一切截断方案否决） */
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+  .m-radio {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    border: 2px solid var(--text-faint);
+    position: relative;
+  }
+  .m-radio.is-on {
+    border-color: var(--accent);
+  }
+  .m-radio.is-on::after {
+    content: "";
+    position: absolute;
+    inset: 3px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* 标签页 sheet 行：文件名 + 分屏徽标 + 脏点 + ✕ */
+  .m-tab-row {
+    display: flex;
+    align-items: center;
+    border-radius: 14px;
+  }
+  .m-tab-row.is-active {
+    background: var(--accent-soft);
+  }
+  .m-tab-main {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 0 4px 0 14px;
+    border: 0;
+    background: transparent;
+    color: var(--text);
+    font-size: 14.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .m-tab-name {
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .m-tab-pane {
+    flex: 0 0 auto;
+    font-size: 10.5px;
+    color: var(--text-faint);
+    border: 1px solid var(--border-soft);
+    border-radius: 6px;
+    padding: 1px 5px;
+  }
+  .m-tab-dirty {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .m-tab-close {
+    flex: 0 0 auto;
+    width: 42px;
+    height: 48px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    background: transparent;
+    color: var(--text-faint);
+    cursor: pointer;
+  }
+  .m-tab-close:active {
+    color: var(--text);
+  }
+
+  /* ---------- 左抽屉分区化（图3/图4）：内容区 + 动作行 + 分区卡 + 仓库底行 ---------- */
+  .sidebar-left {
+    display: flex;
+    flex-direction: column;
+    padding: 10px;
+    gap: 8px;
+  }
+  .m-drawer-content {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    /* 分区内容（树/标签/单词/日历）自己滚 */
+    overflow: hidden;
+  }
+  .m-drawer-content > * {
+    flex-shrink: 0;
+  }
+  /* 内容区里的主内容（树/面板）撑满剩余高度并自滚；页签行/筛选行固定 */
+  .m-drawer-content .tree,
+  .m-drawer-content .tag-dash,
+  .m-drawer-content .vocab-panel,
+  .m-drawer-content .calendar {
+    flex: 1 1 0;
+    min-height: 0;
+    overflow-y: auto;
+  }
+  .m-drawer-content .left-view {
+    flex-shrink: 0;
+  }
+  .m-fulltext-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 12px;
+    margin: 6px 0;
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 13px;
+    cursor: pointer;
+  }
+  .m-fulltext-btn:active {
+    background: var(--hover);
+  }
+
+  /* 动作行：新建笔记/新建文件夹居左，关闭居右（图4 图标行） */
+  .m-drawer-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .m-drawer-actions button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 42px;
+    height: 40px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .m-drawer-actions button:active {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .m-drawer-actions button:disabled {
+    opacity: 0.4;
+  }
+
+  /* 分区卡：五行，当前分区胶囊高亮（图3 底部卡） */
+  .m-drawer-sections {
+    border: 1px solid var(--border-soft);
+    border-radius: 18px;
+    padding: 5px;
+    background: var(--panel);
+  }
+  .m-drawer-section {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 0;
+    border-radius: 13px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 14.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .m-drawer-section + .m-drawer-section {
+    margin-top: 1px;
+  }
+  .m-drawer-section:active {
+    background: var(--hover);
+  }
+  .m-drawer-section.is-on {
+    background: var(--hover);
+    color: var(--text);
+  }
+  .m-drawer-section.is-on svg {
+    color: var(--accent);
+  }
+
+  /* 仓库底行：名字+计数在左（点开 radio sheet），齿轮圆钮在右（图3） */
+  .m-drawer-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 2px 0;
+  }
+  .m-drawer-vault {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 1px;
+    padding: 6px 8px;
+    border: 0;
+    border-radius: 12px;
+    background: transparent;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+  }
+  .m-drawer-vault:active {
+    background: var(--hover);
+  }
+  .m-drawer-vault-name {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 15.5px;
+    font-weight: 650;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .m-drawer-vault-name::after {
+    content: "";
+    width: 0;
+    height: 0;
+    border-left: 4.5px solid transparent;
+    border-right: 4.5px solid transparent;
+    border-top: 5px solid var(--text-faint);
+  }
+  .m-drawer-vault-meta {
+    font-size: 11.5px;
+    color: var(--text-faint);
+  }
+  .m-drawer-gear {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    border: 0;
+    border-radius: 50%;
+    background: var(--hover);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .m-drawer-gear:active {
+    color: var(--text);
+  }
+}
+
+/* 0.34.0 仓库主页品牌块（对齐 Obsidian 图5 页顶：logo + 名称 + 版本居中）。
+   只加标识，0.33.1 的 13 节功能布局不动 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .vault-home-page .mv-brand,
+  .mv-overlay .mv-brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 18px 0 6px;
+  }
+  .mv-brand-logo {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 46px;
+    height: 46px;
+    border-radius: 14px;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .mv-brand-name {
+    font-size: 21px;
+    font-weight: 750;
+    letter-spacing: 0.4px;
+    color: var(--text);
+  }
+  .mv-brand-version {
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+}
+
+/* 0.34.0 补丁：任一抽屉开着时浮动药丸/底条整体让位（Obsidian 语义——抽屉
+   是全高页面，浮动件叠在上面会挡住知识库页签与底部仓座行）。关闭走抽屉的
+   ✕/遮罩/back/边缘滑动。 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .app.m-drawer-open .m-top-pills {
+    transform: translateY(-140%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .app.m-drawer-open .m-bottom-bar {
+    transform: translateX(-50%) translateY(160%);
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+/* 0.34.1 用户反馈三连：①抽屉分区卡默认收起成胶囊（当前分区 + ⇅），点击展开、
+   选中后收回（Obsidian 分区切换器语义）；②右上 ⋮ = 当前笔记菜单（与底条 ☰
+   应用级菜单分工），行样式复用 .m-sheet-row 无需新增；③沉浸改点正文双向 toggle
+   （m-zen-peek 已删）。 */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .m-drawer-section-collapsed {
+    min-height: 46px;
+  }
+  /* ⇅ 上下双尖括号（Obsidian 分区切换器的展开记号） */
+  .m-drawer-section-caret {
+    position: relative;
+    flex: 0 0 auto;
+    margin-left: auto;
+    width: 10px;
+    height: 18px;
+  }
+  .m-drawer-section-caret::before,
+  .m-drawer-section-caret::after {
+    content: "";
+    position: absolute;
+    left: 1px;
+    width: 7px;
+    height: 7px;
+    border-right: 1.6px solid currentColor;
+    border-bottom: 1.6px solid currentColor;
+  }
+  .m-drawer-section-caret::before {
+    top: 1px;
+    transform: rotate(-135deg);
+  }
+  .m-drawer-section-caret::after {
+    bottom: 1px;
+    transform: rotate(45deg);
   }
 }

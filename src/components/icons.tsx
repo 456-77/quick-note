@@ -244,3 +244,26 @@ export const IconFilter = ({ size, className }: IconProps) => (
     <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
   </svg>
 );
+
+// 0.34.0 移动端 Obsidian 化壳层：⋮ 纵向三点（右上菜单钮）
+export const IconDots = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <circle cx="12" cy="5" r="1.6" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="19" r="1.6" fill="currentColor" stroke="none" />
+  </svg>
+);
+
+// ☰ 三横线（底栏动作菜单钮）
+export const IconMenu = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}><path d="M4 6h16" /><path d="M4 12h16" /><path d="M4 18h16" /></svg>
+);
+
+// ‹ ›（底栏导航历史）
+export const IconArrowLeft = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}><path d="m15 18-6-6 6-6" /></svg>
+);
+
+export const IconArrowRight = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}><path d="m9 18 6-6-6-6" /></svg>
+);

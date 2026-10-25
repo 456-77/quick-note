@@ -38,3 +38,6 @@ latest.json
 
 # 历次发版留在仓库根的 Android 安装包（发版产物，随 Release 走，不进 git）
 /*.apk
+
+# ZCode 工作区（会话目录，勿入库）
+.zcode/

@@ -4,10 +4,14 @@
 //
 // 覆盖：
 // - 移动仿真三件套命中（媒体查询/UA 分支）
+// - 0.34.0 Obsidian 化壳层：无常驻顶栏/底导航、顶部两颗药丸、底条六键（‹›🔍＋[N]☰）、
+//   ☰ 动作菜单 sheet、[N] 标签页 sheet、导航历史 ‹›、左抽屉分区化（文件/搜索/标签/
+//   单词本/日历+动作行+分区卡+仓库底行）、仓库 radio sheet→管理仓库、边缘滑动开抽屉、
+//   右抽屉只留目录/统计、沉浸滑出浮动件、主页品牌块（图5）
 // - 批A：令牌/四级文字 --text-placeholder/卡片 16dp/:active
 // - 批B：设置行 flex 三段式（开关/短控件同行、滑杆独占行、说明全宽）
 // - 批B：仓库页 13 节规范（云端行/本地卡/状态标签/长名完整换行/图标不压缩）
-// - 批C/D/E/F：编辑态分离、底栏变量化、文件树指示条、单词行两行、bgOpacity 移动默认 0.15
+// - 批C/D/E/F：编辑态分离、文件树指示条、单词行两行、bgOpacity 移动默认 0.15
 // - 停点1：侧栏近不透明（veil alpha>=0.9）
 // - 停点2/3：空状态新建抽屉聚焦、设置两级头部（56px/‹ 返回/sticky top=0 从屏幕
 //   最顶盖下来/面板无 env 顶距/滚动后贴顶、一级头 ‹ 与标题并排靠左）
@@ -143,8 +147,12 @@ try {
   await evaluate(ws, `localStorage.setItem('quicknote.settings', JSON.stringify({ theme: 'dark' }))`);
   await cdp(ws, "Page.reload");
 
-  const navOk = await waitFor(ws, `document.querySelectorAll('.mobile-nav button').length === 3`, 30000);
-  check(navOk, "移动仿真生效：isMobile()=true 且底栏三键渲染");
+  const shellOk = await waitFor(
+    ws,
+    `document.querySelectorAll('.m-bottom-bar button').length === 6 && document.querySelectorAll('.m-top-pills .m-pill').length === 3`,
+    30000,
+  );
+  check(shellOk, "移动仿真生效：isMobile()=true 且 0.34.0 Obsidian 化壳层渲染（顶药丸+底条六键）");
 
   const mediaOk = await evaluate(
     ws,
@@ -152,35 +160,110 @@ try {
   );
   check(mediaOk, "移动端媒体查询命中（pointer:coarse 仿真有效）");
 
-  // 批D：骨架视觉——底栏 54px+选中背景块、顶栏 48px+右侧图标右对齐+编辑钮图标 16
+  // 0.34.0 骨架：顶栏/底部导航退场；顶药丸（抽屉键 + 编辑/⋮组）；底条六键
   const skeleton = await evaluate(ws, `(() => {
-    const nav = document.querySelector('.mobile-nav').getBoundingClientRect();
-    const topbar = document.querySelector('header.topbar').getBoundingClientRect();
-    const lastIcon = [...document.querySelectorAll('header.topbar .topbar-end button')].filter((b) => b.getBoundingClientRect().width > 0).pop();
-    const lastR = lastIcon ? lastIcon.getBoundingClientRect() : null;
-    const editSvg = document.querySelector('header.topbar .mode-toggle svg');
+    const topbar = document.querySelector('header.topbar');
+    const nav = document.querySelector('.mobile-nav');
+    const pills = document.querySelector('.m-top-pills');
+    const bar = document.querySelector('.m-bottom-bar');
+    const barBtns = bar ? [...bar.querySelectorAll('button')] : [];
+    const pillH = barBtns[0] ? Math.round(barBtns[0].getBoundingClientRect().height) : 0;
+    const tabcount = bar?.querySelector('.m-tabcount')?.textContent.trim() ?? '';
     return {
-      navH: Math.round(nav.height),
-      topbarH: Math.round(topbar.height),
-      lastIconRightGap: lastR ? Math.round(window.innerWidth - lastR.right) : -1,
-      editIconSize: editSvg ? Math.round(editSvg.getBoundingClientRect().width) : 0,
+      topbarGone: !topbar,
+      navGone: !nav,
+      pillsOk: !!pills && pills.querySelectorAll('.m-pill').length === 3,
+      barCount: barBtns.length,
+      pillH,
+      tabcount,
     };
   })()`);
-  check(skeleton.navH >= 54 && skeleton.navH <= 56, `批D：底栏高 ${skeleton.navH}px（54+安全区基准）`);
-  check(skeleton.topbarH === 48, `批D：顶栏收敛为 48px（实际 ${skeleton.topbarH}）`);
-  check(skeleton.lastIconRightGap >= 0 && skeleton.lastIconRightGap <= 16, `批D：顶栏图标组右对齐（末钮距右缘 ${skeleton.lastIconRightGap}px）`);
-  check(skeleton.editIconSize === 16, `批D：编辑钮图标 16px 与顶栏图标统一（实际 ${skeleton.editIconSize}）`);
-  await evaluate(ws, `document.querySelectorAll('.mobile-nav button')[0]?.click()`);
+  check(skeleton.topbarGone, "0.34.0：移动端无常驻顶栏（浮动药丸替代）");
+  check(skeleton.navGone, "0.34.0：底部导航退场");
+  check(skeleton.pillsOk, "0.34.0：顶部药丸三键（抽屉 + 编辑toggle + ⋮）渲染");
+  check(skeleton.barCount === 6, `0.34.0：底条六键 ‹›🔍＋[N]☰（实际 ${skeleton.barCount}）`);
+  check(skeleton.pillH >= 42, `0.34.0：药丸触控高度 ${skeleton.pillH}px（≥42）`);
+  check(skeleton.tabcount === "0", "0.34.0：[N] 标签数徽标初始 0");
+
+  // 抽屉开合：左上药丸 → is-on + transform none；分区卡/动作行/仓库底行齐全
+  await evaluate(ws, `document.querySelector('.m-top-pills .m-pill')?.click()`);
   await sleep(500);
-  const navActive = await evaluate(ws, `(() => {
-    const on = document.querySelector('.mobile-nav button.is-on');
-    if (!on) return { found: false };
-    const cs = getComputedStyle(on);
-    return { found: true, bg: cs.backgroundColor, color: cs.color };
+  const drawerOn = await evaluate(ws, `(() => {
+    const pill = document.querySelector('.m-top-pills .m-pill');
+    const side = document.querySelector('aside.sidebar-left');
+    return {
+      on: pill?.classList.contains('is-on') ?? false,
+      open: side ? getComputedStyle(side).transform === 'none' : false,
+      sections: document.querySelectorAll('.m-drawer-section').length,
+      actions: document.querySelectorAll('.m-drawer-actions button').length,
+      vaultName: document.querySelector('.m-drawer-vault-name')?.textContent ?? '',
+      gear: !!document.querySelector('.m-drawer-gear'),
+    };
   })()`);
-  check(navActive.found && navActive.bg !== "rgba(0, 0, 0, 0)", `批D：底栏选中态有背景块（${navActive.bg}）`);
-  await evaluate(ws, `document.querySelectorAll('.mobile-nav button')[0]?.click()`);
+  check(drawerOn.on && drawerOn.open, "0.34.0：左上药丸开抽屉（is-on + transform none）");
+  check(drawerOn.sections === 1, `0.34.1：分区卡默认收起成胶囊（实际 ${drawerOn.sections} 行）`);
+  // 0.34.1：动作行只属于文件列表分区且只有两键（✕ 已删，全屏抽屉走返回键关闭）
+  check(drawerOn.actions === 2, `0.34.1：动作行两键（新建笔记/文件夹，实际 ${drawerOn.actions}）`);
+  const fullWidth = await evaluate(ws, `Math.round(document.querySelector('aside.sidebar-left').getBoundingClientRect().width)`);
+  check(Math.abs(fullWidth - 390) <= 2, `0.34.1：抽屉全屏（宽 ${fullWidth}px ≈ 视口 390）`);
+  // 非文件分区不显示动作行
+  await evaluate(ws, `document.querySelector('.m-drawer-section-collapsed')?.click()`);
+  await sleep(300);
+  await evaluate(ws, `(() => { [...document.querySelectorAll('.m-drawer-section')].find((b) => b.textContent.includes('标签'))?.click(); return true; })()`);
   await sleep(400);
+  const noActions = await evaluate(ws, `!!document.querySelector('.m-drawer-actions')`);
+  check(!noActions, "0.34.1：非文件分区无动作行");
+  // 回到文件列表分区
+  await evaluate(ws, `document.querySelector('.m-drawer-section-collapsed')?.click()`);
+  await sleep(300);
+  await evaluate(ws, `(() => { [...document.querySelectorAll('.m-drawer-section')].find((b) => b.textContent.includes('文件列表'))?.click(); return true; })()`);
+  await sleep(400);
+  check(drawerOn.vaultName.includes("2026"), `0.34.0：抽屉底行显示仓库名（${drawerOn.vaultName}）`);
+  check(drawerOn.gear, "0.34.0：抽屉齿轮钮存在");
+  // 展开分区卡 → 五行；切换后收回胶囊（0.34.1 用户反馈：默认收起，点击展开）
+  await evaluate(ws, `document.querySelector('.m-drawer-section-collapsed')?.click()`);
+  await sleep(400);
+  const expanded = await evaluate(ws, `document.querySelectorAll('.m-drawer-section').length`);
+  check(expanded === 5, `0.34.1：分区胶囊点击展开五行（实际 ${expanded}）`);
+  await evaluate(ws, `(() => { [...document.querySelectorAll('.m-drawer-section')].find((b) => b.textContent.includes('搜索'))?.click(); return true; })()`);
+  await sleep(400);
+  const recollapsed = await evaluate(ws, `(() => ({
+    count: document.querySelectorAll('.m-drawer-section').length,
+    onLabel: document.querySelector('.m-drawer-section-collapsed')?.textContent.trim() ?? '',
+  }))()`);
+  check(
+    recollapsed.count === 1 && recollapsed.onLabel.includes("搜索"),
+    `0.34.1：选中分区后收回胶囊并显示当前分区（${recollapsed.onLabel}）`,
+  );
+  // 回到文件列表分区（后续树操作依赖）
+  await evaluate(ws, `document.querySelector('.m-drawer-section-collapsed')?.click()`);
+  await sleep(300);
+  await evaluate(ws, `(() => { [...document.querySelectorAll('.m-drawer-section')].find((b) => b.textContent.includes('文件列表'))?.click(); return true; })()`);
+  await sleep(400);
+  const floatGone = await evaluate(ws, `(() => ({
+    cls: document.querySelector('.app')?.classList.contains('m-drawer-open') ?? false,
+    pillsOpacity: getComputedStyle(document.querySelector('.m-top-pills')).opacity,
+  }))()`);
+  check(
+    floatGone.cls && floatGone.pillsOpacity === "0",
+    "0.34.0：抽屉打开时浮动药丸/底条让位（m-drawer-open，不叠在页签/仓库行上）",
+  );
+  await evaluate(ws, `document.querySelector('.m-top-pills .m-pill')?.click()`);
+  await sleep(400);
+
+  // 0.34.1 空状态：编辑钮与当前笔记菜单钮都禁用（没打开文件不能进编辑态）
+  const emptyPills = await evaluate(ws, `(() => {
+    const pills = [...document.querySelectorAll('.m-top-pills .m-pill')];
+    return {
+      editDisabled: pills.find((b) => (b.title || '').includes('编辑'))?.disabled ?? null,
+      dotsDisabled: pills.find((b) => (b.title || '') === '当前笔记操作')?.disabled ?? null,
+      toolbar: (() => { const t = document.querySelector('.mobile-md-toolbar'); return t ? getComputedStyle(t).display : 'absent'; })(),
+    };
+  })()`);
+  check(
+    emptyPills.editDisabled && emptyPills.dotsDisabled && (emptyPills.toolbar === "none" || emptyPills.toolbar === "absent"),
+    `0.34.1：空状态编辑/笔记菜单钮禁用、工具栏不出现（${JSON.stringify(emptyPills)}）`,
+  );
 
   // 停点3：空状态（仓库已开、没开笔记）编辑器禁编辑——裸空 state 曾可编辑，
   // 点正文聚焦出光标+软键盘（真机图2）；空状态点「+ 新建笔记」要开抽屉+输入行可见
@@ -221,11 +304,11 @@ try {
       editable: document.querySelector('.editor-host .cm-content')?.getAttribute('contenteditable'),
       zen: document.body.classList.contains('m-zen'),
       editing: document.body.classList.contains('m-editing'),
-      editBtn: [...document.querySelectorAll('header.topbar .mode-toggle')].some((b) => (b.title || '').includes('编辑这篇笔记')),
+      editBtn: [...document.querySelectorAll('.m-top-pills .m-pill')].some((b) => (b.title || '').includes('编辑这篇笔记')),
     }))()`);
     check(reading.editable === "false", `批C：阅读态默认禁编辑（contenteditable=${reading.editable}）`);
     check(!reading.zen && !reading.editing, "批C：打开笔记默认阅读态、上下栏可见");
-    check(reading.editBtn, "批C：顶栏视图模式钮已换成「编辑」钮");
+    check(reading.editBtn, "批C：右上药丸的「编辑」钮存在");
 
     const treeActive = await evaluate(ws, `(() => {
       const row = document.querySelector('.tree-file.is-active');
@@ -235,7 +318,7 @@ try {
     check(treeActive.found && treeActive.shadow !== "none", "批E：选中文件行左侧指示条（inset box-shadow）");
 
     // 编辑态：点编辑钮 → 解禁 + 聚焦 + 工具栏
-    await evaluate(ws, `document.querySelector('header.topbar .mode-toggle')?.click()`);
+    await evaluate(ws, `[...document.querySelectorAll('.m-top-pills .m-pill')].find((b) => (b.title || '').includes('编辑'))?.click()`);
     await sleep(400);
     const editing = await evaluate(ws, `(() => ({
       editable: document.querySelector('.editor-host .cm-content')?.getAttribute('contenteditable'),
@@ -249,7 +332,7 @@ try {
     check(editing.focused, "批C：编辑态聚焦编辑器（软键盘弹出路径）");
 
     // 停点2 反馈：再点一次编辑钮 = 退出编辑态（不再只认工具栏 ✓）
-    await evaluate(ws, `document.querySelector('header.topbar .mode-toggle')?.click()`);
+    await evaluate(ws, `[...document.querySelectorAll('.m-top-pills .m-pill')].find((b) => (b.title || '').includes('编辑'))?.click()`);
     await sleep(300);
     const toggled = await evaluate(ws, `(() => ({
       editing: document.body.classList.contains('m-editing'),
@@ -257,7 +340,7 @@ try {
     }))()`);
     check(!toggled.editing && toggled.editable === "false", "批C：编辑钮再点一次可退出（toggle）");
     // 回到编辑态，让后续「工具栏 ✓ 完成」断言继续覆盖第二条退出路径
-    await evaluate(ws, `document.querySelector('header.topbar .mode-toggle')?.click()`);
+    await evaluate(ws, `[...document.querySelectorAll('.m-top-pills .m-pill')].find((b) => (b.title || '').includes('编辑'))?.click()`);
     await sleep(300);
 
     // 完成：回阅读态
@@ -298,22 +381,28 @@ try {
       `0.33.1：mode=${readingLive.mode} 时阅读态仍 live 渲染（标题装饰=${readingLive.rendered}，无裸 #=${!readingLive.rawHash}）`,
     );
     // 编辑态：mode=source 时编辑态显示原文（尊重命令面板/快捷键的选择）
-    await evaluate(ws, `document.querySelector('header.topbar .mode-toggle')?.click()`);
+    await evaluate(ws, `[...document.querySelectorAll('.m-top-pills .m-pill')].find((b) => (b.title || '').includes('编辑'))?.click()`);
     await sleep(500);
     const srcEdit = await evaluate(ws, `(() => ({
       editing: document.body.classList.contains('m-editing'),
       rendered: !!document.querySelector('.editor-host .cm-line.cm-lp-heading'),
     }))()`);
     check(srcEdit.editing && !srcEdit.rendered, `0.33.1：mode=source 编辑态显示原文（无标题装饰=${!srcEdit.rendered}）`);
-    await evaluate(ws, `document.querySelector('header.topbar .mode-toggle')?.click()`);
+    await evaluate(ws, `[...document.querySelectorAll('.m-top-pills .m-pill')].find((b) => (b.title || '').includes('编辑'))?.click()`);
     await sleep(300);
     await evaluate(ws, `localStorage.setItem('quicknote.mode', 'live')`);
 
     // 0.33.1 用户反馈「标签列表透图」：.menu-backdrop 原为纯点击层无底色，
-    // 移动端补遮罩——开着标签弹窗时 backdrop 必须有实际底色
+    // 移动端补遮罩——开着标签弹窗时 backdrop 必须有实际底色。
+    // 0.34.1：标签入口在右上 ⋮ 当前笔记菜单（与底条 ☰ 应用级菜单分工）
     await evaluate(
       ws,
-      `(() => { [...document.querySelectorAll('header.topbar button')].find((b) => (b.title || '').startsWith('标签') || (b.title || '') === '添加标签')?.click(); return true; })()`,
+      `(() => { [...document.querySelectorAll('.m-top-pills .m-pill')].find((b) => b.title === '当前笔记操作')?.click(); return true; })()`,
+    );
+    await sleep(400);
+    await evaluate(
+      ws,
+      `(() => { [...document.querySelectorAll('.m-sheet-row')].find((b) => b.textContent.includes('当前笔记标签'))?.click(); return true; })()`,
     );
     await sleep(400);
     const tagScrim = await evaluate(ws, `(() => {
@@ -366,26 +455,26 @@ try {
     );
     check(reloadSame === "false", `批C：完成后重开同一篇仍禁编辑（contenteditable=${reloadSame}）`);
 
-    // 沉浸：点正文 → 上下栏滑出；热区唤回
+    // 沉浸：点正文 → 浮动药丸与底条滑出；0.34.1 双向 toggle——再点一次正文唤回
     await evaluate(ws, `document.querySelector('.editor-host')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
     await sleep(500);
     const zen = await evaluate(ws, `(() => ({
       zen: document.body.classList.contains('m-zen'),
-      topbarH: Math.round(document.querySelector('header.topbar')?.getBoundingClientRect().height ?? -1),
-      navTransform: getComputedStyle(document.querySelector('.mobile-nav')).transform,
-      peek: !!document.querySelector('.m-zen-peek'),
+      pillsTransform: getComputedStyle(document.querySelector('.m-top-pills')).transform,
+      barTransform: getComputedStyle(document.querySelector('.m-bottom-bar')).transform,
+      peekGone: !document.querySelector('.m-zen-peek'),
     }))()`);
     check(zen.zen, "批C：阅读态点正文 → 沉浸（body.m-zen）");
-    check(zen.topbarH <= 2, `批C：沉浸时顶栏收起（高 ${zen.topbarH}px）`);
-    check(zen.navTransform !== "none", "批C：沉浸时底栏滑出");
-    check(zen.peek, "批C：沉浸时顶部唤回热区出现");
-    await evaluate(ws, `document.querySelector('.m-zen-peek')?.click()`);
+    check(zen.pillsTransform !== "none", "批C：沉浸时顶部药丸滑出");
+    check(zen.barTransform !== "none", "批C：沉浸时底条滑出");
+    check(zen.peekGone, "0.34.1：唤回热区已移除（点正文双向 toggle 取代）");
+    await evaluate(ws, `document.querySelector('.editor-host')?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
     await sleep(500);
     const restored = await evaluate(ws, `(() => ({
       zen: document.body.classList.contains('m-zen'),
-      topbarH: Math.round(document.querySelector('header.topbar')?.getBoundingClientRect().height ?? -1),
+      pillsOpacity: getComputedStyle(document.querySelector('.m-top-pills')).opacity,
     }))()`);
-    check(!restored.zen && restored.topbarH >= 40, "批C：热区点击 → 上下栏唤回");
+    check(!restored.zen && restored.pillsOpacity === "1", "批C：再点一次正文 → 药丸与底条唤回（双向 toggle）");
   }
 
   // 字号缩放：localStorage 直写 + reload（铁律），重开笔记后量 .cm-content
@@ -423,20 +512,20 @@ try {
 
   const glow = await evaluate(
     ws,
-    `getComputedStyle(document.querySelector('header.topbar')).backgroundImage.includes('rgba(0, 0, 0, 0)') || getComputedStyle(document.querySelector('header.topbar')).backgroundImage === 'none' || getComputedStyle(document.documentElement).getPropertyValue('--bg-glow').trim() === 'transparent'`,
+    `getComputedStyle(document.documentElement).getPropertyValue('--bg-glow').trim() === 'transparent'`,
   );
-  check(glow, "批A：移动端顶栏晕染已撤除（--bg-glow=transparent）");
+  check(glow, "批A：移动端晕染已撤除（--bg-glow=transparent）");
 
   await screenshot(ws, join(work, "01-main-dark.png"));
 
   // ------------------------------------------------ 设置：外观分区（批B 三段式）
-  // 0.33.1 主页重构后顶栏第一个 icon-btn 是主页图标——搜索钮按 title 精确定位
+  // 0.34.0：搜索入口在底条 🔍 药丸（命令面板兼快速切换/全文搜索）
   await evaluate(
     ws,
-    `(() => { const b = [...document.querySelectorAll('header.topbar button.icon-btn')].find((el) => (el.title || '').includes('全局搜索')); b?.click(); return !!b; })()`,
+    `(() => { const b = [...document.querySelectorAll('.m-bottom-bar .m-pill')].find((el) => (el.title || '').includes('快速切换')); b?.click(); return !!b; })()`,
   );
   const paletteOk = await waitFor(ws, `!!document.querySelector('.palette-overlay')`, 8000);
-  check(paletteOk, "命令面板打开（顶栏搜索钮）");
+  check(paletteOk, "命令面板打开（底条 🔍 药丸）");
   await evaluate(
     ws,
     `(() => { const it = [...document.querySelectorAll('.palette-item')].find((el) => el.textContent.includes('打开设置')); it?.click(); return !!it; })()`,
@@ -574,13 +663,281 @@ try {
 
   await screenshot(ws, join(work, "02-settings-appearance-dark.png"));
 
-  // ------------------------------------------------ 仓库页（批B 头部两行 + 云端行注入验证）
-  // 基础目录指针已在 spawn 前预写；浮层 gate 是新 mount 实例，mount 时即读到列表形态
+  // ------------------------------------------------ 0.34.0 Obsidian 化壳层全量断言
+  // 关设置回编辑区（若开着）
   await evaluate(ws, `(() => { const x = [...document.querySelectorAll('.settings-panel button')].find((b) => b.offsetParent && (b.textContent.trim() === '×' || b.textContent.includes('关闭'))); x?.click(); return true; })()`);
   await sleep(400);
-  await evaluate(ws, `document.querySelector('header.topbar .vault-home-btn')?.click()`);
+
+  // 开一篇笔记：树行点击（抽屉若关着，行仍在 DOM 中可程序点击）
+  await evaluate(
+    ws,
+    `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.offsetParent !== null); t?.click(); return !!t; })()`,
+  );
+  await waitFor(ws, `!!document.querySelector('.tree-file.is-active')`, 10000);
+  await sleep(600);
+  const tabcount1 = await evaluate(ws, `document.querySelector('.m-bottom-bar .m-tabcount')?.textContent.trim()`);
+  check(tabcount1 === "1", `0.34.0：打开一篇后 [N] 徽标=1（实际 ${tabcount1}）`);
+
+  // [N] 标签页 sheet：列出标签页、激活高亮、标题计数
+  await evaluate(ws, `document.querySelector('.m-bottom-bar .m-tabcount')?.click()`);
+  await sleep(400);
+  const tabSheet = await evaluate(ws, `(() => {
+    const rows = [...document.querySelectorAll('.m-tab-row')];
+    return {
+      open: rows.length > 0,
+      count: rows.length,
+      active: !!document.querySelector('.m-tab-row.is-active'),
+      title: document.querySelector('.m-sheet-title')?.textContent ?? '',
+    };
+  })()`);
+  check(tabSheet.open && tabSheet.active, `0.34.0：标签 sheet 列出标签页（${tabSheet.count} 行，激活高亮）`);
+  check(tabSheet.title.includes("标签页（1）"), `0.34.0：sheet 标题计数（${tabSheet.title}）`);
+  await evaluate(ws, `document.querySelector('.m-sheet-backdrop')?.click()`);
+  await sleep(300);
+
+  // 导航历史：开第二篇 → ‹ 可用、› 到头 → ‹ 回第一篇 → › 前进
+  await evaluate(ws, `document.querySelector('.m-top-pills .m-pill')?.click()`);
+  await sleep(500);
+  const otherNote = await evaluate(ws, `(() => {
+    const active = document.querySelector('.tree-file.is-active');
+    const rows = [...document.querySelectorAll('.tree-file')].filter((el) => el.offsetParent !== null);
+    const target = rows.find((el) => el !== active);
+    const name = target?.querySelector('.tree-label')?.textContent ?? '';
+    target?.click();
+    return name;
+  })()`);
+  await sleep(900);
+  const hist1 = await evaluate(ws, `(() => {
+    const back = [...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '后退');
+    const fwd = [...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '前进');
+    return { backDisabled: back?.disabled ?? true, fwdDisabled: fwd?.disabled ?? true };
+  })()`);
+  check(!hist1.backDisabled && hist1.fwdDisabled, `0.34.0：开第二篇「${otherNote}」后 ‹ 可用、› 到头`);
+  await evaluate(ws, `[...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '后退')?.click()`);
+  await sleep(900);
+  const hist2 = await evaluate(ws, `(() => ({
+    active: document.querySelector('.tree-file.is-active .tree-label')?.textContent ?? '',
+    backDisabled: [...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '后退')?.disabled ?? true,
+  }))()`);
+  check(hist2.backDisabled && hist2.active !== otherNote, `0.34.0：‹ 回到第一篇（当前 ${hist2.active}）`);
+  await evaluate(ws, `[...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '前进')?.click()`);
+  await sleep(900);
+  const hist3 = await evaluate(ws, `document.querySelector('.tree-file.is-active .tree-label')?.textContent ?? ''`);
+  check(hist3 === otherNote, `0.34.0：› 前进回第二篇（当前 ${hist3}）`);
+
+  // ☰ 动作菜单 sheet：行清单 + grabber + 遮罩底色 → 「快速切换」行开命令面板
+  await evaluate(ws, `[...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '更多')?.click()`);
+  await sleep(400);
+  const menuRows = await evaluate(ws, `(() => {
+    const sheet = document.querySelector('.m-sheet');
+    const rows = sheet ? [...sheet.querySelectorAll('.m-sheet-row')].map((r) => r.textContent.trim()) : [];
+    const bd = document.querySelector('.m-sheet-backdrop');
+    return {
+      open: !!sheet && !!document.querySelector('.m-sheet-grabber'),
+      rows,
+      bdBg: bd ? getComputedStyle(bd).backgroundColor : '',
+    };
+  })()`);
+  check(menuRows.open, "0.34.0：☰ 动作菜单 sheet 打开（含 grabber，图2）");
+  // 0.34.1：标签/保存两行迁去右上 ⋮ 笔记菜单，应用级菜单剩 8 行
+  check(menuRows.rows.length === 8, `0.34.1：应用级动作菜单 8 行（实际 ${menuRows.rows.length}）`);
+  check(menuRows.bdBg !== "rgba(0, 0, 0, 0)", "0.34.0：sheet 遮罩有底色");
+  check(
+    menuRows.rows.some((r) => r.includes("今天的日记")) &&
+      menuRows.rows.some((r) => r.includes("速记")) &&
+      menuRows.rows.some((r) => r.includes("添加单词")) &&
+      menuRows.rows.some((r) => r.includes("立即同步")) &&
+      menuRows.rows.some((r) => r.includes("设置")),
+    "0.34.0：菜单条目齐（日记/速记/单词/同步/设置）",
+  );
+  // 0.34.1 右上 ⋮ = 当前笔记菜单（阅读/源码/固定/重命名/收藏/标签/关闭/保存）
+  await evaluate(ws, `(() => { [...document.querySelectorAll('.m-sheet-row')].find((b) => b.textContent.includes('设置'))?.click(); return true; })()`);
+  await sleep(500);
+  await evaluate(ws, `(() => { const x = [...document.querySelectorAll('.settings-panel button')].find((b) => b.offsetParent && (b.textContent.trim() === '×' || b.textContent.includes('关闭'))); x?.click(); return true; })()`);
+  await sleep(400);
+  await evaluate(ws, `[...document.querySelectorAll('.m-top-pills .m-pill')].find((b) => b.title === '当前笔记操作')?.click()`);
+  await sleep(400);
+  const noteMenu = await evaluate(ws, `(() => {
+    const rows = [...document.querySelectorAll('.m-sheet-row')].map((r) => r.textContent.trim());
+    return { open: rows.length > 0, rows };
+  })()`);
+  check(
+    noteMenu.open && noteMenu.rows.length === 8,
+    `0.34.1：⋮ 当前笔记菜单 8 行（实际 ${noteMenu.rows.length}）`,
+  );
+  check(
+    noteMenu.rows.some((r) => r.includes("阅读视图") || r.includes("编辑这篇笔记")) &&
+      noteMenu.rows.some((r) => r.includes("实时 / 源码")) &&
+      noteMenu.rows.some((r) => r.includes("固定标签页")) &&
+      noteMenu.rows.some((r) => r.includes("重命名")) &&
+      noteMenu.rows.some((r) => r === "收藏" || r === "取消收藏") &&
+      noteMenu.rows.some((r) => r.includes("标签")) &&
+      noteMenu.rows.some((r) => r.includes("关闭标签页")) &&
+      noteMenu.rows.some((r) => r.includes("保存")),
+    "0.34.1：笔记菜单条目齐（阅读/源码/固定/重命名/收藏/标签/关闭/保存）",
+  );
+  await evaluate(ws, `document.querySelector('.m-sheet-backdrop')?.click()`);
+  await sleep(300);
+  // 「打开/创建今天的日记」= 用户自己的命名流程（0.34.1 拍板：日期+空格+名字，
+  // 输入行必填；不做免输入的纯日期名）——重开底 ☰ 应用级菜单
+  await evaluate(ws, `[...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '更多')?.click()`);
+  await sleep(400);
+  await evaluate(ws, `[...document.querySelectorAll('.m-sheet-row')].find((b) => b.textContent.includes('今天的日记'))?.click()`);
+  await sleep(600);
+  const diaryRow = await evaluate(ws, `(() => {
+    const input = document.querySelector('.create-row input');
+    const side = document.querySelector('aside.sidebar-left');
+    return {
+      input: !!input,
+      placeholder: input?.placeholder ?? '',
+      hint: document.querySelector('.create-row .create-hint')?.textContent ?? '',
+      drawerOpen: side ? getComputedStyle(side).transform === 'none' : false,
+    };
+  })()`);
+  check(diaryRow.input && diaryRow.drawerOpen, "0.34.0：菜单「今天的日记」→ 抽屉输入行（用户命名流程）");
+  check(diaryRow.placeholder.includes("日记名字"), `0.34.0：日记输入行占位（${diaryRow.placeholder}）`);
+  check(diaryRow.hint.includes("日期 + 空格 + 名字"), `0.34.0：日记命名提示（${diaryRow.hint}）`);
+  await evaluate(ws, `(() => { [...document.querySelectorAll('.create-row button')].find((b) => (b.title || '') === '取消')?.click(); return true; })()`);
+  await sleep(300);
+
+  await evaluate(ws, `[...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '更多')?.click()`);
+  await sleep(400);
+  await evaluate(ws, `[...document.querySelectorAll('.m-sheet-row')].find((b) => b.textContent.includes('快速切换'))?.click()`);
+  await sleep(400);
+  check(await evaluate(ws, `!!document.querySelector('.palette-overlay')`), "0.34.0：菜单「快速切换与全文搜索」→ 命令面板");
+  await evaluate(
+    ws,
+    `(() => { const it = [...document.querySelectorAll('.palette-item')].find((el) => el.textContent.includes('打开设置')); it?.click(); return !!it; })()`,
+  );
+  await waitFor(ws, `!!document.querySelector('.settings-panel')`, 8000);
+  await evaluate(ws, `(() => { const x = [...document.querySelectorAll('.settings-panel button')].find((b) => b.offsetParent && (b.textContent.trim() === '×' || b.textContent.includes('关闭'))); x?.click(); return true; })()`);
+  await sleep(400);
+
+  // 右抽屉（大纲/统计）：菜单「右侧面板」打开，页签只剩 目录/统计
+  await evaluate(ws, `[...document.querySelectorAll('.m-bottom-bar .m-pill')].find((b) => b.title === '更多')?.click()`);
+  await sleep(400);
+  await evaluate(ws, `[...document.querySelectorAll('.m-sheet-row')].find((b) => b.textContent.includes('右侧面板'))?.click()`);
+  await sleep(500);
+  const rightDrawer = await evaluate(ws, `(() => {
+    const side = document.querySelector('aside.sidebar-right');
+    const tabs = [...document.querySelectorAll('aside.sidebar-right .sidebar-tab')].map((t) => t.textContent.trim());
+    return { open: side ? getComputedStyle(side).transform === 'none' : false, tabs };
+  })()`);
+  check(rightDrawer.open, "0.34.0：菜单「右侧面板」打开右抽屉");
+  check(
+    rightDrawer.tabs.length === 2 && rightDrawer.tabs.includes("目录") && rightDrawer.tabs.includes("统计"),
+    `0.34.0：右抽屉只剩 目录/统计（${rightDrawer.tabs.join("/")}）`,
+  );
+  // 0.34.1：右抽屉右滑关闭（用户反馈：右滑关右抽屉）
+  await evaluate(ws, `(() => {
+    const t = (x, y) => new Touch({ identifier: 1, target: document.body, clientX: x, clientY: y });
+    document.dispatchEvent(new TouchEvent('touchstart', { touches: [t(120, 420)], bubbles: true }));
+    document.dispatchEvent(new TouchEvent('touchend', { changedTouches: [t(260, 424)], bubbles: true }));
+    return true;
+  })()`);
+  await sleep(500);
+  const rightClosedBySwipe = await evaluate(ws, `getComputedStyle(document.querySelector('aside.sidebar-right')).transform`);
+  check(rightClosedBySwipe !== "none", "0.34.1：右抽屉右滑手势关闭");
+
+  // 左抽屉分区切换：标签/单词本/日历/搜索/文件列表
+  await evaluate(ws, `document.querySelector('.m-top-pills .m-pill')?.click()`);
+  await sleep(500);
+  // 0.34.1：分区卡收起成胶囊——每次切换先展开再点行（选中后自动收回）
+  const pickSection = async (label) => {
+    await evaluate(ws, `document.querySelector('.m-drawer-section-collapsed')?.click()`);
+    await sleep(300);
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.m-drawer-section')].find((b) => b.textContent.includes('${label}'))?.click(); return true; })()`);
+    await sleep(500);
+  };
+  await pickSection("标签");
+  // 空仓库时 TagDashboard 早返回 .tree-empty 空态（「仓库里还没有标签」）——
+  // 两种形态都算渲染成功，唯独不能还是文件树
+  const secTags = await evaluate(ws, `(() => {
+    const c = document.querySelector('.m-drawer-content');
+    return !!c && (c.querySelector('.tag-dash') !== null || c.querySelector('.tree-empty') !== null);
+  })()`);
+  await pickSection("单词本");
+  const secVocab = await waitFor(ws, `!!document.querySelector('.m-drawer-content .vocab-panel')`, 5000);
+  await pickSection("日历");
+  const secCal = await evaluate(ws, `!!document.querySelector('.m-drawer-content .calendar')`);
+  await pickSection("搜索");
+  const secSearch = await evaluate(
+    ws,
+    `(() => ({ filter: !!document.querySelector('.m-drawer-content .sidebar-filter input'), full: !!document.querySelector('.m-fulltext-btn') }))()`,
+  );
+  await pickSection("文件列表");
+  const secFiles = await evaluate(
+    ws,
+    `(() => ({ tree: !!document.querySelector('.m-drawer-content .tree'), chips: document.querySelectorAll('.m-drawer-content .left-view-tab').length }))()`,
+  );
+  check(secTags, "0.34.0：标签分区渲染 TagDashboard");
+  check(secVocab, "0.34.0：单词本分区渲染 VocabularyPanel");
+  check(secCal, "0.34.0：日历分区渲染 CalendarPanel");
+  check(secSearch.filter && secSearch.full, "0.34.0：搜索分区=名称筛选框+全文搜索钮");
+  check(secFiles.tree && secFiles.chips === 3, `0.34.0：文件分区=树+知识库/收藏/最近页签（chips=${secFiles.chips}）`);
+
+  // 0.34.1：全屏抽屉无关闭钮——系统返回关闭（back 消费链）
+  await evaluate(ws, `window.__qnConsumeBack()`);
+  await sleep(500);
+  const closedByBack = await evaluate(ws, `getComputedStyle(document.querySelector('aside.sidebar-left')).transform`);
+  check(closedByBack !== "none", "0.34.1：返回键消费链关闭全屏抽屉（✕ 已删）");
+
+  // 边缘手势：左缘右滑开抽屉（合成 TouchEvent，passive 观察链）
+  await evaluate(ws, `(() => {
+    const t = (x, y) => new Touch({ identifier: 1, target: document.body, clientX: x, clientY: y });
+    document.dispatchEvent(new TouchEvent('touchstart', { touches: [t(8, 420)], bubbles: true }));
+    document.dispatchEvent(new TouchEvent('touchend', { changedTouches: [t(110, 424)], bubbles: true }));
+    return true;
+  })()`);
+  await sleep(500);
+  const swipeOpen = await evaluate(ws, `getComputedStyle(document.querySelector('aside.sidebar-left')).transform`);
+  check(swipeOpen === "none", "0.34.0：左缘右滑手势打开抽屉");
+
+  // 0.34.1：左抽屉左滑关闭（用户反馈：左滑关左抽屉）
+  await evaluate(ws, `(() => {
+    const t = (x, y) => new Touch({ identifier: 1, target: document.body, clientX: x, clientY: y });
+    document.dispatchEvent(new TouchEvent('touchstart', { touches: [t(300, 420)], bubbles: true }));
+    document.dispatchEvent(new TouchEvent('touchend', { changedTouches: [t(140, 424)], bubbles: true }));
+    return true;
+  })()`);
+  await sleep(500);
+  const leftClosedBySwipe = await evaluate(ws, `getComputedStyle(document.querySelector('aside.sidebar-left')).transform`);
+  check(leftClosedBySwipe !== "none", "0.34.1：左抽屉左滑手势关闭");
+
+  // 仓库 radio sheet（抽屉底行仓库名）→「管理仓库…」进主页（图4/图5）
+  await evaluate(ws, `document.querySelector('.m-drawer-vault')?.click()`);
+  await sleep(500);
+  const vaultSheet = await evaluate(ws, `(() => {
+    const rows = [...document.querySelectorAll('.m-vault-row')];
+    return {
+      open: rows.length >= 2,
+      count: rows.length,
+      onCount: document.querySelectorAll('.m-radio.is-on').length,
+      last: rows[rows.length - 1]?.textContent.trim() ?? '',
+    };
+  })()`);
+  check(vaultSheet.open, `0.34.0：仓库 radio sheet（${vaultSheet.count} 行）`);
+  check(vaultSheet.onCount === 1, `0.34.0：当前仓库 radio 高亮（选中圈 ${vaultSheet.onCount}，路径归一后判同）`);
+  check(vaultSheet.last.includes("管理仓库"), `0.34.0：末行「管理仓库…」（${vaultSheet.last}）`);
+  await evaluate(ws, `[...document.querySelectorAll('.m-vault-row')].find((b) => b.textContent.includes('管理仓库'))?.click()`);
+  await sleep(500);
   const gateOk = await waitFor(ws, `!!document.querySelector('.vault-home-page .mv-gate-head')`, 8000);
-  check(gateOk, "仓库页打开且为列表形态（vault-pill 直达）");
+  check(gateOk, "0.34.0：管理仓库… → 仓库主页");
+  const brand = await evaluate(ws, `(() => {
+    const b = document.querySelector('.vault-home-page .mv-brand');
+    return {
+      found: !!b,
+      name: b?.querySelector('.mv-brand-name')?.textContent ?? '',
+      version: b?.querySelector('.mv-brand-version')?.textContent ?? '',
+    };
+  })()`);
+  check(
+    brand.found && brand.name === "Quick Note" && brand.version.includes("Version"),
+    `0.34.0：主页品牌块（logo+名称+版本，图5；${brand.name} ${brand.version}）`,
+  );
+
+  // ------------------------------------------------ 仓库页（批B 头部两行 + 云端行注入验证）
+  // 基础目录指针已在 spawn 前预写；主页是新 mount 实例，mount 时即读到列表形态
 
   const headLayout = await evaluate(ws, `(() => {
     const title = document.querySelector('.vault-home-page .mv-gate-title');
@@ -676,7 +1033,7 @@ try {
     mobile: true,
   });
   await cdp(ws, "Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  await waitFor(ws, `document.querySelectorAll('.mobile-nav button').length === 3`, 30000);
+  await waitFor(ws, `document.querySelectorAll('.m-bottom-bar button').length === 6`, 30000);
   const lightThemeState = await evaluate(
     ws,
     `({ theme: document.documentElement.dataset.theme, ph: getComputedStyle(document.documentElement).getPropertyValue('--text-placeholder').trim(), media: matchMedia('(hover: none) and (pointer: coarse) and (max-width: 900px)').matches })`,
@@ -686,10 +1043,10 @@ try {
     lightThemeState.media && lightThemeState.ph !== "",
     `批A：浅色下 --text-placeholder 有值（${lightThemeState.ph}；媒体=${lightThemeState.media}）`,
   );
-  // 再开一次设置截图（0.33.1 主页图标是第一个 icon-btn——搜索钮按 title 精确定位）
+  // 再开一次设置截图（0.34.0：搜索入口=底条 🔍 药丸）
   await evaluate(
     ws,
-    `(() => { const b = [...document.querySelectorAll('header.topbar button.icon-btn')].find((el) => (el.title || '').includes('全局搜索')); b?.click(); return !!b; })()`,
+    `(() => { const b = [...document.querySelectorAll('.m-bottom-bar .m-pill')].find((el) => (el.title || '').includes('快速切换')); b?.click(); return !!b; })()`,
   );
   await waitFor(ws, `!!document.querySelector('.palette-overlay')`, 8000);
   await evaluate(
@@ -725,7 +1082,7 @@ try {
     mobile: true,
   });
   await cdp(ws, "Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
-  await waitFor(ws, `document.querySelectorAll('.mobile-nav button').length === 3`, 30000);
+  await waitFor(ws, `document.querySelectorAll('.m-bottom-bar button').length === 6`, 30000);
   const bgOn = await waitFor(ws, `document.documentElement.classList.contains('qn-bg-on')`, 10000);
   check(bgOn, "背景图开启（qn-bg-on）");
   if (bgOn) {
