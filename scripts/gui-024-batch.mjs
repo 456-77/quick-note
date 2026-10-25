@@ -575,7 +575,9 @@ try {
     // 详情里编辑释义/备注（0.25 起编辑表单是 音标/释义/备注 三个字段）
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-act')].find((b) => b.textContent === '编辑')?.click(); return true; })()`);
     await sleep(300);
-    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-detail-edit label:nth-child(2) input'); (${nativeSet})(el, '数据传输任务接口表'); return true; })()`);
+    // 0.34.2 编辑表单顶部加了「重新获取在线释义」工具行（div）——label 用
+    // nth-of-type 按类型计数才不被它带偏
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-detail-edit label:nth-of-type(2) input'); (${nativeSet})(el, '数据传输任务接口表'); return true; })()`);
     await sleep(200);
     await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-detail-edit-actions .btn')].find((b) => b.textContent === '保存')?.click(); return true; })()`);
     await sleep(900);

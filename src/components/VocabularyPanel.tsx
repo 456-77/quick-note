@@ -1039,6 +1039,15 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
             )
           }
           onLookup={() => void fillDetailMeaning(detail)}
+          fetchOnline={async () => {
+            try {
+              const result = await vocabLookup(detail.word);
+              return { meaning: result.meaning, phonetic: result.phonetic };
+            } catch (e) {
+              notice(e instanceof Error ? e.message : String(e), "info");
+              return null;
+            }
+          }}
         />
       )}
     </div>
@@ -1157,6 +1166,7 @@ function VocabDetail({
   onRemove,
   onSave,
   onLookup,
+  fetchOnline,
 }: {
   entry: VocabEntry;
   busy: boolean;
@@ -1165,11 +1175,15 @@ function VocabDetail({
   onRemove: () => void;
   onSave: (meaning: string, note: string, phonetic: string) => void;
   onLookup: () => void;
+  /** 0.34.2 用户反馈「释义只能首次获取」：编辑态重新查在线释义，填进输入框
+   *  （不直接落盘，用户看过再保存）。失败返回 null（父级已提示）。 */
+  fetchOnline: () => Promise<{ meaning: string; phonetic: string } | null>;
 }) {
   const [editing, setEditing] = useState(false);
   const [meaning, setMeaning] = useState(entry.meaning);
   const [note, setNote] = useState(entry.note);
   const [phonetic, setPhonetic] = useState(entry.phonetic);
+  const [fetching, setFetching] = useState(false);
 
   // 换词（含条目被更新后的重挂载）时重置编辑态
   useEffect(() => {
@@ -1180,6 +1194,21 @@ function VocabDetail({
   }, [entry.word, entry.meaning, entry.note, entry.phonetic]);
 
   const speak = () => speakWord(entry.word);
+
+  /** 编辑态的「重新获取在线释义」：结果只填进输入框，覆盖与否由用户改完再保存。 */
+  const refetch = async () => {
+    if (fetching) return;
+    setFetching(true);
+    try {
+      const result = await fetchOnline();
+      if (result) {
+        if (result.phonetic) setPhonetic(result.phonetic);
+        if (result.meaning) setMeaning(result.meaning);
+      }
+    } finally {
+      setFetching(false);
+    }
+  };
 
   return (
     <div className="vocab-detail-backdrop" onMouseDown={(event) => {
@@ -1207,6 +1236,17 @@ function VocabDetail({
 
         {editing ? (
           <div className="vocab-detail-edit">
+            <div className="vocab-detail-edit-tools">
+              <button
+                type="button"
+                className="vocab-btn"
+                disabled={fetching}
+                onClick={() => void refetch()}
+              >
+                {fetching ? "查询中…" : "⟳ 重新获取在线释义"}
+              </button>
+              <span className="vocab-detail-edit-hint">填入音标与释义，确认后再保存</span>
+            </div>
             <label>
               音标
               <input

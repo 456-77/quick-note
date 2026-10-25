@@ -200,7 +200,7 @@ try {
 
   ({ child, ws } = await bootAndConnect(vault));
 
-  // ============================================== 1. 全局搜索：表格行露脸 + 计数 + 行号
+  // ============================================== 1. 全局搜索：按文件聚合 + 计数 + 命中数
   {
     // 面板用页面内合成 Ctrl+K（App 的全局 keydown 监听在 window 上，合成事件可触发）
     await evaluate(ws, `document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', code: 'KeyK', ctrlKey: true, bubbles: true, cancelable: true }))`);
@@ -208,15 +208,22 @@ try {
     check(paletteUp, "Ctrl+K 打开命令面板");
     const input = await evaluate(ws, `(() => { const i = document.querySelector('.palette-input'); const set = ${nativeSet}; set(i, 'qn32x'); return i.value; })()`);
     check(input === "qn32x", "输入搜索词", input);
-    const hasTableHit = await waitFor(ws, `(() => {
-      const items = [...document.querySelectorAll('.palette-item')];
-      return items.filter((el) => (el.textContent ?? '').includes('qn32表格')).length;
-    })() >= 2`, 8000);
-    check(hasTableHit, "同一文件多条命中（表格行也出现在结果里，0.32）");
+    const contentRows = await waitFor(ws, `(() => {
+      const items = [...document.querySelectorAll('.palette-item')].filter((el) => (el.textContent ?? '').includes('qn32表格'));
+      return items.length;
+    })() >= 1`, 8000);
+    check(contentRows, "内容组列出命中文件");
+    // 0.34.2：同一文件只出现一次（按文件聚合，此前逐条命中刷屏）
+    const dupCount = await evaluate(ws, `(() => {
+      return [...document.querySelectorAll('.palette-item')].filter((el) => (el.textContent ?? '').includes('qn32表格')).length;
+    })()`);
+    check(dupCount === 1, "同一文件只出现一次（0.34.2 按文件聚合）", String(dupCount));
     const count = await evaluate(ws, `document.querySelector('.palette-group-count')?.textContent ?? ''`);
-    check(count.includes("共"), "内容组带计数徽标（截断与否一眼可见）", count);
-    const lineMeta = await evaluate(ws, `[...document.querySelectorAll('.palette-item-meta')].map((el) => el.textContent).join('|')`);
-    check(/L\d+/.test(lineMeta), "命中条目带行号（L 前缀）", lineMeta);
+    check(/个文件/.test(count), "内容组带文件数徽标（0.34.2 口径）", count);
+    const meta = await evaluate(ws, `[...document.querySelectorAll('.palette-item-meta')].map((el) => el.textContent).join('|')`);
+    check(/\d+ 处/.test(meta), "条目带完整命中数（N 处）", meta);
+    const detail = await evaluate(ws, `[...document.querySelectorAll('.palette-item-detail')].map((el) => el.textContent).join('|')`);
+    check(detail.includes("出现两次"), "样本摘要保留表格行内容（表格行露脸）", detail);
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
     await sleep(300);
   }
@@ -242,8 +249,8 @@ try {
       return true;
     })()`);
     await key(ws, { mod: CTRL, key: "Enter" }, "Enter", 13);
-    const saved = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已收录')`, 6000);
-    check(saved, "残段 + 第二张表收录成功", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
+    const saved = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已保存')`, 6000);
+    check(saved, "残段 + 第二张表收录成功（0.34.2 文案=已保存）", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
     await sleep(300);
   }
@@ -273,14 +280,17 @@ try {
       const tipUp = await waitFor(ws, `!!document.querySelector('#qn-ddl-cell-tip.qn-ddl-cell-tip')`, 5000);
       check(tipUp, "悬停表格单元格浮出建表语句卡（0.32 document 委托）");
       if (tipUp) {
-        const body = await evaluate(ws, `document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-pre')?.textContent ?? ''`);
+        // 0.34.2：悬浮卡直接可编辑（App 注入 saver 后是 textarea，不再有着色 pre）
+        const body = await evaluate(ws, `(() => {
+          const input = document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-input');
+          if (input) return input.value;
+          return document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-pre')?.textContent ?? '';
+        })()`);
         check(body.includes("CREATE TABLE") && body.includes("残段表"), "单元格弹窗内容为该表语句", body.slice(0, 60));
         check(!body.includes("```"), "残段不吞围栏标记（0.32 硬边界）", body.slice(-40));
         check(!body.includes("ids_qn32_other"), "残段不吞下一张表（0.32 硬边界）", body.slice(-40));
-        const kw = await evaluate(ws, `document.querySelectorAll('#qn-ddl-cell-tip .qn-sql-kw').length`);
-        const str = await evaluate(ws, `document.querySelectorAll('#qn-ddl-cell-tip .qn-sql-str').length`);
-        check(kw >= 3, `SQL 关键字着色（CREATE/TABLE/COMMENT…，${kw} 处）`);
-        check(str >= 1, "字符串着色（'主键' 等）");
+        const editable = await evaluate(ws, `(() => { const t = document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-input'); return !!t && !t.disabled && !!document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-save'); })()`);
+        check(editable, "悬浮卡直接可编辑且有保存钮（0.34.2）");
         // 移开（合成 mouseover 到页面空白处）→ 弹窗收起
         await evaluate(ws, `document.body.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`);
         await sleep(300);

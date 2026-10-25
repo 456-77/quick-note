@@ -94,7 +94,8 @@ import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
 import { ddlNoteIntro, extractTableNames, mergeDdlIntoNote, parseDdlTables } from "./lib/ddl";
-import { installDdlCellHover } from "./lib/ddlHover";
+import { installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
+import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
 import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
 import { fetchWeather, insertWeatherLine } from "./lib/weather";
 import { blobTypeOf, removeImageReferences } from "./lib/imageOps";
@@ -723,9 +724,30 @@ export default function App() {
     dismissed?: boolean;
     /** 最新 release 的 .apk 直链（移动端应用内安装用，GitHub 回退路径才解析）。 */
     apkUrl?: string;
+    /** 下载进度 0-100（0.34.2 用户反馈：更新要显示百分比进度）。 */
+    progress?: number;
   }>({ state: "idle", message: "" });
   /** updater 插件的 Update 对象：下载安装必须用它。 */
   const updateRef = useRef<Update | null>(null);
+  /** 更新下载进行中的重入闸：弹窗/设置页双击、移动端重试都不会叠出第二路下载。 */
+  const updatingRef = useRef(false);
+  /** 弹窗是否处于关闭状态（下载中关窗 = 后台下载，进度改走系统通知）。 */
+  const updateDismissedRef = useRef(false);
+  useEffect(() => {
+    updateDismissedRef.current = updateCheck.dismissed === true;
+  }, [updateCheck.dismissed]);
+
+  /** 后台下载时的系统通知（0.34.2：窗口关了也能从通知里看到进度/结果）。 */
+  const notifyUpdateBackground = useCallback(async (body: string) => {
+    try {
+      const notification = await import("@tauri-apps/plugin-notification");
+      let granted = await notification.isPermissionGranted();
+      if (!granted) granted = (await notification.requestPermission()) === "granted";
+      if (granted) notification.sendNotification({ title: "Quick Note 更新", body });
+    } catch {
+      // 通知失败无所谓：进度还在横幅/设置页里
+    }
+  }, []);
 
   useEffect(() => {
     getVersion()
@@ -799,22 +821,43 @@ export default function App() {
   /** 应用内更新：下载（带进度）→ 静默安装 → 重启。失败后按钮变「重试更新」，原地再下。 */
   const installUpdate = useCallback(async () => {
     const update = updateRef.current;
-    if (!update) return;
+    if (!update || updatingRef.current) return;
+    updatingRef.current = true;
+    // 弹窗关着（或下载中途关掉）= 后台下载：进度按 25% 一档发系统通知
+    let background = updateDismissedRef.current;
+    let notifiedAt = 0;
     try {
       await installAndRelaunch(update, (pct) => {
-        setUpdateCheck({ state: "downloading", message: `正在下载更新… ${pct}%`, available: true });
+        background = background || updateDismissedRef.current;
+        setUpdateCheck((prev) => ({
+          ...prev,
+          state: "downloading",
+          message: `正在下载更新… ${pct}%`,
+          available: true,
+          progress: pct,
+        }));
+        if (background && pct > notifiedAt && (pct >= 100 || pct - notifiedAt >= 25)) {
+          notifiedAt = pct;
+          void notifyUpdateBackground(
+            pct >= 100 ? "更新下载完成，应用即将重启安装" : `更新下载中 ${pct}%`,
+          );
+        }
       });
     } catch (e) {
       // 保留 available/notes/url：错误提示归位后「立即更新」（此时显示为
       // 「重试更新」）和更新弹窗仍在，用户可以直接再试，不必去发布页
+      if (background) void notifyUpdateBackground(`更新下载失败：${e}`);
       setUpdateCheck((prev) => ({
         ...prev,
         state: "error",
         message: `更新下载失败：${e}`,
         available: true,
+        progress: undefined,
       }));
+    } finally {
+      updatingRef.current = false;
     }
-  }, []);
+  }, [notifyUpdateBackground]);
 
   /**
    * 移动端应用内更新：qnAndroid 桥下载 APK → 拉起系统安装器。
@@ -835,14 +878,25 @@ export default function App() {
       setStatus("请在系统设置中允许 Quick Note「安装未知应用」，回来后再点一次「下载并安装」");
       return;
     }
+    if (updatingRef.current) return;
+    updatingRef.current = true;
     (window as unknown as Record<string, unknown>).__qnUpdateDone = (ok: boolean, msg: string) => {
+      updatingRef.current = false;
       setUpdateCheck((prev) =>
         ok
-          ? { ...prev, state: "done", message: `更新包已下载：${msg}，按系统提示完成安装`, available: true }
-          : { ...prev, state: "error", message: `更新失败：${msg}`, available: true },
+          ? { ...prev, state: "done", message: `更新包已下载：${msg}，按系统提示完成安装`, available: true, progress: undefined }
+          : { ...prev, state: "error", message: `更新失败：${msg}（网络不稳可重试，或到发布页下载 APK）`, available: true, progress: undefined },
       );
     };
-    setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新包…" }));
+    // 0.34.2：Kotlin 侧下载进度回调（百分比）
+    (window as unknown as Record<string, unknown>).__qnUpdateProgress = (pct: number) => {
+      setUpdateCheck((prev) =>
+        prev.state === "downloading"
+          ? { ...prev, progress: pct, message: `正在下载更新包… ${pct}%` }
+          : prev,
+      );
+    };
+    setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新包… 0%", progress: 0 }));
     bridge.installUpdate(url);
   }, [updateCheck.apkUrl, updateCheck.url]);
 
@@ -2024,6 +2078,9 @@ export default function App() {
     } catch {
       resourcesRef.current.ddlTables = new Map();
       if (splitCtxRef.current) splitCtxRef.current.ddlTables = new Map();
+    } finally {
+      // 库变了没有文档事务：通知表名着色插件重扫（0.34.2 表名变色）
+      notifyDdlLibraryUpdated();
     }
   }, []);
 
@@ -2067,6 +2124,34 @@ export default function App() {
     },
     [loadDdlLibrary],
   );
+
+  /**
+   * DDL 语句落盘：读 DDL 笔记 → 同名表整段替换（新表追加文末）→ 写回 →
+   * 重载悬浮库。收录弹窗（Ctrl+Alt+J）与悬浮卡「编辑」（0.34.2 用户反馈
+   * 「支持在这个视图中直接修改 DDL 语句」）共用这一条通道。
+   */
+  const saveDdlStatements = useCallback(
+    async (ddlText: string) => {
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能保存建表语句");
+      const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
+      const existing = await readNoteOptional(dir, path);
+      const base = existing?.content ?? ddlNoteIntro();
+      const merged = mergeDdlIntoNote(base, ddlText);
+      await writeNote(dir, path, merged, existing?.hasBom ?? false);
+      await loadDdlLibrary(dir);
+      void refresh(dir);
+      const names = extractTableNames(ddlText);
+      return `已保存 ${names.length} 张表 → ${path}`;
+    },
+    [loadDdlLibrary, refresh],
+  );
+
+  // 悬浮卡的「编辑」走模块级钩子注入（ddlHover.ts 的 saver；卸载时清除）
+  useEffect(() => {
+    setDdlSaver((_table, ddl) => saveDdlStatements(ddl));
+    return () => setDdlSaver(null);
+  }, [saveDdlStatements]);
 
   /** 笔记数量（目录与非 md 文件不计入）。 */
   const noteCount = useMemo(
@@ -3037,10 +3122,30 @@ export default function App() {
       try {
         const picked = await pickDirectory(`选择「${name}」的落地位置（将在其中创建同名空目录）`);
         if (!picked) return;
-        const base = picked.replace(/[\/]+$/, "");
+        const base = picked.replace(/[\/\\]+$/, "");
         const sameName =
-          (base.split(/[\/]/).pop() ?? "").toLowerCase() === name.toLowerCase();
+          (base.split(/[\\/]/).pop() ?? "").toLowerCase() === name.toLowerCase();
         const landing = sameName ? base : `${base}/${name}`;
+        // 0.34.2 用户反馈「莫名其妙重复添加了这些文件，还把软件搞卡死了」：
+        // 落地位置选到已有仓库内部（或就是它、或它的祖先）时，全量拉取会把
+        // 一整套文件嵌进现有仓库——监听风暴+同名文件成山+界面卡死。落地点必须
+        // 与一切已知仓库无父子关系。
+        const norm = (p: string) => p.replace(/[\\/]+$/, "").replace(/\\/g, "/").toLowerCase();
+        const landingNorm = norm(landing);
+        const known = [...new Set([vault, ...vaultRecents])].filter(Boolean) as string[];
+        for (const item of known) {
+          const itemNorm = norm(item);
+          if (
+            landingNorm === itemNorm ||
+            landingNorm.startsWith(`${itemNorm}/`) ||
+            itemNorm.startsWith(`${landingNorm}/`)
+          ) {
+            setError(
+              `落地位置「${landing}」与已有仓库「${item}」重叠——选一个跟现有仓库无关的空目录`,
+            );
+            return;
+          }
+        }
         const entries = await ensureDirectory(landing);
         if (entries > 0) {
           setError(`落地目录不是空的（${landing}，已有 ${entries} 项）——换个空位置，避免把本地内容混进云端仓库`);
@@ -4392,7 +4497,15 @@ export default function App() {
         return;
       }
       await switchVault(target);
-      window.setTimeout(() => void openNoteAtRef.current(path, line, term), 120);
+      // 等 React 提交到 vaultRef（switchVault await 返回后渲染可能还在下一帧），
+      // 再打开定位。此前固定 120ms：首开大仓库渲染慢，openNoteAtRef 捕获的还是
+      // 旧仓库的 openNote 闭包 → 笔记开不出来也定位不了，表现为「搜索别的仓库
+      // 只会定位到标题」（0.34.2 用户反馈）。
+      const deadline = Date.now() + 4000;
+      while (vaultRef.current !== target && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      await openNoteAtRef.current(path, line, term);
     },
     [vault, openNoteAt, switchVault],
   );
@@ -5302,10 +5415,31 @@ export default function App() {
     );
   }, []);
 
+  /**
+   * 打开命令面板。0.34.2 用户反馈「已经选中内容然后再打开全局搜索能够自动
+   * 搜索选中内容」：编辑器里有选中文本时把第一个非空行（≤80 字）作为种子词
+   * 带给面板。所有打开入口（快捷键/顶栏搜索框/移动端药丸/抽屉全文搜索/
+   * ☰ 菜单）都走 shortcuts.palette 或本函数。
+   */
+  const paletteSeedRef = useRef("");
+  const openPalette = useCallback(() => {
+    const view = viewRef.current;
+    let seed = "";
+    if (view) {
+      const { from, to } = view.state.selection.main;
+      if (from !== to) {
+        const firstLine = view.state.sliceDoc(from, to).split(/\r?\n/)[0].trim();
+        seed = firstLine.length > 80 ? firstLine.slice(0, 80) : firstLine;
+      }
+    }
+    paletteSeedRef.current = seed;
+    setPaletteOpen((value) => !value);
+  }, []);
+
   /** 快捷键动作表。命令面板按同一份文案生成动作项，这里集中定义避免两处漂移。 */
   const shortcuts = useMemo(
     () => ({
-      palette: () => setPaletteOpen((value) => !value),
+      palette: () => openPalette(),
       newNote: () => beginCreate("note"),
       newDiary: () => beginCreate("diary"),
       newFolder: () => beginCreate("folder"),
@@ -5352,7 +5486,7 @@ export default function App() {
       },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
-    [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary, vault],
+    [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary, vault, openPalette],
   );
 
   /** 编辑器内命令的统一分发：命令面板搜到的快捷键命令（标题/列表/行内代码等）从这里走。 */
@@ -6066,7 +6200,7 @@ export default function App() {
               className="m-pill"
               onClick={() => {
                 mobileOverlayGone();
-                setPaletteOpen(true);
+                openPalette();
               }}
               title="快速切换与全文搜索"
             >
@@ -6191,17 +6325,9 @@ export default function App() {
           ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
           onClose={() => setDdlDialogOpen(false)}
           onSubmit={async (ddlText) => {
-            const dir = vaultRef.current;
-            if (!dir) throw new Error("打开仓库后才能收录建表语句");
-            const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
-            const existing = await readNoteOptional(dir, path);
-            const base = existing?.content ?? ddlNoteIntro();
-            const merged = mergeDdlIntoNote(base, ddlText);
-            await writeNote(dir, path, merged, existing?.hasBom ?? false);
-            await loadDdlLibrary(dir);
-            void refresh(dir);
-            const names = extractTableNames(ddlText);
-            return `已收录 ${names.length} 张表 → ${path}`;
+            const message = await saveDdlStatements(ddlText);
+            setStatus(message);
+            return message;
           }}
         />
       )}
@@ -6365,8 +6491,10 @@ export default function App() {
         attachmentCount={attachmentCount}
       />
 
-      {/* 发现新版本的弹窗：启动自动检查或手动检查发现可用更新时出现，展示新版本介绍 */}
-      {updateCheck.available && !updateCheck.dismissed && updateCheck.state !== "downloading" && updateCheck.state !== "installing" && (
+      {/* 发现新版本的弹窗：启动自动检查或手动检查发现可用更新时出现，展示新版本介绍。
+          0.34.2 用户反馈：下载中弹窗保留（百分比进度条），✕ 关闭后转入后台继续下载，
+          进度经系统通知播报；重复点击由 updatingRef 重入闸挡住。 */}
+      {updateCheck.available && !updateCheck.dismissed && updateCheck.state !== "installing" && (
         <>
           <div className="menu-backdrop" onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))} />
           <div className="update-dialog" role="alertdialog" aria-label="发现新版本">
@@ -6375,38 +6503,51 @@ export default function App() {
               <button
                 type="button"
                 className="icon-btn"
-                title="稍后再说"
+                title={updateCheck.state === "downloading" ? "关闭窗口，下载在后台继续" : "稍后再说"}
                 onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))}
               >
                 <IconX size={14} />
               </button>
             </div>
             {updateCheck.notes && <UpdateNotes markdown={updateCheck.notes} />}
-            <div className="update-dialog-actions">
-              <button
-                type="button"
-                className="btn"
-                onClick={() => (isMobile() ? installUpdateMobile() : void installUpdate())}
-              >
-                {updateCheck.state === "error" ? "重试更新" : isMobile() ? "下载并安装" : "立即更新"}
-              </button>
-              {updateCheck.url && (
-                <button type="button" className="btn btn-ghost" onClick={() => void openReleasePage(updateCheck.url!)}>
-                  查看发布页
+            {updateCheck.state === "downloading" ? (
+              <div className="update-progress" role="status">
+                <div className="update-progress-bar" aria-hidden>
+                  <span style={{ width: `${updateCheck.progress ?? 0}%` }} />
+                </div>
+                <div className="update-progress-row">
+                  <span className="update-progress-pct">{updateCheck.progress ?? 0}%</span>
+                  <span className="update-progress-hint">可以关闭此窗口，下载在后台继续（完成后应用自动重启）</span>
+                </div>
+              </div>
+            ) : (
+              <div className="update-dialog-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() => (isMobile() ? installUpdateMobile() : void installUpdate())}
+                >
+                  {updateCheck.state === "error" ? "重试更新" : isMobile() ? "下载并安装" : "立即更新"}
                 </button>
-              )}
-              <button
-                type="button"
-                className="btn btn-ghost"
-                onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))}
-              >
-                稍后
-              </button>
-            </div>
+                {updateCheck.url && (
+                  <button type="button" className="btn btn-ghost" onClick={() => void openReleasePage(updateCheck.url!)}>
+                    查看发布页
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setUpdateCheck((prev) => ({ ...prev, dismissed: true }))}
+                >
+                  稍后
+                </button>
+              </div>
+            )}
           </div>
         </>
       )}
-      {updateCheck.state === "downloading" && (
+      {/* 下载中且弹窗已关（后台模式）：细横幅继续播百分比 */}
+      {updateCheck.state === "downloading" && updateCheck.dismissed && (
         <div className="update-banner" role="status">
           <span>{updateCheck.message}（完成后应用将自动重启）</span>
         </div>
@@ -6958,7 +7099,7 @@ export default function App() {
                         className="m-fulltext-btn"
                         onClick={() => {
                           setLeftCollapsed(true);
-                          setPaletteOpen(true);
+                          openPalette();
                         }}
                       >
                         <IconSearch size={14} />
@@ -7739,7 +7880,7 @@ export default function App() {
               className="m-sheet-row"
               onClick={() => {
                 setMobileMenuOpen(false);
-                setPaletteOpen(true);
+                openPalette();
               }}
             >
               <IconSearch size={17} />
@@ -8068,6 +8209,7 @@ export default function App() {
         onOpenNoteInVault={(target, path, line, term) => void openNoteInVault(target, path, line, term)}
         actions={paletteActions}
         hoverPreview={settings.searchHoverPreview}
+        seed={paletteOpen ? paletteSeedRef.current : ""}
       />
 
       <WeekReviewDialog

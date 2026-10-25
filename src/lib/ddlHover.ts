@@ -23,6 +23,27 @@ function isWordChar(ch: string | undefined): boolean {
   return !!ch && /[A-Za-z0-9_$#.]/.test(ch);
 }
 
+// -------------------------------------------------------- 悬浮卡直接编辑（0.34.2）
+//
+// 弹窗里的「编辑」要写回 DDL 笔记——落盘通道（读笔记→同名表替换→写回→重载库）
+// 都在 App 侧，这里挂一个模块级钩子：App 挂载时 setDdlSaver 注入，两处 build
+// DdlTipDom 的调用点据此决定要不要渲染编辑钮。卸载时置回 null。
+
+export type DdlSaver = (table: string, ddl: string) => Promise<string>;
+
+let ddlSaver: DdlSaver | null = null;
+
+/** 注入/清除 DDL 保存通道（App 挂载时调用一次）。 */
+export function setDdlSaver(fn: DdlSaver | null): void {
+  ddlSaver = fn;
+}
+
+/** 带当前 saver 的弹窗装配参数（saver 不在时不渲染编辑钮）。 */
+function tipOptions(): { onSave: (table: string, ddl: string) => Promise<string> } | undefined {
+  const saver = ddlSaver;
+  return saver ? { onSave: (table, ddl) => saver(table, ddl) } : undefined;
+}
+
 export function ddlHover(): Extension {
   return hoverTooltip(
     (view, pos) => {
@@ -45,7 +66,7 @@ export function ddlHover(): Extension {
         pos: line.from + from,
         end: line.from + to,
         above: true,
-        create: () => ({ dom: buildDdlTipDom(word, ddl) }),
+        create: () => ({ dom: buildDdlTipDom(word, ddl, tipOptions()) }),
       };
     },
     // 默认 750ms 太迟钝；350ms 接近 Obsidian 的悬浮手感
@@ -79,7 +100,7 @@ export function installDdlCellHover(): () => void {
 
   const show = (cell: HTMLElement, word: string, ddl: string) => {
     hide();
-    const tip = buildDdlTipDom(word, ddl);
+    const tip = buildDdlTipDom(word, ddl, tipOptions());
     tip.id = CELL_TIP_ID;
     tip.classList.add("qn-ddl-cell-tip");
     document.body.appendChild(tip);
@@ -125,13 +146,21 @@ export function installDdlCellHover(): () => void {
     }, CELL_HOVER_MS);
   };
 
+  const onDocMouseDown = (event: MouseEvent) => {
+    // 0.34.2：弹窗现在直接可编辑——点击弹窗内部（文本域/保存钮）不能把它
+    // 藏掉，只有点在弹窗外才收起
+    const tip = document.getElementById(CELL_TIP_ID);
+    if (tip && event.target instanceof Node && tip.contains(event.target)) return;
+    hide();
+  };
+
   document.addEventListener("mouseover", onOver, true);
   window.addEventListener("scroll", hide, true);
-  window.addEventListener("mousedown", hide, true);
+  window.addEventListener("mousedown", onDocMouseDown, true);
   return () => {
     hide();
     document.removeEventListener("mouseover", onOver, true);
     window.removeEventListener("scroll", hide, true);
-    window.removeEventListener("mousedown", hide, true);
+    window.removeEventListener("mousedown", onDocMouseDown, true);
   };
 }

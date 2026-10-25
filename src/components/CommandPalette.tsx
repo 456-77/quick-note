@@ -20,7 +20,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { listEntries, readNoteOptional, searchVault, type EntryMeta, type SearchHit } from "../lib/api";
+import { listEntries, readNoteOptional, searchVault, type EntryMeta, type SearchFileHit } from "../lib/api";
 import { fieldVariants } from "../lib/searchVariants";
 
 export interface PaletteAction {
@@ -53,8 +53,8 @@ interface Item {
   hit?: PaletteHit;
 }
 
-/** 内容命中（带来源仓库）：悬停预览与跨仓库打开都需要它。 */
-export interface PaletteHit extends SearchHit {
+/** 内容命中（按文件聚合，带来源仓库）：悬停预览与跨仓库打开都需要它。 */
+export interface PaletteHit extends SearchFileHit {
   /** 命中来自哪个仓库（绝对路径）；当前仓库命中与 vault prop 相同。 */
   vault: string;
 }
@@ -80,19 +80,22 @@ interface Props {
   actions: PaletteAction[];
   /** 「内容」结果悬停预览（设置 → 通用 → 搜索，0.21 用户反馈）。 */
   hoverPreview: boolean;
+  /** 打开面板时带入的初始搜索词（编辑器选中文本，0.34.2 用户反馈）。 */
+  seed?: string;
 }
 
 const SEARCH_DEBOUNCE = 250;
 const NAME_LIMIT = 8;
 /**
- * 「内容」组的展示上限。0.32 用户反馈「搜索结果是不是只给了一部分」——是的：
- * 此前显示上限 14，约一屏 9 条又没有可见滚动条，看起来就像被截断了。现在
- * 上限拉到 60 并在组名上标出「显示 x / 共 y 条」，截断与否一眼可见。
+ * 「内容」组的展示上限。0.32 起拉到 60 并在组名上标出「显示 x / 共 y 条」。
+ * 0.34.2 起结果**按文件聚合**——一个文件一行（0.34.2 用户反馈：同一文件此前
+ * 逐条列出刷屏，应只出现一次、进笔记后用文件内搜索看所有命中），60 行能覆盖
+ * 的文件数比命中行数多得多，徽标同步改为「共 y 个文件 · n 处」口径。
  */
 const CONTENT_LIMIT = 60;
-/** 内容检索的分仓限额：当前仓库多给，其他仓库每仓少给，防大库拖慢一轮搜索。 */
-const CONTENT_LIMIT_CURRENT = 120;
-const CONTENT_LIMIT_OTHER = 40;
+/** 内容检索的分仓限额（按文件计）：当前仓库多给，其他仓库每仓少给，防大库拖慢一轮搜索。 */
+const CONTENT_LIMIT_CURRENT = 150;
+const CONTENT_LIMIT_OTHER = 50;
 /** 其他仓库笔记名命中合计上限。 */
 const NAME_LIMIT_OTHER = 8;
 /** 参与搜索的仓库总数上限（最近仓库列表本身 ≤8，加上当前仓库天然封顶）。 */
@@ -155,6 +158,7 @@ export default function CommandPalette({
   onOpenNoteInVault,
   actions,
   hoverPreview,
+  seed,
 }: Props) {
   // 保留上一次的搜索词（会话内不重置，跨重启落盘 localStorage）。打开时全选
   // 文本：直接输入即替换，想接着改也可以光标挪过去。
@@ -194,8 +198,12 @@ export default function CommandPalette({
   }, [query, terms]);
 
   // 打开时聚焦；关闭时清掉残留的悬停预览。搜索词按上面的策略保留。
+  // 0.34.2 用户反馈「选中内容后再打开全局搜索自动搜索选中内容」：编辑器里有
+  // 选中文本时把第一个非空行（≤80 字）带进搜索框。setQuery 在 RAF 聚焦前提交，
+  // 聚焦后的 select() 选中的就是种子词——直接打字即替换。
   useEffect(() => {
     if (open) {
+      if (seed) setQuery(seed);
       setActive(0);
       setSearching(false);
       setPreview(null);
@@ -206,6 +214,7 @@ export default function CommandPalette({
         if (input.value) input.select();
       });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
   useEffect(() => {
@@ -346,30 +355,41 @@ export default function CommandPalette({
       }
 
       // 0.30 用户反馈：标题命中的文件在「内容」组也要列出（此前为去重被压掉，
-      // 结果只有标题行能看，少了命中行摘要与悬停预览）。两组各自独立展示，
-      // 同一文件最多在两组各出现一次。同一文件的多条命中（表格行也能露脸，
-      // 0.32）逐条列出，行号放 meta 方便对行。
-      const shown = contentHits.slice(0, CONTENT_LIMIT);
-      shown.forEach((hit, index) => {
+      // 结果只有标题行能看，少了命中行摘要与悬停预览）。两组各自独立展示。
+      // 0.34.2 用户反馈：同一文件只出现一次（此前逐条命中刷屏），完整命中数
+      // 放 meta，点击打开笔记并预填文件内搜索——所有命中在笔记里高亮可跳。
+      // 0.34.2 第二批反馈「搜其他库中的内容，还是只搜索到文件名」：常见字（如
+      // 「的」）会让当前仓库的文件把 60 行展示上限全占掉，其他仓库的命中永远
+      // 排不进来——当前仓库最多占一半，剩下让给其他仓库（按最近仓库序）。
+      const currentCap =
+        contentHits.some((hit) => hit.vault !== vault) ? Math.floor(CONTENT_LIMIT / 2) : CONTENT_LIMIT;
+      const currentRows = contentHits.filter((hit) => hit.vault === vault);
+      const otherRows = contentHits.filter((hit) => hit.vault !== vault);
+      const shown = [
+        ...currentRows.slice(0, currentCap),
+        ...otherRows.slice(0, CONTENT_LIMIT - Math.min(currentRows.length, currentCap)),
+      ];
+      const truncated = contentHits.length > shown.length;
+      const totalHits = contentHits.reduce((sum, hit) => sum + hit.count, 0);
+      const totalHitsLabel = totalHits > 999 ? "999+" : String(totalHits);
+      shown.forEach((hit) => {
         const otherVault = hit.vault !== vault;
         const vaultBase = hit.vault.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || hit.vault;
+        const first = hit.samples[0];
         out.push({
-          key: `hit-${hit.vault}-${hit.path}-${hit.line}`,
+          key: `hit-${hit.vault}-${hit.path}`,
           group: "内容",
-          groupBadge:
-            index === 0
-              ? contentHits.length > shown.length
-                ? `显示 ${shown.length} / 共 ${contentHits.length}+ 条`
-                : `共 ${contentHits.length} 条`
-              : undefined,
+          groupBadge: truncated
+            ? `显示 ${shown.length} / 共 ${contentHits.length}+ 个文件 · ${totalHitsLabel} 处`
+            : `${contentHits.length} 个文件 · ${totalHitsLabel} 处`,
           icon: otherVault ? "🗂️" : "🔎",
           title: hit.path.slice(hit.path.lastIndexOf("/") + 1),
-          detail: hit.text.trim(),
-          meta: otherVault ? `${vaultBase} · L${hit.line + 1}` : `L${hit.line + 1}`,
+          detail: first?.text.trim() ?? "",
+          meta: `${otherVault ? `${vaultBase} · ` : ""}${hit.count} 处`,
           // 带回首个关键词：打开后预填搜索面板高亮全文命中（0.21 用户反馈）
           run: otherVault
-            ? () => onOpenNoteInVault(hit.vault, hit.path, hit.line, rawFirstTerm)
-            : () => onOpenNote(hit.path, hit.line, rawFirstTerm),
+            ? () => onOpenNoteInVault(hit.vault, hit.path, first?.line, rawFirstTerm)
+            : () => onOpenNote(hit.path, first?.line, rawFirstTerm),
           hit,
         });
       });
@@ -428,7 +448,8 @@ export default function CommandPalette({
             return;
           }
           const all = note.content.split(/\r?\n/);
-          const center = Math.min(Math.max(hit.line, 0), all.length - 1);
+          // 预览以第一条命中样本为中心（0.34.2 起命中按文件聚合）
+          const center = Math.min(Math.max(hit.samples[0]?.line ?? 0, 0), all.length - 1);
           const from = Math.max(0, center - 4);
           const to = Math.min(all.length - 1, center + 4);
           const lines: { no: number; text: string }[] = [];

@@ -385,8 +385,8 @@ try {
     const recognized = await waitFor(ws, `(document.querySelector('.quick-capture-help')?.textContent ?? '').includes('1 张表')`, 5000);
     check(recognized, "粘贴后自动识别表名", await evaluate(ws, `document.querySelector('.quick-capture-help')?.textContent ?? ''`));
     await key(ws, { mod: CTRL, key: "Enter" }, "Enter", 13);
-    const saved = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已收录')`, 6000);
-    check(saved, "收录成功提示", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
+    const saved = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已保存')`, 6000);
+    check(saved, "收录成功提示（0.34.2 文案=已保存）", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
     const ddlFile = join(vaultA, "数据库表DDL.md");
     let fileOk = false;
     for (let i = 0; i < 20 && !fileOk; i += 1) {
@@ -433,9 +433,16 @@ try {
       // tooltip 本体是 cm-tooltip cm-tooltip-hover，qn-ddl-tip 是它的内容子节点
       const tip = await waitFor(ws, `!!document.querySelector('.qn-ddl-tip')`, 4000);
       const head = await evaluate(ws, `document.querySelector('.qn-ddl-tip-head')?.textContent ?? ''`);
-      const body = await evaluate(ws, `document.querySelector('.qn-ddl-tip-pre')?.textContent ?? ''`);
+      // 0.34.2：悬浮卡直接可编辑——App 注入 saver 后是 textarea，只读 pre 只在无 saver 时出现
+      const body = await evaluate(ws, `(() => {
+        const input = document.querySelector('.qn-ddl-tip .qn-ddl-tip-input');
+        if (input) return input.value;
+        return document.querySelector('.qn-ddl-tip .qn-ddl-tip-pre')?.textContent ?? '';
+      })()`);
+      const editable = await evaluate(ws, `!!document.querySelector('.qn-ddl-tip .qn-ddl-tip-input') && !!document.querySelector('.qn-ddl-tip .qn-ddl-tip-save')`);
       check(tip && head.includes("ids_qn31_tab"), "悬停表名浮出建表语句卡（Table: 标题）", head);
       check(body.includes("CREATE TABLE") && body.includes("批测表"), "悬浮卡内容为完整 DDL", body.slice(0, 60));
+      check(editable, "悬浮卡直接可编辑且有保存钮（0.34.2）");
     }
   }
 

@@ -803,19 +803,35 @@ fn field_variants(term: &str) -> Vec<String> {
     out
 }
 
+/// 按文件聚合的全文搜索结果（0.34.2 用户反馈：一个文件在结果里只出现一次，
+/// 完整命中数带出去，进笔记后用文件内搜索看所有命中）。
+#[derive(Serialize, Debug)]
+pub struct SearchFileHit {
+    pub path: String,
+    /// 该文件的命中行总数（完整统计，不受样本截断影响）。
+    pub count: usize,
+    /// 命中行样本（0 基行号 + 截断文本），供结果列表预览与点击跳转。
+    pub samples: Vec<SearchHit>,
+}
+
 /// 大小写不敏感的全文搜索（多关键词 AND，空格分隔；每个关键词按 [`field_variants`]
-/// 的变体"或"匹配）。
+/// 的变体"或"匹配），结果**按文件聚合**。
 ///
-/// 遍历仓库内全部 `.md`（跳过点开头的隐藏路径），逐行找命中行，**每文件最多记
-/// `PER_FILE_HITS` 条**（0.32 用户反馈"搜不到表格中的内容"：表格行与普通行一样
-/// 参与匹配，但此前每文件只记首个命中行——首个命中常落在标题/正文上，表格行
-/// 永远没有露脸机会）。个人库的量级（数百篇）在 Rust 侧全量扫描是毫秒级的，
-/// 刻意不做倒排索引——索引要处理增量失效，复杂度换不来这个量级下的收益。
+/// 遍历仓库内全部 `.md`（跳过点开头的隐藏路径）：统计每个文件的完整命中行数，
+/// 样本最多记 [`SAMPLES_PER_FILE`] 条（0.32 用户反馈"搜不到表格中的内容"：表格
+/// 行与普通行一样参与匹配）。**不再在命中总量到限后提前收工**——0.34.2 用户
+/// 反馈「搜索内容并没有搜全」，根因就是旧版在 `hits.len() >= limit` 时 break，
+/// 按文件序排在后面的笔记根本没被扫到；现在每篇必扫，只有结果文件数受
+/// `file_limit` 约束（超出部分前端标「共 y 个文件」）。个人库的量级（数百篇）
+/// 在 Rust 侧全量扫描是毫秒级的，刻意不做倒排索引。
 #[tauri::command]
-pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<SearchHit>, String> {
-    /// 单个文件最多返回的命中行数：表格/重复段落里的命中也能露脸，又不至于
-    /// 一个巨型文件把整个结果列表刷屏。
-    const PER_FILE_HITS: usize = 5;
+pub fn search_vault(
+    vault: String,
+    query: String,
+    file_limit: usize,
+) -> Result<Vec<SearchFileHit>, String> {
+    /// 结果里每文件最多带的命中行样本数：预览与跳转用，完整数在 count 里。
+    const SAMPLES_PER_FILE: usize = 3;
     let root = vault_root(&vault)?;
     // 变体在**原始大小写**上生成（驼峰边界依赖大写字母），再统一小写参与子串匹配
     let term_groups: Vec<Vec<String>> = query
@@ -835,7 +851,7 @@ pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<Se
     if term_groups.is_empty() {
         return Ok(Vec::new());
     }
-    let limit = limit.clamp(1, 400);
+    let file_limit = file_limit.clamp(1, 500);
 
     /** 一行的全部关键词是否都按变体命中。 */
     fn line_matches(line_lower: &str, term_groups: &[Vec<String>]) -> bool {
@@ -847,11 +863,8 @@ pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<Se
     let mut entries = Vec::new();
     walk_entries(&root, &root, &mut entries, 0);
 
-    let mut hits = Vec::new();
+    let mut files = Vec::new();
     for entry in entries {
-        if hits.len() >= limit {
-            break;
-        }
         if entry.is_dir || !entry.name.to_lowercase().ends_with(".md") {
             continue;
         }
@@ -866,33 +879,45 @@ pub fn search_vault(vault: String, query: String, limit: usize) -> Result<Vec<Se
         let Ok(content) = std::str::from_utf8(body) else {
             continue;
         };
+        // 先对全文（一次小写化）做快速预筛，再逐行统计——不含关键词的文件
+        // 不进逐行循环，全库扫描的大头在这里省掉
         let lowered = content.to_lowercase();
         if !line_matches(&lowered, &term_groups) {
             continue;
         }
-        let mut file_hits = 0usize;
+        let mut count = 0usize;
+        let mut samples: Vec<SearchHit> = Vec::new();
         for (line_index, line) in content.lines().enumerate() {
             let line_lower = line.to_lowercase();
             if line_matches(&line_lower, &term_groups) {
-                let text: String = if line.chars().count() > 160 {
-                    let truncated: String = line.chars().take(160).collect();
-                    format!("{truncated}…")
-                } else {
-                    line.to_string()
-                };
-                hits.push(SearchHit {
-                    path: entry.path.clone(),
-                    line: line_index,
-                    text,
-                });
-                file_hits += 1;
-                if file_hits >= PER_FILE_HITS || hits.len() >= limit {
-                    break;
+                count += 1;
+                if samples.len() < SAMPLES_PER_FILE {
+                    let text: String = if line.chars().count() > 160 {
+                        let truncated: String = line.chars().take(160).collect();
+                        format!("{truncated}…")
+                    } else {
+                        line.to_string()
+                    };
+                    samples.push(SearchHit {
+                        path: entry.path.clone(),
+                        line: line_index,
+                        text,
+                    });
                 }
             }
         }
+        if count > 0 {
+            files.push(SearchFileHit {
+                path: entry.path.clone(),
+                count,
+                samples,
+            });
+            if files.len() >= file_limit {
+                break;
+            }
+        }
     }
-    Ok(hits)
+    Ok(files)
 }
 
 #[tauri::command]
@@ -1667,9 +1692,8 @@ mod tests {
 
     #[test]
     fn search_vault_returns_multiple_hits_per_file() {
-        // 0.32 用户反馈"搜不到表格中的内容"：表格行是普通文本行，本来就能匹配，
-        // 但此前每文件只记**首个**命中行——首个命中常落在标题/正文上，表格行
-        // 永远没有露脸机会。现在每文件最多 5 条。
+        // 0.32 用户反馈"搜不到表格中的内容"：表格行是普通文本行，本来就能匹配。
+        // 0.34.2 起结果按文件聚合：count 完整统计，samples 带前 3 条行号。
         let root = std::env::temp_dir().join(format!("qn-search-multihit-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
@@ -1690,14 +1714,19 @@ mod tests {
             .join("\n"),
         )
         .unwrap();
+        // 0.34.2「搜索没搜全」回归：命中文件数达到 file_limit 后才停，排在
+        // 文件序后面的笔记不会被漏扫（旧版在命中**条数**到限后就 break）
+        fs::write(root.join("另一篇.md"), "这里也有 git commit -m 的用法。\n").unwrap();
 
         let vault = root.to_string_lossy().to_string();
-        let hits = search_vault(vault, "-m".into(), 50).unwrap();
-        assert!(hits.len() >= 4, "表格行与正文行都返回: {:?}", hits);
-        let lines: Vec<usize> = hits.iter().map(|h| h.line).collect();
-        assert!(lines.contains(&6), "表格数据行命中在结果里: {lines:?}");
-        assert!(lines.contains(&7), "第二条表格行也在: {lines:?}");
-        assert!(lines.contains(&2) && lines.contains(&9), "正文行也保留: {lines:?}");
+        let files = search_vault(vault, "-m".into(), 10).unwrap();
+        assert_eq!(files.len(), 2, "两个命中文件都在: {:?}", files);
+        let tables = files.iter().find(|f| f.path == "tables.md").unwrap();
+        assert!(tables.count >= 4, "完整命中数: {}", tables.count);
+        assert_eq!(tables.samples.len(), 3, "样本最多 3 条: {:?}", tables.samples);
+        let lines: Vec<usize> = tables.samples.iter().map(|h| h.line).collect();
+        assert!(lines.contains(&2), "正文行样本在结果里: {lines:?}");
+        assert!(lines.contains(&6), "表格数据行样本在结果里: {lines:?}");
         let _ = fs::remove_dir_all(&root);
     }
 

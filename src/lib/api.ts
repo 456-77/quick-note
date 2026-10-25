@@ -100,7 +100,7 @@ export const readNote = (vault: string, path: string) =>
 export const readNoteOptional = (vault: string, path: string) =>
   invoke<NoteContent | null>("read_note_optional", { vault, path });
 
-/** 全文搜索的一个命中。 */
+/** 全文搜索的一个命中行。 */
 export interface SearchHit {
   path: string;
   /** 命中行（0 基）。 */
@@ -109,13 +109,22 @@ export interface SearchHit {
   text: string;
 }
 
+/** 按文件聚合的全文搜索结果（0.34.2）：一个文件一条，完整命中数 + 样本行。 */
+export interface SearchFileHit {
+  path: string;
+  /** 该文件命中行总数（完整统计）。 */
+  count: number;
+  /** 命中行样本（最多 3 条），预览与点击跳转用。 */
+  samples: SearchHit[];
+}
+
 /**
- * 仓库内全文搜索（大小写不敏感，空格分隔多个关键词，全部命中才算）。
- *
- * Rust 侧逐文件扫描，个人库量级下是毫秒级的；调用方自行防抖即可。
+ * 仓库内全文搜索（大小写不敏感，空格分隔多个关键词，全部命中才算），
+ * 结果按文件聚合：全库必扫（不在命中条数到限后提前收工），file_limit 只限
+ * 返回的文件数。Rust 侧逐文件扫描，个人库量级下是毫秒级的；调用方自行防抖。
  */
-export const searchVault = (vault: string, query: string, limit = 60) =>
-  invoke<SearchHit[]>("search_vault", { vault, query, limit });
+export const searchVault = (vault: string, query: string, fileLimit = 120) =>
+  invoke<SearchFileHit[]>("search_vault", { vault, query, fileLimit });
 
 export const writeNote = (vault: string, path: string, content: string, hasBom: boolean) =>
   invoke<WriteResult>("write_note", { vault, path, content, hasBom });

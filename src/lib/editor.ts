@@ -14,6 +14,7 @@ import { blockWidgetsField, gutterNumberAlign, livePreviewExtension } from "./li
 import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { ddlHover } from "./ddlHover";
+import { ddlKnownMarks } from "./ddlMark";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
 import { codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
@@ -232,6 +233,8 @@ export function createEditorState(
       altClickHandler(),
       // 表名悬浮预览（0.31）：光标停在已收录的表名上显示建表语句
       ddlHover(),
+      // 已收录 DDL 的表名整词着色（0.34.2）：视觉索引，提示该表已在库里
+      ddlKnownMarks(),
       // 重设计的搜索面板（Ctrl+F）：替代 CM 默认 Find Bar
       customSearchPanel(),
       // // 表格里的 Tab 是"下一格"，必须压过 basicSetup 的缩进键位。

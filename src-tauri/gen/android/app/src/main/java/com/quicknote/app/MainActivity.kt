@@ -270,30 +270,49 @@ class MainActivity : TauriActivity() {
 
     /**
      * 下载 APK 到私有目录并拉起系统安装器。完成/失败经 __qnUpdateDone(ok, message)
-     * 回报前端。网络 IO 在桥线程；intent 必须回 UI 线程。
+     * 回报前端；下载中经 __qnUpdateProgress(pct) 播百分比（0.34.2 用户反馈
+     * 「更新要显示进度」）。弱网/代理环境一条连接常被中途掐断（真机
+     * 「Software caused connection abort」）：最多试 3 次、间隔 1.2s。
+     * 重复调用被 downloading 闸挡住——前端双击/重试不会叠出多路下载。
      */
     @JavascriptInterface
     fun installUpdate(url: String) {
       val webView = webViewRef ?: return
+      if (!downloading.compareAndSet(false, true)) {
+        notifyUpdateDone(webView, false, "已有下载在进行中，请稍候")
+        return
+      }
       try {
         val dir = File(filesDir, "update").apply { mkdirs() }
         // 清旧包：只保留本次下载
         dir.listFiles()?.forEach { it.delete() }
         val dest = File(dir, "quick-note-update.apk")
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 15_000
-        connection.readTimeout = 60_000
-        connection.instanceFollowRedirects = true
-        connection.connect()
-        val code = connection.responseCode
-        if (code !in 200..299) {
-          notifyUpdateDone(webView, false, "下载失败：HTTP $code")
-          return
-        }
-        connection.inputStream.use { input ->
-          dest.outputStream().use { output ->
-            input.copyTo(output, bufferSize = 64 * 1024)
+        var lastError: IOException? = null
+        var attempts = 0
+        while (attempts < 3) {
+          attempts += 1
+          try {
+            downloadApk(webView, url, dest)
+            lastError = null
+            break
+          } catch (e: IOException) {
+            lastError = e
+            if (attempts < 3) {
+              try {
+                Thread.sleep(1200)
+              } catch (_: InterruptedException) {
+              }
+            }
           }
+        }
+        val err = lastError
+        if (err != null) {
+          notifyUpdateDone(
+            webView,
+            false,
+            "下载失败（已重试 $attempts 次）：${err.message}。网络不稳可再试，或到发布页直接下载 APK"
+          )
+          return
         }
         if (!dest.exists() || dest.length() == 0L) {
           notifyUpdateDone(webView, false, "下载失败：文件为空")
@@ -316,8 +335,53 @@ class MainActivity : TauriActivity() {
             notifyUpdateDone(webView, false, "拉起安装器失败：${e.message}")
           }
         }
-      } catch (e: IOException) {
-        notifyUpdateDone(webView, false, "下载失败：${e.message}")
+      } finally {
+        downloading.set(false)
+      }
+    }
+
+    /** 下载互斥闸：同一时刻只允许一路下载（0.34.2 用户反馈「可能会下载多次」）。 */
+    private val downloading = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 下载 APK 本体；进度经 __qnUpdateProgress(pct) 回前端（300ms 节流）。 */
+    private fun downloadApk(webView: WebView, url: String, dest: File) {
+      val connection = URL(url).openConnection() as HttpURLConnection
+      connection.connectTimeout = 15_000
+      connection.readTimeout = 60_000
+      connection.instanceFollowRedirects = true
+      connection.connect()
+      val code = connection.responseCode
+      if (code !in 200..299) {
+        throw IOException("HTTP $code")
+      }
+      val total = connection.contentLengthLong
+      connection.inputStream.use { input ->
+        dest.outputStream().use { output ->
+          val buffer = ByteArray(64 * 1024)
+          var done = 0L
+          var lastPct = -2
+          var lastSent = 0L
+          while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            output.write(buffer, 0, read)
+            done += read
+            val now = System.currentTimeMillis()
+            if (total > 0 && now - lastSent >= 300) {
+              lastSent = now
+              val pct = ((done * 100) / total).toInt().coerceIn(0, 99)
+              if (pct != lastPct) {
+                lastPct = pct
+                mainHandler.post {
+                  webView.evaluateJavascript(
+                    "window.__qnUpdateProgress && window.__qnUpdateProgress($pct)",
+                    null
+                  )
+                }
+              }
+            }
+          }
+        }
       }
     }
   }
