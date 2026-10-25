@@ -882,7 +882,8 @@ try {
   const closedByBack = await evaluate(ws, `getComputedStyle(document.querySelector('aside.sidebar-left')).transform`);
   check(closedByBack !== "none", "0.34.1：返回键消费链关闭全屏抽屉（✕ 已删）");
 
-  // 边缘手势：左缘右滑开抽屉（合成 TouchEvent，passive 观察链）
+  // 0.34.1 内容区手势：双抽屉关闭时右滑开左抽屉（不再是边缘带——合成
+  // TouchEvent 同步派发 dt≈0 过时间门，target=document 跳过交互元素守卫）
   await evaluate(ws, `(() => {
     const t = (x, y) => new Touch({ identifier: 1, target: document.body, clientX: x, clientY: y });
     document.dispatchEvent(new TouchEvent('touchstart', { touches: [t(8, 420)], bubbles: true }));
@@ -891,7 +892,7 @@ try {
   })()`);
   await sleep(500);
   const swipeOpen = await evaluate(ws, `getComputedStyle(document.querySelector('aside.sidebar-left')).transform`);
-  check(swipeOpen === "none", "0.34.0：左缘右滑手势打开抽屉");
+  check(swipeOpen === "none", "0.34.1：内容区右滑手势打开抽屉");
 
   // 0.34.1：左抽屉左滑关闭（用户反馈：左滑关左抽屉）
   await evaluate(ws, `(() => {

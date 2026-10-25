@@ -5150,8 +5150,10 @@ html.qn-bg-on .calendar-card {
 /* 0.31：背景开着时，侧栏/面板里的**控件级**深色底也要跟随浓度——此前只有
    大表面降不透明度，导航 chips、筛选框、单词本搜索框、字母分组头仍是
    不透明深色实心块，浅色背景上形成高对比「深色孤岛」（0.30 用户反馈的突兀），
-   深色主题配浅色背景时尤其刺眼。 */
-html.qn-bg-on .left-view,
+   深色主题配浅色背景时尤其刺眼。
+   0.34.1 用户反馈「左侧功能栏有底色，要和右侧一样」：.left-view 从本规则
+   移除——右侧 .sidebar-tabs 从来没有底色，开背景图时只有左页签行多出一块
+   深色底，左右不一致；去掉后两侧同为透明。 */
 html.qn-bg-on .sidebar-filter,
 html.qn-bg-on .vocab-search {
   background: color-mix(in srgb, var(--surface-2) var(--qn-veil-card, 76%), transparent);
@@ -9410,9 +9412,12 @@ button.cm-tag:hover {
   /* ---------- 二、顶部栏：0.34.0 起移动端无常驻顶栏（浮动药丸替代），
       顶栏规则整段退场；桌面样式不受本媒体查询影响 ---------- */
 
-  /* ---------- 四、文件列表：52dp 行高、弱描边选中、文件名为主 ---------- */
+  /* ---------- 四、文件列表：弱描边选中、文件名为主。
+      0.34.1 用户反馈「行与行空隙太大，移动端空间小」：原 15px 上下 padding
+      叠加触屏常驻 32px 的 ⋯ 钮，每行被撑到 ~63px——收到 9px（行高 ~46px，
+      仍满足 ≥44dp 触控规范） ---------- */
   .sidebar-left .tree-item {
-    padding: 15px 10px;
+    padding: 9px 10px;
     gap: 8px;
     font-size: 14px;
   }
@@ -9435,7 +9440,8 @@ button.cm-tag:hover {
   }
   .tree-more {
     width: 32px;
-    height: 32px;
+    /* 0.34.1：32→28px——触屏常驻的 ⋯ 是行高的实际下限，压行距先压它 */
+    height: 28px;
     border-radius: 8px;
     font-size: 15px;
   }
@@ -9519,8 +9525,9 @@ button.cm-tag:hover {
     align-items: stretch;
     gap: 2px;
     /* 0.33.1：env(safe-area-inset-top) 移除——原生 margin 已让出状态栏，
-       vivo WebView 里 env 虚报再补一次 = 一级页顶部 ~50px 双重空白 */
-    padding: 8px 10px 8px;
+       vivo WebView 里 env 虚报再补一次 = 一级页顶部 ~50px 双重空白。
+       0.34.1：顶 padding 8→0，一级头与二级头一样从屏幕内容区最顶开始 */
+    padding: 0 10px 8px;
     overflow: hidden;
     -webkit-mask-image: none;
     mask-image: none;
@@ -9534,8 +9541,12 @@ button.cm-tag:hover {
      「‹ 标题」并排靠左 */
   .settings-nav-head {
     width: 100%;
-    height: 48px;
+    /* 0.34.1 用户反馈「一级/二级页面风格和布局对齐」：48→56px 并补底部分隔
+       线，与 .settings-mobile-head 同高同描边（gui-035 的两级头同高断言
+       量的是「头高 + nav paddingTop」，56+0 仍等于二级头 56） */
+    height: 56px;
     justify-content: flex-start;
+    border-bottom: 1px solid var(--border-soft);
   }
   /* 0.33.0 停点3 第三轮：关闭钮（‹）挪到标题左侧——右侧放 ‹ 反直觉
      （用户反馈），返回/关闭的箭头就该在最左；桌面顺序不变 */
@@ -9543,6 +9554,12 @@ button.cm-tag:hover {
     order: -1;
     margin-right: 2px;
     margin-left: -6px;
+  }
+  /* 0.34.1：关闭钮图标与二级头返回 ‹ 同尺寸（20px；.icon-btn 固定 28×28，
+     只放大 SVG 不动布局） */
+  .settings-nav-head .settings-close svg {
+    width: 20px;
+    height: 20px;
   }
   .settings-nav-title {
     font-size: 16px;
@@ -11895,8 +11912,9 @@ html.qn-bg-on .editor-pane-col.is-split {
   .sidebar-left {
     display: flex;
     flex-direction: column;
-    padding: 10px;
-    gap: 8px;
+    /* 0.34.1 用户反馈「组件之间的间隙也需要调整」：10/8 收到 8/6 */
+    padding: 8px 10px;
+    gap: 6px;
   }
   .m-drawer-content {
     flex: 1;
@@ -12062,6 +12080,14 @@ html.qn-bg-on .editor-pane-col.is-split {
   .m-drawer-gear:active {
     color: var(--text);
   }
+  /* 0.34.1 用户反馈「输入时底部这些选项没必要显示」：新建/重命名输入行打开
+     期间隐藏动作行/分区卡/仓库底行——键盘弹出后空间紧张，且输入行自带落点
+     提示，这些元素此刻用不到（类由 App.tsx 在 creating/renaming 时挂上） */
+  .sidebar-left.m-inputting .m-drawer-actions,
+  .sidebar-left.m-inputting .m-drawer-sections,
+  .sidebar-left.m-inputting .m-drawer-foot {
+    display: none;
+  }
 }
 
 /* 0.34.0 仓库主页品牌块（对齐 Obsidian 图5 页顶：logo + 名称 + 版本居中）。
@@ -12146,5 +12172,75 @@ html.qn-bg-on .editor-pane-col.is-split {
   .m-drawer-section-caret::after {
     bottom: 1px;
     transform: rotate(45deg);
+  }
+}
+
+/* ==================== 0.34.1 真机反馈批：横幅表层 + 快捷键页头 ==================== */
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  /* 用户反馈「报错信息不应该显示在最表层吗，现在被遮挡住了」：.banner 原本
+     在文档流里（.app 顶部），而抽屉 70 / 主页 84 / 设置 85 / sheet 86 全是
+     更高的固定定位浮层——任何浮层开着时错误横幅都被盖住。移动端改成 fixed
+     顶层浮出（z 90 > sheet 86）；桌面维持文档流原样（零视觉变化） */
+  .banner {
+    position: fixed;
+    top: 10px;
+    left: 12px;
+    right: 12px;
+    z-index: 90;
+    margin: 0;
+  }
+
+  /* 用户反馈「快捷键页内容太多时相互重叠」：.hotkey-head 桌面自带 sticky
+     top:-12px（相对分区顶），与二级页 sticky 头（56px、z-5）叠用时按钮行/
+     搜索框滑进页头背后被裁半截。移动端让它吸在二级头下缘（top:56px），
+     负 margin 改吃掉 settings-body 的 16px 左右 padding，宽度与页头对齐 */
+  .settings-panel.is-detail .hotkey-head {
+    position: sticky;
+    top: 56px;
+    margin: 0 -16px 8px;
+    padding: 10px 16px 8px;
+  }
+
+  /* ---------- 收件箱（速记管理）三修（0.34.1 用户反馈） ---------- */
+
+  /* ① 「收件箱就不要显示这些悬浮按钮了」：收件箱是全屏工作页，自带 Inbox
+     顶栏（搜索/⟳/⋯/✕）与底部快捷键提示行，浮动药丸/底条叠在顶栏上既挡字
+     又用不到——整个让位（关闭走面板自带 ✕ 或系统返回） */
+  .app.inbox-open .m-top-pills {
+    transform: translateY(-140%);
+    opacity: 0;
+    pointer-events: none;
+  }
+  .app.inbox-open .m-bottom-bar {
+    transform: translateX(-50%) translateY(160%);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* ③ 「这面板滑动无法进入抽屉页面」：桌面语义收件箱打开时藏左右栏
+     （.app.inbox-open .sidebar-left/right{display:none}），但移动端抽屉是
+     召唤式全屏浮层——内容区滑动手势其实触发了（m-drawer-open 类都翻转了），
+     抽屉却渲染不出来，看起来就是「滑不动」。移动端恢复两侧渲染：右滑开左
+     抽屉、左滑开右抽屉，全屏盖在收件箱上；点文件 openNote 自带关收件箱
+     （0.20 语义已在）。只恢复左边会造出另一种暗坑：左滑开右抽屉时类翻转
+     了、面板不可见，m-drawer-open 还会把药丸永久藏掉 */
+  .app.inbox-open .sidebar-left,
+  .app.inbox-open .sidebar-right {
+    display: flex;
+  }
+
+  /* ② 「内容行只占左边那么点，功能归纳到 ⋯」：行尾操作区常驻占位
+     （opacity:0 也吃掉 ~150px 行宽），手机上没有 hover 白白留白——编辑/
+     标签/归档收进 ⋯ 菜单（CaptureManager 按 isMobile 增补菜单项），行尾
+     只留常显 ⋯（对齐文件树行）；行内加标签输入框出现时工具区临时显形，
+     否则菜单关掉后输入框 opacity:0 看不见 */
+  .app.inbox-open .cm-row-tool .cm-row-quick {
+    display: none;
+  }
+  .app.inbox-open .cm-row-more {
+    opacity: 1;
+  }
+  .app.inbox-open .cm-row-tool:has(.cm-row-tag-input) {
+    opacity: 1;
   }
 }

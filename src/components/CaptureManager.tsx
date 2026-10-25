@@ -31,6 +31,7 @@ import {
 } from "../lib/capture";
 import { IMAGE_EXT } from "../lib/paths";
 import { openLightbox } from "../lib/lightbox";
+import { isMobile } from "../lib/platform";
 import { normalizeTagName } from "../lib/tags";
 import { IconCalendar, IconFilter, IconFolder, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
 
@@ -1981,6 +1982,64 @@ export default function CaptureManager({
                       </button>
                       {rowMenu === key && (
                         <div className="cm-pop cm-pop-right">
+                          {/* 0.34.1 用户反馈「功能可以归纳到 ⋯ 中」：移动端行尾
+                              只留常显 ⋯（CSS 藏快捷钮、省出 ~150px 行宽），编辑/
+                              添加标签/归档收进本菜单；桌面保留 hover 快捷钮不动 */}
+                          {isMobile() && (
+                            <>
+                              <button
+                                type="button"
+                                className="cm-pop-item"
+                                onClick={() => {
+                                  setRowMenu(null);
+                                  editCancelRef.current = false;
+                                  setEditDraft(entry.text);
+                                  setEditKey(key);
+                                }}
+                              >
+                                编辑
+                              </button>
+                              <button
+                                type="button"
+                                className="cm-pop-item"
+                                disabled={busy}
+                                onClick={() => {
+                                  setRowMenu(null);
+                                  setTagEditKey(key);
+                                }}
+                              >
+                                添加标签
+                              </button>
+                              {entry.archived ? (
+                                <button
+                                  type="button"
+                                  className="cm-pop-item"
+                                  disabled={busy}
+                                  title="撤销归档（去掉 ^archived 标记）"
+                                  onClick={() => {
+                                    setRowMenu(null);
+                                    void unarchiveEntries([entry]);
+                                  }}
+                                >
+                                  撤销归档
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="cm-pop-item"
+                                  disabled={busy || !targetVault || !targetNote}
+                                  title={targetNote ? `归档到 ${targetNote}` : "先在批量栏选归档目标"}
+                                  onClick={() => {
+                                    setRowMenu(null);
+                                    void archiveEntries([entry]);
+                                  }}
+                                >
+                                  归档
+                                </button>
+                              )}
+                              <div className="cm-pop-sep" />
+                            </>
+                          )}
                           <button
                             type="button"
                             className="cm-pop-item"

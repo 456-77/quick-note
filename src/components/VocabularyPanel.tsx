@@ -894,15 +894,17 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
           </div>
           <button
             type="button"
-            className="vocab-btn"
+            className="vocab-btn vocab-btn-primary"
             onClick={() => {
-              // 收录 = 展开添加区并带入搜索词，直接走在线查询预览
+              // 收录 = 展开添加区并带入搜索词，直接走在线查询预览。
+              // 0.34.1 用户反馈「未搜到可以提示添加单词」：该入口其实早已存在，
+              // 但幽灵按钮样式太低调被当成没有——提级为主按钮并加引导文案
               setAddOpen(true);
               setDraft(query.trim());
               void runLookup(query);
             }}
           >
-            收录「{query.trim()}」并查询释义
+            没有找到？收录「{query.trim()}」并查询释义
           </button>
         </div>
       ) : visible.length === 0 ? (

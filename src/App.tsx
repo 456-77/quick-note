@@ -1043,11 +1043,12 @@ export default function App() {
     };
   }, []);
 
-  // 0.34.0 边缘滑动手势：左缘右滑开左抽屉、右缘左滑开右抽屉；0.34.1 用户反馈
-  // 补关闭方向——左抽屉**左滑关闭**、右抽屉**右滑关闭**（Obsidian 语义）。
-  // 纯观察监听（passive、不 preventDefault，完全不挡编辑器触摸）：横向位移占优
-  // 且 >60px 才触发；sheet/设置/主页等浮层盖着时不响应（防隔着浮层关抽屉）。
-  // 抽屉开关经 ref 读最新值，监听器只装一次。
+  // 0.34.1 内容区滑动手势（用户拍板：边缘留给系统返回，不做边缘带）：双抽屉
+  // 都关时，内容区**右滑开左抽屉、左滑开右抽屉**；有抽屉开着时保留 0.34.0 的
+  // 关闭语义——左抽屉左滑关、右抽屉右滑关。纯观察监听（passive、不
+  // preventDefault，完全不挡编辑器触摸）：横向位移占优且 >60px 才触发，
+  // 开抽屉另有时间门与三道防误触守卫（见 onStart）；sheet/设置/主页等浮层
+  // 盖着时不响应。抽屉开关经 ref 读最新值，监听器只装一次。
   const leftCollapsedRef = useRef(leftCollapsed);
   const rightCollapsedRef = useRef(rightCollapsed);
   useEffect(() => {
@@ -1060,10 +1061,12 @@ export default function App() {
     if (!isMobile()) return;
     let sx = 0;
     let sy = 0;
-    let intent: "open-left" | "open-right" | "close-left" | "close-right" | null = null;
+    let st = 0;
+    let intent: "open-content" | "close-left" | "close-right" | null = null;
     const onStart = (e: TouchEvent) => {
       const t = e.touches[0];
       intent = null;
+      st = e.timeStamp;
       // 浮层（sheet/设置/面板/主页/速记/右键菜单）盖在抽屉上时，滑动属于浮层。
       // target 必须 instanceof Element：合成事件派发在 document 上时 target 是
       // Document，没有 closest 方法（批测的 TouchEvent 直接派发到 document）
@@ -1074,9 +1077,19 @@ export default function App() {
         return;
       }
       if (leftCollapsedRef.current && rightCollapsedRef.current) {
-        // 双抽屉都关：24px 边缘带内起手 = 开
-        if (t.clientX <= 24) intent = "open-left";
-        else if (t.clientX >= window.innerWidth - 24) intent = "open-right";
+        // 双抽屉都关：内容区横滑开抽屉（0.34.1 用户拍板：不是边缘带——边缘
+        // 留给系统返回手势）。右滑 = 开左抽屉、左滑 = 开右抽屉，方向在 onEnd
+        // 按位移正负定。三道守卫防误触（正文是编辑器，横滑可能是在操作文本）：
+        // ① 编辑态 / 键盘弹出时不响应——防和光标、选词操作打架；
+        // ② 起手点在交互元素（按钮/输入框/药丸/底条/工具栏）上不响应；
+        // ③ 编辑器已有文本选区时不响应——拖选择柄调选区是横向的长拖。
+        // 另外 onEnd 有时间门（<400ms）——长按选词本身就占 ~500ms，慢拖不算滑。
+        const editing =
+          document.body.classList.contains("m-editing") ||
+          document.documentElement.classList.contains("qn-ime-open");
+        const selecting = typeof window.getSelection === "function" && (window.getSelection()?.toString().length ?? 0) > 0;
+        const onInteractive = target instanceof Element && target.closest("button, input, textarea, select, a, label, .m-top-pills, .m-bottom-bar, .mobile-md-toolbar");
+        if (!editing && !selecting && !onInteractive) intent = "open-content";
       } else if (!leftCollapsedRef.current) {
         intent = "close-left"; // 左抽屉开着：任意位置左滑关
       } else {
@@ -1090,18 +1103,28 @@ export default function App() {
       const t = e.changedTouches[0];
       const dx = t.clientX - sx;
       const dy = t.clientY - sy;
+      const dt = e.timeStamp - st;
       const horizontal = Math.abs(dx) > Math.abs(dy) * 1.5 && Math.abs(dx) > 60;
-      if (intent === "open-left" && dx > 0 && horizontal) setLeftCollapsed(false);
-      if (intent === "open-right" && dx < 0 && horizontal) setRightCollapsed(false);
+      if (intent === "open-content" && horizontal && dt < 400) {
+        if (dx > 0) setLeftCollapsed(false);
+        else setRightCollapsed(false);
+      }
       if (intent === "close-left" && dx < 0 && horizontal) setLeftCollapsed(true);
       if (intent === "close-right" && dx > 0 && horizontal) setRightCollapsed(true);
       intent = null;
     };
+    const onCancel = () => {
+      intent = null;
+    };
     document.addEventListener("touchstart", onStart, { passive: true });
     document.addEventListener("touchend", onEnd, { passive: true });
+    // 0.34.1：系统手势接管时 WebView 收到 touchcancel（touchend 不来）——
+    // 清掉意图，避免残留到下一次触摸误触发
+    document.addEventListener("touchcancel", onCancel, { passive: true });
     return () => {
       document.removeEventListener("touchstart", onStart);
       document.removeEventListener("touchend", onEnd);
+      document.removeEventListener("touchcancel", onCancel);
     };
   }, []);
 
@@ -3529,6 +3552,23 @@ export default function App() {
     setRenaming(null);
     setDraft("");
   }, []);
+
+  // 0.34.1 用户反馈「新建笔记/日记/文件时输入框会一直存在，需要手动关闭」：
+  // 移动端输入行打开期间，点击输入行以外的任何元素（文件行/分区卡/按钮/遮罩）
+  // 自动取消——捕获阶段监听，同一击的 click 照常执行（点文件行 = 关输入 + 开
+  // 笔记一次完成）。桌面保持原样：Esc / ✕ 手动关。
+  useEffect(() => {
+    if (!isMobile()) return;
+    const inputting = creating !== null || (renaming !== null && renameOwner === "tree");
+    if (!inputting) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest(".create-row")) return;
+      if (renaming !== null) cancelRename();
+      else cancelCreate();
+    };
+    document.addEventListener("pointerdown", onPointerDown, true);
+    return () => document.removeEventListener("pointerdown", onPointerDown, true);
+  }, [creating, renaming, renameOwner, cancelCreate, cancelRename]);
 
   const submitCreate = useCallback(async () => {
     if (!creating || !vault) return;
@@ -6796,7 +6836,7 @@ export default function App() {
           />
         )}
           <aside
-            className="sidebar sidebar-left"
+            className={`sidebar sidebar-left${creating || (renaming && renameOwner === "tree") ? " m-inputting" : ""}`}
             ref={sidebarLeftRef}
             onClick={(event) => {
               // 移动端：点中笔记/目录行后自动收抽屉（事件委托，不逐行改回调）

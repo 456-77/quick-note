@@ -630,7 +630,9 @@ export default function SettingsDialog({
     <div className={`settings-panel${mobileDetail ? " is-detail" : ""}`} role="dialog" aria-label="设置">
       <div className="settings-nav">
         <div className="settings-nav-head">
-          <span className="settings-nav-title">设置{searching ? "" : ` / ${SECTIONS.find((s) => s.id === active)?.label ?? ""}`}</span>
+          {/* 0.34.1 用户反馈：一级标题去掉「/xx」后缀——分类名由下面的导航列表
+              呈现，一级页头只保留「设置」（桌面与移动端同步生效） */}
+          <span className="settings-nav-title">设置</span>
           {savedFlash && <span className="settings-saved">已保存</span>}
           {/* 0.33.0 停点3：关闭入口也用 ‹（移动端习惯），不用 × */}
           <button
