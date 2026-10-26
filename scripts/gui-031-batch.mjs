@@ -448,6 +448,27 @@ try {
       // cm-tooltip-hover 外层）
       const wide = await evaluate(ws, `(() => { const t = document.querySelector('.qn-ddl-tip'); return t ? Math.round(t.getBoundingClientRect().width) : 0; })()`);
       check(wide > 500, `悬浮卡大面板宽度（0.34.4，实际 ${wide}px）`, String(wide));
+      // 0.34.5 关键字高亮：着色层垫底（qn-sql-kw 关键字 token）
+      const hlOk = await evaluate(ws, `!!document.querySelector('.qn-ddl-tip .qn-ddl-tip-hl .qn-sql-kw')`);
+      check(hlOk, "悬浮卡着色层有关键字高亮（0.34.5）");
+      // 0.34.5 编辑态锁：聚焦即脱管为 body 浮层 + 打编辑态标记
+      const focusInfo = await evaluate(ws, `(() => {
+        const tip = document.querySelector('.qn-ddl-tip');
+        const input = tip?.querySelector('.qn-ddl-tip-input');
+        input?.focus();
+        return { detached: tip?.classList.contains('qn-ddl-detached') ?? false, editing: tip?.classList.contains('qn-ddl-editing') ?? false, inBody: tip?.parentElement === document.body };
+      })()`);
+      check(focusInfo.detached && focusInfo.editing && focusInfo.inBody, "聚焦即脱管为编辑浮层并打编辑态标记（0.34.5）", JSON.stringify(focusInfo));
+      // 编辑态下滚动编辑器不收起
+      await evaluate(ws, `(() => { document.querySelector('.editor-host .cm-scroller')?.dispatchEvent(new Event('scroll')); return true; })()`);
+      await sleep(400);
+      const aliveOnScroll = await evaluate(ws, `!!document.querySelector('.qn-ddl-tip.qn-ddl-editing')`);
+      check(aliveOnScroll, "编辑态下滚动不收起（0.34.5）");
+      // 点弹窗外部收起
+      await evaluate(ws, `document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`);
+      await sleep(300);
+      const goneAfterOutside = await evaluate(ws, `!document.querySelector('.qn-ddl-tip')`);
+      check(goneAfterOutside, "编辑态点弹窗外部收起（0.34.5）");
     }
   }
 

@@ -11346,25 +11346,69 @@ button.cm-tag:hover {
   white-space: nowrap;
 }
 
-/* 悬浮卡直接可编辑（0.34.2）：textarea 常驻；0.34.4 起一大块、长行横向滚动 */
-.qn-ddl-tip-input {
-  display: block;
+/* 编辑态（0.34.5）：textarea 聚焦/组词中的弹窗——ddlHover 的隐藏通道见类即退避；
+   从 CM tooltip 脱管到 body 后追加 .qn-ddl-detached 补上容器外框（失去
+   cm-tooltip 的主题底） */
+.qn-ddl-tip.qn-ddl-detached {
+  position: fixed;
+  z-index: 80;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+
+/* 可编辑体部（0.34.5 关键字高亮）：着色 pre 垫底 + textarea 透明字叠在上层。
+   两层必须同字体/同行高/同 padding/同 pre 排版，滚动由 textarea 驱动同步 */
+.qn-ddl-tip-body {
+  position: relative;
   flex: 1 1 auto;
-  width: calc(100% - 24px);
-  margin: 10px 12px;
+  min-height: 0;
   height: 46vh;
   min-height: 200px;
   max-height: 62vh;
-  padding: 8px 10px;
+  margin: 10px 12px;
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: var(--surface);
-  color: var(--text);
+  overflow: hidden;
+}
+
+.qn-ddl-tip-hl,
+.qn-ddl-tip-input {
+  margin: 0;
+  border: 0;
+  padding: 8px 10px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.55;
+  tab-size: 4;
+  white-space: pre;
+}
+
+.qn-ddl-tip-hl {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  color: var(--text);
+  pointer-events: none;
+}
+
+.qn-ddl-tip-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  /* 字透明让底下的着色层透出来，光标与选区底保持可见 */
+  color: transparent;
+  caret-color: var(--text);
   resize: none;
   outline: none;
+}
+
+.qn-ddl-tip-input::selection {
+  background: var(--accent-soft);
 }
 
 /* 保存结果/错误提示在标题行表名右侧展示（0.34.4：动作行并入标题行） */

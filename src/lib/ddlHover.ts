@@ -146,9 +146,12 @@ export function installDdlCellHover(): () => void {
 
   const onOver = (event: MouseEvent) => {
     const target = event.target as Element | null;
+    const openTip = document.getElementById(CELL_TIP_ID);
+    // 0.34.5 编辑态锁：textarea 聚焦/组词中，hover 通道完全不参与——输入法
+    // 候选窗交互要移鼠标出弹窗，任何「移出即收」都会毁掉组词
+    if (openTip?.classList.contains("qn-ddl-editing")) return;
     // 0.34.4：弹窗大面板化后必然要移入内部编辑——移入弹窗内部不收起（与
     // mousedown 的放过同一逻辑），并取消宽限收起
-    const openTip = document.getElementById(CELL_TIP_ID);
     if (openTip && target && openTip.contains(target)) {
       cancelHideSoon();
       return;
@@ -182,6 +185,20 @@ export function installDdlCellHover(): () => void {
   };
 
   const onDocMouseDown = (event: MouseEvent) => {
+    // 0.34.5 编辑态锁：编辑中的弹窗（含从 CM tooltip 脱管的浮层）只有「点在
+    // 弹窗外」才关；组词中连点外都不关——候选窗交互可能落下页面 mousedown
+    const editingTip = document.querySelector(".qn-ddl-tip.qn-ddl-editing");
+    if (editingTip) {
+      const inside = event.target instanceof Node && editingTip.contains(event.target);
+      const composing =
+        editingTip.querySelector<HTMLTextAreaElement>(".qn-ddl-tip-input")?.dataset.composing ===
+        "1";
+      if (!inside && !composing) {
+        if (editingTip.id === CELL_TIP_ID) hide();
+        else editingTip.remove();
+      }
+      return;
+    }
     // 0.34.2：弹窗现在直接可编辑——点击弹窗内部（文本域/保存钮）不能把它
     // 藏掉，只有点在弹窗外才收起
     const tip = document.getElementById(CELL_TIP_ID);
@@ -190,11 +207,13 @@ export function installDdlCellHover(): () => void {
   };
 
   const onScroll = (event: Event) => {
-    // 0.34.4 用户反馈「想滑动弹窗内容」：捕获阶段的 scroll 对弹窗内部滚动
-    // 也会触发——目标在弹窗里就不收起，只认弹窗外的滚动
     const t = event.target;
     const openTip = document.getElementById(CELL_TIP_ID);
+    // 0.34.4 用户反馈「想滑动弹窗内容」：捕获阶段的 scroll 对弹窗内部滚动
+    // 也会触发——目标在弹窗里就不收起，只认弹窗外的滚动
     if (openTip && t instanceof Node && openTip.contains(t)) return;
+    // 0.34.5 编辑态锁：编辑中的弹窗（含脱管浮层）不因任何滚动收起
+    if (document.querySelector(".qn-ddl-tip.qn-ddl-editing")) return;
     hide();
   };
 

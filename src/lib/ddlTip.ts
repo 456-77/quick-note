@@ -60,12 +60,71 @@ export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptio
   });
   head.append(message, saveBtn);
 
+  // 0.34.5 用户反馈「ddl语句要支持关键字高亮」：textarea 本身着不了色，用
+  // 「着色层垫底 + textarea 透明字叠在上面」的双层结构——textarea 仍是唯一的
+  // 编辑面（输入法/撤销/选区全原生），底下的 pre 跟着值重铺 token、跟着滚动
+  const body = document.createElement("div");
+  body.className = "qn-ddl-tip-body";
+
+  const hl = document.createElement("pre");
+  hl.className = "qn-ddl-tip-hl";
+  renderSqlHighlighted(hl, ddl);
+
   const input = document.createElement("textarea");
   input.className = "qn-ddl-tip-input";
   input.value = ddl;
   input.spellcheck = false;
-  // 长行不折行（DataGrip 式横向滚动）——大面板下折行反而看不清列对位
+  // 长行不折行（DataGrip 式横向滚动）——着色层与 textarea 都按 pre 排版才能对齐
   input.wrap = "off";
+
+  const refreshHl = () => {
+    renderSqlHighlighted(hl, input.value);
+    syncScroll();
+  };
+  const syncScroll = () => {
+    hl.scrollTop = input.scrollTop;
+    hl.scrollLeft = input.scrollLeft;
+  };
+  input.addEventListener("input", refreshHl);
+  input.addEventListener("scroll", syncScroll);
+
+  // 0.34.5 用户反馈「中文输入法状态下进行输入时，弹窗就直接关闭了」：输入法
+  // 候选窗交互要移鼠标出弹窗/滚页面，任何「移出即收」的通道都会毁掉组词。
+  // 编辑态（聚焦或组词中）打标记在弹窗根上，ddlHover 的隐藏通道见标记即退避。
+  const syncEditing = () => {
+    dom.classList.toggle(
+      "qn-ddl-editing",
+      document.activeElement === input || input.dataset.composing === "1",
+    );
+  };
+  input.addEventListener("focus", () => {
+    // CM tooltip 生命周期（鼠标移出编辑器即收）会连输入一起销毁弹窗——
+    // 一进编辑就脱管成 body 固定浮层，CM 后续的收起只作用于空壳。
+    // 注意：Chromium 把「已聚焦节点 reparent」当失焦处理（blur 掉再不回来），
+    // 所以脱管后必须把焦点重打回去；重入本监听时 detached 已置位
+    if (!dom.dataset.detached && dom.parentElement && dom.parentElement !== document.body) {
+      const rect = dom.getBoundingClientRect();
+      dom.dataset.detached = "1";
+      dom.classList.add("qn-ddl-detached");
+      dom.style.left = `${Math.round(rect.left)}px`;
+      dom.style.top = `${Math.round(rect.top)}px`;
+      dom.style.width = `${Math.round(rect.width)}px`;
+      document.body.appendChild(dom);
+      input.focus();
+      return;
+    }
+    syncEditing();
+  });
+  input.addEventListener("blur", syncEditing);
+  input.addEventListener("compositionstart", () => {
+    input.dataset.composing = "1";
+    syncEditing();
+  });
+  input.addEventListener("compositionend", () => {
+    input.dataset.composing = "0";
+    syncEditing();
+  });
+
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
@@ -96,6 +155,7 @@ export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptio
       message.className = "qn-ddl-tip-message";
       message.textContent = ok;
       input.value = statement;
+      refreshHl();
     } catch (e) {
       message.className = "qn-ddl-tip-message is-error";
       message.textContent = e instanceof Error ? e.message : String(e);
@@ -105,7 +165,8 @@ export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptio
     }
   };
 
-  dom.append(head, input);
+  body.append(hl, input);
+  dom.append(head, body);
   return dom;
 }
 
@@ -118,8 +179,10 @@ const CLS: Record<string, string> = {
   cmt: "qn-sql-cmt",
 };
 
-/** 按位置穿插普通文本节点铺满整段 SQL（不拼 HTML 字符串，全 textContent）。 */
+/** 按位置穿插普通文本节点铺满整段 SQL（不拼 HTML 字符串，全 textContent）。
+    先清空目标——着色层随每次输入全量重铺（DDL 数 KB，开销可忽略）。 */
 function renderSqlHighlighted(target: HTMLElement, sql: string): void {
+  target.textContent = "";
   let cursor = 0;
   for (const token of tokenizeSql(sql)) {
     if (token.from > cursor) {

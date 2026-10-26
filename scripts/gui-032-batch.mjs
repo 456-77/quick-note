@@ -313,6 +313,32 @@ try {
         check(stayOnScroll && stillUp2, "弹窗内部滚动不收起（0.34.4）", `scroll=${stayOnScroll} still=${stillUp2}`);
         const wide = await evaluate(ws, `(() => { const t = document.querySelector('#qn-ddl-cell-tip'); return t ? Math.round(t.getBoundingClientRect().width) : 0; })()`);
         check(wide > 500, `弹窗大面板宽度（0.34.4，实际 ${wide}px）`, String(wide));
+        // 0.34.5 关键字高亮 + 编辑态锁：聚焦打标记；组词中滚动编辑器不收起
+        const hlOk = await evaluate(ws, `!!document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-hl .qn-sql-kw')`);
+        check(hlOk, "单元格弹窗着色层有关键字高亮（0.34.5）");
+        const editState = await evaluate(ws, `(() => {
+          const tip = document.querySelector('#qn-ddl-cell-tip');
+          const input = tip?.querySelector('.qn-ddl-tip-input');
+          input?.focus();
+          return { editing: tip?.classList.contains('qn-ddl-editing') ?? false, detached: tip?.classList.contains('qn-ddl-detached') ?? false };
+        })()`);
+        check(editState.editing && !editState.detached, "单元格弹窗聚焦打编辑态标记（0.34.5，本挂 body 无需脱管）", JSON.stringify(editState));
+        await evaluate(ws, `(() => {
+          const input = document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-input');
+          input?.dispatchEvent(new CompositionEvent('compositionstart'));
+          document.querySelector('.editor-host .cm-scroller')?.dispatchEvent(new Event('scroll'));
+          return true;
+        })()`);
+        await sleep(400);
+        const aliveDuringCompose = await evaluate(ws, `!!document.querySelector('#qn-ddl-cell-tip.qn-ddl-editing')`);
+        check(aliveDuringCompose, "组词中滚动编辑器不收起（0.34.5）");
+        await evaluate(ws, `(() => {
+          const input = document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-input');
+          input?.dispatchEvent(new CompositionEvent('compositionend'));
+          input?.blur();
+          return true;
+        })()`);
+        await sleep(250);
         // 移开（合成 mouseover 到页面空白处）→ 宽限 200ms 后弹窗收起
         await evaluate(ws, `document.body.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`);
         await sleep(700);

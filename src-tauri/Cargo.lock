@@ -3044,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "quick-note"
-version = "0.34.4"
+version = "0.34.5"
 dependencies = [
  "base64 0.22.1",
  "notify",
