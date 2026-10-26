@@ -39,9 +39,10 @@ writeFileSync(join(vault, "mem-mermaid大笔记.md"), `# mermaid 压测\n\n${dia
 const bigRows = Array.from({ length: 300 }, (_, r) => `| 行${r} | 值${r}-甲 | 值${r}-乙 | ${r * 2} |`).join("\n");
 writeFileSync(join(vault, "mem-大文本.md"), `# 大文本\n\n${"| 列一 | 列二 | 列三 | 列四 |\n| --- | --- | --- | --- |\n"}${bigRows}\n\n${"长段落。".repeat(4000)}`, "utf8");
 
-// xlsx 用项目自带的 SheetJS 生成：临时 .cjs 脚本放项目里跑（依赖从项目 node_modules 解析）
+// xlsx 用项目自带的 SheetJS 生成：临时 .cjs 脚本写进本次的临时工作目录跑
+// （依赖从项目 node_modules 解析；此前写进 scripts/ 没清理，污染工作区）
 const xlsxPath = join(vault, "mem-表格.xlsx");
-const genCjs = join(process.cwd(), "scripts", "_mem-gen-xlsx.cjs");
+const genCjs = join(work, "mem-gen-xlsx.cjs");
 writeFileSync(
   genCjs,
   [
@@ -148,13 +149,15 @@ try {
   await sleep(3000);
   row("B mermaid 笔记（30 图）", measure(pid));
 
-  for (let cycle = 1; cycle <= 5; cycle += 1) {
+  for (let cycle = 1; cycle <= 8; cycle += 1) {
     await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('mem-表格.xlsx')); t?.click(); return !!t; })()`);
     await sleep(2500);
     await evaluate(ws, `(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); return true; })()`);
-    await sleep(800);
+    await sleep(2500);
     row(`C${cycle} xlsx 开→关`, measure(pid));
   }
+  await sleep(30000);
+  row("C9 xlsx 循环后静置 30s", measure(pid));
 
   await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('mem-大文本')); t?.click(); return !!t; })()`);
   await sleep(2000);

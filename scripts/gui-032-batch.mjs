@@ -291,9 +291,31 @@ try {
         check(!body.includes("ids_qn32_other"), "残段不吞下一张表（0.32 硬边界）", body.slice(-40));
         const editable = await evaluate(ws, `(() => { const t = document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-input'); return !!t && !t.disabled && !!document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-save'); })()`);
         check(editable, "悬浮卡直接可编辑且有保存钮（0.34.2）");
-        // 移开（合成 mouseover 到页面空白处）→ 弹窗收起
+        // 0.34.4 大面板：移入弹窗内部（mouseover 目标=弹窗根）不收起——
+        // 200ms 宽限后仍在，证明没有走延迟收起
+        const stayOnEnter = await evaluate(ws, `(() => {
+          const tip = document.querySelector('#qn-ddl-cell-tip');
+          if (!tip) return false;
+          tip.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          return !!document.querySelector('#qn-ddl-cell-tip');
+        })()`);
+        await sleep(350);
+        const stillUp = await evaluate(ws, `!!document.querySelector('#qn-ddl-cell-tip')`);
+        check(stayOnEnter && stillUp, "移入弹窗内部不收起（0.34.4 宽限）", `enter=${stayOnEnter} still=${stillUp}`);
+        // 0.34.4：滚动弹窗内容（scroll 目标=textarea，捕获监听）不收起
+        const stayOnScroll = await evaluate(ws, `(() => {
+          const input = document.querySelector('#qn-ddl-cell-tip .qn-ddl-tip-input');
+          if (!input) return false;
+          input.dispatchEvent(new Event('scroll'));
+          return !!document.querySelector('#qn-ddl-cell-tip');
+        })()`);
+        const stillUp2 = await evaluate(ws, `!!document.querySelector('#qn-ddl-cell-tip')`);
+        check(stayOnScroll && stillUp2, "弹窗内部滚动不收起（0.34.4）", `scroll=${stayOnScroll} still=${stillUp2}`);
+        const wide = await evaluate(ws, `(() => { const t = document.querySelector('#qn-ddl-cell-tip'); return t ? Math.round(t.getBoundingClientRect().width) : 0; })()`);
+        check(wide > 500, `弹窗大面板宽度（0.34.4，实际 ${wide}px）`, String(wide));
+        // 移开（合成 mouseover 到页面空白处）→ 宽限 200ms 后弹窗收起
         await evaluate(ws, `document.body.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`);
-        await sleep(300);
+        await sleep(700);
         const tipGone = await evaluate(ws, `!document.querySelector('#qn-ddl-cell-tip')`);
         check(tipGone, "移开单元格后弹窗收起");
       }

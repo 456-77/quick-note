@@ -10,6 +10,12 @@
  * - 「当前点击编辑按钮后，弹窗就消失了」→ 直接可编辑设计下没有编辑钮了；
  *   单元格悬浮的 document 级 mousedown 隐藏逻辑也要放过弹窗内部的点击
  *   （见 ddlHover.ts）。
+ *
+ * 0.34.4 用户反馈「现在这个数据表的ddl弹窗现在很小，将弹窗改成第二张图片的
+ * 样子，只是将编辑按钮改成保存」：0.34.2 起体部换成 textarea 后失去了着色
+ * pre 的撑宽能力（textarea 固有宽度只有默认 20 列），整卡缩成 ~200px 小窗。
+ * 改成 DataGrip 式宽面板——标题行 = 表名 + 保存钮（原「编辑」的右上位置），
+ * 体部一大块可编辑文本域（长行横向滚动不折行）；无 onSave 时仍是着色只读体。
  */
 
 import { parseDdlTables, tokenizeSql } from "./ddl.ts";
@@ -19,7 +25,7 @@ export interface DdlTipOptions {
   onSave?: (table: string, ddl: string) => Promise<string>;
 }
 
-/** 悬浮弹窗 DOM：标题行 +（有 onSave 时）可编辑文本域 + 动作行，否则着色只读体。 */
+/** 悬浮弹窗 DOM：标题行（表名 + [消息 + 保存钮]）+ 可编辑文本域，否则着色只读体。 */
 export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptions): HTMLElement {
   const dom = document.createElement("div");
   dom.className = "qn-ddl-tip";
@@ -27,22 +33,39 @@ export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptio
 
   const head = document.createElement("div");
   head.className = "qn-ddl-tip-head";
-  head.textContent = `Table: ${table}`;
-  dom.appendChild(head);
+  const title = document.createElement("span");
+  title.className = "qn-ddl-tip-title";
+  title.textContent = `Table: ${table}`;
+  head.appendChild(title);
 
   if (!onSave) {
     const pre = document.createElement("pre");
     pre.className = "qn-ddl-tip-pre";
     renderSqlHighlighted(pre, ddl);
-    dom.appendChild(pre);
+    dom.append(head, pre);
     return dom;
   }
+
+  const message = document.createElement("span");
+  message.className = "qn-ddl-tip-message";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "qn-ddl-tip-save";
+  saveBtn.textContent = "保存";
+  saveBtn.addEventListener("mousedown", (event) => event.stopPropagation());
+  saveBtn.addEventListener("click", (event) => {
+    event.stopPropagation();
+    void submit();
+  });
+  head.append(message, saveBtn);
 
   const input = document.createElement("textarea");
   input.className = "qn-ddl-tip-input";
   input.value = ddl;
   input.spellcheck = false;
-  input.rows = Math.min(16, Math.max(4, ddl.split("\n").length));
+  // 长行不折行（DataGrip 式横向滚动）——大面板下折行反而看不清列对位
+  input.wrap = "off";
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
       event.preventDefault();
@@ -57,23 +80,6 @@ export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptio
   });
   // 别让点击冒泡到编辑器/document 层的隐藏逻辑（单元格悬浮的 mousedown 捕获）
   input.addEventListener("mousedown", (event) => event.stopPropagation());
-
-  const message = document.createElement("span");
-  message.className = "qn-ddl-tip-message";
-
-  const saveBtn = document.createElement("button");
-  saveBtn.type = "button";
-  saveBtn.className = "qn-ddl-tip-save";
-  saveBtn.textContent = "保存";
-  saveBtn.addEventListener("mousedown", (event) => event.stopPropagation());
-  saveBtn.addEventListener("click", (event) => {
-    event.stopPropagation();
-    void submit();
-  });
-
-  const actions = document.createElement("div");
-  actions.className = "qn-ddl-tip-actions";
-  actions.append(message, saveBtn);
 
   const submit = async () => {
     // 与收录弹窗同一套校验：改完的文本里必须还能认出这张表的 CREATE TABLE
@@ -99,7 +105,7 @@ export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptio
     }
   };
 
-  dom.append(input, actions);
+  dom.append(head, input);
   return dom;
 }
 

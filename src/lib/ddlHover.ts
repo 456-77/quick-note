@@ -78,6 +78,11 @@ export function ddlHover(): Extension {
 
 const CELL_TIP_ID = "qn-ddl-cell-tip";
 const CELL_HOVER_MS = 350;
+// 0.34.4 用户反馈「移动光标到ddl弹窗时，一旦脱离表名，弹窗就消失了」：弹窗
+// 与单元格之间隔着 6px 定位空隙，光标横穿空隙的瞬间既不在弹窗里也不在单元格
+// 上，按旧逻辑立即收起，永远到不了弹窗。mouseover 驱动的收起走 200ms 宽限，
+// 光标落回弹窗/单元格就取消；滚动与点外面仍然即时收起
+const LEAVE_GRACE_MS = 200;
 
 /**
  * 表格单元格的 DDL 悬浮（0.32）：document 层 mouseover 委托，只认 Live Preview
@@ -89,13 +94,33 @@ export function installDdlCellHover(): () => void {
   if (typeof document === "undefined") return () => {};
 
   let timer: number | null = null;
+  let hideTimer: number | null = null;
 
   const hide = () => {
     if (timer !== null) {
       window.clearTimeout(timer);
       timer = null;
     }
+    if (hideTimer !== null) {
+      window.clearTimeout(hideTimer);
+      hideTimer = null;
+    }
     document.getElementById(CELL_TIP_ID)?.remove();
+  };
+
+  const cancelHideSoon = () => {
+    if (hideTimer !== null) {
+      window.clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+  };
+
+  const hideSoon = () => {
+    if (hideTimer !== null) return;
+    hideTimer = window.setTimeout(() => {
+      hideTimer = null;
+      hide();
+    }, LEAVE_GRACE_MS);
   };
 
   const show = (cell: HTMLElement, word: string, ddl: string) => {
@@ -121,15 +146,25 @@ export function installDdlCellHover(): () => void {
 
   const onOver = (event: MouseEvent) => {
     const target = event.target as Element | null;
+    // 0.34.4：弹窗大面板化后必然要移入内部编辑——移入弹窗内部不收起（与
+    // mousedown 的放过同一逻辑），并取消宽限收起
+    const openTip = document.getElementById(CELL_TIP_ID);
+    if (openTip && target && openTip.contains(target)) {
+      cancelHideSoon();
+      return;
+    }
     const cell = target?.closest?.("td, th") as HTMLElement | null;
     if (!cell || !cell.closest(".cm-lp-tablewrap")) {
-      hide();
+      // 宽限收起而非立即收起：给光标横穿 6px 定位空隙的时间
+      if (openTip) hideSoon();
       return;
     }
     if (!getSettings().ddlHover) {
-      hide();
+      if (openTip) hideSoon();
       return;
     }
+    // 落回单元格：取消宽限收起
+    cancelHideSoon();
     // 已在展示该单元格的弹窗：别重置计时闪掉
     const current = document.getElementById(CELL_TIP_ID);
     if (current && cell.contains(target)) return;
@@ -154,13 +189,22 @@ export function installDdlCellHover(): () => void {
     hide();
   };
 
+  const onScroll = (event: Event) => {
+    // 0.34.4 用户反馈「想滑动弹窗内容」：捕获阶段的 scroll 对弹窗内部滚动
+    // 也会触发——目标在弹窗里就不收起，只认弹窗外的滚动
+    const t = event.target;
+    const openTip = document.getElementById(CELL_TIP_ID);
+    if (openTip && t instanceof Node && openTip.contains(t)) return;
+    hide();
+  };
+
   document.addEventListener("mouseover", onOver, true);
-  window.addEventListener("scroll", hide, true);
+  window.addEventListener("scroll", onScroll, true);
   window.addEventListener("mousedown", onDocMouseDown, true);
   return () => {
     hide();
     document.removeEventListener("mouseover", onOver, true);
-    window.removeEventListener("scroll", hide, true);
+    window.removeEventListener("scroll", onScroll, true);
     window.removeEventListener("mousedown", onDocMouseDown, true);
   };
 }

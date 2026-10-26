@@ -11297,59 +11297,87 @@ button.cm-tag:hover {
 
 /* ------------------------------------------------ 表名悬浮预览（0.31） */
 
-/* 悬浮卡：标题行 + DDL 代码体。cm-tooltip 自带边框/阴影/定位，这里只管内容 */
-.editor-host .cm-tooltip.qn-ddl-tip {
-  max-width: min(620px, 72vw);
-  padding: 0;
+/* 悬浮卡容器（0.34.4 用户反馈「ddl弹窗很小，改成图二的样子」）：DataGrip 式
+   宽面板。0.34.2 起体部是 textarea（固有宽度仅默认 20 列），容器收缩适应，
+   整卡缩成 ~200px 小窗——这里给显式宽度。
+   两条挂载路径共用这条容器规则：
+   - 编辑器正文路径：根节点被 CM 追加 cm-tooltip-section，是外层
+     .cm-tooltip.cm-tooltip-hover 的唯一子节点——外层收缩适应包裹这里的宽度，
+     定位/压高都在外层做（所以旧写法 .cm-tooltip.qn-ddl-tip 同类名选择器
+     从未命中过，宽度一直由内容决定）；
+   - 表格单元格路径：根节点直接挂 body（追加强调类 .qn-ddl-cell-tip）。
+   flex 列布局：体部在被压高时靠 flex 收缩出内部滚动 */
+.qn-ddl-tip {
+  width: min(960px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
 }
 
+/* 编辑器路径：CM 把可用高度直接写在外层 dom 上，根节点百分比跟随；
+   外层裁掉圆角溢出（ CM 基础主题不给 overflow） */
+.editor-host .cm-tooltip.cm-tooltip-hover {
+  overflow: hidden;
+}
+
+.editor-host .cm-tooltip > .qn-ddl-tip {
+  height: 100%;
+}
+
 .qn-ddl-tip-head {
-  padding: 5px 10px;
-  font-size: 11.5px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
   font-weight: 650;
   color: var(--accent);
   background: var(--surface-2);
   border-bottom: 1px solid var(--border-soft);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: none;
 }
 
-/* 悬浮卡直接可编辑（0.34.2）：textarea 常驻，不再有「编辑」钮与取消钮 */
+.qn-ddl-tip-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 悬浮卡直接可编辑（0.34.2）：textarea 常驻；0.34.4 起一大块、长行横向滚动 */
 .qn-ddl-tip-input {
   display: block;
-  width: calc(100% - 20px);
-  margin: 8px 10px 0;
-  min-height: 120px;
-  max-height: 300px;
-  padding: 6px 8px;
+  flex: 1 1 auto;
+  width: calc(100% - 24px);
+  margin: 10px 12px;
+  height: 46vh;
+  min-height: 200px;
+  max-height: 62vh;
+  padding: 8px 10px;
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: var(--surface);
   color: var(--text);
   font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  resize: vertical;
+  font-size: 12px;
+  line-height: 1.55;
+  resize: none;
   outline: none;
 }
 
-.qn-ddl-tip-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px 8px;
-}
-
+/* 保存结果/错误提示在标题行表名右侧展示（0.34.4：动作行并入标题行） */
 .qn-ddl-tip-message {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   font-size: 11px;
+  font-weight: 400;
   color: var(--text-faint);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-align: right;
 }
 
 .qn-ddl-tip-message.is-error {
@@ -11358,13 +11386,13 @@ button.cm-tag:hover {
 
 .qn-ddl-tip-save {
   flex: none;
-  padding: 2px 10px;
+  padding: 2px 12px;
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: transparent;
   color: var(--accent);
   font: inherit;
-  font-size: 11.5px;
+  font-size: 12px;
   cursor: pointer;
 }
 
@@ -11384,12 +11412,14 @@ button.cm-tag:hover {
 
 .qn-ddl-tip-pre {
   margin: 0;
-  padding: 8px 10px;
-  max-height: 300px;
+  padding: 8px 12px;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 62vh;
   overflow: auto;
   font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
   color: var(--text);
   white-space: pre;
 }
@@ -11418,16 +11448,17 @@ button.cm-tag:hover {
 }
 
 /* 表格单元格上浮出的 DDL 弹窗（0.32）：CM 的 hoverTooltip 管不到 widget 内部，
-   这一份由 document 层定位，容器样式对齐 cm-tooltip 的观感 */
+   这一份由 document 层定位，容器样式对齐 cm-tooltip 的观感。宽度/弹性布局在
+   共用的 .qn-ddl-tip 上（0.34.4），这里只管定位与外框；高度封顶视口，
+   show() 的越界夹取按实测盒宽换算 */
 .qn-ddl-cell-tip {
   position: fixed;
   z-index: 80;
-  max-width: min(620px, 72vw);
+  max-height: calc(100vh - 16px);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
   box-shadow: var(--shadow-2);
-  overflow: hidden;
   animation: fade-in 0.12s ease;
 }
 
@@ -11512,8 +11543,12 @@ button.cm-tag:hover {
   background: var(--accent-soft);
 }
 
+/* 0.34.4 用户反馈「启用分屏后不显示背景图片」：qn-bg-on 时 .editor-pane 自身
+   已垫一层半透明 surface，右栏列再叠一层就把两层浓度乘起来（80%×80%≈96%
+   不透明），背景图被盖死（左栏没有自己的底所以正常）。右栏改透明，与左栏
+   一样只吃父层那层 veil */
 html.qn-bg-on .editor-pane-col.is-split {
-  background: color-mix(in srgb, var(--surface) var(--qn-veil-editor, 80%), transparent);
+  background: transparent;
 }
 
 /* 右栏自己的标签栏：复用 .tabbar 的全部排版，只补一条底边线（与左栏隔开） */

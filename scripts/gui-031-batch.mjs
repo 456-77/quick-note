@@ -443,6 +443,11 @@ try {
       check(tip && head.includes("ids_qn31_tab"), "悬停表名浮出建表语句卡（Table: 标题）", head);
       check(body.includes("CREATE TABLE") && body.includes("批测表"), "悬浮卡内容为完整 DDL", body.slice(0, 60));
       check(editable, "悬浮卡直接可编辑且有保存钮（0.34.2）");
+      // 0.34.4 大面板：0.34.2 起 textarea 固有宽度只有 ~20 列，容器收缩适应
+      // 缩成 ~200px 小窗；显式宽度后这里量的是根节点（CM 会把它包进
+      // cm-tooltip-hover 外层）
+      const wide = await evaluate(ws, `(() => { const t = document.querySelector('.qn-ddl-tip'); return t ? Math.round(t.getBoundingClientRect().width) : 0; })()`);
+      check(wide > 500, `悬浮卡大面板宽度（0.34.4，实际 ${wide}px）`, String(wide));
     }
   }
 
