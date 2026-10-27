@@ -10589,6 +10589,14 @@ button.cm-tag:hover {
   background: var(--hover);
 }
 
+/* 0.34.6「不认识」作答后的停留态：弱化标记 + 下一个主按钮 */
+.vocab-review-mark {
+  flex: 1;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
 .vocab-review-done {
   display: flex;
   flex-direction: column;
@@ -12314,6 +12322,16 @@ html.qn-bg-on .editor-pane-col.is-split {
   body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-foot {
     display: none;
   }
+
+  /* 0.34.6 用户反馈「背景预览照用 PC 端逻辑，没自适应手机尺寸」：PC 预览是
+     120px 横向条，手机上竖版壁纸被塞成中间一条，与真实观感（竖屏铺满）完全
+     对不上。移动端改竖屏比例预览（9:16 近似手机屏，高度封顶防占满设置页） */
+  .bg-preview {
+    height: auto;
+    aspect-ratio: 9 / 16;
+    max-height: 44vh;
+    max-width: calc(44vh * 9 / 16);
+  }
 }
 
 /* 0.34.0 仓库主页品牌块（对齐 Obsidian 图5 页顶：logo + 名称 + 版本居中）。
@@ -12482,5 +12500,84 @@ html.qn-bg-on .editor-pane-col.is-split {
      (z75) 反过来会压住面板顶部——移动端把面板整体下移避开药丸带 */
   .qn-search {
     top: 64px;
+  }
+
+  /* 0.34.6 应用内目录浏览器（安卓 plugin-dialog 未实现目录选择的替代通道）：
+     底部弹层（与单词详情同款手势语义——点遮罩关），z 95 盖过设置(85) */
+  .mobile-dir-picker {
+    position: fixed;
+    inset: 0;
+    z-index: 95;
+    display: flex;
+    align-items: flex-end;
+    background: rgba(8, 9, 14, 0.55);
+  }
+  .mobile-dir-sheet {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    max-height: 72vh;
+    padding: 14px 14px 22px;
+    border-radius: 16px 16px 0 0;
+    background: var(--panel);
+    box-shadow: var(--shadow-2);
+  }
+  .mobile-dir-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .mobile-dir-title {
+    font-size: 14.5px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .mobile-dir-path {
+    margin-top: 8px;
+    padding: 7px 10px;
+    border: 1px solid var(--border-soft);
+    border-radius: 9px;
+    background: var(--surface-2);
+    font-size: 11.5px;
+    color: var(--text-faint);
+    word-break: break-all;
+    max-height: 54px;
+    overflow: auto;
+  }
+  .mobile-dir-list {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    margin-top: 8px;
+  }
+  .mobile-dir-item {
+    display: block;
+    width: 100%;
+    padding: 11px 12px;
+    border: 0;
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text);
+    font-size: 13.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .mobile-dir-item:active {
+    background: var(--hover);
+  }
+  .mobile-dir-item.is-up {
+    color: var(--accent);
+  }
+  .mobile-dir-empty {
+    padding: 16px 12px;
+    font-size: 12.5px;
+    color: var(--text-faint);
+    text-align: center;
+  }
+  .mobile-dir-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    margin-top: 10px;
   }
 }

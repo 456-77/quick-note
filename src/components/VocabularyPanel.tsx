@@ -156,12 +156,15 @@ interface LookupState {
   manualOpen: boolean;
 }
 
-/** 快速复习的进行态（0.27 规范 §八：先英文 → 主动看释义 → 认识/不认识 → 进度）。 */
+/** 快速复习的进行态（0.27 规范 §八：先英文 → 主动看释义 → 认识/不认识 → 进度）。
+    answered：本卡是否已作答——「不认识」作答后翻出释义停留，等「下一个」再推进
+    （0.34.6 用户反馈：直接跳下一个等于没学）；认识仍直接推进。 */
 interface ReviewState {
   queue: VocabEntry[];
   index: number;
   revealed: boolean;
   knownCount: number;
+  answered: "known" | "unknown" | null;
 }
 
 const LOOKUP_IDLE: LookupState = { status: "idle", result: null, manualMeaning: "", manualOpen: false };
@@ -516,24 +519,37 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
       showToast("没有待学习的单词");
       return;
     }
-    setReview({ queue, index: 0, revealed: false, knownCount: 0 });
+    setReview({ queue, index: 0, revealed: false, knownCount: 0, answered: null });
   }, [entries, showToast]);
 
-  /** 复习作答：认识 → 落为已掌握；不认识 → 留在待学习。推进队列，到尾进完成态。 */
+  /** 复习作答：认识 → 落为已掌握并推进；不认识 → 翻出释义停留在本卡（0.34.6
+      用户反馈「点不认识直接跳下一个」——正是不认识的词才需要看释义），用户点
+      「下一个」才推进队列，到尾进完成态。 */
   const reviewAnswer = useCallback(
     (known: boolean) => {
       if (!review || review.index >= review.queue.length) return;
       const entry = review.queue[review.index];
-      if (known) void mutate((content) => setVocabLearned(content, entry.word, true).content);
-      setReview({
-        ...review,
-        index: review.index + 1,
-        revealed: false,
-        knownCount: review.knownCount + (known ? 1 : 0),
-      });
+      if (known) {
+        void mutate((content) => setVocabLearned(content, entry.word, true).content);
+        setReview({
+          ...review,
+          index: review.index + 1,
+          revealed: false,
+          answered: null,
+          knownCount: review.knownCount + 1,
+        });
+        return;
+      }
+      setReview({ ...review, answered: "unknown", revealed: true });
     },
     [review, mutate],
   );
+
+  /** 复习推进到下一张（「下一个」按钮）：清掉作答与翻面状态。 */
+  const reviewNext = useCallback(() => {
+    if (!review) return;
+    setReview({ ...review, index: review.index + 1, revealed: false, answered: null });
+  }, [review]);
 
   if (!vault) {
     return <div className="vocab-panel vocab-empty">打开仓库后可使用单词本。</div>;
@@ -979,6 +995,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
           review={review}
           onReveal={() => setReview((prev) => (prev ? { ...prev, revealed: true } : prev))}
           onAnswer={reviewAnswer}
+          onNext={reviewNext}
           onClose={() => setReview(null)}
           onRestart={startReview}
         />
@@ -1021,12 +1038,14 @@ function VocabReview({
   review,
   onReveal,
   onAnswer,
+  onNext,
   onClose,
   onRestart,
 }: {
   review: ReviewState;
   onReveal: () => void;
   onAnswer: (known: boolean) => void;
+  onNext: () => void;
   onClose: () => void;
   onRestart: () => void;
 }) {
@@ -1101,12 +1120,24 @@ function VocabReview({
               </button>
             )}
             <div className="vocab-detail-actions">
-              <button type="button" className="vocab-detail-act vocab-review-no" onClick={() => onAnswer(false)}>
-                不认识
-              </button>
-              <button type="button" className="vocab-detail-act vocab-detail-primary" onClick={() => onAnswer(true)}>
-                认识
-              </button>
+              {review.answered === "unknown" ? (
+                // 0.34.6 用户反馈：不认识 → 翻出释义停留，看完点「下一个」才推进
+                <>
+                  <span className="vocab-review-mark">已记为不认识 · 看完释义点下一个</span>
+                  <button type="button" className="vocab-detail-act vocab-detail-primary" onClick={onNext}>
+                    下一个
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="vocab-detail-act vocab-review-no" onClick={() => onAnswer(false)}>
+                    不认识
+                  </button>
+                  <button type="button" className="vocab-detail-act vocab-detail-primary" onClick={() => onAnswer(true)}>
+                    认识
+                  </button>
+                </>
+              )}
             </div>
           </>
         )}

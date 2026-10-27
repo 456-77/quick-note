@@ -231,6 +231,10 @@ export async function pickDirectory(title: string): Promise<string | null> {
   return typeof picked === "string" ? picked : null;
 }
 
+/** 列出任意绝对路径下的一级子目录（0.34.6：安卓上 plugin-dialog 没实现目录
+    选择——「选择目录」点了没反应，改用应用内目录浏览器，靠这条命令翻目录）。 */
+export const listSubdirs = (path: string) => invoke<string[]>("list_subdirs", { path });
+
 /** 命令行参数指定的仓库目录（没有则为 null）。 */
 export const startupVault = () => invoke<string | null>("startup_vault");
 

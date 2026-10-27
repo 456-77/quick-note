@@ -22,7 +22,7 @@ import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { bgFilterCss } from "../lib/background";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
-import { clearWebviewCache, pickDirectory, listVaults, webviewCacheStat, type AppDataPaths, type DirStat } from "../lib/api";
+import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, type AppDataPaths, type DirStat } from "../lib/api";
 import { bgSettingsFor, type BgSettings, type Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import type { SyncController } from "../lib/useSync";
@@ -453,6 +453,36 @@ export default function SettingsDialog({
   const [bgNotice, setBgNotice] = useState("");
   const bgNoticeTimer = useRef<number | null>(null);
   const bgPickTimer = useRef<number | null>(null);
+  /**
+   * 应用内目录浏览器（0.34.6 用户反馈「选择目录没有反应」）：安卓上
+   * tauri-plugin-dialog 根本没实现目录选择（Kotlin 侧 TODO），pickDirectory
+   * 点了静默返回。移动端换这里：Rust list_subdirs 逐级列出真实子目录，配合
+   * 「所有文件访问」直接选路径。target 记录确认后写哪个设置。
+   */
+  const [dirPicker, setDirPicker] = useState<{
+    current: string;
+    parent: string | null;
+    entries: string[];
+    error: string;
+    target: "wallpaper" | "export";
+  } | null>(null);
+  const openDirAt = useCallback(async (path: string, target: "wallpaper" | "export") => {
+    try {
+      const entries = await listSubdirs(path);
+      const clean = path.replace(/[\\/]+$/, "");
+      const parent = clean.includes("/") ? clean.slice(0, clean.lastIndexOf("/")) || null : null;
+      setDirPicker({ current: path, parent, entries, error: "", target });
+    } catch (e) {
+      // 根目录都不可读时也给出可用反馈：显示错误，列表空
+      setDirPicker((prev) => ({
+        current: path,
+        parent: prev?.parent ?? null,
+        entries: [],
+        error: e instanceof Error ? e.message : String(e),
+        target: prev?.target ?? target,
+      }));
+    }
+  }, []);
 
   /** applySettings 的包装：闪一次「已保存」。所有设置改动都走这里。 */
   const saveWithFlash: typeof applySettings = useCallback(
@@ -801,6 +831,12 @@ export default function SettingsDialog({
                 className="btn btn-mini"
                 title="在仓库里选一个目录作为导出目录（取所选目录名）"
                 onClick={async () => {
+                  // 0.34.6：安卓 plugin-dialog 没实现目录选择——手机走应用内
+                  // 目录浏览器（确认后取目录名，与桌面同语义）
+                  if (isMobile()) {
+                    void openDirAt("/storage/emulated/0", "export");
+                    return;
+                  }
                   const picked = await pickDirectory("选择导出目录");
                   if (picked) {
                     const folder = picked.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
@@ -1282,6 +1318,12 @@ export default function SettingsDialog({
                 className="btn"
                 disabled={!vault}
                 onClick={async () => {
+                  // 0.34.6 用户反馈「点击选择目录没有反应」：安卓 plugin-dialog
+                  // 未实现目录选择（Kotlin 侧 TODO）——手机走应用内目录浏览器
+                  if (isMobile()) {
+                    void openDirAt("/storage/emulated/0", "wallpaper");
+                    return;
+                  }
                   const picked = await pickDirectory("选择壁纸图片目录");
                   if (!picked) return;
                   // 换目录后清掉当前图：轮换立即从头选一张新目录里的图
@@ -1868,6 +1910,77 @@ export default function SettingsDialog({
           </p>
         </section>
       </div>
+
+      {/* 0.34.6 应用内目录浏览器（仅移动端入口会打开）：安卓 plugin-dialog 未
+          实现目录选择，这里用 list_subdirs 逐级翻真实目录，确认取当前路径 */}
+      {dirPicker && (
+        <div
+          className="mobile-dir-picker"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setDirPicker(null);
+          }}
+        >
+          <div className="mobile-dir-sheet" role="dialog" aria-label="选择文件夹">
+            <div className="mobile-dir-head">
+              <span className="mobile-dir-title">选择文件夹</span>
+              <button type="button" className="vocab-detail-close" title="关闭" onClick={() => setDirPicker(null)}>
+                ×
+              </button>
+            </div>
+            <div className="mobile-dir-path" title={dirPicker.current}>
+              {dirPicker.current}
+            </div>
+            <div className="mobile-dir-list">
+              {dirPicker.error && <div className="mobile-dir-empty">{dirPicker.error}</div>}
+              {!dirPicker.error && dirPicker.parent && (
+                <button
+                  type="button"
+                  className="mobile-dir-item is-up"
+                  onClick={() => void openDirAt(dirPicker.parent!, dirPicker.target)}
+                >
+                  ↩ 上一级
+                </button>
+              )}
+              {!dirPicker.error && dirPicker.entries.length === 0 && (
+                <div className="mobile-dir-empty">没有子文件夹（可直接选当前目录）</div>
+              )}
+              {dirPicker.entries.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  className="mobile-dir-item"
+                  onClick={() => void openDirAt(`${dirPicker.current.replace(/[\\/]+$/, "")}/${name}`, dirPicker.target)}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+            <div className="mobile-dir-actions">
+              <button type="button" className="btn" onClick={() => setDirPicker(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  const picked = dirPicker.current.replace(/[\\/]+$/, "");
+                  setDirPicker(null);
+                  if (dirPicker.target === "wallpaper") {
+                    // 换目录后清掉当前图：轮换立即从头选一张新目录里的图
+                    saveBg({ bgRotateDir: picked, bgImageAbsPath: "" });
+                  } else {
+                    saveWithFlash({
+                      exportFolder: picked.split(/[\\/]/).pop() ?? "",
+                    });
+                  }
+                }}
+              >
+                选这个目录
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

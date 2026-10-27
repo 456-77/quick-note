@@ -416,6 +416,7 @@ pub fn run() {
             vault_home::vault_home_set_from_path,
             vault_home::vault_home_clear,
             vault_home::list_vaults,
+            vault_home::list_subdirs,
             vault_home::create_vault,
             vault_home::storage_writable,
             data_dir::app_data_paths,

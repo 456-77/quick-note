@@ -201,6 +201,34 @@ pub fn list_vaults(app: AppHandle) -> Result<Vec<VaultInfo>, String> {
     Ok(vaults)
 }
 
+/// 列出任意绝对路径下的一级子目录（应用内目录浏览器用，0.34.6 用户反馈
+/// 「选择目录没有反应」：tauri-plugin-dialog 在安卓根本没实现目录选择——
+/// Kotlin 侧 pickFolder 还是 TODO，pickDirectory 点了静默返回）。跳过点开头
+/// 目录，按名称排序；配合「所有文件访问」权限，返回的是真实路径可直接读。
+#[tauri::command]
+pub fn list_subdirs(path: String) -> Result<Vec<String>, String> {
+    let entries = fs::read_dir(&path).map_err(|e| format!("目录不可读: {path}（{e}）"))?;
+    let mut names = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if !kind.is_dir() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if name.starts_with('.') {
+            continue;
+        }
+        names.push(name.to_string());
+    }
+    names.sort_by_key(|a| a.to_lowercase());
+    Ok(names)
+}
+
 /// 在基础目录下新建一个仓库（空目录即合法仓库），返回其路径。
 #[tauri::command]
 pub fn create_vault(app: AppHandle, name: String) -> Result<String, String> {
