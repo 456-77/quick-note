@@ -1,7 +1,7 @@
 {
   "name": "quick-note",
   "private": true,
-  "version": "0.34.5",
+  "version": "0.34.6",
   "type": "module",
   "scripts": {
     "dev": "vite",

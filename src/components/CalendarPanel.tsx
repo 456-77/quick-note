@@ -18,6 +18,7 @@ import {
   validateDailyName,
 } from "../lib/daily";
 import type { DailyController } from "../lib/useDaily";
+import { isMobile } from "../lib/platform";
 import { menuRefClampedToViewport } from "../lib/menuClamp";
 
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
@@ -167,6 +168,13 @@ export default function CalendarPanel({
       return;
     }
     onCreateDaily(namingDate, name);
+    setNamingDate(null);
+    setNameDraft("");
+    setNameProblem(null);
+  };
+
+  /** 放弃本次新建日记（Esc / 移动端失焦）：清空草稿收起输入行。 */
+  const cancelNaming = () => {
     setNamingDate(null);
     setNameDraft("");
     setNameProblem(null);
@@ -331,11 +339,20 @@ export default function CalendarPanel({
                 autoFocus
                 type="text"
                 value={renaming.draft}
+                enterKeyHint="send"
                 onChange={(event) => onRenameDraft(event.target.value)}
                 onFocus={(event) => event.currentTarget.select()}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") onRenameSubmit();
+                  // 0.34.6 用户反馈（vivo 输入法动作键变「下一项」）：与抽屉新建
+                  // 输入行同款——keyCode 13 兜底 + 组词中不提交；移动端失焦即取消
+                  if ((event.key === "Enter" || event.keyCode === 13) && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    onRenameSubmit();
+                  }
                   if (event.key === "Escape") onRenameCancel();
+                }}
+                onBlur={() => {
+                  if (isMobile()) onRenameCancel();
                 }}
               />
               <div className="create-hint">{renaming.hint}</div>
@@ -379,14 +396,24 @@ export default function CalendarPanel({
             autoFocus
             type="text"
             value={nameDraft}
+            enterKeyHint="send"
             placeholder={`${namingDate} 的名字，例如：项目周报`}
             onChange={(event) => {
               setNameDraft(event.target.value);
               setNameProblem(null);
             }}
             onKeyDown={(event) => {
-              if (event.key === "Enter") submitName();
-              if (event.key === "Escape") setNamingDate(null);
+              // 0.34.6：与抽屉新建输入行同款兜底——发送键/keyCode 13、组词中不提交
+              if ((event.key === "Enter" || event.keyCode === 13) && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                submitName();
+              }
+              if (event.key === "Escape") cancelNaming();
+            }}
+            onBlur={() => {
+              // 0.34.6 用户反馈「点『下一项』跳去待办框后，日记输入行一直挂着」：
+              // 移动端焦点离开=放弃本次新建
+              if (isMobile()) cancelNaming();
             }}
           />
           <div className="create-hint">
@@ -559,10 +586,13 @@ export default function CalendarPanel({
             ref={addInputRef}
             rows={1}
             value={todoDraft}
+            enterKeyHint="send"
             placeholder="添加待办：Enter 确认 · Shift+Enter 换行 · 前缀「明天 / 10-01 / 2026-10-01」记到那天"
             onChange={(event) => setTodoDraft(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
+              // 0.34.6：vivo 等输入法把动作键改成「下一项」且 key 可能带不走——
+              // 补 keyCode 13；Shift+Enter 仍是换行；组词确认的 Enter 不提交
+              if ((event.key === "Enter" || event.keyCode === 13) && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
                 submitTodo();
               }

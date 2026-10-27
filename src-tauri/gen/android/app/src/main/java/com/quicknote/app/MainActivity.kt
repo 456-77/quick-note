@@ -30,6 +30,55 @@ class MainActivity : TauriActivity() {
   private var pendingShareImageMime: String? = null
   private var webViewRef: WebView? = null
   private val mainHandler = Handler(Looper.getMainLooper())
+  /** 相册选壁纸的回调（SAF）：用户选完/取消后回 JS（0.34.6 壁纸从相册选）。 */
+  private var pendingBgPick = false
+  /** 待拷贝的目标仓库目录（SAF 结果回来时用）。 */
+  private var bgPickVaultDir: String? = null
+
+  companion object {
+    /** SAF 相册选壁纸的请求码。 */
+    private const val REQ_PICK_BG = 4201
+  }
+
+  @Deprecated("Deprecated in Java")
+  override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+    super.onActivityResult(requestCode, resultCode, data)
+    if (requestCode != REQ_PICK_BG || !pendingBgPick) return
+    pendingBgPick = false
+    val webView = webViewRef ?: return
+    val uri = data?.data
+    if (resultCode != RESULT_OK || uri == null) {
+      notifyBgPick(webView, false, "")
+      return
+    }
+    val vaultDir = bgPickVaultDir
+    if (vaultDir.isNullOrBlank()) {
+      notifyBgPick(webView, false, "目标仓库目录为空")
+      return
+    }
+    // 拷贝放 IO 线程（大图可能几 MB）；结果回 UI 线程再 evaluateJavascript
+    Thread {
+      try {
+        val dir = File(vaultDir, "attachments").apply { mkdirs() }
+        // 扩展名从 mime 推断（content:// 没有真实路径）
+        val ext = when (contentResolver.getType(uri)) {
+          "image/png" -> "png"
+          "image/webp" -> "webp"
+          "image/gif" -> "gif"
+          else -> "jpg"
+        }
+        val dest = File(dir, "background.$ext")
+        contentResolver.openInputStream(uri)?.use { input ->
+          dest.outputStream().use { output -> input.copyTo(output) }
+        } ?: throw IOException("无法读取所选图片")
+        val relPath = "attachments/${dest.name}"
+        mainHandler.post { notifyBgPick(webView, true, relPath) }
+      } catch (e: Exception) {
+        val msg = (e.message ?: "拷贝失败").replace("\"", "'")
+        mainHandler.post { notifyBgPick(webView, false, msg) }
+      }
+    }.start()
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
@@ -256,6 +305,29 @@ class MainActivity : TauriActivity() {
       return packageManager.canRequestPackageInstalls()
     }
 
+    /**
+     * 从系统相册选一张图作为壁纸（0.34.6 用户反馈：应用还不支持直接在库中
+     * 添加图片，壁纸该能从相册选）。启动 SAF 图片选择器；用户选完后把原图
+     * 拷贝到 vaultDir/attachments/background.<扩展名> 并回调
+     * __qnBgPickDone(ok, relPathOrError)。vaultDir 由前端传（当前仓库绝对路径），
+     * 应用已有所有文件访问权，直接写主存储。
+     */
+    @JavascriptInterface
+    fun pickBackgroundImage(vaultDir: String) {
+      val webView = webViewRef ?: return
+      mainHandler.post {
+        try {
+          bgPickVaultDir = vaultDir
+          pendingBgPick = true
+          val intent = Intent(Intent.ACTION_PICK)
+          intent.type = "image/*"
+          startActivityForResult(intent, REQ_PICK_BG)
+        } catch (e: Exception) {
+          notifyBgPick(webView, false, "无法打开相册：${e.message}")
+        }
+      }
+    }
+
     /** 跳到系统的「安装未知应用」授权页（安装前一次性授权）。 */
     @JavascriptInterface
     fun requestInstallPermission() {
@@ -390,6 +462,14 @@ class MainActivity : TauriActivity() {
     mainHandler.post {
       val msg = message.replace("\\", "\\\\").replace("\"", "\\\"")
       webView.evaluateJavascript("window.__qnUpdateDone && window.__qnUpdateDone($ok, \"$msg\")", null)
+    }
+  }
+
+  /** 相册选壁纸结果回 JS（ok=false 且 message 为空 = 用户取消，前端静默）。 */
+  private fun notifyBgPick(webView: WebView, ok: Boolean, message: String) {
+    mainHandler.post {
+      val msg = message.replace("\\", "\\\\").replace("\"", "\\\"")
+      webView.evaluateJavascript("window.__qnBgPickDone && window.__qnBgPickDone($ok, \"$msg\")", null)
     }
   }
 }

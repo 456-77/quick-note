@@ -270,10 +270,11 @@ try {
   );
 
   // ---------------------------------------------- 3. 释义自动获取（真网络）
-  // 成功路径：scenario → 预览（音标+释义）→ 保存 → v3 行落盘
-  await evaluate(ws, `(() => { document.querySelector('.vocab-add-toggle')?.click(); return true; })()`);
-  await sleep(300);
-  await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'scenario'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+  // 0.34.6 搜索框唯一入口：scenario → 搜索无结果 → 点「收录」→ 预览（音标+释义）
+  // → 保存 → v3 行落盘
+  await evaluate(ws, `(() => { const el = document.querySelector('.vocab-search-input'); if (!el) return false; (${nativeSet})(el, 'scenario'); return true; })()`);
+  await sleep(400);
+  await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-empty-search button')].find((x) => x.textContent.includes('收录')); b?.click(); return !!b; })()`);
   const previewOk = await waitFor(
     ws,
     `(() => {
@@ -341,12 +342,12 @@ try {
     6000,
   );
   check(!!emptyShown, "空列表态：还没有记录单词");
-  await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-empty-list .vocab-btn')].find((b) => b.textContent.includes('添加单词'))?.click(); return true; })()`);
-  await sleep(300);
-  check(!!(await evaluate(ws, `!!document.querySelector('.vocab-add-input')`)), "空态「＋ 添加单词」展开添加区");
-  await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-input'); el?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return true; })()`);
-  await sleep(250);
-  check(!(await evaluate(ws, `!!document.querySelector('.vocab-add-input')`)), "Esc 关闭添加区");
+  // 0.34.6 用户反馈：独立添加区移除——空态不再有「添加单词」按钮，引导文案
+  // 指向搜索框收录
+  check(
+    !(await evaluate(ws, `!!document.querySelector('.vocab-empty-list .vocab-btn')`)),
+    "空列表态不再有「添加单词」按钮（搜索框唯一入口）",
+  );
 
   // ---------------------------------------------- 5. 背景图层（0.26 回归断言）
   // 0.25 曾在图层上叠 ::after 主题色遮罩把图压到 ~12% 感知透明度——用户反馈

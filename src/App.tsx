@@ -94,7 +94,7 @@ import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
 import { ddlNoteIntro, extractTableNames, mergeDdlIntoNote, parseDdlTables } from "./lib/ddl";
-import { installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
+import { closeDdlTip, installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
 import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
 import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
 import { fetchWeather, insertWeatherLine } from "./lib/weather";
@@ -126,11 +126,21 @@ import {
   isCursorInTable,
 } from "./lib/tableEdit";
 import { clampHeadings, codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList } from "./lib/codeEdit";
+import { formatJsonText } from "./lib/formatJson";
 import { useDaily } from "./lib/useDaily";
 import { useSync, type SyncController } from "./lib/useSync";
 import "./styles.css";
 
 const VAULT_KEY = "quicknote.vault";
+
+/**
+ * 无笔记空态的编辑器状态：editable=false。0.34.6 用户反馈「没打开任何文件时，
+ * 内容区域可以编辑」（桌面/移动都能聚焦出光标+软键盘，0.33.0 只把启动首帧
+ * 的裸 create 禁了编辑）——关空标签/批量关全部/切仓库/删笔记后的空态走的是
+ * 空 extensions 的 EditorState.create，CM 默认可编辑。四处统一走这里。
+ */
+const emptyEditorState = () =>
+  EditorState.create({ extensions: [EditorView.editable.of(false)] });
 const FAVORITES_V2_KEY = "quicknote.favorites.v2";
 /** 收藏置顶的存储键（按仓库分桶，同收藏；0.21 用户反馈：收藏栏要能置顶）。 */
 const FAVORITES_PIN_KEY = "quicknote.favorites.pin.v2";
@@ -301,6 +311,18 @@ export default function App() {
   const [vaultSheetList, setVaultSheetList] = useState<VaultInfo[]>([]);
   /** 左抽屉分区：文件列表 / 搜索 / 标签 / 单词本 / 日历（Obsidian 分区卡模型）。 */
   const [drawerView, setDrawerView] = useState<"files" | "search" | "tags" | "vocab" | "calendar">("files");
+  /** 「定位当前文件」请求（0.34.6，IDEA 式 Select Opened File）：FileTree 沿途
+      展开目录并把当前笔记行滚到视口中央闪烁。seq 让同一文件能连续定位两次。 */
+  const [treeReveal, setTreeReveal] = useState<{ path: string; seq: number } | null>(null);
+  /** 发起定位：请求 2.5s 后自动清掉——闪烁只该亮这一次；请求一直挂着的话，
+      之后切视图/进分区导致的树重挂会把上一次的目标再闪一遍（0.34.6 用户
+      反馈「高亮的是上次点按钮时的文件，不是当前打开的文件」）。 */
+  const revealCurrentNote = useCallback(() => {
+    const path = currentRef.current?.path;
+    if (!path) return;
+    setTreeReveal({ path, seq: Date.now() });
+    window.setTimeout(() => setTreeReveal(null), 2500);
+  }, []);
   /**
    * 笔记导航历史（底栏 ‹ ›）：浏览器式栈 + 指针。activeTab 一变就压栈（去重、
    * 截断前进分支），程序性装载不特判——切仓库时整个重置，启动首篇自然成为
@@ -1016,6 +1038,8 @@ export default function App() {
   const backConsumeRef = useRef<() => boolean>(() => false);
   /** 单词面板注册的返回键消费者（详情弹层 → 添加区 → 搜索态，先于抽屉收起）。 */
   const vocabBackRef = useRef<(() => boolean) | null>(null);
+  /** 设置面板的系统返回消费（0.34.6：二级详情页返回=回分类列表）。 */
+  const settingsBackRef = useRef<(() => boolean) | null>(null);
   backConsumeRef.current = () => {
     if (quickCaptureOpen) {
       setQuickCaptureOpen(false);
@@ -1047,8 +1071,10 @@ export default function App() {
       return true;
     }
     // 0.33.1 主页重构：设置盖在主页之上（z 85>84）——back 先关设置再关主页，
-    // 顺序与视觉层叠一致（主页开着时按返回：先回仓库界面，再按才关仓库页）
+    // 顺序与视觉层叠一致（主页开着时按返回：先回仓库界面，再按才关仓库页）。
+    // 0.34.6：设置内部二级详情页先返回分类列表（面板自消费）
     if (showSettings) {
+      if (settingsBackRef.current?.()) return true;
       setShowSettings(false);
       return true;
     }
@@ -1125,7 +1151,7 @@ export default function App() {
       // target 必须 instanceof Element：合成事件派发在 document 上时 target 是
       // Document，没有 closest 方法（批测的 TouchEvent 直接派发到 document）
       const target = e.target;
-      if (target instanceof Element && target.closest(".m-sheet, .settings-panel, .palette-overlay, .vault-home-page, .quick-capture, .update-dialog, .context-menu, .menu-backdrop")) {
+      if (target instanceof Element && target.closest(".m-sheet, .settings-panel, .palette-overlay, .vault-home-page, .quick-capture, .update-dialog, .context-menu, .menu-backdrop, .qn-lightbox")) {
         sx = t.clientX;
         sy = t.clientY;
         return;
@@ -2274,6 +2300,8 @@ export default function App() {
       const view = viewRef.current;
       const stored = stateStore.current.get(path);
       if (!view || !stored) return;
+      // 0.34.6 用户反馈：切标签同切笔记——DDL 悬浮卡/编辑浮层一并收掉
+      closeDdlTip();
       // 归属右栏的标签不在主编辑器激活（0.32.2 分栏）：路由到右栏（openNote
       // 正常都先路由过，这里兜直连调用者）
       if (rightTabsRef.current.includes(path)) {
@@ -2403,7 +2431,7 @@ export default function App() {
           setDirty(false);
           setInTable(false);
           resourcesRef.current.notePath = null;
-          viewRef.current?.setState(EditorState.create({}));
+          viewRef.current?.setState(emptyEditorState());
           viewOwnerRef.current = null;
         }
       } else if (!wasRight) {
@@ -2486,7 +2514,7 @@ export default function App() {
           setDirty(false);
           setInTable(false);
           resourcesRef.current.notePath = null;
-          viewRef.current?.setState(EditorState.create({}));
+          viewRef.current?.setState(emptyEditorState());
           viewOwnerRef.current = null;
         }
       } else {
@@ -2779,7 +2807,7 @@ export default function App() {
       // 导航历史按仓库清（历史里全是旧仓库的路径，留着只会 ‹ 回去打不开）
       setNavHistory({ stack: [], index: -1 });
       resourcesRef.current.notePath = null;
-      viewRef.current?.setState(EditorState.create({}));
+      viewRef.current?.setState(emptyEditorState());
       activateVault(picked);
       try {
         await refresh(picked);
@@ -3291,6 +3319,9 @@ export default function App() {
       // 切笔记时收起文件内搜索面板（0.23 用户反馈：搜索框只属于它打开的那篇，
       // 挂到别的笔记上会带着上一次的高亮，看起来像"搜索框坏了"）
       closeSearchPanelIfOpen();
+      // 0.34.6 用户反馈「DDL 弹窗在切换页面或者切换笔记后要自动隐藏」：body 层的
+      // 单元格悬浮卡/脱管编辑浮层不会跟着旧笔记消失，切页时一并收掉
+      closeDdlTip();
       recordRecent(path);
       // 要切走的那一栏先落盘（0.32.2：两栏各有独立的脏状态与保存通道）
       if (targetSide === "main") {
@@ -3644,7 +3675,14 @@ export default function App() {
     setError(null);
     // 0.33.0 停点3：移动端输入行在文件抽屉顶部——抽屉收着时点「新建笔记/
     // 今日日记」毫无可见反馈（真机实测）。顺手展开抽屉让输入行进入视野。
-    if (isMobile()) setLeftCollapsed(false);
+    if (isMobile()) {
+      setLeftCollapsed(false);
+      // 0.34.6 用户反馈「跳转到左抽屉页面时，功能选择没有自动变化到文件」：
+      // 抽屉记着上次停留的分区/页签（单词本/日历/收藏…）时，新建输入行虽然
+      // 在顶部，脚下却不是文件树——把分区卡和页签都带回文件列表
+      setDrawerView("files");
+      setLeftView("files");
+    }
   }, []);
 
   const cancelCreate = useCallback(() => {
@@ -4059,7 +4097,7 @@ export default function App() {
             setDirty(false);
             setInTable(false);
             resourcesRef.current.notePath = null;
-            viewRef.current?.setState(EditorState.create({}));
+            viewRef.current?.setState(emptyEditorState());
             viewOwnerRef.current = null;
           }
         }
@@ -5504,6 +5542,29 @@ export default function App() {
         toggleHeading(view, Number(headingMatch[1]));
         return;
       }
+      if (id === "formatJson") {
+        // 0.34.6 用户反馈「创建一个脚本用来格式化 json」：排查接口数据时贴的
+        // 压缩 JSON 一键展开。只认选区——无选区/非法 JSON 都明说
+        const sel = view.state.selection.main;
+        if (sel.empty) {
+          notice("先选中要格式化的 JSON 文本", "error");
+          return;
+        }
+        const raw = view.state.sliceDoc(sel.from, sel.to);
+        const result = formatJsonText(raw);
+        if (!result.ok) {
+          notice(`不是合法 JSON：${result.error}`, "error");
+          return;
+        }
+        if (result.text !== raw) {
+          view.dispatch({
+            changes: { from: sel.from, to: sel.to, insert: result.text },
+            selection: { anchor: sel.from },
+          });
+        }
+        notice("已格式化 JSON（2 空格缩进）");
+        return;
+      }
       switch (id) {
         case "toggleInlineCode":
           toggleInlineCode(view);
@@ -5772,6 +5833,7 @@ export default function App() {
       { id: "settings", title: "打开设置", hint: keyHint("openSettings"), icon: "⚙️", run: shortcuts.openSettings },
       { id: "export-pdf", title: "导出 PDF（打印对话框，选「另存为 PDF」）", icon: "🖨️", run: () => void exportPdf() },
       { id: "export-pdf-file", title: "导出 PDF 文件（选定位置，直接落盘）", icon: "📄", run: () => void exportPdfFile() },
+      { id: "format-json", title: "格式化选中的 JSON", keywords: ["json", "格式化", "format"], icon: "{}", run: () => runEditorCommand("formatJson") },
       { id: "roundtrip", title: "校验字节往返（写后读比对）", icon: "🧪", run: () => void verifyRoundTrip() },
       // 快捷键设置里的其余命令也进面板：Ctrl+K 应能搜到「设置 → 快捷键」里的
       // 每个功能（标题/列表/行内代码、插入日期时间等编辑器内命令为主）。
@@ -5834,6 +5896,7 @@ export default function App() {
       recents={recents}
       hiddenDirs={hiddenDirs}
       selectedPath={selectedPath}
+      reveal={treeReveal}
       onSelectPath={setSelectedPath}
       onOpen={(p) => void openEntry(p)}
       onContext={openContextMenu}
@@ -6458,6 +6521,7 @@ export default function App() {
       <SettingsDialog
         open={showSettings}
         onClose={() => setShowSettings(false)}
+        backConsumerRef={settingsBackRef}
         settings={settings}
         applySettings={applySettings}
         /* 0.33.1 用户反馈：主页打开的设置**只显示全局设置**（按仓库的分区与
@@ -6998,6 +7062,7 @@ export default function App() {
                       autoFocus
                       type="text"
                       value={draft}
+                      enterKeyHint="send"
                       placeholder={
                         renaming
                           ? "新名称"
@@ -7010,8 +7075,21 @@ export default function App() {
                       onChange={(event) => setDraft(event.target.value)}
                       onFocus={(event) => event.currentTarget.select()}
                       onKeyDown={(event) => {
-                        if (event.key === "Enter") void (renaming ? submitRename() : submitCreate());
+                        // 0.34.6 用户反馈「点输入法面板的发送键没反应，创建不了」：
+                        // 部分输入法派发的 Enter 带不走 event.key（或动作键被页面
+                        // 多输入框改写成「下一步」）——补 keyCode 13 判定；组词中
+                        // 确认候选的 Enter（isComposing）不提交
+                        if ((event.key === "Enter" || event.keyCode === 13) && !event.nativeEvent.isComposing) {
+                          event.preventDefault();
+                          void (renaming ? submitRename() : submitCreate());
+                        }
                         if (event.key === "Escape") (renaming ? cancelRename : cancelCreate)();
+                      }}
+                      onBlur={() => {
+                        // 0.34.6 用户反馈「点下一步光标进入下一个输入框，原先的
+                        // 新建输入框不会消失」：移动端焦点离开输入行=放弃本次
+                        // 新建，收起输入行（桌面仍走 Esc/✕/Enter，不动）
+                        if (isMobile()) (renaming ? cancelRename : cancelCreate)();
                       }}
                     />
                     <button
@@ -7117,6 +7195,14 @@ export default function App() {
                     点文件/仓库切换（Obsidian 移动端同款，全屏抽屉无关闭钮） */}
                 {drawerView === "files" && (
                   <div className="m-drawer-actions">
+                    <button
+                      type="button"
+                      disabled={!current}
+                      onClick={revealCurrentNote}
+                      title="定位当前文件"
+                    >
+                      <IconListTree size={16} />
+                    </button>
                     <button
                       type="button"
                       disabled={!vault}
@@ -7252,6 +7338,15 @@ export default function App() {
                 <button
                   type="button"
                   className="icon-btn"
+                  disabled={!current}
+                  onClick={revealCurrentNote}
+                  title="定位当前文件：在文件树中展开并高亮"
+                >
+                  <IconListTree size={15} />
+                </button>
+                <button
+                  type="button"
+                  className="icon-btn"
                   disabled={!vault}
                   onClick={() => beginCreate("diary")}
                   title="新建今天的日记（按日期命名）"
@@ -7337,7 +7432,11 @@ export default function App() {
                 onChange={(event) => setDraft(event.target.value)}
                 onFocus={(event) => event.currentTarget.select()}
                 onKeyDown={(event) => {
-                  if (event.key === "Enter") void (renaming ? submitRename() : submitCreate());
+                  // 0.34.6：与移动端输入行同款兜底——keyCode 13 + 组词中不提交
+                  if ((event.key === "Enter" || event.keyCode === 13) && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    void (renaming ? submitRename() : submitCreate());
+                  }
                   if (event.key === "Escape") (renaming ? cancelRename : cancelCreate)();
                 }}
               />

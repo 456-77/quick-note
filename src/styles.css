@@ -1066,6 +1066,17 @@ div.tree-item:focus-visible {
   color: var(--accent);
 }
 
+/* 0.34.6「定位当前文件」：定位落点闪烁两次accent 底，几秒后自己退场 */
+@keyframes qn-tree-flash {
+  0%, 100% { background: transparent; }
+  25%, 75% { background: color-mix(in srgb, var(--accent) 30%, transparent); }
+  50% { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+}
+
+.tree-item.is-flash {
+  animation: qn-tree-flash 0.9s ease 2;
+}
+
 /* 选中的目录：粘贴目标（点击目录即选中，再点切换展开） */
 .tree-dir.is-selected {
   background: var(--accent-soft);
@@ -5806,10 +5817,13 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 
 /* 命中落在行内 code 上（0.24 用户反馈"红色高亮被遮挡"）：livePreview 装饰的
    优先级更高、DOM 在外层命中 span 的**内层**，.cm-lp-code 的不透明芯片底色
-   会把半透明红整个盖住。命中区间内把芯片底色放透明，让红色透出来。 */
+   会把半透明红整个盖住。命中区间内把芯片底色放透明，让红色透出来。
+   0.34.6 用户反馈又现「关键字被代码高亮替代」：主题规则（如
+   html.qn-style-bluetopaz .editor-host .cm-lp-code）特异性 (0,3,1) 压过本规则
+   的 (0,3,0)——补 !important（与上面 cm-searchMatch 同一套压主题策略）。 */
 .cm-editor .cm-searchMatch .cm-lp-code,
 .cm-editor .cm-searchMatch-selected .cm-lp-code {
-  background: transparent;
+  background: transparent !important;
 }
 
 /* 渲染态表格里的命中（0.24）：块级 widget 的 DOM 在 CM 装饰管线之外，文本高亮
@@ -5827,7 +5841,10 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   position: absolute;
   top: 8px;
   right: 16px;
-  z-index: 120;
+  /* 0.34.6 用户反馈「打开文件内搜索弹窗后，设置和全局搜索被它遮挡」：面板挂在
+     .cm-editor 里但 cm-editor 不创建层叠上下文，z 参与全局比较——此前 120 盖过
+     设置(20)/全局搜索(50)。压到两者之下，仍高于编辑器普通内容 */
+  z-index: 12;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -5978,13 +5995,16 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 }
 
 .qn-lightbox img {
-  max-width: 92vw;
-  max-height: 92vh;
+  /* 0.34.6 缩放模型换成布局宽度：尺寸全由 JS 写 width（naturalWidth*scale），
+     max-* 钳制会顶掉它；height auto 防变形。transform 只留平移（位图不再被
+     矩阵拉伸，任何倍率都按原图重新采样，放大不发糊） */
+  max-width: none;
+  height: auto;
   border-radius: 6px;
   box-shadow: 0 8px 48px rgba(0, 0, 0, 0.55);
   user-select: none;
-  transform-origin: center center;
   will-change: transform;
+  touch-action: none;
 }
 
 .qn-lightbox-bar {
@@ -7682,10 +7702,8 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   font-size: 13.5px;
   line-height: 1.5;
   color: var(--text);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
+  /* 0.34.6 用户反馈「速记行要支持内容的换行展示」：两行截断改成完整换行
+     （管理面板本体可滚动，长速记全部可见） */
   overflow-wrap: anywhere;
 }
 
@@ -12287,6 +12305,15 @@ html.qn-bg-on .editor-pane-col.is-split {
   .sidebar-left.m-inputting .m-drawer-foot {
     display: none;
   }
+  /* 0.34.6 用户反馈「日历分区加日记/待办时，键盘上方还浮着分区胶囊和仓库行」：
+     0.34.1 的 m-inputting 只覆盖抽屉顶部输入行——日历面板的输入行/待办框在
+     内容区里。放宽为「键盘弹出 + 抽屉开着」即藏（抽屉开着时键盘只可能是抽屉
+     内输入弹的，此时底部三件都用不到） */
+  body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-actions,
+  body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-sections,
+  body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-foot {
+    display: none;
+  }
 }
 
 /* 0.34.0 仓库主页品牌块（对齐 Obsidian 图5 页顶：logo + 名称 + 版本居中）。
@@ -12441,5 +12468,19 @@ html.qn-bg-on .editor-pane-col.is-split {
   }
   .app.inbox-open .cm-row-tool:has(.cm-row-tag-input) {
     opacity: 1;
+  }
+
+  /* 0.34.6 用户反馈「启用背景图片后，左右抽屉还会透图」：桌面侧栏半透明是有意
+     的（背景图从表面透出），但移动端抽屉是全屏工作面——透图毁可读性。恢复
+     不透明实底（放专区尾部，同特异性下压过 html.qn-bg-on .sidebar 的 66%） */
+  html.qn-bg-on .sidebar-left,
+  html.qn-bg-on .sidebar-right {
+    background: var(--panel);
+  }
+
+  /* 0.34.6 文件内搜索面板 z 压到 12（修「遮挡设置/全局搜索」）后，浮动药丸
+     (z75) 反过来会压住面板顶部——移动端把面板整体下移避开药丸带 */
+  .qn-search {
+    top: 64px;
   }
 }

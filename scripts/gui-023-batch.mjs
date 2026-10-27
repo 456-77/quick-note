@@ -551,17 +551,18 @@ try {
   }
 
   // ---------------------------------------------- 9. 单词本
-  // （0.25 面板重排后：添加区默认收起（＋ 添加新单词），展开后回车先在线查询——
-  // 生造词查询必失败，走「手动填写释义」兜底保存；标记掌握走详情弹层）
+  // （0.34.6 用户反馈后独立添加区整个移除，搜索框是唯一入口：搜索无结果 →
+  // 点「收录」就地在线查询——生造词查询必失败，走「手动填写释义」兜底保存；
+  // 标记掌握走详情弹层）
   const tabPos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
   check(!!tabPos, "右侧面板出现「单词」页签");
   if (tabPos) {
     await mouseClick(ws, tabPos.x, tabPos.y);
     await sleep(500);
-    // 展开添加区：点「＋ 添加新单词」
-    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-toggle'); if (!el) return false; el.click(); return true; })()`);
+    // 搜索框输入生造词 → 空态出现「收录」主按钮 → 点它就地查询
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-search-input'); if (!el) return false; (${nativeSet})(el, 'qn23word'); return true; })()`);
     await sleep(400);
-    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-add-input'); if (!el) return false; (${nativeSet})(el, 'qn23word'); el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-empty-search button')].find((x) => x.textContent.includes('收录')); b?.click(); return !!b; })()`);
     // 生造词在线查询失败 → 预览卡出现「未找到在线释义」
     await waitFor(ws, `(() => { const el = document.querySelector('.vocab-lookup'); return !!el && el.textContent.includes('未找到在线释义'); })()`, 15000);
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-lookup button')].find((x) => x.textContent === '手动填写释义'); b?.click(); return !!b; })()`);
@@ -600,9 +601,11 @@ try {
   );
   await sleep(900);
   const vocab2 = existsSync(globalVocabFile) ? readFileSync(globalVocabFile, "utf8") : "";
-  check(/- user_name — .* · qn23字段/.test(vocab2), "Ctrl+Alt+V 把选中的词收进单词本（带来源）", vocab2.split("\n").filter((l) => l.startsWith("- ")).join(" ; "));
+  // 释义段可选：有道查询成功时行带「| 释义」，失败时词后直接「 — 」——
+  // 批测不依赖外网查询结果（0.34.6 起两种落盘形态都算通过）
+  check(/- user_name( \| [^—]*)? — .* · qn23字段/.test(vocab2), "Ctrl+Alt+V 把选中的词收进单词本（带来源）", vocab2.split("\n").filter((l) => l.startsWith("- ")).join(" ; "));
   const status = await statusText(ws);
-  check(/已加入单词本/.test(status), "状态栏提示已加入", status);
+  check(/已加入单词本|已自动补全/.test(status), "状态栏提示已加入", status);
 
   // ---------------------------------------------- 10. 跨窗口设置热加载
   const child2 = spawnInstance();

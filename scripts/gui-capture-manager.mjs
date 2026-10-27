@@ -198,7 +198,13 @@ try {
   );
   const firstRowParsed = JSON.parse(firstRow);
   check(firstRowParsed.text.includes("给快速笔记添加一个页面"), "第一行是今天的速记", firstRow);
-  check(firstRowParsed.clamp === "2", "正文 2 行截断");
+  // 0.34.6 用户反馈「速记行要支持内容的换行展示」：两行截断改完整换行——
+  // 断言反转为「不再钳制行数」（webkitLineClamp 回到 none/初始值）
+  check(
+    firstRowParsed.clamp === "none" || firstRowParsed.clamp === "",
+    "正文完整换行展示（不再两行截断）",
+    firstRowParsed.clamp,
+  );
   check(firstRowParsed.time === "15:58", "今天组内只显示 HH:mm", firstRowParsed.time);
   check(
     firstRowParsed.tags.join(",") === "#想法,#项目A",

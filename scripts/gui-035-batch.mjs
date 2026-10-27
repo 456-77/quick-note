@@ -199,23 +199,44 @@ try {
 
   // 抽屉开合：左上药丸 → is-on + transform none；分区卡/动作行/仓库底行齐全
   await evaluate(ws, `document.querySelector('.m-top-pills .m-pill')?.click()`);
-  await sleep(500);
-  const drawerOn = await evaluate(ws, `(() => {
-    const pill = document.querySelector('.m-top-pills .m-pill');
-    const side = document.querySelector('aside.sidebar-left');
-    return {
-      on: pill?.classList.contains('is-on') ?? false,
-      open: side ? getComputedStyle(side).transform === 'none' : false,
-      sections: document.querySelectorAll('.m-drawer-section').length,
-      actions: document.querySelectorAll('.m-drawer-actions button').length,
-      vaultName: document.querySelector('.m-drawer-vault-name')?.textContent ?? '',
-      gear: !!document.querySelector('.m-drawer-gear'),
-    };
-  })()`);
-  check(drawerOn.on && drawerOn.open, "0.34.0：左上药丸开抽屉（is-on + transform none）");
+  // 启动期主线程忙时 0.2s 过渡可能起步晚——轮询等条件，不再信固定 sleep
+  let drawerOn = null;
+  for (let i = 0; i < 14 && !drawerOn; i += 1) {
+    await sleep(300);
+    const probe = await evaluate(ws, `(() => {
+      const pill = document.querySelector('.m-top-pills .m-pill');
+      const side = document.querySelector('aside.sidebar-left');
+      return JSON.stringify({
+        on: pill?.classList.contains('is-on') ?? false,
+        open: side ? getComputedStyle(side).transform === 'none' : false,
+        sections: document.querySelectorAll('.m-drawer-section').length,
+        actions: document.querySelectorAll('.m-drawer-actions button').length,
+        vaultName: document.querySelector('.m-drawer-vault-name')?.textContent ?? '',
+        gear: !!document.querySelector('.m-drawer-gear'),
+      });
+    })()`);
+    const parsed = JSON.parse(probe);
+    if (parsed.on && parsed.open) drawerOn = parsed;
+  }
+  if (!drawerOn) {
+    drawerOn = JSON.parse(await evaluate(ws, `(() => {
+      const pill = document.querySelector('.m-top-pills .m-pill');
+      const side = document.querySelector('aside.sidebar-left');
+      return JSON.stringify({
+        on: pill?.classList.contains('is-on') ?? false,
+        open: side ? getComputedStyle(side).transform === 'none' : false,
+        sections: document.querySelectorAll('.m-drawer-section').length,
+        actions: document.querySelectorAll('.m-drawer-actions button').length,
+        vaultName: document.querySelector('.m-drawer-vault-name')?.textContent ?? '',
+        gear: !!document.querySelector('.m-drawer-gear'),
+      });
+    })()`));
+  }
+  check(drawerOn.on && drawerOn.open, "0.34.0：左上药丸开抽屉（is-on + transform none）", JSON.stringify(drawerOn));
   check(drawerOn.sections === 1, `0.34.1：分区卡默认收起成胶囊（实际 ${drawerOn.sections} 行）`);
-  // 0.34.1：动作行只属于文件列表分区且只有两键（✕ 已删，全屏抽屉走返回键关闭）
-  check(drawerOn.actions === 2, `0.34.1：动作行两键（新建笔记/文件夹，实际 ${drawerOn.actions}）`);
+  // 0.34.1：动作行只属于文件列表分区；0.34.6 起三键（定位当前文件/新建笔记/
+  // 新建文件夹，✕ 已删，全屏抽屉走返回键关闭）
+  check(drawerOn.actions === 3, `0.34.1：动作行键数（0.34.6 加定位钮后为 3，实际 ${drawerOn.actions}）`);
   const fullWidth = await evaluate(ws, `Math.round(document.querySelector('aside.sidebar-left').getBoundingClientRect().width)`);
   check(Math.abs(fullWidth - 390) <= 2, `0.34.1：抽屉全屏（宽 ${fullWidth}px ≈ 视口 390）`);
   // 非文件分区不显示动作行

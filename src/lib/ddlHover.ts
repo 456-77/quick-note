@@ -15,7 +15,7 @@ import { EditorView, hoverTooltip } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import { livePreviewContext } from "./paths.ts";
 import { getSettings } from "./settings.ts";
-import { buildDdlTipDom } from "./ddlTip.ts";
+import { buildDdlTipDom, revealDdlLine } from "./ddlTip.ts";
 import { tableWordInText } from "./ddl.ts";
 
 /** 表名词法字符：字母数字下划线 $ # 与库名前缀的点。 */
@@ -84,6 +84,30 @@ const CELL_HOVER_MS = 350;
 // 光标落回弹窗/单元格就取消；滚动与点外面仍然即时收起
 const LEAVE_GRACE_MS = 200;
 
+// 悬浮计时器提为模块级：closeDdlTip（切笔记/切标签自动隐藏）要能取消它们，
+// 否则切页瞬间 pending 的 350ms 计时还会把弹窗重新弹出来
+let cellTimer: number | null = null;
+let cellHideTimer: number | null = null;
+
+/**
+ * 关掉一切 DDL 弹窗（0.34.6 用户反馈「切换页面或者切换笔记后要自动隐藏」）：
+ * document 层的单元格悬浮卡 + 从 CM tooltip 脱管到 body 的编辑浮层。CM 托管的
+ * tooltip 不在这里动——切笔记装载新文档时 CM 自会重评估收起。App 在 openNote /
+ * activateTab 时调用。
+ */
+export function closeDdlTip(): void {
+  if (cellTimer !== null) {
+    window.clearTimeout(cellTimer);
+    cellTimer = null;
+  }
+  if (cellHideTimer !== null) {
+    window.clearTimeout(cellHideTimer);
+    cellHideTimer = null;
+  }
+  document.getElementById(CELL_TIP_ID)?.remove();
+  document.querySelectorAll(".qn-ddl-tip.qn-ddl-detached").forEach((el) => el.remove());
+}
+
 /**
  * 表格单元格的 DDL 悬浮（0.32）：document 层 mouseover 委托，只认 Live Preview
  * 表格 widget 里的 td/th。查库走「离这个单元格最近的编辑器」的上下文——分屏
@@ -93,32 +117,29 @@ const LEAVE_GRACE_MS = 200;
 export function installDdlCellHover(): () => void {
   if (typeof document === "undefined") return () => {};
 
-  let timer: number | null = null;
-  let hideTimer: number | null = null;
-
   const hide = () => {
-    if (timer !== null) {
-      window.clearTimeout(timer);
-      timer = null;
+    if (cellTimer !== null) {
+      window.clearTimeout(cellTimer);
+      cellTimer = null;
     }
-    if (hideTimer !== null) {
-      window.clearTimeout(hideTimer);
-      hideTimer = null;
+    if (cellHideTimer !== null) {
+      window.clearTimeout(cellHideTimer);
+      cellHideTimer = null;
     }
     document.getElementById(CELL_TIP_ID)?.remove();
   };
 
   const cancelHideSoon = () => {
-    if (hideTimer !== null) {
-      window.clearTimeout(hideTimer);
-      hideTimer = null;
+    if (cellHideTimer !== null) {
+      window.clearTimeout(cellHideTimer);
+      cellHideTimer = null;
     }
   };
 
   const hideSoon = () => {
-    if (hideTimer !== null) return;
-    hideTimer = window.setTimeout(() => {
-      hideTimer = null;
+    if (cellHideTimer !== null) return;
+    cellHideTimer = window.setTimeout(() => {
+      cellHideTimer = null;
       hide();
     }, LEAVE_GRACE_MS);
   };
@@ -129,6 +150,10 @@ export function installDdlCellHover(): () => void {
     tip.id = CELL_TIP_ID;
     tip.classList.add("qn-ddl-cell-tip");
     document.body.appendChild(tip);
+    // 0.34.6 用户反馈「会自动滑动到ddl语句的底部，而不是定位到光标所在位置」：
+    // 触发单元格的文本（列名/表名）就是锚——弹窗滚动到语句中含这个词的行并
+    // 居中；语句不足一屏时本来滚不动，自然从头展示
+    revealDdlLine(tip, cell.textContent ?? "");
     // 贴在单元格下方左对齐；越界时翻到上方 / 右对齐
     const rect = cell.getBoundingClientRect();
     const box = tip.getBoundingClientRect();
@@ -171,9 +196,9 @@ export function installDdlCellHover(): () => void {
     // 已在展示该单元格的弹窗：别重置计时闪掉
     const current = document.getElementById(CELL_TIP_ID);
     if (current && cell.contains(target)) return;
-    if (timer !== null) window.clearTimeout(timer);
-    timer = window.setTimeout(() => {
-      timer = null;
+    if (cellTimer !== null) window.clearTimeout(cellTimer);
+    cellTimer = window.setTimeout(() => {
+      cellTimer = null;
       const editor = cell.closest(".cm-editor");
       const view = editor ? EditorView.findFromDOM(editor as HTMLElement) : null;
       const tables = view?.state.facet(livePreviewContext).ddlTables;

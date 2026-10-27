@@ -17,7 +17,7 @@
  *   - 关于页给 Logo、版本、更新与资源入口；设置搜索命中可点击跳转。
  */
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type MutableRefObject, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { bgFilterCss } from "../lib/background";
@@ -96,6 +96,9 @@ interface Props {
   noteCount: number | null;
   /** 仓库附件目录里的文件数量。 */
   attachmentCount: number | null;
+  /** Android 系统返回消费（0.34.6 用户反馈：二级详情页按返回应回到分类列表，
+      而不是直接退出设置）——二级页时消费返回 true，一级页返回 false 让外层关面板。 */
+  backConsumerRef?: MutableRefObject<(() => boolean) | null>;
 }
 
 /** 设置行：标签 + 一句话说明 + 右侧控件；完整说明放 title tooltip。
@@ -394,6 +397,7 @@ export default function SettingsDialog({
   openReleasePage,
   noteCount,
   attachmentCount,
+  backConsumerRef,
 }: Props) {
   const [active, setActive] = useState<SectionId>("general");
   /**
@@ -402,6 +406,21 @@ export default function SettingsDialog({
    * 桌面端此状态无效（CSS 只在移动断点消费 is-detail）。
    */
   const [mobileDetail, setMobileDetail] = useState(false);
+  // Android 系统返回：二级详情页先回分类列表（消费这次返回），一级页交给外层
+  // 关掉整个设置面板（0.34.6 用户反馈「二级页面按返回直接退出了软件」）
+  useEffect(() => {
+    if (!backConsumerRef) return;
+    backConsumerRef.current = () => {
+      if (mobileDetail) {
+        setMobileDetail(false);
+        return true;
+      }
+      return false;
+    };
+    return () => {
+      backConsumerRef.current = null;
+    };
+  }, [backConsumerRef, mobileDetail]);
   /** 移动端收件仓库候选（基础目录下发现的仓库）。 */
   const [inboxVaultOptions, setInboxVaultOptions] = useState<Array<{ path: string; name: string }> | null>(null);
   const [query, setQuery] = useState("");
@@ -423,6 +442,17 @@ export default function SettingsDialog({
   const savedTimerRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
+  // 0.34.6 相册选壁纸：qnAndroid.pickBackgroundImage 发起后等原生回调
+  // __qnBgPickDone(ok, relPathOrError)。bgPicking 驱动按钮「等待相册…」；
+  // bgBridgeReady 探测桥是否存在（桌面/未注入时按钮禁用）。
+  const [bgPicking, setBgPicking] = useState(false);
+  const [bgBridgeReady] = useState(
+    () => typeof (window as unknown as Record<string, unknown>).qnAndroid === "object",
+  );
+  /** 相册选壁纸的结果提示（与 savedFlash 同位展示，1.6s 后消失）。 */
+  const [bgNotice, setBgNotice] = useState("");
+  const bgNoticeTimer = useRef<number | null>(null);
+  const bgPickTimer = useRef<number | null>(null);
 
   /** applySettings 的包装：闪一次「已保存」。所有设置改动都走这里。 */
   const saveWithFlash: typeof applySettings = useCallback(
@@ -447,6 +477,27 @@ export default function SettingsDialog({
     },
     [vault, settings.bgPerVault, bg, saveWithFlash],
   );
+
+  // 0.34.6 相册选壁纸的原生回调：挂 __qnBgPickDone（桥在 MainActivity 注入）。
+  // 必须在 saveBg 之后注册——成功回调里要写 bgImagePath + 启用背景
+  useEffect(() => {
+    (window as unknown as Record<string, unknown>).__qnBgPickDone = (ok: boolean, result: string) => {
+      if (bgPickTimer.current !== null) {
+        window.clearTimeout(bgPickTimer.current);
+        bgPickTimer.current = null;
+      }
+      setBgPicking(false);
+      if (bgNoticeTimer.current !== null) window.clearTimeout(bgNoticeTimer.current);
+      setBgNotice(ok ? `已拷入 ${result} 并设为背景` : result ? `壁纸保存失败：${result}` : "");
+      if (ok || result) bgNoticeTimer.current = window.setTimeout(() => setBgNotice(""), 2600);
+      if (ok) saveBg({ bgImagePath: result, bgEnabled: true });
+    };
+    return () => {
+      delete (window as unknown as Record<string, unknown>).__qnBgPickDone;
+      if (bgPickTimer.current !== null) window.clearTimeout(bgPickTimer.current);
+      if (bgNoticeTimer.current !== null) window.clearTimeout(bgNoticeTimer.current);
+    };
+  }, [saveBg]);
 
   // 面板打开时 Ctrl/Cmd+F 聚焦「搜索设置」（拦掉浏览器默认页内搜索）
   useEffect(() => {
@@ -1134,6 +1185,7 @@ export default function SettingsDialog({
           <>
           <Group>全局背景（每仓库一份，存本机）</Group>
           {!vault && <p className="settings-hint">打开仓库后才能选择与预览背景图片（图片来自仓库内部）。</p>}
+          {bgNotice && <p className="settings-hint">{bgNotice}</p>}
           <Row
             label="启用背景图片"
             desc="把仓库里的一张图垫在界面最底层营造氛围。"
@@ -1172,6 +1224,37 @@ export default function SettingsDialog({
               }
             />
           </Row>
+          {isMobile() && (
+            <Row
+              label="从相册选择壁纸"
+              desc="调系统相册选一张图，自动拷入当前仓库的附件目录并设为背景。"
+              tip="应用暂不支持在库内直接添加图片，这里从系统相册选取：选中的原图会拷贝到 仓库/attachments/background.<扩展名>，随后自动设为背景图片（0.34.6 用户反馈）。"
+              keywords="相册 壁纸 背景 图片 添加"
+            >
+              <button
+                type="button"
+                className="btn"
+                disabled={!vault || !bgBridgeReady || bgPicking}
+                onClick={() => {
+                  if (!vault) return;
+                  setBgPicking(true);
+                  const bridge = (window as unknown as Record<string, unknown>).qnAndroid as
+                    | { pickBackgroundImage?: (dir: string) => void }
+                    | undefined;
+                  if (!bridge?.pickBackgroundImage) {
+                    setBgPicking(false);
+                    return;
+                  }
+                  bgPickTimer.current = window.setTimeout(() => {
+                    setBgPicking(false);
+                  }, 120000);
+                  bridge.pickBackgroundImage(vault.replace(/[\\/]+$/, ""));
+                }}
+              >
+                {bgPicking ? "等待相册…" : "从相册选择"}
+              </button>
+            </Row>
+          )}
           {/* 壁纸轮换（0.32 用户需求）：目录里的图定时换，随机或按文件名顺序。
               开启后背景图来自该目录（绝对路径），上面的「背景图片」选择暂时让位；
               关掉轮换自动落回仓库内选的图。 */}

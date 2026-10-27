@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { EntryMeta } from "../lib/api";
 import { fileKindOf } from "../lib/fileTypes";
 import {
@@ -204,6 +204,19 @@ export function topLevelDirs(entries: EntryMeta[]): string[] {
 }
 
 /**
+ * 「定位当前文件」请求（0.34.6 用户反馈，对齐 IDEA 的 Select Opened File）：
+ * App 点按钮发一个 {path, seq}——沿途目录节点自动展开，目标行滚动到视口中央
+ * 并闪烁高亮。seq 区分同一文件的连续两次定位（滚回去再滚一次）。
+ * 经 context 下发：目录/文件行在树的任意深度，props 逐层钻太吵。
+ */
+export interface TreeReveal {
+  path: string;
+  seq: number;
+}
+
+const RevealContext = createContext<TreeReveal | null>(null);
+
+/**
  * 收藏 / 最近视图的扁平列表：目录以外的文件都收（md 笔记、可编辑文本、
  * 预览类文件）——收藏不只属于笔记，pdf/docx/图片同样可以钉在收藏里。
  */
@@ -258,11 +271,25 @@ function NoteRow({
     kind === "preview"
       ? `${node.path}（点击预览 · Alt+点击在资源管理器中定位）`
       : `${node.path}（Alt+点击在资源管理器中定位）`;
+  // 0.34.6「定位当前文件」：自己是目标行就滚动到视口中央并闪烁高亮
+  const reveal = useContext(RevealContext);
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const [flash, setFlash] = useState(false);
+  useEffect(() => {
+    if (!reveal || reveal.path !== node.path) return;
+    const el = rowRef.current;
+    if (!el) return;
+    el.scrollIntoView({ block: "center" });
+    setFlash(true);
+    const timer = window.setTimeout(() => setFlash(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [reveal, node.path]);
   return (
     <div
+      ref={rowRef}
       role="button"
       tabIndex={0}
-      className={`tree-item tree-file${active ? " is-active" : ""}${picked ? " is-picked" : ""}`}
+      className={`tree-item tree-file${active ? " is-active" : ""}${picked ? " is-picked" : ""}${flash ? " is-flash" : ""}`}
       style={indent ? { paddingLeft: `${indent}px` } : undefined}
       draggable
       onDragStart={(event) => dragEntryStart(event, node.path)}
@@ -334,6 +361,13 @@ function Node({
   // 默认只展开"子树里有笔记"的目录：只放附件的目录（例如装满图片的 image/）
   // 若默认展开，会把侧栏刷满与笔记无关的条目。
   const [expanded, setExpanded] = useState(node.hasNotes);
+  // 0.34.6「定位当前文件」：目标在子树里就沿途展开（挂载时 effect 必跑，
+  // 父层展开渲染出子层后，子层的 effect 接力，几轮内收敛到目标）
+  const reveal = useContext(RevealContext);
+  useEffect(() => {
+    if (!reveal) return;
+    if (reveal.path.startsWith(`${node.path}/`)) setExpanded(true);
+  }, [reveal, node.path]);
   /** 是不是正在被拖悬的落点：高亮提示松手就落到这里。 */
   const [dropActive, setDropActive] = useState(false);
   const contextProps = {
@@ -479,6 +513,7 @@ export default function FileTree({
   onReveal,
   onMoveEntry,
   onCopyEntry,
+  reveal,
 }: {
   entries: EntryMeta[];
   activePath: string | null;
@@ -501,6 +536,8 @@ export default function FileTree({
   /** 树内拖拽：普通拖 = 移动（剪切），Ctrl+拖 = 复制。 */
   onMoveEntry: (path: string, destDir: string) => void;
   onCopyEntry: (path: string, destDir: string) => void;
+  /** 「定位当前文件」请求（0.34.6）：App 的按钮发起，见 TreeReveal。 */
+  reveal?: TreeReveal | null;
 }) {
   const tree = useMemo(() => {
     const visible = hiddenDirs && hiddenDirs.size > 0
@@ -548,9 +585,10 @@ export default function FileTree({
       .filter((node): node is TreeNode => Boolean(node));
   }, [view, tree, favoriteSet, pinnedSet, recents]);
 
-  if (entries.length === 0) {
-    return <div className="tree-empty">仓库内暂无内容</div>;
-  }
+  const content = (() => {
+    if (entries.length === 0) {
+      return <div className="tree-empty">仓库内暂无内容</div>;
+    }
 
   if (view === "favorites") {
     return (
@@ -682,5 +720,8 @@ export default function FileTree({
         />
       ))}
     </div>
-  );
+    );
+  })();
+
+  return <RevealContext.Provider value={reveal ?? null}>{content}</RevealContext.Provider>;
 }

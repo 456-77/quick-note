@@ -76,6 +76,10 @@ export function buildDdlTipDom(table: string, ddl: string, options?: DdlTipOptio
   input.spellcheck = false;
   // 长行不折行（DataGrip 式横向滚动）——着色层与 textarea 都按 pre 排版才能对齐
   input.wrap = "off";
+  // 0.34.6 用户反馈「点击弹窗会自动滑到语句底部」：脚本赋值后 textarea 的选区
+  // 默认落在文本末尾，聚焦（含 0.34.5 脱管后的重打焦点）就会滚到光标处=底部。
+  // 显式把选区放回开头，聚焦不再引发滚动
+  input.setSelectionRange(0, 0);
 
   const refreshHl = () => {
     renderSqlHighlighted(hl, input.value);
@@ -178,6 +182,42 @@ const CLS: Record<string, string> = {
   num: "qn-sql-num",
   cmt: "qn-sql-cmt",
 };
+
+/**
+ * 把弹窗体滚动到 anchor（触发单元格文本：列名/表名）所在的行并居中。
+ * 必须在弹窗插入文档后调用（要量 clientHeight）。语句不足一屏时 clamp 到 0，
+ * 自然保持从头展示（0.34.6 用户反馈「内容少就不用强制居中」）。
+ * anchor 找不到对应行（列名被改名/文本不符）就退回顶部。
+ */
+export function revealDdlLine(tip: HTMLElement, anchor: string): void {
+  const input = tip.querySelector<HTMLTextAreaElement>(".qn-ddl-tip-input");
+  if (!input) return;
+  input.scrollTop = 0;
+  const word = anchor.trim();
+  if (!word) return;
+  const lines = input.value.split("\n");
+  // 先找带反引号的精确列名（DDL 惯例 `col`），找不到再退化成裸词
+  let hit = lines.findIndex((line) => line.includes(`\`${word}\``));
+  if (hit < 0) hit = lines.findIndex((line) => new RegExp(`\\b${escapeRegExp(word)}`).test(line));
+  if (hit < 0) return;
+  // 行高从实际排版反推（scrollHeight 含 padding，去掉）：比解析 lineHeight 字符串稳
+  const style = window.getComputedStyle(input);
+  const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+  const lineH = (input.scrollHeight - padY) / Math.max(1, lines.length);
+  const target = hit * lineH - (input.clientHeight - lineH) / 2;
+  input.scrollTop = Math.max(0, Math.min(target, input.scrollHeight - input.clientHeight));
+  input.scrollLeft = 0;
+  // 同步着色垫底层的滚动（textarea scroll 事件没触发，手动对齐一次）
+  const hl = tip.querySelector<HTMLElement>(".qn-ddl-tip-hl");
+  if (hl) {
+    hl.scrollTop = input.scrollTop;
+    hl.scrollLeft = input.scrollLeft;
+  }
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 /** 按位置穿插普通文本节点铺满整段 SQL（不拼 HTML 字符串，全 textContent）。
     先清空目标——着色层随每次输入全量重铺（DDL 数 KB，开销可忽略）。 */

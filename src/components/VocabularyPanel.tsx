@@ -173,7 +173,8 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
   const [sort, setSort] = useState<Sort>(loadSort);
   const [sortOpen, setSortOpen] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [addOpen, setAddOpen] = useState(false);
+  /** 收录流程的暂存词：0.34.6 起没有独立添加区——「没有找到？收录」直接用
+      搜索框里的词在线查询，预览卡就地渲染在空态里，保存时取这个词。 */
   const [draft, setDraft] = useState("");
   const [lookup, setLookup] = useState<LookupState>(LOOKUP_IDLE);
   const [busy, setBusy] = useState(false);
@@ -186,7 +187,6 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
   const lookupSeq = useRef(0);
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
-  const addInputRef = useRef<HTMLInputElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
   /**
@@ -246,7 +246,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     [],
   );
 
-  // Android 返回键：复习 → 详情 → 添加区（含查询预览）→ 搜索态，都被消费后才轮到抽屉
+  // Android 返回键：复习 → 详情 → 收录预览卡 → 搜索态，都被消费后才轮到抽屉
   useEffect(() => {
     if (!backConsumerRef) return;
     backConsumerRef.current = () => {
@@ -258,10 +258,8 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
         setDetailWord(null);
         return true;
       }
-      if (addOpen) {
-        setAddOpen(false);
-        setDraft("");
-        setLookup(LOOKUP_IDLE);
+      if (lookup.status !== "idle") {
+        cancelLookup();
         return true;
       }
       if (query) {
@@ -273,7 +271,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     return () => {
       backConsumerRef.current = null;
     };
-  }, [backConsumerRef, review, detailWord, addOpen, query]);
+  }, [backConsumerRef, review, detailWord, lookup, query]);
 
   /** 行级变换的公共骨架：读 → 变换 → 写回 → 刷新列表。 */
   const mutate = useCallback(
@@ -301,6 +299,13 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     if (toastTimer.current !== null) window.clearTimeout(toastTimer.current);
     setToast({ id: Date.now(), message, action });
     toastTimer.current = window.setTimeout(() => setToast(null), 2800);
+  }, []);
+
+  /** 撤掉收录预览卡（返回键 / 改搜索词 / 保存与取消共用）：作废在途查询。 */
+  const cancelLookup = useCallback(() => {
+    lookupSeq.current += 1;
+    setDraft("");
+    setLookup(LOOKUP_IDLE);
   }, []);
 
   const tokens = useMemo(
@@ -357,18 +362,6 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     [],
   );
 
-  /** 添加区回车：先在线查询，不让用户手写翻译。词统一转小写（0.26 用户反馈）。 */
-  const submitDraft = useCallback(() => {
-    if (!draft.trim() || lookup.status === "loading") return;
-    void runLookup(draft.trim().toLowerCase());
-  }, [draft, lookup.status, runLookup]);
-
-  const closeAdd = useCallback(() => {
-    setAddOpen(false);
-    setDraft("");
-    setLookup(LOOKUP_IDLE);
-  }, []);
-
   const confirmSave = useCallback(() => {
     // 落盘同样用小写（0.26 用户反馈"统一成小写"）：查询与保存同源，不会出现
     // 预览的是 Scenario、存的是 scenario 的错位
@@ -377,10 +370,10 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     const meaning = lookup.result?.meaning ?? lookup.manualMeaning.trim();
     const phonetic = lookup.result?.phonetic ?? "";
     void saveWord(word, meaning, phonetic);
-    closeAdd();
+    cancelLookup();
     // 从「搜索无结果 → 收录」进来的保存：清掉搜索词，让新词直接出现在列表里
     if (searching && query.trim().toLowerCase() === word.toLowerCase()) setQuery("");
-  }, [draft, lookup, saveWord, closeAdd, searching, query]);
+  }, [draft, lookup, saveWord, cancelLookup, searching, query]);
 
   /** 回车提交搜索：记入最近搜索（去重、限量）。 */
   const commitSearch = useCallback(() => {
@@ -583,7 +576,12 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
             value={query}
             spellCheck={false}
             enterKeyHint="search"
-            onChange={(event) => setQuery(event.target.value)}
+            onChange={(event) => {
+              // 0.34.6 用户反馈「收录不要再弹新输入框，直接复用搜索框」：预览卡
+              // 的词取自搜索框，改搜索词就等于放弃这次收录——顺手撤掉旧卡
+              if (lookup.status !== "idle") cancelLookup();
+              setQuery(event.target.value);
+            }}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
@@ -613,116 +611,9 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
         </button>
       </div>
 
-      {/* 添加区默认收起：一个小按钮，不跟搜索框抢视觉。展开后回车自动查询释义。 */}
-      {!addOpen ? (
-        <button type="button" className="vocab-add-toggle" onClick={() => setAddOpen(true)}>
-          ＋ 添加新单词
-        </button>
-      ) : (
-        <div className="vocab-add">
-          <div className="vocab-add-row">
-            <input
-              ref={addInputRef}
-              type="text"
-              className="vocab-add-input"
-              placeholder="输入单词，例如 scenario"
-              value={draft}
-              spellCheck={false}
-              enterKeyHint="done"
-              autoFocus
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  submitDraft();
-                } else if (event.key === "Escape") {
-                  event.preventDefault();
-                  closeAdd();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="vocab-add-btn"
-              disabled={busy || !draft.trim() || lookup.status === "loading"}
-              onClick={submitDraft}
-            >
-              查询
-            </button>
-          </div>
-
-          {lookup.status === "loading" && (
-            <div className="vocab-lookup vocab-lookup-loading">正在查询在线释义…</div>
-          )}
-
-          {lookup.status === "done" && lookup.result && (
-            <div className="vocab-lookup">
-              <div className="vocab-lookup-word">
-                {lookup.result.word}
-                {lookup.result.phonetic && (
-                  <span className="vocab-lookup-phonetic">{lookup.result.phonetic}</span>
-                )}
-              </div>
-              {lookup.result.meaning ? (
-                <div className="vocab-lookup-meaning">{lookup.result.meaning}</div>
-              ) : (
-                <div className="vocab-lookup-none">词典里没有收录释义</div>
-              )}
-              <div className="vocab-lookup-actions">
-                <button type="button" className="vocab-btn" onClick={closeAdd}>
-                  取消
-                </button>
-                <button type="button" className="vocab-btn vocab-btn-primary" disabled={busy} onClick={confirmSave}>
-                  保存
-                </button>
-              </div>
-            </div>
-          )}
-
-          {lookup.status === "failed" && (
-            <div className="vocab-lookup">
-              <div className="vocab-lookup-none">未找到在线释义</div>
-              {lookup.manualOpen ? (
-                <input
-                  type="text"
-                  className="vocab-add-input"
-                  placeholder="手动填写释义（可留空，之后再补）"
-                  value={lookup.manualMeaning}
-                  spellCheck={false}
-                  autoFocus
-                  onChange={(event) => setLookup((prev) => ({ ...prev, manualMeaning: event.target.value }))}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      confirmSave();
-                    }
-                  }}
-                />
-              ) : (
-                <div className="vocab-lookup-actions">
-                  <button
-                    type="button"
-                    className="vocab-btn"
-                    onClick={() => setLookup((prev) => ({ ...prev, manualOpen: true }))}
-                  >
-                    手动填写释义
-                  </button>
-                </div>
-              )}
-              {lookup.manualOpen && (
-                <div className="vocab-lookup-actions">
-                  <button type="button" className="vocab-btn" onClick={closeAdd}>
-                    取消
-                  </button>
-                  <button type="button" className="vocab-btn vocab-btn-primary" disabled={busy} onClick={confirmSave}>
-                    保存
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+      {/* 0.34.6 用户反馈：独立的「＋ 添加新单词」输入区整个移除——搜索框就是
+          唯一入口。收录流程见下方空态：搜索没结果时点「收录」就地在线查询，
+          预览卡直接渲染在空态里，不再展开新的输入框 */}
 
       {/* 最近搜索（空查询时显示，方便重复查词） */}
       {!searching && recent.length > 0 && (
@@ -884,7 +775,8 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
         </div>
       )}
 
-      {/* 无结果空态：先给排查建议，再给一键收录 */}
+      {/* 无结果空态：先给排查建议，再给一键收录；0.34.6 起收录的在线查询预览
+          就地渲染在这里——不再展开独立的添加输入框（复用搜索框的词） */}
       {searchEmpty ? (
         <div className="vocab-empty-search">
           <span className="vocab-empty-icon" aria-hidden>🔍</span>
@@ -892,36 +784,102 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
           <div className="vocab-empty-tips">
             可以尝试：检查拼写 · 搜索中文释义 · 只输入部分单词
           </div>
-          <button
-            type="button"
-            className="vocab-btn vocab-btn-primary"
-            onClick={() => {
-              // 收录 = 展开添加区并带入搜索词，直接走在线查询预览。
-              // 0.34.1 用户反馈「未搜到可以提示添加单词」：该入口其实早已存在，
-              // 但幽灵按钮样式太低调被当成没有——提级为主按钮并加引导文案
-              setAddOpen(true);
-              setDraft(query.trim());
-              void runLookup(query);
-            }}
-          >
-            没有找到？收录「{query.trim()}」并查询释义
-          </button>
+          {lookup.status === "idle" ? (
+            <button
+              type="button"
+              className="vocab-btn vocab-btn-primary"
+              onClick={() => {
+                // 收录 = 直接用搜索框里的词在线查询（0.34.6：不再有添加输入区）
+                setDraft(query.trim());
+                void runLookup(query);
+              }}
+            >
+              没有找到？收录「{query.trim()}」并查询释义
+            </button>
+          ) : (
+            <>
+              {lookup.status === "loading" && (
+                <div className="vocab-lookup vocab-lookup-loading">正在查询在线释义…</div>
+              )}
+
+              {lookup.status === "done" && lookup.result && (
+                <div className="vocab-lookup">
+                  <div className="vocab-lookup-word">
+                    {lookup.result.word}
+                    {lookup.result.phonetic && (
+                      <span className="vocab-lookup-phonetic">{lookup.result.phonetic}</span>
+                    )}
+                  </div>
+                  {lookup.result.meaning ? (
+                    <div className="vocab-lookup-meaning">{lookup.result.meaning}</div>
+                  ) : (
+                    <div className="vocab-lookup-none">词典里没有收录释义</div>
+                  )}
+                  <div className="vocab-lookup-actions">
+                    <button type="button" className="vocab-btn" onClick={cancelLookup}>
+                      取消
+                    </button>
+                    <button type="button" className="vocab-btn vocab-btn-primary" disabled={busy} onClick={confirmSave}>
+                      保存
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {lookup.status === "failed" && (
+                <div className="vocab-lookup">
+                  <div className="vocab-lookup-none">未找到在线释义</div>
+                  {lookup.manualOpen ? (
+                    <input
+                      type="text"
+                      className="vocab-add-input"
+                      placeholder="手动填写释义（可留空，之后再补）"
+                      value={lookup.manualMeaning}
+                      spellCheck={false}
+                      autoFocus
+                      onChange={(event) => setLookup((prev) => ({ ...prev, manualMeaning: event.target.value }))}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") {
+                          event.preventDefault();
+                          confirmSave();
+                        }
+                      }}
+                    />
+                  ) : (
+                    <div className="vocab-lookup-actions">
+                      <button
+                        type="button"
+                        className="vocab-btn"
+                        onClick={() => setLookup((prev) => ({ ...prev, manualOpen: true }))}
+                      >
+                        手动填写释义
+                      </button>
+                    </div>
+                  )}
+                  {lookup.manualOpen && (
+                    <div className="vocab-lookup-actions">
+                      <button type="button" className="vocab-btn" onClick={cancelLookup}>
+                        取消
+                      </button>
+                      <button type="button" className="vocab-btn vocab-btn-primary" disabled={busy} onClick={confirmSave}>
+                        保存
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </div>
       ) : visible.length === 0 ? (
         <div className="vocab-empty-list">
           <span className="vocab-empty-icon" aria-hidden>✦</span>
           <p>还没有记录单词</p>
           <div className="vocab-empty-tips">
-            在笔记里选中一个词按 <kbd>Ctrl+Alt+V</kbd>，或输入一个单词开始记录。
-            单词本按账户共用一份（所有仓库共享，存本机），随时可手改。
+            在笔记里选中一个词按 <kbd>Ctrl+Alt+V</kbd>，或直接在上面的搜索框输入一个
+            单词——搜不到时点「收录」即可查释义入库。单词本按账户共用一份（所有仓库
+            共享，存本机），随时可手改。
           </div>
-          <button
-            type="button"
-            className="vocab-btn vocab-btn-primary"
-            onClick={() => setAddOpen(true)}
-          >
-            ＋ 添加单词
-          </button>
         </div>
       ) : (
         <div className="vocab-list" ref={listRef}>

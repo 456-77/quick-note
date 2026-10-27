@@ -558,11 +558,15 @@ try {
       "快捷筛选：全部/待学习/已掌握（最近添加已移进排序）",
       JSON.stringify(filters),
     );
-    // 添加区默认收起；展开 → 查询（生造词必失败）→ 手动兜底 → 保存 → Toast
-    check(!!(await evaluate(ws, `!!document.querySelector('.vocab-add-toggle')`)), "添加区默认收起（＋ 添加新单词）");
-    await evaluate(ws, `(() => { document.querySelector('.vocab-add-toggle')?.click(); return true; })()`);
-    await sleep(300);
-    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'qn24word1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
+    // 0.34.6 用户反馈后独立添加区整个移除，搜索框是唯一入口：搜索无结果 →
+    // 点「收录」就地在线查询（生造词必失败）→ 手动兜底 → 保存 → Toast
+    check(
+      (await evaluate(ws, `!document.querySelector('.vocab-add-toggle') && !document.querySelector('.vocab-add-input')`)),
+      "添加区已移除（搜索框是唯一入口）",
+    );
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-search-input'); if (!el) return false; (${nativeSet})(el, 'qn24word1'); return true; })()`);
+    await sleep(400);
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.vocab-empty-search button')].find((x) => x.textContent.includes('收录')); b?.click(); return !!b; })()`);
     await waitFor(ws, saveViaAdd, 20000, 600);
     await sleep(900);
     const toast1 = await evaluate(ws, `document.querySelector('.vocab-toast')?.textContent ?? ''`);
@@ -570,17 +574,12 @@ try {
     const vocabFile = globalVocabFile;
     let vocab = existsSync(vocabFile) ? readFileSync(vocabFile, "utf8") : "";
     check(vocab.includes("- qn24word1"), "快速添加落盘账户级单词本", vocab);
-    // 重复添加 → 提示已存在 + 查看入口（先等第一条 Toast 消失，避免轮询命中残留）
+    // 搜索已存在的词 → 列表命中 → 点条目开详情（0.34.6：无独立添加区，也就没有
+    // 「重复添加」Toast 路径——搜到即是查到，从条目进详情）
     await waitFor(ws, `!document.querySelector('.vocab-toast')`, 5000);
-    await evaluate(ws, `(() => { const t = document.querySelector('.vocab-add-toggle'); if (t) { t.click(); return true; } return !!document.querySelector('.vocab-add-input'); })()`);
-    await sleep(300);
-    await evaluate(ws, `(() => { (${nativeSet})(document.querySelector('.vocab-add-input'), 'qn24word1'); document.querySelector('.vocab-add-input')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return true; })()`);
-    await waitFor(ws, saveViaAdd, 20000, 600);
-    await sleep(900);
-    const toast2 = await waitFor(ws, `(document.querySelector('.vocab-toast')?.textContent ?? '').includes('已经添加过了')`, 6000);
-    check(!!toast2, "重复词 Toast 提示", String(await evaluate(ws, `document.querySelector('.vocab-toast')?.textContent ?? ''`)));
-    const viewBtn = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.vocab-toast button')].find((x) => x.textContent === '查看'); if (!b) return false; b.click(); return true; })()`, 4000);
-    check(viewBtn, "Toast 的「查看」打开详情");
+    await evaluate(ws, `(() => { const el = document.querySelector('.vocab-search-input'); if (!el) return false; (${nativeSet})(el, 'qn24word1'); return true; })()`);
+    await sleep(400);
+    await evaluate(ws, `(() => { const item = [...document.querySelectorAll('.vocab-item')].find((el) => el.textContent.includes('qn24word1')); item?.click(); return !!item; })()`);
     await waitFor(ws, `!!document.querySelector('.vocab-detail')`, 4000);
     check(await evaluate(ws, `document.querySelector('.vocab-detail-word')?.textContent === 'qn24word1'`), "详情弹层显示单词");
     // 详情里编辑释义/备注（0.25 起编辑表单是 音标/释义/备注 三个字段）
