@@ -195,6 +195,9 @@ try {
   if (!portReady) throw new Error("调试端口未就绪");
   let booted = false;
   for (let i = 0; i < 60 && !booted; i += 1) {
+    // 轮间必须停一拍：目标还没出现时 connectPage 立即抛错，无 sleep 的 60 轮
+    // 会在十几秒内空转耗完，冷启动（WebView2 首次初始化）根本等不够
+    await sleep(1000);
     ws = await connectPage(0).catch(() => null);
     if (!ws) continue;
     booted = await evaluate(
