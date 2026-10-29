@@ -29,6 +29,8 @@ class MainActivity : TauriActivity() {
   private var pendingShareImagePath: String? = null
   private var pendingShareImageMime: String? = null
   private var webViewRef: WebView? = null
+  /** 最新系统栏 inset（0.34.8 全幅架构：前端启动经 qnAndroid.insets() 拉取）。 */
+  private var insetJson: String = "{\"top\":0,\"bottom\":0}"
   private val mainHandler = Handler(Looper.getMainLooper())
   /** 相册选壁纸的回调（SAF）：用户选完/取消后回 JS（0.34.6 壁纸从相册选）。 */
   private var pendingBgPick = false
@@ -179,14 +181,20 @@ class MainActivity : TauriActivity() {
       )
       val lp = webView.layoutParams
       if (lp is ViewGroup.MarginLayoutParams) {
-        lp.setMargins(
-          bars.left,
-          bars.top,
-          bars.right,
-          maxOf(bars.bottom, ime.bottom),
-        )
+        // 0.34.8 用户反馈「顶部和底部的系统栏没有渲染背景图片，很突兀」：
+        // 纵向不再 margin 让出系统栏——WebView 全幅铺满，背景图层（#qn-bg-layer，
+        // fixed inset 0）跟着铺到栏后；内容避让改由前端按 --qn-inset-top/bottom
+        // CSS 变量处理。横向仍让出（刘海/挖孔侧缘），键盘照旧 margin 顶住
+        lp.setMargins(bars.left, 0, bars.right, ime.bottom)
         webView.layoutParams = lp
       }
+      // inset 喂给前端：底部在键盘弹出时归零（导航栏被键盘盖住，WebView 底缘
+      // 就是键盘顶缘，内容不再需要让出导航栏高度）
+      insetJson = "{\"top\":${bars.top},\"bottom\":${if (ime.bottom > 0) 0 else bars.bottom}}"
+      webView.evaluateJavascript(
+        "(window.__qnApplyInsets || function(){})($insetJson)",
+        null,
+      )
       insets
     }
 
@@ -241,20 +249,17 @@ class MainActivity : TauriActivity() {
    */
   inner class UpdateBridge {
     /**
-     * 系统栏区域配色（0.33.1 用户反馈「顶部和底部的颜色要和系统面板相匹配」）：
-     * edge-to-edge 下 WebView 用 margin 让出系统栏区域，条纹透出的是 decorView
-     * 的 windowBackground（默认主题色与应用表面不一致，真机上表现为黑条）。
-     * JS 侧主题变化时把应用表面色（--panel）同步过来；dark 同时控制状态栏/
-     * 导航栏图标的深浅，避免深色条上出现深色图标。
+     * 系统栏（0.34.8 全幅架构）：WebView 纵向不再让出系统栏，栏后透出的就是
+     * WebView 自己的内容（背景图层全幅铺到栏后），着色反而会把图盖住——栏
+     * 保持全透明，只按主题调状态栏/导航栏图标的深浅。color 参数保留兼容旧
+     * 调用方（0.33.1 的配色语义已由全幅内容取代）。
      */
     @JavascriptInterface
     fun setChromeBackground(color: String, dark: Boolean) {
       mainHandler.post {
         try {
-          val c = Color.parseColor(color)
-          window.decorView.setBackgroundColor(c)
-          window.statusBarColor = c
-          window.navigationBarColor = c
+          window.statusBarColor = Color.TRANSPARENT
+          window.navigationBarColor = Color.TRANSPARENT
           val controller = WindowInsetsControllerCompat(window, window.decorView)
           controller.isAppearanceLightStatusBars = !dark
           controller.isAppearanceLightNavigationBars = !dark
@@ -262,6 +267,14 @@ class MainActivity : TauriActivity() {
         }
       }
     }
+
+    /**
+     * 当前系统栏 inset（0.34.8 全幅架构）：前端启动时拉一次（qnAndroid.insets()），
+     * 之后原生在 insets 变化（旋转/键盘）时经 window.__qnApplyInsets 推送。
+     * 返回 JSON：{"top":px,"bottom":px}（bottom 已含键盘归零逻辑，见监听器）。
+     */
+    @JavascriptInterface
+    fun insets(): String = insetJson
 
     /** 是否已拥有「所有文件访问」授权（真值 = 主存储可写探测，与 Rust probe 同哲学）。 */
     @JavascriptInterface

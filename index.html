@@ -5,9 +5,75 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
     <link rel="icon" type="image/png" href="/qn-icon.png" />
     <title>Quick Note</title>
+    <script>
+      // 启动动画（0.34.8 用户反馈「在手机上添加启动动画」）的第一块拼图：主题
+      // 先于首帧落到 <html data-theme>，splash 底色与随后的应用表面无缝衔接，
+      // 顺带治掉冷启动「先白一闪再变深色」。解析口径与 lib/theme.ts 的
+      // resolveTheme 一致——那边的解析规则变了，这里要同步。
+      try {
+        var mode = JSON.parse(localStorage.getItem("quicknote.settings") || "{}").theme || "system";
+        var dark = mode === "dark" || (mode !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      } catch (e) { /* 读不到设置就按系统主题，splash 仍成立 */ }
+      window.__qnSplashAt = Date.now();
+    </script>
+    <style>
+      /* 启动动画只在触屏设备显示（用户要求手机端；桌面零视觉变化）。
+         样式全内联：bundle 尚未加载时它就必须成立。React 挂载首帧后由
+         App.tsx 的挂载 effect 加 .is-done 淡出并移除。 */
+      #qn-splash { display: none; }
+      @media (hover: none) and (pointer: coarse) {
+        #qn-splash {
+          display: flex;
+          position: fixed;
+          inset: 0;
+          z-index: 9999;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 16px;
+          background: var(--bg);
+          transition: opacity 0.32s ease;
+        }
+        #qn-splash.is-done {
+          opacity: 0;
+          pointer-events: none;
+        }
+        #qn-splash .qn-splash-mark {
+          width: 64px;
+          height: 64px;
+          color: var(--accent);
+          animation: qn-splash-in 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+        }
+        #qn-splash .qn-splash-name {
+          font-family: var(--font-ui);
+          font-size: 17px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
+          color: var(--text);
+          animation: qn-splash-in 0.5s 0.08s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+        }
+        @keyframes qn-splash-in {
+          from { opacity: 0; transform: translateY(10px) scale(0.92); }
+          to { opacity: 1; transform: none; }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          #qn-splash .qn-splash-mark,
+          #qn-splash .qn-splash-name {
+            animation: none;
+          }
+        }
+      }
+    </style>
   </head>
 
   <body>
+    <div id="qn-splash" aria-hidden="true">
+      <svg class="qn-splash-mark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
+      </svg>
+      <div class="qn-splash-name">Quick Note</div>
+    </div>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

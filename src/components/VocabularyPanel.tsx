@@ -47,13 +47,15 @@ interface Props {
   backConsumerRef?: MutableRefObject<(() => boolean) | null>;
 }
 
-type Filter = "all" | "todo" | "done";
+type Filter = "all" | "todo" | "done" | "recent";
 type Sort = "az" | "za" | "recent";
 
 const FILTERS: Array<{ key: Filter; label: string }> = [
   { key: "all", label: "全部" },
   { key: "todo", label: "待学习" },
   { key: "done", label: "已掌握" },
+  // 0.34.8 用户反馈「添加最近选项：显示最近搜索，新增的单词」
+  { key: "recent", label: "最近" },
 ];
 
 const SORTS: Array<{ key: Sort; label: string }> = [
@@ -65,6 +67,8 @@ const SORTS: Array<{ key: Sort; label: string }> = [
 const RECENT_KEY = "quicknote.vocabRecentSearches";
 const SORT_KEY = "quicknote.vocabSort";
 const RECENT_LIMIT = 8;
+/** 「最近」页「新增单词」区展示的条数上限（按收录日期取最新）。 */
+const RECENT_ADDED_LIMIT = 30;
 
 function loadRecent(): string[] {
   try {
@@ -396,10 +400,18 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     });
   }, [query]);
 
+  /** 「最近」页的新增单词：按收录日期取最新若干（0.34.8 用户反馈）。 */
+  const recentAdded = useMemo(() => {
+    return [...entries]
+      .sort((a, b) => addedAt(b).localeCompare(addedAt(a)) || b.line - a.line)
+      .slice(0, RECENT_ADDED_LIMIT);
+  }, [entries]);
+
   const visible = useMemo(() => {
     let list = entries;
     if (searching) list = list.filter((entry) => matchEntry(entry, tokens));
-    if (filter === "todo") list = list.filter((entry) => !entry.learned);
+    else if (filter === "recent") return recentAdded;
+    else if (filter === "todo") list = list.filter((entry) => !entry.learned);
     else if (filter === "done") list = list.filter((entry) => entry.learned);
     if (sort === "recent") {
       return [...list].sort(
@@ -410,10 +422,10 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     return [...list].sort((a, b) =>
       sort === "za" ? collator.compare(b.word, a.word) : collator.compare(a.word, b.word),
     );
-  }, [entries, searching, tokens, filter, sort]);
+  }, [entries, searching, tokens, filter, sort, recentAdded]);
 
-  /** 字母分组（「最近添加」排序与搜索结果是纯列表，不分组）。 */
-  const grouped = !searching && sort !== "recent";
+  /** 字母分组（「最近添加」排序、「最近」页与搜索结果是纯列表，不分组）。 */
+  const grouped = !searching && filter !== "recent" && sort !== "recent";
   const groups = useMemo(() => {
     if (!grouped) return [{ key: "", items: visible }];
     const map = new Map<string, VocabEntry[]>();
@@ -505,6 +517,54 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
   );
 
   const todoCount = useMemo(() => entries.filter((entry) => !entry.learned).length, [entries]);
+
+  /** 词条行（主列表与「最近」页的新增区共用同一份 JSX）。 */
+  const renderItem = (entry: VocabEntry) => (
+    <div
+      key={`${entry.line}-${entry.word}`}
+      className={`vocab-item${entry.learned ? " is-learned" : ""}`}
+      onClick={() => setDetailWord(entry.word)}
+    >
+      {/* 第一行：英文单词（视觉主体）+ 学习状态标签（点击即切换，规范 §七） */}
+      <div className="vocab-item-line1">
+        <span className="vocab-item-word">{entry.word}</span>
+        <button
+          type="button"
+          className={`vocab-status vocab-status-btn${entry.learned ? " is-learned" : ""}`}
+          title={entry.learned ? "移回待学习" : "标记为已掌握"}
+          disabled={busy}
+          onClick={(event) => {
+            event.stopPropagation();
+            void toggleLearned(entry, !entry.learned);
+          }}
+        >
+          <span className="vocab-status-dot" aria-hidden>{entry.learned ? "✓" : "●"}</span>
+          {entry.learned ? "已掌握" : "待学习"}
+        </button>
+      </div>
+      {/* 第二行：音标 + 发音 + 释义（0.33.0 批E 需求 §七：三行压两行，
+          释义同行省略截断，条目更紧凑；全空则省略整行） */}
+      {(entry.phonetic || entry.meaning) && (
+        <div className="vocab-item-line2">
+          {entry.phonetic && <span className="vocab-item-phonetic">{entry.phonetic}</span>}
+          {
+            <button
+              type="button"
+              className="vocab-item-speak"
+              title={`朗读 ${entry.word}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                speakWord(entry.word);
+              }}
+            >
+              🔊
+            </button>
+          }
+          {entry.meaning && <span className="vocab-item-meaning">{entry.meaning}</span>}
+        </div>
+      )}
+    </div>
+  );
 
   /**
    * 开始快速复习（0.27 规范 §八的轻量版）：从「待学习」里取队列，先只显示英文，
@@ -631,8 +691,8 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
           唯一入口。收录流程见下方空态：搜索没结果时点「收录」就地在线查询，
           预览卡直接渲染在空态里，不再展开新的输入框 */}
 
-      {/* 最近搜索（空查询时显示，方便重复查词） */}
-      {!searching && recent.length > 0 && (
+      {/* 最近搜索（空查询时显示，方便重复查词；「最近」页里已有同款区，避免重复） */}
+      {filter !== "recent" && !searching && recent.length > 0 && (
         <div className="vocab-recent">
           {recent.map((item) => (
             <button
@@ -671,7 +731,9 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
                 ? entries.length
                 : item.key === "todo"
                   ? entries.filter((entry) => !entry.learned).length
-                  : entries.filter((entry) => entry.learned).length;
+                  : item.key === "recent"
+                    ? recent.length + recentAdded.length
+                    : entries.filter((entry) => entry.learned).length;
             return (
               <button
                 key={item.key}
@@ -887,6 +949,62 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
             </>
           )}
         </div>
+      ) : filter === "recent" && !searching ? (
+        /* 0.34.8 用户反馈「添加最近选项」：最近搜索（点词即重查）+ 新增单词
+           （按收录日期取最新若干）。搜索态不进这个分支——「最近」页退化为
+           全局搜索，结果可能是任何词。 */
+        <div className="vocab-list" ref={listRef}>
+          <div className="vocab-recent-section">
+            <div className="vocab-group-letter">
+              <span>最近搜索</span>
+              <span className="vocab-group-count">· {recent.length} 条</span>
+            </div>
+            {recent.length > 0 ? (
+              <div className="vocab-recent">
+                {recent.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    className="vocab-recent-chip"
+                    onClick={() => setQuery(item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="vocab-recent-clear"
+                  title="清空最近搜索"
+                  onClick={() => {
+                    setRecent([]);
+                    try {
+                      localStorage.removeItem(RECENT_KEY);
+                    } catch {
+                      // 尽力而为
+                    }
+                  }}
+                >
+                  清除
+                </button>
+              </div>
+            ) : (
+              <div className="vocab-recent-empty">在搜索框回车查过的词会出现在这里</div>
+            )}
+          </div>
+          <div className="vocab-recent-section">
+            <div className="vocab-group-letter">
+              <span>新增单词</span>
+              <span className="vocab-group-count">
+                · {recentAdded.length} 个{entries.length > recentAdded.length ? "（最新）" : ""}
+              </span>
+            </div>
+            {recentAdded.length > 0 ? (
+              recentAdded.map((entry) => renderItem(entry))
+            ) : (
+              <div className="vocab-recent-empty">还没有收录单词</div>
+            )}
+          </div>
+        </div>
       ) : visible.length === 0 ? (
         <div className="vocab-empty-list">
           <span className="vocab-empty-icon" aria-hidden>✦</span>
@@ -907,52 +1025,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
                   <span className="vocab-group-count">· {group.items.length} 个单词</span>
                 </div>
               )}
-              {group.items.map((entry) => (
-                <div
-                  key={`${entry.line}-${entry.word}`}
-                  className={`vocab-item${entry.learned ? " is-learned" : ""}`}
-                  onClick={() => setDetailWord(entry.word)}
-                >
-                  {/* 第一行：英文单词（视觉主体）+ 学习状态标签（点击即切换，规范 §七） */}
-                  <div className="vocab-item-line1">
-                    <span className="vocab-item-word">{entry.word}</span>
-                    <button
-                      type="button"
-                      className={`vocab-status vocab-status-btn${entry.learned ? " is-learned" : ""}`}
-                      title={entry.learned ? "移回待学习" : "标记为已掌握"}
-                      disabled={busy}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        void toggleLearned(entry, !entry.learned);
-                      }}
-                    >
-                      <span className="vocab-status-dot" aria-hidden>{entry.learned ? "✓" : "●"}</span>
-                      {entry.learned ? "已掌握" : "待学习"}
-                    </button>
-                  </div>
-                  {/* 第二行：音标 + 发音 + 释义（0.33.0 批E 需求 §七：三行压两行，
-                      释义同行省略截断，条目更紧凑；全空则省略整行） */}
-                  {(entry.phonetic || entry.meaning) && (
-                    <div className="vocab-item-line2">
-                      {entry.phonetic && <span className="vocab-item-phonetic">{entry.phonetic}</span>}
-                      {
-                        <button
-                          type="button"
-                          className="vocab-item-speak"
-                          title={`朗读 ${entry.word}`}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            speakWord(entry.word);
-                          }}
-                        >
-                          🔊
-                        </button>
-                      }
-                      {entry.meaning && <span className="vocab-item-meaning">{entry.meaning}</span>}
-                    </div>
-                  )}
-                </div>
-              ))}
+              {group.items.map((entry) => renderItem(entry))}
             </div>
           ))}
         </div>

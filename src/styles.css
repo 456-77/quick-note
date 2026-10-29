@@ -701,6 +701,21 @@ kbd {
   box-shadow: -1px 0 0 var(--border-soft);
 }
 
+/* 右栏（日历/目录/统计/单词）滚动条不占布局位：切天数等内容增减时原生滚动条
+   弹出/收起，会把整栏内容横向挤 9px（0.34.8 用户反馈「右边的滑动条还是占用了
+   空间」——上轮只按手机截图盖了移动端，桌面同一容器 .calendar overflow:auto
+   同样弹条）。滚动本身不受影响（滚轮/触摸/拖动照旧），只是不画指示条。
+   移动端另有全区隐藏规则（媒体查询块内），此处全平台覆盖右栏。 */
+.sidebar-right,
+.sidebar-right * {
+  scrollbar-width: none;
+}
+.sidebar-right::-webkit-scrollbar,
+.sidebar-right *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
 /* 让收起动画不把内容挤变形：内容保持自身宽度，被裁掉而不是重排。
    宽度要给子元素自带的左右 margin（各 10px，共 20px）留出余量——此前直接用
    面板全宽，子元素外宽超出容器 20px，被 overflow:hidden 永久裁掉右边一条，
@@ -1711,6 +1726,18 @@ div.tree-item:focus-visible {
    表格单元格在 widget DOM 里不受 CM 选区层管理，单独保留主题色。 */
 .cm-lp-table ::selection {
   background: var(--selection);
+}
+
+/* 代码块行是整行不透明底（.cm-lp-codeblock 的 --code-bg），而 CM 的选区层
+   画在行背景**之下**——代码块里拖多行选区时只剩光标行的 activeLine 可见
+   （0.34.8 用户反馈「代码块中选中多行内容，还是只有光标选中行变色」）。
+   drawSelection 会用 Prec.highest 把原生 ::selection 压成 transparent（配合
+   行下的选区层），这里以更高特异性在代码块语境恢复原生 ::selection：按内联
+   盒画在行背景之上，多行选区全部可见。代码块内容是纯语法 token，没有带
+   padding 的行内 chip，「选中行底边多一块高度」的坑在这里不存在。 */
+.editor-host .cm-lp-codeblock::selection,
+.editor-host .cm-lp-codeblock ::selection {
+  background-color: var(--selection) !important;
 }
 
 .cm-editor.cm-focused {
@@ -5293,8 +5320,11 @@ html.qn-bg-on .editor-empty {
   align-items: center;
   justify-content: center;
   background: rgba(8, 8, 14, 0.82);
-  /* 灯箱支持拖动/选中：默认抓手，按住拖动时由 JS 无所谓；SVG 文字保持可选 */
+  /* 灯箱支持拖动/选中：默认抓手，按住拖动时由 JS 无所谓；SVG 文字保持可选。
+     touch-action:none 交给 JS 处理触摸（捏合缩放/平移），浏览器不再抢做原生
+     平移缩放（0.34.8 移动端触摸通道） */
   cursor: grab;
+  touch-action: none;
 }
 
 .qn-mermaid-overlay:active {
@@ -5305,6 +5335,9 @@ html.qn-bg-on .editor-empty {
   background: var(--surface);
   border-radius: var(--radius);
   padding: 16px;
+  /* 缩放走 width 布局尺寸（可超视口）：不压 flex 收缩——默认 flex-shrink:1 会把
+     超宽的图压回视口宽，捏合放大看起来"没反应"（0.34.8 实测踩中） */
+  flex: none;
   /* 不用 will-change:transform——缩放已改为改实际宽高（真实布局重排），
      合成层提升反而会让 foreignObject 文字按初始尺度光栅化，放大即糊 */
 }
@@ -5962,7 +5995,7 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 .update-banner {
   position: fixed;
   right: 16px;
-  bottom: 16px;
+  bottom: calc(16px + var(--qn-inset-bottom, 0px));
   z-index: 130;
   display: flex;
   align-items: center;
@@ -5997,9 +6030,11 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 .qn-lightbox img {
   /* 0.34.6 缩放模型换成布局宽度：尺寸全由 JS 写 width（naturalWidth*scale），
      max-* 钳制会顶掉它；height auto 防变形。transform 只留平移（位图不再被
-     矩阵拉伸，任何倍率都按原图重新采样，放大不发糊） */
+     矩阵拉伸，任何倍率都按原图重新采样，放大不发糊）。flex:none 同 mermaid
+     灯箱——flex 容器里的默认收缩会把超出视口的放大压回去 */
   max-width: none;
   height: auto;
+  flex: none;
   border-radius: 6px;
   box-shadow: 0 8px 48px rgba(0, 0, 0, 0.55);
   user-select: none;
@@ -9000,6 +9035,17 @@ button.cm-tag:hover {
 
 /* 触屏没有 hover：⋯ 按钮常驻（文件树行、待办行、代码块复制等同理 */
 @media (hover: none) and (pointer: coarse) {
+  /* 0.34.8 用户反馈「右侧滚动条不要单独占用空间…像向左挤了一下」：自定义
+     webkit 滚动条在 Chromium 里永远占布局空间，内容增减（如切换天数待办变多）
+     时滚动条弹出/收起会把整个面板内容横向挤 9px。触屏上滚动没有指示条的必要，
+     全区隐藏（触摸滚动不受影响），桌面保持细滚动条不变 */
+  * {
+    scrollbar-width: none;
+  }
+  *::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
   .tree-item .tree-more {
     display: inline-flex;
   }
@@ -10164,6 +10210,17 @@ button.cm-tag:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 5px;
+}
+
+/* 「最近」页的两个分区（0.34.8 用户反馈）：分区标题复用字母分组的行样式 */
+.vocab-recent-section {
+  margin-bottom: 16px;
+}
+
+.vocab-recent-empty {
+  padding: 4px 2px 2px;
+  font-size: 12.5px;
+  color: var(--text-faint);
 }
 
 .vocab-recent-chip {
@@ -12579,5 +12636,56 @@ html.qn-bg-on .editor-pane-col.is-split {
     gap: 8px;
     justify-content: flex-end;
     margin-top: 10px;
+  }
+}
+
+/* ==================== 0.34.8 真机反馈批：系统栏全幅避让 ==================== */
+/* 用户反馈「顶部和底部的系统栏没有渲染背景图片，很突兀」：Kotlin 侧 WebView
+   纵向不再 margin 让出系统栏（MainActivity insets 监听：margin=(left,0,right,ime)），
+   背景图层（#qn-bg-layer，fixed inset 0）跟着铺到栏后；栏高经 --qn-inset-top/bottom
+   CSS 变量喂给前端（启动 qnAndroid.insets() 拉 + 原生经 window.__qnApplyInsets
+   推，键盘弹出时 bottom 归零）。变量未就绪时全部 0 兜底；桌面无此变量，下面
+   规则全部退化为原值（零视觉变化）。平板（coarse >900px）同样吃避让。 */
+@media (hover: none) and (pointer: coarse) {
+  .app {
+    padding-top: var(--qn-inset-top, 0px);
+    padding-bottom: var(--qn-inset-bottom, 0px);
+  }
+  .sidebar-left,
+  .sidebar-right {
+    /* 全屏抽屉：内容让开系统栏，抽屉底色照旧铺满全屏（含栏后） */
+    padding-top: calc(8px + var(--qn-inset-top, 0px));
+    padding-bottom: calc(8px + var(--qn-inset-bottom, 0px));
+  }
+  .vault-home-page {
+    padding-top: var(--qn-inset-top, 0px);
+    padding-bottom: var(--qn-inset-bottom, 0px);
+  }
+}
+
+@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
+  .m-top-pills {
+    top: calc(10px + var(--qn-inset-top, 0px));
+  }
+  .m-bottom-bar {
+    bottom: calc(12px + var(--qn-inset-bottom, 0px));
+  }
+  .banner {
+    top: calc(10px + var(--qn-inset-top, 0px));
+  }
+  .m-sheet {
+    bottom: calc(10px + var(--qn-inset-bottom, 0px));
+  }
+  .quick-capture {
+    bottom: var(--qn-inset-bottom, 0px);
+  }
+  .mobile-md-toolbar {
+    /* 编辑态贴键盘（html.qn-ime-open bottom:0 特异性更高照旧赢）；键盘未弹时
+       让开导航栏 */
+    bottom: var(--qn-inset-bottom, 0px);
+  }
+  .settings-panel {
+    padding-top: var(--qn-inset-top, 0px);
+    padding-bottom: var(--qn-inset-bottom, 0px);
   }
 }

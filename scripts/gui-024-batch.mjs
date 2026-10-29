@@ -554,8 +554,8 @@ try {
     );
     const filters = await evaluate(ws, `[...document.querySelectorAll('.vocab-filter')].map((b) => b.textContent)`);
     check(
-      filters.length === 3 && filters[0].includes("全部") && filters[1].includes("待学习") && filters[2].includes("已掌握"),
-      "快捷筛选：全部/待学习/已掌握（最近添加已移进排序）",
+      filters.length === 4 && filters[0].includes("全部") && filters[1].includes("待学习") && filters[2].includes("已掌握") && filters[3].includes("最近"),
+      "快捷筛选：全部/待学习/已掌握/最近（0.34.8 用户反馈加最近页：最近搜索+新增单词）",
       JSON.stringify(filters),
     );
     // 0.34.6 用户反馈后独立添加区整个移除，搜索框是唯一入口：搜索无结果 →

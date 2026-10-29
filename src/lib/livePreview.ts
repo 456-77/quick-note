@@ -41,6 +41,7 @@ import {
 } from "./table.ts";
 import { renderEmbeddedNote } from "./embed.ts";
 import { openLightbox } from "./lightbox.ts";
+import { isMobile } from "./platform.ts";
 import { getSettings } from "./settings.ts";
 import { bindingFor, comboOf, isCapturing, isHotkeyEnabled } from "./hotkeys.ts";
 import {
@@ -760,7 +761,16 @@ function enhanceMermaid(
         svg.classList.add("me-fit-tall");
         svg.classList.remove("me-zoom-px");
         svg.style.removeProperty("width");
-        svg.style.height = "60vh";
+        if (isMobile()) {
+          // 0.34.8 用户反馈「图渲染太大，超出屏幕的内容被截断了」：60vh 高按
+          // 比例折算出的宽在窄屏上会超出块内容宽（右侧被裁掉，横滑又被抽屉手势
+          // 抢走）——按容器可用宽把高再钳一次，图完整落在视口内。桌面不变
+          const availW = Math.max(120, box.clientWidth - 24); // 块左右 padding 各 12
+          const byWidth = availW * (state.naturalH / state.naturalW);
+          svg.style.height = `${Math.round(Math.min(window.innerHeight * 0.6, byWidth))}px`;
+        } else {
+          svg.style.height = "60vh";
+        }
       } else {
         svg.classList.remove("me-fit-tall", "me-zoom-px");
         svg.style.removeProperty("width");
@@ -853,11 +863,18 @@ function enhanceMermaid(
 /**
  * 全屏放大浮层（mermaid 灯箱）。
  *
- * 交互与图片灯箱对齐：**按住左键拖动**移动位置（按下后位移超过 5px 才算拖动，
- * 轻点不拖仍然能选中 SVG 里的节点文字并复制）、滚轮缩放（以指针为锚）、
- * Esc / 点击背景关闭。缩放平移只改 transform，不影响 SVG 文本的选中。
+ * 桌面：**按住左键拖动**移动位置（按下后位移超过 5px 才算拖动，轻点不拖仍然
+ * 能选中 SVG 里的节点文字并复制）、滚轮缩放（以指针为锚）、Esc / 点击背景关闭。
+ * 缩放平移只改 transform，不影响 SVG 文本的选中。
+ *
+ * 移动端（0.34.8 用户反馈「点击放大后无法手指滑动缩放；左右滑动会触发抽屉」）：
+ * 触摸通道与图片灯箱对齐——双指捏合缩放（以捏合中心为锚）+ 单指拖动平移 +
+ * 双击在适应/实际大小间切换 + 点背景关闭；touchmove 一律 preventDefault 拦掉
+ * 页面滚动与浏览器手势，浮层另列入 App 抽屉手势监听的排除名单。缩放上限 12
+ * （0.34.8 用户反馈「增大点击后缩放支持的最大放大倍数」），密图小字也看得清。
  */
 function openMermaidOverlay(svg: SVGSVGElement): void {
+  const mobile = isMobile();
   const overlay = document.createElement("div");
   overlay.className = "qn-mermaid-overlay";
   overlay.title = "拖动移动 · 滚轮缩放 · Esc 关闭";
@@ -869,6 +886,13 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
   clone.style.width = "auto";
   clone.style.height = "auto";
   overlay.appendChild(clone);
+  if (mobile) {
+    // 操作提示条：复用图片灯箱的样式（overlay 是 fixed，absolute 提示贴其底部）
+    const hint = document.createElement("div");
+    hint.className = "qn-lightbox-hint";
+    hint.textContent = "双指缩放 · 拖动平移 · 双击 适应/实际大小 · 点背景关闭";
+    overlay.appendChild(hint);
+  }
 
   // 基准尺寸：首次布局（fit 进 92vw/86vh）后实测。缩放改**实际宽高**而不是
   // transform:scale——foreignObject 里的 HTML 文字按初始尺度光栅化后不再重排，
@@ -886,18 +910,37 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
     clone.style.transform = `translate(${x}px, ${y}px)`;
   };
 
-  const onWheel = (event: WheelEvent) => {
-    event.preventDefault();
-    const next = Math.min(8, Math.max(0.1, scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  const MAX_SCALE = 12;
+  const zoomAt = (factor: number, cx: number, cy: number) => {
+    const next = Math.min(MAX_SCALE, Math.max(0.1, scale * factor));
     if (next === scale) return;
-    // 以指针为锚缩放：指针下的图点保持不动
-    const dx = event.clientX - window.innerWidth / 2 - x;
-    const dy = event.clientY - window.innerHeight / 2 - y;
+    // 以 (cx, cy)（视口坐标）为锚缩放：图上该点保持不动
+    const dx = cx - window.innerWidth / 2 - x;
+    const dy = cy - window.innerHeight / 2 - y;
     const ratio = next / scale;
     x += dx * (1 - ratio);
     y += dy * (1 - ratio);
     scale = next;
     apply();
+  };
+  const fit = () => {
+    scale = 1;
+    x = 0;
+    y = 0;
+    apply();
+  };
+  // 实际大小：viewBox 宽 / 适应宽 的比例（fit 时 scale=1 是 92vw 基准）
+  const actual = () => {
+    const vbW = svg.viewBox.baseVal.width || 0;
+    scale = vbW > 0 && baseW > 0 ? Math.min(MAX_SCALE, vbW / baseW) : 2;
+    x = 0;
+    y = 0;
+    apply();
+  };
+
+  const onWheel = (event: WheelEvent) => {
+    event.preventDefault();
+    zoomAt(event.deltaY < 0 ? 1.15 : 1 / 1.15, event.clientX, event.clientY);
   };
   overlay.addEventListener("wheel", onWheel, { passive: false });
 
@@ -932,11 +975,90 @@ function openMermaidOverlay(svg: SVGSVGElement): void {
   window.addEventListener("mousemove", onMove);
   window.addEventListener("mouseup", onUp);
 
+  // 移动端触摸（捏合/单指拖/双击），交互口径同图片灯箱（lightbox.ts）
+  let lastTapTime = 0;
+  let downX = 0;
+  let downY = 0;
+  let pinchDist = 0;
+  let pinchScale = 1;
+  const touchDist = (event: TouchEvent) => {
+    const a = event.touches[0];
+    const b = event.touches[1];
+    return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  };
+  const onTouchStart = (event: TouchEvent) => {
+    dragging = false;
+    const t = event.touches[0];
+    downX = t.clientX;
+    downY = t.clientY;
+    if (event.touches.length === 2) {
+      pinchDist = touchDist(event);
+      pinchScale = scale;
+    } else if (event.touches.length === 1) {
+      lastX = t.clientX;
+      lastY = t.clientY;
+    }
+  };
+  const onTouchMove = (event: TouchEvent) => {
+    event.preventDefault();
+    if (event.touches.length === 2) {
+      const dist = touchDist(event);
+      if (pinchDist > 0 && dist > 0) {
+        const cx = (event.touches[0].clientX + event.touches[1].clientX) / 2;
+        const cy = (event.touches[0].clientY + event.touches[1].clientY) / 2;
+        zoomAt((pinchScale * (dist / pinchDist)) / scale, cx, cy);
+      }
+      return;
+    }
+    if (event.touches.length === 1) {
+      const t = event.touches[0];
+      x += t.clientX - lastX;
+      y += t.clientY - lastY;
+      lastX = t.clientX;
+      lastY = t.clientY;
+      apply();
+    }
+  };
+  const onTouchEnd = (event: TouchEvent) => {
+    if (event.touches.length === 1) {
+      // 双指收起一根转单指拖动：基准点重置到剩余手指，避免从旧坐标起跳
+      const rest = event.touches[0];
+      lastX = rest.clientX;
+      lastY = rest.clientY;
+      return;
+    }
+    if (event.touches.length > 0) return;
+    pinchDist = 0;
+    // 轻点判定（位移 <10px 才算 tap）：点背景关闭；图上双击切适应/实际大小
+    const t = event.changedTouches[0];
+    if (Math.hypot(t.clientX - downX, t.clientY - downY) > 10) return;
+    const target = event.target;
+    const now = Date.now();
+    if (now - lastTapTime < 320 && (target === clone || clone.contains(target as Node))) {
+      lastTapTime = 0;
+      if (scale > 1.05) fit();
+      else actual();
+      return;
+    }
+    lastTapTime = now;
+    if (target === overlay) close();
+  };
+  if (mobile) {
+    overlay.addEventListener("touchstart", onTouchStart, { passive: true });
+    overlay.addEventListener("touchmove", onTouchMove, { passive: false });
+    overlay.addEventListener("touchend", onTouchEnd);
+  }
+
   const close = () => {
     overlay.removeEventListener("wheel", onWheel);
     overlay.removeEventListener("mousedown", onDown);
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);
+    if (mobile) {
+      overlay.removeEventListener("touchstart", onTouchStart);
+      overlay.removeEventListener("touchmove", onTouchMove);
+      overlay.removeEventListener("touchend", onTouchEnd);
+    }
     document.removeEventListener("keydown", onKey, true);
     overlay.remove();
   };

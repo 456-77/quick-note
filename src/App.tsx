@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import moment from "moment";
 import type { Moment } from "moment";
 import { EditorState } from "@codemirror/state";
@@ -845,6 +845,9 @@ export default function App() {
     const update = updateRef.current;
     if (!update || updatingRef.current) return;
     updatingRef.current = true;
+    // 0.34.8 用户反馈「点击更新后按钮还存在且还可以点」：点下瞬间就切进度态——
+    // 原先要等首个进度事件（网络 Started 往返）才切，慢网时按钮停留数秒像没反应
+    setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新… 0%", progress: 0 }));
     // 弹窗关着（或下载中途关掉）= 后台下载：进度按 25% 一档发系统通知
     let background = updateDismissedRef.current;
     let notifiedAt = 0;
@@ -1123,6 +1126,52 @@ export default function App() {
     };
   }, []);
 
+  // 系统栏全幅（0.34.8 用户反馈「顶部和底部的系统栏没有渲染背景图片，很突兀」）：
+  // Kotlin 侧 WebView 纵向不再 margin 让出系统栏，背景图层跟着铺到栏后；内容
+  // （药丸/底条/抽屉/横幅等）的避让走 --qn-inset-top/bottom CSS 变量——启动经
+  // qnAndroid 桥同步拉一次（useLayoutEffect 保证首帧就位，不闪跳），之后原生在
+  // insets 变化（旋转/键盘）时经 window.__qnApplyInsets 推。桌面无桥，零影响。
+  useLayoutEffect(() => {
+    if (!isMobile()) return;
+    const apply = (top: number, bottom: number) => {
+      const root = document.documentElement;
+      root.style.setProperty("--qn-inset-top", `${top}px`);
+      root.style.setProperty("--qn-inset-bottom", `${bottom}px`);
+    };
+    (window as unknown as Record<string, unknown>).__qnApplyInsets = (ins: { top: number; bottom: number }) => {
+      if (typeof ins?.top === "number" && typeof ins?.bottom === "number") apply(ins.top, ins.bottom);
+    };
+    try {
+      const raw = (window as unknown as { qnAndroid?: { insets?: () => string } }).qnAndroid?.insets?.();
+      if (raw) {
+        const parsed = JSON.parse(raw) as { top?: number; bottom?: number };
+        apply(parsed.top ?? 0, parsed.bottom ?? 0);
+      }
+    } catch {
+      // 桥未就绪（老包/非安卓路径）：等原生推
+    }
+  }, []);
+
+  // 启动动画收尾（0.34.8「在手机上添加启动动画」）：index.html 里的静态 splash
+  // 在 bundle 加载前就显示（主题经内联脚本先行落盘，无闪白）；应用挂载、首帧
+  // 绘制后再淡出并移除。最少停留 700ms——快启动时入场动画不至于一闪而过。
+  // 桌面上 splash 本就 display:none，这里顺手清节点即可。
+  useLayoutEffect(() => {
+    const splash = document.getElementById("qn-splash");
+    if (!splash) return;
+    const startedAt = (window as unknown as { __qnSplashAt?: number }).__qnSplashAt ?? Date.now();
+    const timer = window.setTimeout(
+      () => {
+        requestAnimationFrame(() => {
+          splash.classList.add("is-done");
+          window.setTimeout(() => splash.remove(), 420);
+        });
+      },
+      Math.max(0, 700 - (Date.now() - startedAt)),
+    );
+    return () => window.clearTimeout(timer);
+  }, []);
+
   // 0.34.1 内容区滑动手势（用户拍板：边缘留给系统返回，不做边缘带）：双抽屉
   // 都关时，内容区**右滑开左抽屉、左滑开右抽屉**；有抽屉开着时保留 0.34.0 的
   // 关闭语义——左抽屉左滑关、右抽屉右滑关。纯观察监听（passive、不
@@ -1139,6 +1188,19 @@ export default function App() {
   }, [rightCollapsed]);
   useEffect(() => {
     if (!isMobile()) return;
+    // 从触点向上找「实际横向溢出且 overflow-x 为 auto/scroll」的祖先：宽表
+    // （.cm-tb-scroll）、放大后的 mermaid 块（.cm-lp-mermaid）等都算。走到 body
+    // 为止；cm-scroller 的 overflow-x 是 hidden（硬禁页面横滚），不会误伤正文
+    // 横滑开抽屉的主路径
+    const inHorizontalScroller = (start: Element): boolean => {
+      for (let el: Element | null = start; el && el !== document.body; el = el.parentElement) {
+        if (el.scrollWidth > el.clientWidth + 1) {
+          const overflowX = getComputedStyle(el).overflowX;
+          if (overflowX === "auto" || overflowX === "scroll") return true;
+        }
+      }
+      return false;
+    };
     let sx = 0;
     let sy = 0;
     let st = 0;
@@ -1151,7 +1213,7 @@ export default function App() {
       // target 必须 instanceof Element：合成事件派发在 document 上时 target 是
       // Document，没有 closest 方法（批测的 TouchEvent 直接派发到 document）
       const target = e.target;
-      if (target instanceof Element && target.closest(".m-sheet, .settings-panel, .palette-overlay, .vault-home-page, .quick-capture, .update-dialog, .context-menu, .menu-backdrop, .qn-lightbox")) {
+      if (target instanceof Element && target.closest(".m-sheet, .settings-panel, .palette-overlay, .vault-home-page, .quick-capture, .update-dialog, .context-menu, .menu-backdrop, .qn-lightbox, .qn-mermaid-overlay")) {
         sx = t.clientX;
         sy = t.clientY;
         return;
@@ -1163,13 +1225,17 @@ export default function App() {
         // ① 编辑态 / 键盘弹出时不响应——防和光标、选词操作打架；
         // ② 起手点在交互元素（按钮/输入框/药丸/底条/工具栏）上不响应；
         // ③ 编辑器已有文本选区时不响应——拖选择柄调选区是横向的长拖。
+        // ④ 0.34.8 用户反馈「mermaid 灯箱里左右滑动触发抽屉」：起手点在横向
+        //    可滚区域内（宽表 .cm-tb-scroll、放大后的 mermaid 块等）时，这次
+        //    横滑属于内容平移，不开抽屉。
         // 另外 onEnd 有时间门（<400ms）——长按选词本身就占 ~500ms，慢拖不算滑。
         const editing =
           document.body.classList.contains("m-editing") ||
           document.documentElement.classList.contains("qn-ime-open");
         const selecting = typeof window.getSelection === "function" && (window.getSelection()?.toString().length ?? 0) > 0;
         const onInteractive = target instanceof Element && target.closest("button, input, textarea, select, a, label, .m-top-pills, .m-bottom-bar, .mobile-md-toolbar");
-        if (!editing && !selecting && !onInteractive) intent = "open-content";
+        const inHScroll = target instanceof Element && inHorizontalScroller(target);
+        if (!editing && !selecting && !onInteractive && !inHScroll) intent = "open-content";
       } else if (!leftCollapsedRef.current) {
         intent = "close-left"; // 左抽屉开着：任意位置左滑关
       } else {
