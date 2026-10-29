@@ -9078,6 +9078,11 @@ button.cm-tag:hover {
   /* 侧栏 → 抽屉：0.34.1 用户反馈改为**全屏**（Obsidian 移动端同款——抽屉
      盖满整屏，关闭走系统返回/点文件/仓库切换）。上下贴屏幕边（系统栏仍由
      原生 margin 让出） */
+  /* 收件箱（速记管理）是 in-flow 全屏页：页头自行避让系统栏 */
+  .cm-root {
+    padding-top: calc(10px + var(--qn-inset-top, 0px));
+    padding-bottom: calc(12px + var(--qn-inset-bottom, 0px));
+  }
   .sidebar-left,
   .sidebar-right {
     position: fixed;
@@ -11837,7 +11842,7 @@ html.qn-bg-on .editor-pane-col.is-split {
      顶部 60px：0.34.10 用户反馈「阅读界面顶部标题被悬浮药丸盖住」——正文
      起点让开药丸带（4px+inset 起、42px 高），滚动后内容照旧从药丸下穿过 */
   .cm-scroller {
-    padding: 60px 10px 34vh;
+    padding: calc(var(--qn-inset-top, 0px) + 52px) 10px 34vh;
   }
   .editor-host .cm-scroller > .cm-content {
     margin-left: 10px;
@@ -12649,10 +12654,10 @@ html.qn-bg-on .editor-pane-col.is-split {
    推，键盘弹出时 bottom 归零）。变量未就绪时全部 0 兜底；桌面无此变量，下面
    规则全部退化为原值（零视觉变化）。平板（coarse >900px）同样吃避让。 */
 @media (hover: none) and (pointer: coarse) {
-  .app {
-    padding-top: var(--qn-inset-top, 0px);
-    padding-bottom: var(--qn-inset-bottom, 0px);
-  }
+  /* 0.34.10 用户反馈「顶栏和底栏还是没有显示文字内容，Obsidian 能实现」：
+     .app 不再让出系统栏——编辑区滚动视口全幅铺满，滚动时文字直接穿过
+     状态栏/手势条后面（Obsidian 同款）；初始避让由 .cm-scroller 的
+     padding-top 承担（顶栏高度 + 呼吸），抽屉/主页/设置各自保留 inset padding */
   .sidebar-left,
   .sidebar-right {
     /* 全屏抽屉：内容让开系统栏，抽屉底色照旧铺满全屏（含栏后） */

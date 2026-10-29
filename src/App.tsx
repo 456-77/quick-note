@@ -6274,7 +6274,9 @@ export default function App() {
       {/* 0.34.0 Obsidian 化移动壳层：顶部两颗药丸（左=抽屉，右=编辑toggle+⋮）+
           底部工具条（‹ › 搜索 ＋ [标签数] ☰）。沉浸/编辑态由 body.m-zen /
           body.m-editing 类在 CSS 里收走，这里无条件渲染。所有键开合前先跑
-          mobileOverlayGone 互斥（浮层不与抽屉/彼此共存）。 */}
+          mobileOverlayGone 互斥（浮层不与抽屉/彼此共存）。
+          0.34.11：顶栏恢复药丸——用户澄清不要常驻标题，要的是整屏处处可滚
+          （内容穿过系统栏后面，.app 已不再让出系统栏，见 styles.css） */}
       {isMobile() && (
         <>
           <div className="m-top-pills">

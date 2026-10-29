@@ -101,6 +101,33 @@ export function bgFilterCss(bg: BgSettings): string {
     .join(" ");
 }
 
+/**
+ * 0.34.11 用户反馈「输入内容时背景图片会上移」：键盘弹出时原生把 WebView
+ * 压矮（margin=ime.bottom），fixed 的背景层跟着重排，cover 重算——图整张跳位。
+ * 把层高锁在「无键盘时的视口高」：键盘期间不跟随（多出的部分被键盘盖住）；
+ * 键盘收起/旋转/桌面改窗时延迟 150ms 重锁（等 Kotlin 的 qn-ime-open 类先落地，
+ * 避免把压矮中的高度锁进去）。
+ */
+function syncBgLayerHeight(): void {
+  const layer = document.getElementById(LAYER_ID);
+  if (!layer) return;
+  layer.style.height = `${window.innerHeight}px`;
+}
+
+function scheduleBgLayerSync(): void {
+  window.setTimeout(() => {
+    if (!document.documentElement.classList.contains("qn-ime-open")) syncBgLayerHeight();
+  }, 150);
+}
+
+let bgSyncWired = false;
+function ensureBgLayerSync(): void {
+  if (bgSyncWired || typeof window === "undefined") return;
+  bgSyncWired = true;
+  window.addEventListener("resize", scheduleBgLayerSync);
+  window.visualViewport?.addEventListener("resize", scheduleBgLayerSync);
+}
+
 /** 把一张背景参数快照铺到 DOM 上。参数改变、仓库切换后都要重新调用。 */
 export function applyBackground(bg: BgSettings, vaultPath: string | null): void {
   if (typeof document === "undefined") return; // Node 测试环境没有 DOM
@@ -125,6 +152,8 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
     document.body.appendChild(layer);
   }
   root.classList.add(ROOT_CLASS);
+  ensureBgLayerSync();
+  scheduleBgLayerSync();
 
   // 壁纸轮换的绝对路径直接用；否则仓库内相对路径 → 绝对路径 → asset URL。
   // 背景路径是仓库内路径（与插件一致），这里靠 vaultPath 现场拼出绝对路径；
