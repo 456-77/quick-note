@@ -189,8 +189,15 @@ class MainActivity : TauriActivity() {
         webView.layoutParams = lp
       }
       // inset 喂给前端：底部在键盘弹出时归零（导航栏被键盘盖住，WebView 底缘
-      // 就是键盘顶缘，内容不再需要让出导航栏高度）
-      insetJson = "{\"top\":${bars.top},\"bottom\":${if (ime.bottom > 0) 0 else bars.bottom}}"
+      // 就是键盘顶缘，内容不再需要让出导航栏高度）。
+      // ⚠ insets 是**物理像素**，前端 CSS 变量要的是 dp——0.34.8 首发直接把 px
+      // 写进 CSS，被 DPR（2.6~3x）放大成天文数字，表现为「上下空白很大」
+      // （0.34.8 用户反馈）。这里换算成 dp；120dp 是保险钳（正常 24~48dp，
+      // 防 ROM 虚报直接撑爆布局）。
+      val density = resources.displayMetrics.density
+      val topDp = (bars.top / density).toInt().coerceIn(0, 120)
+      val bottomDp = if (ime.bottom > 0) 0 else (bars.bottom / density).toInt().coerceIn(0, 120)
+      insetJson = "{\"top\":$topDp,\"bottom\":$bottomDp}"
       webView.evaluateJavascript(
         "(window.__qnApplyInsets || function(){})($insetJson)",
         null,
@@ -270,8 +277,9 @@ class MainActivity : TauriActivity() {
 
     /**
      * 当前系统栏 inset（0.34.8 全幅架构）：前端启动时拉一次（qnAndroid.insets()），
-     * 之后原生在 insets 变化（旋转/键盘）时经 window.__qnApplyInsets 推送。
-     * 返回 JSON：{"top":px,"bottom":px}（bottom 已含键盘归零逻辑，见监听器）。
+     * 之后原生在 insets 变化（旋转/键盘）时经 window.__qnApplyInsets 推。
+     * 返回 JSON：{"top":dp,"bottom":dp}（dp 单位、已含键盘归零与 120dp 钳制，
+     * 见监听器——CSS 变量要 dp，物理 px 会被 DPR 放大）。
      */
     @JavascriptInterface
     fun insets(): String = insetJson
