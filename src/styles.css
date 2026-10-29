@@ -9359,7 +9359,8 @@ button.cm-tag:hover {
      底部 34vh 足足一屏的三分之一。压缩为固定值（120px ≈ 工具栏+底栏+余量，
      用固定 px 而不是 vh——键盘弹出时 vh 会缩，留白跟着跳）。 */
   .editor-host .cm-scroller {
-    padding: 10px 14px 120px;
+    /* 0.34.11：起点让开药丸带 + 系统栏；滚动后内容穿过系统栏（.app 已不避让） */
+    padding: calc(var(--qn-inset-top, 0px) + 52px) 14px 120px;
   }
 }
 
@@ -11842,7 +11843,7 @@ html.qn-bg-on .editor-pane-col.is-split {
      顶部 60px：0.34.10 用户反馈「阅读界面顶部标题被悬浮药丸盖住」——正文
      起点让开药丸带（4px+inset 起、42px 高），滚动后内容照旧从药丸下穿过 */
   .cm-scroller {
-    padding: calc(var(--qn-inset-top, 0px) + 52px) 10px 34vh;
+    padding: 8px 10px 34vh;
   }
   .editor-host .cm-scroller > .cm-content {
     margin-left: 10px;
