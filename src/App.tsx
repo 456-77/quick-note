@@ -900,7 +900,15 @@ export default function App() {
     }
     if (!bridge.canRequestInstall()) {
       bridge.requestInstallPermission();
-      setStatus("请在系统设置中允许 Quick Note「安装未知应用」，回来后再点一次「下载并安装」");
+      // 0.34.10 用户反馈「点击更新按钮不会立马消失」：跳授权页只发了一条
+      // 底部状态提示，弹窗纹丝不动，用户不知道发生了什么。把引导直接写进
+      // 弹窗标题（state=error 保持三按钮，回来再点一次即可）
+      setUpdateCheck((prev) => ({
+        ...prev,
+        state: "error",
+        message: "需要「安装未知应用」权限：已打开系统设置，请允许后回来再点「下载并安装」",
+        available: true,
+      }));
       return;
     }
     if (updatingRef.current) return;
@@ -909,7 +917,9 @@ export default function App() {
       updatingRef.current = false;
       setUpdateCheck((prev) =>
         ok
-          ? { ...prev, state: "done", message: `更新包已下载：${msg}，按系统提示完成安装`, available: true, progress: undefined }
+          ? // 0.34.10 用户反馈「下载好之后直接装，回来按钮还在」：安装器已拉起，
+            // 流程结束——顺手关掉弹窗，不再把三个按钮摆回来
+            { ...prev, state: "done", message: `更新包已下载：${msg}，按系统提示完成安装`, available: true, progress: undefined, dismissed: true }
           : { ...prev, state: "error", message: `更新失败：${msg}（网络不稳可重试，或到发布页下载 APK）`, available: true, progress: undefined },
       );
     };

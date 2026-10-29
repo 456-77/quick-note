@@ -11833,9 +11833,11 @@ html.qn-bg-on .editor-pane-col.is-split {
   }
 
   /* 用户反馈「内容展示区域两边空白太大」：桌面 24px 边距 + 900px 阅读宽度
-     居中在手机上没有意义，收到 10px；行号 gutter 让位 47→40px */
+     居中在手机上没有意义，收到 10px；行号 gutter 让位 47→40px。
+     顶部 60px：0.34.10 用户反馈「阅读界面顶部标题被悬浮药丸盖住」——正文
+     起点让开药丸带（4px+inset 起、42px 高），滚动后内容照旧从药丸下穿过 */
   .cm-scroller {
-    padding: 8px 10px 34vh;
+    padding: 60px 10px 34vh;
   }
   .editor-host .cm-scroller > .cm-content {
     margin-left: 10px;
@@ -12665,13 +12667,15 @@ html.qn-bg-on .editor-pane-col.is-split {
 
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
   .m-top-pills {
-    top: calc(10px + var(--qn-inset-top, 0px));
+    /* 0.34.10 用户反馈「顶部区域利用起来」：贴住状态栏下缘，少留一截 */
+    top: calc(4px + var(--qn-inset-top, 0px));
   }
   .m-bottom-bar {
-    bottom: calc(12px + var(--qn-inset-bottom, 0px));
+    bottom: calc(8px + var(--qn-inset-bottom, 0px));
   }
   .banner {
-    top: calc(10px + var(--qn-inset-top, 0px));
+    /* 顶到药丸带下方：横幅不再盖住可交互的药丸 */
+    top: calc(56px + var(--qn-inset-top, 0px));
   }
   .m-sheet {
     bottom: calc(10px + var(--qn-inset-bottom, 0px));
