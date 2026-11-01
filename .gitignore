@@ -42,3 +42,6 @@ latest.json
 # ZCode 工作区（会话目录，勿入库）
 .zcode/
 *.tmp-*.png
+
+# 脱敏词表（本地自留，不入库）
+scripts/sensitive-words.local.txt

@@ -774,16 +774,17 @@ try {
     };
   })()`);
   check(menuRows.open, "0.34.0：☰ 动作菜单 sheet 打开（含 grabber，图2）");
-  // 0.34.1：标签/保存两行迁去右上 ⋮ 笔记菜单，应用级菜单剩 8 行
-  check(menuRows.rows.length === 8, `0.34.1：应用级动作菜单 8 行（实际 ${menuRows.rows.length}）`);
+  // 0.34.1：标签/保存两行迁去右上 ⋮ 笔记菜单，应用级菜单剩 8 行；0.35.2 加「语句库管理」= 9 行
+  check(menuRows.rows.length === 9, `0.35.2：应用级动作菜单 9 行（实际 ${menuRows.rows.length}）`);
   check(menuRows.bdBg !== "rgba(0, 0, 0, 0)", "0.34.0：sheet 遮罩有底色");
   check(
     menuRows.rows.some((r) => r.includes("今天的日记")) &&
       menuRows.rows.some((r) => r.includes("速记")) &&
       menuRows.rows.some((r) => r.includes("添加单词")) &&
+      menuRows.rows.some((r) => r.includes("语句库管理")) &&
       menuRows.rows.some((r) => r.includes("立即同步")) &&
       menuRows.rows.some((r) => r.includes("设置")),
-    "0.34.0：菜单条目齐（日记/速记/单词/同步/设置）",
+    "0.35.2：菜单条目齐（日记/速记/单词/语句库/同步/设置）",
   );
   // 0.34.1 右上 ⋮ = 当前笔记菜单（阅读/源码/固定/重命名/收藏/标签/关闭/保存）
   await evaluate(ws, `(() => { [...document.querySelectorAll('.m-sheet-row')].find((b) => b.textContent.includes('设置'))?.click(); return true; })()`);

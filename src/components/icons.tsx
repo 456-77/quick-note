@@ -211,6 +211,14 @@ export const IconLibrary = ({ size, className }: IconProps) => (
   </svg>
 );
 
+export const IconDatabase = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <ellipse cx="12" cy="5" rx="8" ry="3" />
+    <path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5" />
+    <path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6" />
+  </svg>
+);
+
 export const IconCloud = ({ size, className }: IconProps) => (
   <svg {...base(size, className)}>
     <path d="M17.5 19a4.5 4.5 0 0 0 .42-8.98 7 7 0 0 0-13.36 2.2A4 4 0 0 0 6 19Z" />

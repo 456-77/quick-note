@@ -83,7 +83,7 @@ export default function DdlDialog({
           ref={areaRef}
           className="ddl-textarea"
           placeholder={
-            "粘贴 CREATE TABLE 语句（可多条）或 Java 类源码，名称自动识别，例如：\n\nCREATE TABLE ids_check_scenario (\n  id bigint NOT NULL,\n  ...\n) COMMENT '检查场景';\n\npublic class CheckScenario { ... }"
+            "粘贴 CREATE TABLE 语句（可多条）或 Java 类源码，名称自动识别，例如：\n\nCREATE TABLE app_user (\n  id bigint NOT NULL,\n  ...\n) COMMENT '用户表';\n\npublic class AppUser { ... }"
           }
           value={draft}
           spellCheck={false}

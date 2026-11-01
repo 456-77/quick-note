@@ -8314,8 +8314,26 @@ button.cm-tag:hover {
     display: none;
   }
 
+  /* 0.35.2 手机实测：单行 flex 装不下「标题+搜索+按钮」，标题列 nowrap 的
+     副标题「快速整理刚刚记录的内容」被不透明背景的搜索框盖住（用户截图）——
+     头部换成两行：标题+副标题独占一行，搜索+按钮一行 */
+  .cm-head {
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .cm-head-titles {
+    flex: 1 1 100%;
+  }
+
+  .cm-head > .cm-spacer {
+    display: none;
+  }
+
   .cm-search {
-    width: 140px;
+    flex: 1;
+    width: auto;
+    min-width: 0;
   }
 }
 

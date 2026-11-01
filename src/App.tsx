@@ -35,6 +35,7 @@ import {
   IconChart,
   IconCheck,
   IconClock,
+  IconDatabase,
   IconCode,
   IconCopy,
   IconDots,
@@ -8425,6 +8426,19 @@ export default function App() {
             >
               <IconClock size={17} />
               速记管理
+            </button>
+            <button
+              type="button"
+              className="m-sheet-row"
+              onClick={() => {
+                setMobileMenuOpen(false);
+                // 0.35.2 用户反馈「手机上无法打开 DDL 管理面板」：管理面板只有
+                // 快捷键和命令面板两个入口，手机上补一个 ☰ 菜单直达
+                shortcuts.libraryManager();
+              }}
+            >
+              <IconDatabase size={17} />
+              语句库管理
             </button>
             <button
               type="button"
