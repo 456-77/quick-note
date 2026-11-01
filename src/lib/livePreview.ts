@@ -2664,6 +2664,13 @@ interface BuildContext {
    * `**`、`` ` `` 全部恢复成源码——Obsidian 只展开光标所在的那个元素。
    */
   cursorIn: (from: number, to: number) => boolean;
+  /**
+   * 非空选区是否与 [from, to] 相交。与 cursorIn（只认折叠光标）互补：
+   * 拖选/双击选中=明确的编辑意图，此时没有"空光标"，链接必须保持源码态，
+   * 否则选着选着整条链接翻成渲染态、要改的目标/别名直接消失
+   * （0.35.1 用户反馈「选中链接源码进行修改时变成渲染态」）。
+   */
+  selected: (from: number, to: number) => boolean;
 }
 
 /** 节点是否与当前选区同处一行（同行则显示源码）。 */
@@ -2709,6 +2716,9 @@ export function buildLivePreviewDecorations(
     cursorIn: (from, to) =>
       editing &&
       state.selection.ranges.some((range) => range.empty && range.from >= from && range.to <= to),
+    selected: (from, to) =>
+      editing &&
+      state.selection.ranges.some((range) => !range.empty && range.from < to && range.to > from),
   };
 
   const marks: Range<Decoration>[] = [];
@@ -2766,12 +2776,15 @@ export function buildLivePreviewDecorations(
 
   // wiki 语法先注册：去重时它要优先于解析器为它生成的那些节点。
   for (const item of wiki) {
-    // 只有点进括号区（`[[` / `![[` / `]]`）才显出源码；点链接文字保持渲染——
-    // 整个 item 一个区间的话，点文字也会让括号弹出来、文字横移
-    const bracketHit =
-      ctx.cursorIn(item.from, item.from + (item.embed ? 3 : 2)) ||
-      ctx.cursorIn(item.to - 2, item.to);
-    if (bracketHit) continue; // 光标在该元素内才显示源码
+    // 光标或非空选区落在链接里（**整段**）就显出源码。曾经只认括号区（0.23：
+    // 点链接文字保持渲染，免得括号弹出来文字横移）——但点击委托在 mousedown
+    // 就 preventDefault，鼠标根本放不进光标，能落到文字中间的光标只来自
+    // 键盘/拖选=编辑意图；只认括号区的代价是目标区打到一半就翻渲染态、
+    // 后续字符不可见（盲打）。与 Markdown Link 分支（本来就是整段判定）拉齐。
+    // 非空选区相交同理=编辑意图（0.35.1 用户反馈「选中链接源码进行修改时
+    // 变成渲染态」）。
+    const showSource = ctx.selected(item.from, item.to) || ctx.cursorIn(item.from, item.to);
+    if (showSource) continue; // 光标在该元素内才显示源码
 
     if (item.embed) {
       if (IMAGE_EXT.test(item.target)) {
@@ -2935,31 +2948,50 @@ export function buildLivePreviewDecorations(
           }
           const open = node.node.firstChild;
           const close = open?.nextSibling;
-          if (
-            open?.name === "LinkMark" &&
-            close?.name === "LinkMark" &&
-            !ctx.cursorIn(node.from, node.to)
-          ) {
-            hide(open.from, open.to);
-            // 从 `]` 一路藏到节点末尾，覆盖 `](url)`。
-            hide(close.from, node.to);
-            if (close.from > open.to) {
-              const urlNode = node.node.getChild("URL");
-              const url = urlNode ? doc.sliceString(urlNode.from, urlNode.to) : "";
-              marks.push(
-                isExternalUrl(url)
-                  ? externalLinkMark(url).range(open.to, close.from)
-                  // 内部链接（含 `#锚点`）：带 data-md-link 供 App 的 document
-                  // 委托点击跟随（0.23 用户反馈：链接文件的语法支持）。属性里放
-                  // **解析后的仓库相对路径**（embed 渲染的同名属性同理）——点击
-                  // 处理就不用再关心相对路径是相对哪篇笔记。
-                  : Decoration.mark({
-                      class: "cm-lp-link",
-                      attributes: {
-                        "data-md-link": resolveWikiRelative(resources, url) ?? url,
-                      },
-                    }).range(open.to, close.from),
-              );
+          if (open?.name === "LinkMark" && close?.name === "LinkMark") {
+            const urlNode = node.node.getChild("URL");
+            let url = urlNode ? doc.sliceString(urlNode.from, urlNode.to) : "";
+            // 藏到哪：默认整个 Link 节点末尾（覆盖 `](url)`）。
+            let showTo = node.to;
+            // 0.35.1 用户反馈「链接笔记失效了，是地址有空格的原因吗」：CommonMark
+            // 不允许裸目标含空格，`[文本](2026-10-28 海亮.md)` 会被 lezer 拆成
+            // 无 URL 的快捷链接 + 字面 `(…)`——链接点不动、括号内容裸露成死文本。
+            // 放宽：Link 没解析出 URL 且同行紧跟 `(...)`（无嵌套括号）时，把括号
+            // 整体当作链接目标；与 wiki 语法重叠时不接管（那归 wiki 分支）。
+            if (!urlNode) {
+              const lineTo = doc.lineAt(node.to).to;
+              const loose = /^\(([^()\n]+)\)/.exec(doc.sliceString(node.to, lineTo));
+              if (loose && loose[1].trim() && !inWiki(node.to, node.to + loose[0].length)) {
+                url = loose[1].trim();
+                showTo = node.to + loose[0].length;
+              }
+            }
+            // `<>` 包裹的目标：URL 节点连尖括号一起给出（CommonMark 逃生通道），
+            // 剥掉再解析，否则 resolveWikiRelative 必失败、链接永远点不开
+            if (url.length > 1 && url.startsWith("<") && url.endsWith(">")) {
+              url = url.slice(1, -1);
+            }
+            // 光标或非空选区落在链接（含放宽吸收的目标区）内=编辑意图，显示源码
+            if (!ctx.cursorIn(node.from, showTo) && !ctx.selected(node.from, showTo)) {
+              hide(open.from, open.to);
+              // 从 `]` 一路藏到节点（或放宽吸收的目标）末尾，覆盖 `](url)`。
+              hide(close.from, showTo);
+              if (close.from > open.to) {
+                marks.push(
+                  isExternalUrl(url)
+                    ? externalLinkMark(url).range(open.to, close.from)
+                    // 内部链接（含 `#锚点`）：带 data-md-link 供 App 的 document
+                    // 委托点击跟随（0.23 用户反馈：链接文件的语法支持）。属性里放
+                    // **解析后的仓库相对路径**（embed 渲染的同名属性同理）——点击
+                    // 处理就不用再关心相对路径是相对哪篇笔记。
+                    : Decoration.mark({
+                        class: "cm-lp-link",
+                        attributes: {
+                          "data-md-link": resolveWikiRelative(resources, url) ?? url,
+                        },
+                      }).range(open.to, close.from),
+                );
+              }
             }
           }
           return false;

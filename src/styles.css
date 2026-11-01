@@ -11815,6 +11815,142 @@ button.cm-tag:hover {
   border-color: var(--accent);
 }
 
+/* 语句库管理面板（0.35.1）：复用 .quick-capture 壳（桌面 600px 弹窗/移动
+   Bottom Sheet 同一套），列表按 ## 项目段落分组 */
+.ddl-mgr-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.ddl-mgr-tabs > button {
+  padding: 4px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.ddl-mgr-tabs > button.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.ddl-mgr-search {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.ddl-mgr-search:focus {
+  border-color: var(--accent);
+}
+
+.ddl-mgr-list {
+  max-height: 48vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.ddl-mgr-empty {
+  padding: 26px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.ddl-mgr-project {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.ddl-mgr-count {
+  margin-left: auto;
+  font-weight: 400;
+  font-size: 11px;
+}
+
+.ddl-mgr-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ddl-mgr-row:last-child {
+  border-bottom: 0;
+}
+
+.ddl-mgr-row:hover {
+  background: var(--hover);
+}
+
+.ddl-mgr-name {
+  flex: 0 1 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  color: var(--text);
+}
+
+.ddl-mgr-preview {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.ddl-mgr-row > button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.ddl-mgr-row > button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ddl-mgr-row > button.is-confirm {
+  color: #fff;
+  background: var(--danger);
+  border-color: transparent;
+}
+
 /* ------------------------------------------------ 分屏查看（0.31） */
 
 /* 编辑区主体：编辑器 + 可选分屏窗格横向排布 */

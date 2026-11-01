@@ -71,10 +71,17 @@ export const COMMAND_KEYS: CommandKeys[] = [
   },
   {
     id: "ddlCapture",
-    label: "收录建表语句…",
-    desc: "弹窗粘贴 CREATE TABLE 自动识别表名，合并进仓库的 DDL 笔记；笔记里悬停已收录的表名会浮动显示建表语句。按了没反应多半是组合键被其他软件全局占用（QQ 的「锁定」默认就是 Ctrl+Alt+L），在这里改绑即可",
+    label: "收录语句（DDL / 实体）…",
+    desc: "弹窗粘贴建表语句或 Java 类源码（class/interface/enum/record），自动识别后分别收进 DDL 库 / 实体库笔记，可指定项目段落（## 项目名）；笔记里悬停已收录的表名/类名会浮动显示。按了没反应多半是组合键被其他软件全局占用（QQ 的「锁定」默认就是 Ctrl+Alt+L），在这里改绑即可",
     group: "edit",
     keys: ["Mod-Alt-J"],
+  },
+  {
+    id: "libraryManager",
+    label: "语句库管理…",
+    desc: "面板浏览库里已收录的全部表/类（DDL 库与 Java 实体库同一个面板，页签切换）：按项目分组、搜索过滤，每条可定位到库笔记对应行、复制语句、删除（两步确认）",
+    group: "edit",
+    keys: ["Mod-Alt-K"],
   },
   {
     id: "jsonPanel",
@@ -112,6 +119,13 @@ export const COMMAND_KEYS: CommandKeys[] = [
     desc: "选中则包裹 **，再按取消（0.22 起 Ctrl+B 让位给它，文件栏改 Ctrl+\\）",
     group: "markdown",
     keys: ["Mod-B"],
+  },
+  {
+    id: "insertLink",
+    label: "插入内部链接",
+    desc: "选中文本包成 [[链接]]：选区恰好是库内笔记名（或含 / 的路径）就当目标，否则当别名、光标停到前面的目标槽位直接打笔记名（[[长名.md|别名]] 的书写顺序）；光标已在链接里再按取消。外部链接不用它，直接粘贴网址即可",
+    group: "markdown",
+    keys: ["Mod-Shift-K"],
   },
   { id: "toggleLeft", label: "收起 / 展开文件栏", desc: "默认 Ctrl+\\（Ctrl+B 已让位给粗体，Obsidian 同款）", group: "nav", keys: ["Mod-\\"] },
   { id: "toggleRight", label: "收起 / 展开右侧面板", group: "nav", keys: ["Mod-Shift-B"] },

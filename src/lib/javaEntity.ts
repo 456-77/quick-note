@@ -20,7 +20,7 @@
  * 不碰 DOM、不碰 Tauri，Node 里直接断言（verify-all 的一节）。
  */
 
-import { ddlSections, sectionProjectAt, type DdlEntry, type DdlLibrary } from "./ddl.ts";
+import { ddlSections, dropEmptyFence, sectionProjectAt, type DdlEntry, type DdlLibrary } from "./ddl.ts";
 
 const CLASS_RE =
   /(?:^|\n)[ \t]*(?:(?:public|protected|private|static|final|abstract|sealed)\s+)*(?:class|interface|enum|record)[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)/g;
@@ -214,6 +214,63 @@ export function javaNoteIntro(): string {
     "实体类源码集中收录在这里（设置里可改路径）。笔记里光标悬停在已收录的类名上，会浮动显示该类的源码；用「收录建表语句」弹窗粘贴类源码即可收录（自动识别 class/interface/enum/record），`## 项目名` 段落区分同名类。",
     "",
   ].join("\n");
+}
+
+// -------------------------------------------------------- 管理面板配套（0.35.1）
+
+/**
+ * 在库笔记里定位某项目下某个类的源码（面板「定位/删除」用）。
+ * 与 {@link locateDdlEntry} 同构：目标项目段落内**最后一次**出现的声明行
+ * （解析口径一致），classSpan 切到配对右花括号。找不到返回 null。
+ */
+export function locateClassEntry(
+  text: string,
+  name: string,
+  project = "",
+): { from: number; to: number; line: number } | null {
+  const section = ddlSections(text).find((sec) => sec.project === project);
+  if (!section || section.to <= section.from) return null;
+  const span = text.slice(section.from, section.to);
+  const re = classAt(name, "gm");
+  let last: RegExpExecArray | null = null;
+  for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
+  if (!last) return null;
+  const abs = section.from + last.index;
+  const { cut } = classSpan(text.slice(abs));
+  return { from: abs, to: abs + cut, line: newlineCount(text, abs) };
+}
+
+/**
+ * 从库笔记里删除某项目下某个类的源码（面板删除用）。
+ * 与 {@link removeDdlEntry} 同构：删类体 + 行尾换行 + 紧跟的空白行，删空后
+ * 的 ```java 围栏整块拿掉（复用 ddl.ts 的 dropEmptyFence——先从这导出）。
+ */
+export function removeClassEntry(
+  existing: string,
+  name: string,
+  project = "",
+): { text: string; line: number } | null {
+  const hit = locateClassEntry(existing, name, project);
+  if (!hit) return null;
+  let end = hit.to;
+  if (existing.startsWith("\r\n", end)) end += 2;
+  else if (existing[end] === "\n") end += 1;
+  for (;;) {
+    const nl = existing.indexOf("\n", end);
+    const lineEnd = nl < 0 ? existing.length : nl + 1;
+    if (lineEnd === end || existing.slice(end, lineEnd).trim() !== "") break;
+    end = lineEnd;
+  }
+  let text = existing.slice(0, hit.from) + existing.slice(end);
+  text = dropEmptyFence(text, hit.from);
+  return { text, line: hit.line };
+}
+
+/** pos 之前的换行数（0 基行号）。 */
+function newlineCount(text: string, pos: number): number {
+  let count = 0;
+  for (let i = text.indexOf("\n"); i >= 0 && i < pos; i = text.indexOf("\n", i + 1)) count += 1;
+  return count;
 }
 
 // -------------------------------------------------------- Java 着色纯函数

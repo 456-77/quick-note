@@ -323,6 +323,103 @@ export function ddlNoteIntro(): string {
   ].join("\n");
 }
 
+// -------------------------------------------------------- 管理面板配套（0.35.1）
+
+/** 非全局版 CREATE 头匹配（表名反查显示名用；CREATE_RE 带 g 有 lastIndex 状态）。 */
+const CREATE_ONE =
+  /create\s+table\s+(?:if\s+not\s+exists\s+)?[`"[]?([A-Za-z_][A-Za-z0-9_$#.]*)[`"\]]?/i;
+
+/** 从语句文本里反查表名（面板显示用；库 Map 的键是小写名）。 */
+export function ddlEntryName(ddl: string): string {
+  return CREATE_ONE.exec(ddl)?.[1] ?? "";
+}
+
+/**
+ * 在库笔记里定位某项目下某张表的语句（面板「定位/删除」用）。
+ *
+ * 定位口径与收录替换一致：在目标项目段落内找**最后一次**出现的 CREATE 头
+ * （解析与合并都以最后一次出现为准），再按同一套 statementSpan 切出语句体。
+ * 返回 span（字符区间）与 line（0 基行号，openNoteAt 的行参数口径）；
+ * 段落/表都不存在返回 null。
+ */
+export function locateDdlEntry(
+  text: string,
+  table: string,
+  project = "",
+): { from: number; to: number; line: number } | null {
+  const section = ddlSections(text).find((sec) => sec.project === project);
+  if (!section || section.to <= section.from) return null;
+  const span = text.slice(section.from, section.to);
+  const re = tableAt(table, "gi");
+  let last: RegExpExecArray | null = null;
+  for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
+  if (!last) return null;
+  const abs = section.from + last.index;
+  const { cut } = statementSpan(text.slice(abs), last[0].length);
+  return { from: abs, to: abs + cut, line: newlineCount(text, abs) };
+}
+
+/**
+ * 从库笔记里删除某项目下某张表的语句（面板删除用）。
+ *
+ * 删语句本体 + 行尾换行 + 紧跟的整行空白行（不留双空行）；语句删空导致围栏块
+ * 只剩语言标签行时把整块围栏拿掉。返回新文本与语句原所在行（0 基）；
+ * 找不到返回 null（调用方提示），原文不动。
+ */
+export function removeDdlEntry(
+  existing: string,
+  table: string,
+  project = "",
+): { text: string; line: number } | null {
+  const hit = locateDdlEntry(existing, table, project);
+  if (!hit) return null;
+  let end = hit.to;
+  // 语句自己的行尾换行
+  if (existing.startsWith("\r\n", end)) end += 2;
+  else if (existing[end] === "\n") end += 1;
+  // 之后的整行空白行一并吞掉（不产生连续空行；内容行/围栏行即停）
+  for (;;) {
+    const nl = existing.indexOf("\n", end);
+    const lineEnd = nl < 0 ? existing.length : nl + 1;
+    if (lineEnd === end || existing.slice(end, lineEnd).trim() !== "") break;
+    end = lineEnd;
+  }
+  let text = existing.slice(0, hit.from) + existing.slice(end);
+  text = dropEmptyFence(text, hit.from);
+  return { text, line: hit.line };
+}
+
+/**
+ * 删空语句后清理只剩语言标签行的空围栏块（```sql / ```java）。
+ * 从 at 往前找最近的围栏开头、往后找闭合，体内只剩空白才动；找不到/还有
+ * 内容一律原样返回。
+ */
+export function dropEmptyFence(text: string, at: number): string {
+  const openAt = text.lastIndexOf("```", Math.max(0, at - 1));
+  if (openAt < 0) return text;
+  const closeAt = text.indexOf("```", at);
+  if (closeAt < 0) return text;
+  const body = text.slice(openAt + 3, closeAt);
+  const nl = body.indexOf("\n");
+  if (nl < 0) return text;
+  if (!/^[ \t]*(sql|java)?[ \t]*$/.test(body.slice(0, nl))) return text;
+  if (!/^\s*$/.test(body.slice(nl + 1))) return text;
+  let start = text.lastIndexOf("\n", openAt) + 1;
+  // 围栏前若正好留了一个空行，收掉一个避免双空行
+  if (text.slice(0, start).endsWith("\n\n")) start -= 1;
+  let end = closeAt + 3;
+  if (text[end] === "\r") end += 1;
+  if (text[end] === "\n") end += 1;
+  return text.slice(0, start) + text.slice(end);
+}
+
+/** pos 之前的换行数（= 0 基行号；CRLF 也按一个换行算）。 */
+function newlineCount(text: string, pos: number): number {
+  let count = 0;
+  for (let i = text.indexOf("\n"); i >= 0 && i < pos; i = text.indexOf("\n", i + 1)) count += 1;
+  return count;
+}
+
 // -------------------------------------------------------- 悬浮配套纯函数
 //
 // 放在这个纯模块里（而不是 ddlHover.ts）：Node 侧 verify 直接断言，不必拉起

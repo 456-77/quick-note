@@ -25,7 +25,8 @@ import { detectLanguage } from "./languageDetect.ts";
  *
  * 入参：`lineText` 是本行文本，`fromCol`/`toCol` 是选区在本行内的列（空选区时相等）。
  * 返回：
- * - `{ remove: [起, 止] }`：成对反引号的区间（删掉即取消行内代码）；
+ * - `{ remove: [起, 止], text }`：成对反引号连同内容的区间，`text` 是剥掉标记后
+ *   应该留下的内容（取消=整段替换回纯文本）；
  * - `{ wrap: [左插位, 右插位] }`：两侧各插一个反引号（包裹成行内代码）；
  * - `null`：此选区没法做行内代码切换（跨行、内容里已有反引号等），调用方跳过。
  *
@@ -38,12 +39,12 @@ export function inlineCodeToggleAt(
   lineText: string,
   fromCol: number,
   toCol: number,
-): { remove: [number, number] } | { wrap: [number, number] } | null {
+): { remove: [number, number]; text: string } | { wrap: [number, number] } | null {
   const selected = lineText.slice(fromCol, toCol);
   // 1) 选区自带反引号（`选中 \`code\`` 这种）：去掉两侧
   if (selected.length >= 2 && selected.startsWith("`") && selected.endsWith("`")) {
     const inner = selected.slice(1, -1);
-    if (!inner.includes("`")) return { remove: [fromCol, toCol] };
+    if (!inner.includes("`")) return { remove: [fromCol, toCol], text: inner };
     return null;
   }
 
@@ -54,7 +55,7 @@ export function inlineCodeToggleAt(
   if (leftAt >= 0 && rightAt > leftAt) {
     const inner = lineText.slice(leftAt + 1, rightAt);
     if (!inner.includes("`") && fromCol >= leftAt + 1 && toCol <= rightAt) {
-      return { remove: [leftAt, rightAt + 1] };
+      return { remove: [leftAt, rightAt + 1], text: inner };
     }
   }
 
@@ -88,9 +89,11 @@ export function toggleInlineCode(view: EditorView): boolean {
     }
     if ("remove" in action) {
       const [a, b] = action.remove;
-      changes.push({ from: line.from + a, to: line.from + b, insert: "" });
+      // 取消=整段替换回剥掉标记的内容。此前 insert: "" 连代码文字一起删——
+      // 光标在 `code` 里按 Ctrl+` 会把代码清掉（0.35.1 修，纯函数补了 text 字段）
+      changes.push({ from: line.from + a, to: line.from + b, insert: action.text });
       ranges.push(
-        EditorSelection.range(line.from + a, Math.max(line.from + b - 2, line.from + a)),
+        EditorSelection.range(line.from + a, line.from + a + action.text.length),
       );
     } else {
       const [a, b] = action.wrap;
@@ -588,6 +591,113 @@ export function wrapSelection(view: EditorView, marker: string): boolean {
 /** 切换粗体（`**`）。 */
 export function toggleBold(view: EditorView): boolean {
   return wrapSelection(view, "**");
+}
+
+// ---------------------------------------------------------------- 内部链接
+
+/**
+ * wiki 链接里「该还原成哪段纯文本」：显示文本——有别名取别名，别名空取目标。
+ * 取消链接时把用户看到过的文字留下来（与行内代码取消=保留 code 同一原则），
+ * `[[目标|别名]]` 整段剥括号只会剩 "目标|别名" 的杂交串，不是任何人要的。
+ */
+function wikiDisplayTextOf(inner: string): string {
+  const pipe = inner.indexOf("|");
+  if (pipe < 0) return inner;
+  return inner.slice(pipe + 1) || inner.slice(0, pipe);
+}
+
+/**
+ * 计算内部链接（wiki 语法 `[[目标|别名]]`）切换在**一行文本内**的动作。
+ *
+ * 三段判定与 {@link inlineCodeToggleAt} 同构：
+ * 1. 选区自带括号（含 `![[` 嵌入形态）→ 取消；
+ * 2. 选区/光标落在同一对括号里（中间不许再出现括号，跨了别的链接宁可不当
+ *    它存在）→ 取消那一对（`!` 一起剥）；
+ * 3. 其余 → 包裹。
+ */
+export function wikiLinkToggleAt(
+  lineText: string,
+  fromCol: number,
+  toCol: number,
+): { remove: [number, number]; text: string } | { wrap: [number, number] } | null {
+  const selected = lineText.slice(fromCol, toCol);
+  // 1) 选区自带括号
+  if (selected.length >= 4 && selected.endsWith("]]")) {
+    const head = selected.startsWith("![[") ? 3 : selected.startsWith("[[") ? 2 : 0;
+    if (head > 0) {
+      const inner = selected.slice(head, -2);
+      if (!inner.includes("[[") && !inner.includes("]]")) {
+        return { remove: [fromCol, toCol], text: wikiDisplayTextOf(inner) };
+      }
+    }
+  }
+
+  // 2) 选区/光标所在的一对括号
+  const leftAt = fromCol > 0 ? lineText.lastIndexOf("[[", fromCol - 1) : -1;
+  const rightAt = lineText.indexOf("]]", toCol);
+  if (leftAt >= 0 && rightAt > leftAt) {
+    const inner = lineText.slice(leftAt + 2, rightAt);
+    if (!inner.includes("[[") && !inner.includes("]]") && fromCol >= leftAt + 2 && toCol <= rightAt) {
+      const embed = leftAt > 0 && lineText[leftAt - 1] === "!";
+      return { remove: [embed ? leftAt - 1 : leftAt, rightAt + 2], text: wikiDisplayTextOf(inner) };
+    }
+  }
+
+  // 3) 包裹。选区里已有链接语法的不包（会拆出错误的边界）。
+  if (selected.includes("[[") || selected.includes("]]")) return null;
+  return { wrap: [fromCol, toCol] };
+}
+
+/**
+ * 内部链接切换（0.35.1 用户反馈「快捷添加链接的快捷键」）：
+ *
+ * - 选区/光标已在链接里 → 取消，还原显示文本（{@link wikiLinkToggleAt}）；
+ * - 空选区 → 插入 `[[]]`，光标落中间；
+ * - 非空选区按内容分流（Obsidian Ctrl+K「选区=显示文字、光标进目标位」同思路）：
+ *   选区恰好是库内笔记名（noteIndex 能按名解析）或含 `/` 的路径 → 当**目标**，
+ *   包成 `[[文本]]`、光标贴文本末尾便于续打补全；
+ *   否则当**别名**，包成 `[[|文本]]`、光标停在前面的目标槽位——正是
+ *   `[[长笔记名.md|(10.28)]]` 这种「短别名 + 长目标」的书写顺序，打完目标即可。
+ *
+ * 跨行选区没法包（wiki 语法单行）返回 false，由调用方提示。
+ */
+export function toggleWikiLink(
+  view: EditorView,
+  noteIndex: { has(name: string): boolean },
+): boolean {
+  const { state } = view;
+  const range = state.selection.main;
+  const line = state.doc.lineAt(range.from);
+  // 行内链接不跨行：跨行选区直接不做（调用方给提示）
+  if (state.doc.lineAt(range.to).number !== line.number) return false;
+  const action = wikiLinkToggleAt(line.text, range.from - line.from, range.to - line.from);
+  if (!action) return false;
+
+  if ("remove" in action) {
+    const [a, b] = action.remove;
+    view.dispatch({
+      changes: { from: line.from + a, to: line.from + b, insert: action.text },
+      selection: { anchor: line.from + a },
+      scrollIntoView: true,
+    });
+    view.focus();
+    return true;
+  }
+
+  const [a, b] = action.wrap;
+  const selected = line.text.slice(a, b);
+  // 目标判定与 resolveWikiRelative 的索引通道同口径：纯名字查索引，含 / 按路径
+  const asTarget =
+    range.empty || selected.includes("/") || noteIndex.has(selected.trim().toLowerCase());
+  const insert = asTarget ? `[[${selected}]]` : `[[|${selected}]]`;
+  const targetSlot = line.from + a + 2;
+  view.dispatch({
+    changes: { from: line.from + a, to: line.from + b, insert },
+    selection: { anchor: asTarget && !range.empty ? targetSlot + selected.length : targetSlot },
+    scrollIntoView: true,
+  });
+  view.focus();
+  return true;
 }
 
 /**

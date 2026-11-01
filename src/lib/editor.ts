@@ -17,7 +17,7 @@ import { ddlHover } from "./ddlHover";
 import { ddlKnownMarks } from "./ddlMark";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
-import { codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList } from "./codeEdit";
+import { codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList, toggleWikiLink } from "./codeEdit";
 import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing, isHotkeyEnabled } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
@@ -518,6 +518,20 @@ function editorToggleKeymap(): Extension {
       if (hits("toggleBold")) {
         event.preventDefault();
         return toggleBold(view);
+      }
+      // 内部链接（0.35.1 用户反馈：快捷添加链接）。目标/别名分流要查文件名
+      // 索引——用资源上下文里与 wiki 解析同一条 embedIndex，口径永远一致
+      if (hits("insertLink")) {
+        event.preventDefault();
+        const ok = toggleWikiLink(view, view.state.facet(livePreviewContext).embedIndex);
+        if (!ok) {
+          window.dispatchEvent(
+            new CustomEvent("qn-notice", {
+              detail: { message: "无法创建内部链接：wiki 语法不支持跨行，选区里也不能已有链接括号", kind: "error" },
+            }),
+          );
+        }
+        return true;
       }
       return false;
     },

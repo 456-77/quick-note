@@ -730,5 +730,111 @@ check(
   "对照组：编辑态光标行仍显源码（LivePreview 既有行为不回归）",
 );
 
+// ============================================================ 0.35.1 链接两修
+console.log("\n场景 I：0.35.1 链接修复——非空选区保持源码 + 含空格目标放宽\n");
+{
+  // 自带文档，不碰 fixture：避免影响前面按数量断言的场景
+  const doc2 = "改这行 [[目标笔记|别名]] 和 [[另一篇]]，还有 [汇报](2026-10-28 海亮-问题.md) 与 [尖](<括号 目标.md>)。";
+  const collect2 = (state) => {
+    const items = [];
+    buildLivePreviewDecorations(state, 0, doc2.length).between(0, doc2.length, (from, to, value) => {
+      const spec = value.spec ?? {};
+      items.push({
+        from,
+        to,
+        kind: from === to ? "line" : spec.widget !== undefined ? "widget" : spec.class ? "mark" : "hide",
+        cls: spec.class,
+        attrs: spec.attributes,
+        text: doc2.slice(from, to),
+      });
+    });
+    return items;
+  };
+  const mk = (anchor, head) => {
+    const state = EditorState.create({
+      doc: doc2,
+      selection: { anchor, head: head ?? anchor },
+      extensions: [markdown({ base: markdownLanguage })],
+    });
+    return { state, items: collect2(state) };
+  };
+  const hidesIn2 = (items, needle) => {
+    const at = doc2.indexOf(needle);
+    if (at < 0) throw new Error(`doc2 里找不到 ${JSON.stringify(needle)}`);
+    return items.filter((d) => d.kind === "hide" && d.from >= at && d.to <= at + needle.length);
+  };
+  const linksIn2 = (items, needle) => {
+    const at = doc2.indexOf(needle);
+    if (at < 0) throw new Error(`doc2 里找不到 ${JSON.stringify(needle)}`);
+    return items.filter((d) => d.cls?.includes("cm-lp-link") && d.from >= at && d.to <= at + needle.length);
+  };
+
+  // 渲染态基线（光标在文末）
+  const R = mk(doc2.length);
+  check(hidesIn2(R.items, "[[目标笔记|别名]]").length === 2, "带别名 wiki 链接渲染：括号+目标区隐藏", `实际=${hidesIn2(R.items, "[[目标笔记|别名]]").length}`);
+  check(linksIn2(R.items, "[[目标笔记|别名]]")[0]?.text === "别名", "带别名 wiki 链接渲染：只留别名做链接文字");
+  check(hidesIn2(R.items, "[[另一篇]]").length === 2, "无别名 wiki 链接渲染：两侧括号隐藏");
+  check(
+    linksIn2(R.items, "[汇报](2026-10-28 海亮-问题.md)")[0]?.attrs?.["data-md-link"] === "2026-10-28 海亮-问题.md",
+    "含空格目标被放宽吸收：整条渲染成链接并携带目标",
+  );
+  check(hidesIn2(R.items, "[汇报](2026-10-28 海亮-问题.md)").length === 2, "含空格目标：`[` 与 `](…)` 都隐藏");
+  check(
+    linksIn2(R.items, "[尖](<括号 目标.md>)")[0]?.attrs?.["data-md-link"] === "括号 目标.md",
+    "`<>` 包裹目标剥掉尖括号再解析",
+  );
+
+  // 非空选区落在 wiki 链接内 → 保持源码态（0.35.1 用户反馈）
+  const selWiki = mk(doc2.indexOf("目标笔记"), doc2.indexOf("目标笔记") + 4);
+  check(hidesIn2(selWiki.items, "[[目标笔记|别名]]").length === 0, "选区落在 wiki 链接内：括号不隐藏（源码态）");
+  check(linksIn2(selWiki.items, "[[目标笔记|别名]]").length === 0, "选区落在 wiki 链接内：不加链接样式");
+  // 非空选区落在含空格目标的 md 链接内 → 同样保持源码态
+  const selMd = mk(doc2.indexOf("汇报"), doc2.indexOf("汇报") + 2);
+  check(hidesIn2(selMd.items, "[汇报](2026-10-28 海亮-问题.md)").length === 0, "选区落在 md 链接（含空格目标）内：源码态");
+  // 对照：选区只罩住链接外面的普通文字 → 链接照常渲染
+  const selOut = mk(doc2.indexOf("改这行"), doc2.indexOf("改这行") + 3);
+  check(hidesIn2(selOut.items, "[[目标笔记|别名]]").length === 2, "选区在链接外：wiki 链接照常渲染");
+  // 折叠光标在链接文字中部 → 源码态（0.35.1 起整段判定，与 md Link 分支拉齐；
+  // 渲染态下点击委托 preventDefault，鼠标放不进光标，能落进来的只有键盘/拖选）
+  const midWiki = mk(doc2.indexOf("另一篇") + 1);
+  check(hidesIn2(midWiki.items, "[[另一篇]]").length === 0, "折叠光标在链接文字中部：源码态（整段判定）");
+
+  // 盲打防线：光标落在渲染态下被隐藏的区域（目标区/目标槽位）必须保持源码，
+  // 否则往 `[[` 后打目标名打到一半链接翻渲染态，后续字符不可见
+  {
+    const mkAt = (docText, pos) => {
+      const state = EditorState.create({
+        doc: docText,
+        selection: { anchor: pos },
+        extensions: [markdown({ base: markdownLanguage })],
+      });
+      const items = [];
+      buildLivePreviewDecorations(state, 0, docText.length).between(0, docText.length, (from, to, value) => {
+        const spec = value.spec ?? {};
+        items.push({
+          from, to,
+          kind: from === to ? "line" : spec.widget !== undefined ? "widget" : spec.class ? "mark" : "hide",
+          cls: spec.class,
+        });
+      });
+      return items;
+    };
+    const hidesInDoc = (items, docText, needle) => {
+      const at = docText.indexOf(needle);
+      return items.filter((d) => d.kind === "hide" && d.from >= at && d.to <= at + needle.length);
+    };
+    const typingTarget = "看 [[目标|别名]] 这";
+    check(
+      hidesInDoc(mkAt(typingTarget, typingTarget.indexOf("标")), typingTarget, "[[目标|别名]]").length === 0,
+      "光标落在目标区中间：源码态（盲打防线）",
+    );
+    const aliasSlot = "看 [[|别名]] 这";
+    check(
+      hidesInDoc(mkAt(aliasSlot, aliasSlot.indexOf("|")), aliasSlot, "[[|别名]]").length === 0,
+      "光标停在 [[| 的目标槽位：源码态（别名流打目标不翻渲染）",
+    );
+  }
+}
+
 console.log(failures === 0 ? "\nLive Preview 装饰层验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);
 process.exit(failures === 0 ? 0 : 1);

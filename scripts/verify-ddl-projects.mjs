@@ -138,4 +138,86 @@ const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); proces
   assert(/## 新项目\s*\n+\s*```java\s*\npublic interface Repo/.test(merged2), "文末新建实体段落");
 }
 
+// ---------------- 管理面板：locate / remove（0.35.1） ----------------
+{
+  const { locateDdlEntry, removeDdlEntry, ddlEntryName, dropEmptyFence } = await import("../src/lib/ddl.ts");
+  const { locateClassEntry, removeClassEntry } = await import("../src/lib/javaEntity.ts");
+
+  const note = [
+    "# 数据库表 DDL",
+    "",
+    "## 海亮",
+    "",
+    "```sql",
+    "CREATE TABLE alpha (x int);",
+    "",
+    "CREATE TABLE beta (y int);",
+    "```",
+    "",
+    "## 中粮",
+    "",
+    "```sql",
+    "CREATE TABLE alpha (z int);",
+    "```",
+    "",
+  ].join("\n");
+
+  // 定位：同名表按项目各归各的；行号是 0 基（openNoteAt 口径）
+  const hitA = locateDdlEntry(note, "alpha", "海亮");
+  assert(hitA && note.slice(hitA.from, hitA.to).includes("(x int)"), "海亮版 alpha 定位到自己的语句");
+  assert(hitA.line === 5, `海亮版 alpha 在第 5 行（0 基），实际 ${hitA?.line}`);
+  const hitB = locateDdlEntry(note, "alpha", "中粮");
+  assert(hitB && note.slice(hitB.from, hitB.to).includes("(z int)"), "中粮版 alpha 互不干扰");
+  assert(locateDdlEntry(note, "alpha", "不存在") === null, "项目不存在 → null");
+
+  // 删除：段落内的删除不越段落；围栏里还有别的语句时围栏保留
+  const rm1 = removeDdlEntry(note, "beta", "海亮");
+  assert(rm1 && !rm1.text.includes("(y int)"), "删除 beta 后语句消失");
+  assert(rm1.text.includes("(x int)") && rm1.text.includes("(z int)"), "其余语句原样保留");
+  assert(rm1.text.includes("```sql"), "围栏里还有语句 → 围栏保留");
+  assert(!/\n{3,}/.test(rm1.text), "删除处不留连续空行");
+  // 解析侧同步：删除后库映射不再含海亮的 beta
+  const parsedAfter = parseDdlTables(rm1.text);
+  assert(
+    !(parsedAfter.get("beta") ?? []).some((entry) => entry.project === "海亮"),
+    "删除后解析不到海亮的 beta",
+  );
+
+  // 删除：围栏里最后一条 → 空围栏整块拿掉
+  const rm2 = removeDdlEntry(rm1.text, "alpha", "海亮");
+  assert(rm2 && !rm2.text.includes("(x int)"), "海亮 alpha 删除");
+  const sea = rm2.text.slice(rm2.text.indexOf("## 海亮"), rm2.text.indexOf("## 中粮"));
+  assert(!sea.includes("```sql"), "段落里语句删空 → 围栏整块清掉", sea);
+  assert(parseDdlTables(rm2.text).get("alpha")?.length === 1, "只剩中粮版 alpha");
+  assert(removeDdlEntry(rm2.text, "alpha", "海亮") === null, "再删同一条 → null（提示已不存在）");
+
+  // 显示名反查（库 Map 键是小写）
+  assert(ddlEntryName("CREATE TABLE `UserOrder` (id int);") === "UserOrder", "反引号表名原样反查");
+  assert(ddlEntryName("create table if not exists ids_task (id int);") === "ids_task", "小写输入也反查得到");
+
+  // Java 同构
+  const jn = [
+    "# Java 实体",
+    "",
+    "```java",
+    "public class Foo {",
+    "  int x;",
+    "}",
+    "",
+    "public class Bar {",
+    "}",
+    "```",
+    "",
+  ].join("\n");
+  const jHit = locateClassEntry(jn, "Foo", "");
+  assert(jHit && jHit.line === 3, `Foo 定位在声明行（0 基 3），实际 ${jHit?.line}`);
+  const jRm1 = removeClassEntry(jn, "Foo", "");
+  assert(jRm1 && jRm1.text.includes("public class Bar") && !jRm1.text.includes("int x;"), "删 Foo 留 Bar");
+  assert(jRm1.text.includes("```java"), "围栏还有类 → 保留");
+  const jRm2 = removeClassEntry(jRm1.text, "Bar", "");
+  assert(jRm2 && !jRm2.text.includes("```java"), "最后一个类删掉 → 空围栏整块清掉", jRm2?.text);
+  assert(dropEmptyFence("# T\n\n```sql\n```", 12) === "# T\n", "空围栏清理独立可用（连围栏前的空行收掉）");
+  assert(dropEmptyFence("# T\n\n```sql\nCREATE TABLE a (x int);\n```", 12).includes("CREATE TABLE"), "围栏里有语句 → 不动");
+}
+
 console.log("DDL/实体多项目断言全部通过");

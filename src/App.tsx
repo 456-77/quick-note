@@ -15,6 +15,7 @@ import RecentFilesDialog from "./components/RecentFilesDialog";
 import QuickTodoDialog from "./components/QuickTodoDialog";
 import AddWordDialog from "./components/AddWordDialog";
 import DdlDialog from "./components/DdlDialog";
+import LibraryManagerDialog, { type LibraryKind } from "./components/LibraryManagerDialog";
 import JsonFormatDialog from "./components/JsonFormatDialog";
 import SplitPane from "./components/SplitPane";
 import CaptureManager from "./components/CaptureManager";
@@ -94,12 +95,14 @@ import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
-import { ddlNoteIntro, ddlProjectNames, extractTableNames, mergeDdlIntoNote, parseDdlTables } from "./lib/ddl";
+import { ddlNoteIntro, ddlProjectNames, extractTableNames, locateDdlEntry, mergeDdlIntoNote, parseDdlTables, removeDdlEntry } from "./lib/ddl";
 import {
   extractClassNames,
   javaNoteIntro,
+  locateClassEntry,
   mergeClassesIntoNote,
   parseClassLibrary,
+  removeClassEntry,
 } from "./lib/javaEntity";
 import { closeDdlTip, installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
 import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
@@ -132,7 +135,7 @@ import {
   insertRowBelow,
   isCursorInTable,
 } from "./lib/tableEdit";
-import { clampHeadings, codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList } from "./lib/codeEdit";
+import { clampHeadings, codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList, toggleWikiLink } from "./lib/codeEdit";
 import { formatJsonText } from "./lib/formatJson";
 import { useDaily } from "./lib/useDaily";
 import { useSync, type SyncController } from "./lib/useSync";
@@ -1757,6 +1760,8 @@ export default function App() {
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
   /** 建表语句收录弹窗（0.31；默认键 0.32.1 起 Ctrl+Alt+J，可改绑）。 */
   const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
+  /** 语句库管理面板（0.35.1）：DDL / Java 实体同一个面板，Ctrl+Alt+K 唤起。 */
+  const [libraryPanelOpen, setLibraryPanelOpen] = useState(false);
   /** DDL 库笔记里出现过的项目名（收录弹窗的项目下拉候选；loadDdlLibrary 维护）。 */
   const [ddlProjects, setDdlProjects] = useState<string[]>([]);
   // JSON 格式转换面板（0.34.13 用户反馈）：打开时带入编辑器选区，转换完成后写回
@@ -2391,6 +2396,60 @@ export default function App() {
     setDdlSaver((_table, ddl, project) => saveLibraryStatements(ddl, project));
     return () => setDdlSaver(null);
   }, [saveLibraryStatements]);
+
+  /** 两种库的笔记路径（面板定位/删除/打开共用；实体库留空报配置错误）。 */
+  const libraryPathOf = useCallback((kind: LibraryKind): string => {
+    const cfg = getSettings();
+    if (kind === "ddl") return cfg.ddlFilePath.trim() || "数据库表DDL.md";
+    const path = cfg.javaEntityFilePath.trim();
+    if (!path) throw new Error("实体库路径为空（设置 → 编辑 可配置）");
+    return path;
+  }, []);
+
+  /**
+   * 面板「删除」：从库笔记里整段移除一条语句（0.35.1）。与收录同一条落盘纪律
+   * （读盘-改-写盘-重载悬浮库）；库笔记正在编辑器里打开时，若缓冲与磁盘一致就
+   * 同步替换缓冲，防止随后的自动保存把删除冲回去（有未保存分歧则不动缓冲，
+   * 状态栏提示以磁盘为准）。
+   */
+  const deleteLibraryEntry = useCallback(
+    async (kind: LibraryKind, name: string, project: string) => {
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能删除语句");
+      const path = libraryPathOf(kind);
+      const note = await readNoteOptional(dir, path);
+      if (!note) throw new Error(`库笔记「${path}」不存在`);
+      const removed =
+        kind === "ddl"
+          ? removeDdlEntry(note.content, name, project)
+          : removeClassEntry(note.content, name, project);
+      if (!removed) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
+      await writeNote(dir, path, removed.text, note.hasBom);
+      const view = viewRef.current;
+      if (view && viewOwnerRef.current === path) {
+        if (view.state.doc.toString() === note.content) {
+          view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: removed.text } });
+        } else {
+          setStatus(`注意：${path} 在编辑器里有未保存修改，删除已写盘、编辑器未同步`);
+        }
+      }
+      const stored = stateStore.current.get(path);
+      if (stored) {
+        if (stored.doc.toString() === note.content) {
+          stateStore.current.set(
+            path,
+            stored.update({ changes: { from: 0, to: stored.doc.length, insert: removed.text } }).state,
+          );
+        } else {
+          dirtyTabs.current.add(path);
+        }
+      }
+      await loadDdlLibrary(dir);
+      void refresh(dir);
+      return `${kind === "ddl" ? "表" : "类"}「${name}」已从 ${path} 删除`;
+    },
+    [libraryPathOf, loadDdlLibrary, refresh],
+  );
 
   /**
    * 批量归组（0.34.13 用户反馈「添加设置，用来初始化所有的 ddl 所属的项目，
@@ -4592,6 +4651,32 @@ export default function App() {
 
   /** 最新一轮渲染的 openNoteAt：跨仓库打开在切完仓库后必须用新仓库的实例。 */
   const openNoteAtRef = useRef(openNoteAt);
+
+  /**
+   * 面板「定位」：按收录同口径在库笔记里找这条语句，跳进对应行（0.35.1）。
+   * locate 用的也是解析/合并同款的「段落内最后一次出现」，手工调过的笔记同样找得到。
+   */
+  const jumpLibraryEntry = useCallback(
+    async (kind: LibraryKind, name: string, project: string) => {
+      try {
+        const dir = vaultRef.current;
+        if (!dir) throw new Error("打开仓库后才能定位语句");
+        const path = libraryPathOf(kind);
+        const note = await readNoteOptional(dir, path);
+        if (!note) throw new Error(`库笔记「${path}」不存在`);
+        const hit =
+          kind === "ddl"
+            ? locateDdlEntry(note.content, name, project)
+            : locateClassEntry(note.content, name, project);
+        if (!hit) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
+        setLibraryPanelOpen(false);
+        await openNoteAt(path, hit.line);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [libraryPathOf, openNoteAt],
+  );
   useEffect(() => {
     openNoteAtRef.current = openNoteAt;
   });
@@ -5767,6 +5852,13 @@ export default function App() {
         }
         setDdlDialogOpen(true);
       },
+      libraryManager: () => {
+        if (!vault) {
+          notice("打开仓库后才能管理语句库", "error");
+          return;
+        }
+        setLibraryPanelOpen(true);
+      },
       jsonPanel: () => {
         // 预填当前选区（有选区时）；面板内转换，写回时替换原选区/插入光标处
         const view = viewRef.current;
@@ -5827,6 +5919,14 @@ export default function App() {
         case "toggleBold":
           toggleBold(view);
           return;
+        case "insertLink": {
+          // 目标/别名分流查 embedIndex（与编辑器键位同一条索引）
+          const ok = toggleWikiLink(view, resourcesRef.current.embedIndex);
+          if (!ok) {
+            notice("无法创建内部链接：wiki 语法不支持跨行，选区里也不能已有链接括号", "error");
+          }
+          return;
+        }
         case "copyCode": {
           const hit = codeAtCursor(view.state);
           if (!hit) {
@@ -6103,7 +6203,9 @@ export default function App() {
           clampHeading: "⇕",
           toggleInlineCode: "</>", toggleCodeBlock: "{}",
           toggleBulletList: "•", toggleNumberList: "1.",
+          insertLink: "🔗",
           insertDate: "📅", insertTime: "🕐", toggleTags: "🏷️",
+          libraryManager: "🗃️",
         };
         return COMMAND_KEYS.filter((cmd) => !covered.has(cmd.id)).map((cmd) => ({
           id: `cmd-${cmd.id}`,
@@ -6647,6 +6749,28 @@ export default function App() {
             const message = await saveLibraryStatements(ddlText, project);
             setStatus(message);
             return message;
+          }}
+        />
+      )}
+
+      {/* 语句库管理（默认键 Ctrl+Alt+K）：DDL 与 Java 实体同一个面板，查看/定位/复制/删除 */}
+      {libraryPanelOpen && (
+        <LibraryManagerDialog
+          tables={resourcesRef.current.ddlTables ?? new Map()}
+          classes={resourcesRef.current.javaClasses ?? new Map()}
+          projects={ddlProjects}
+          ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
+          javaPath={getSettings().javaEntityFilePath.trim()}
+          onClose={() => setLibraryPanelOpen(false)}
+          onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
+          onDelete={deleteLibraryEntry}
+          onOpenNote={(kind) => {
+            setLibraryPanelOpen(false);
+            void openNoteAt(
+              kind === "ddl"
+                ? getSettings().ddlFilePath.trim() || "数据库表DDL.md"
+                : getSettings().javaEntityFilePath.trim(),
+            );
           }}
         />
       )}
@@ -7965,6 +8089,7 @@ export default function App() {
                   { label: "H", title: "标题", run: () => viewRef.current && toggleHeading(viewRef.current, 1) },
                   { label: "B", title: "粗体", run: () => viewRef.current && toggleBold(viewRef.current) },
                   { label: "</>", title: "行内代码", run: () => viewRef.current && toggleInlineCode(viewRef.current) },
+                  { label: "🔗", title: "内部链接", run: () => runEditorCommand("insertLink") },
                   { label: "•", title: "无序列表", run: () => viewRef.current && toggleBulletList(viewRef.current) },
                   { label: "☑", title: "待办", run: () => viewRef.current && toggleTaskList(viewRef.current) },
                   { label: "{}", title: "代码块", run: () => viewRef.current && toggleCodeBlock(viewRef.current) },

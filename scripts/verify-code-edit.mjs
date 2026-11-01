@@ -1,13 +1,15 @@
 // 行内代码 / 代码块切换的纯逻辑验证（无需 DOM、无需启动应用）。
 //
-// 覆盖 `src/lib/codeEdit.ts` 的两个纯函数：
+// 覆盖 `src/lib/codeEdit.ts` 的三个纯函数：
 //   - inlineCodeToggleAt：包裹 / 取消 / 不动作的三种判定；
+//   - wikiLinkToggleAt：内部链接（[[目标|别名]]）的包裹 / 取消 / 不动作；
 //   - codeBlockPadding：块级插入的前后补位（与 paste.ts 的 blockInsertPadding 同一套规则）。
 //
 // 用法：node --experimental-strip-types --no-warnings scripts/verify-code-edit.mjs
 
 import {
   inlineCodeToggleAt,
+  wikiLinkToggleAt,
   codeBlockPadding,
   headingToggleAt,
 } from "../src/lib/codeEdit.ts";
@@ -32,9 +34,9 @@ eq(
 );
 
 console.log("\n行内代码：取消\n");
-eq(inlineCodeToggleAt("a `code` b", 2, 8), { remove: [2, 8] }, "选中含反引号的整段 → 整段取消");
-eq(inlineCodeToggleAt("a `code` b", 3, 6), { remove: [2, 8] }, "光标/选区在代码段内 → 取消那一对");
-eq(inlineCodeToggleAt("a `` b", 3, 3), { remove: [2, 4] }, "光标在空代码段（``）中间也能取消");
+eq(inlineCodeToggleAt("a `code` b", 2, 8), { remove: [2, 8], text: "code" }, "选中含反引号的整段 → 取消并还原内容（0.35.1 前 insert:\"\" 连内容一起删）");
+eq(inlineCodeToggleAt("a `code` b", 3, 6), { remove: [2, 8], text: "code" }, "光标/选区在代码段内 → 取消那一对并保留内容");
+eq(inlineCodeToggleAt("a `` b", 3, 3), { remove: [2, 4], text: "" }, "光标在空代码段（``）中间也能取消");
 eq(inlineCodeToggleAt("a `code` b", 0, 1), { wrap: [0, 1] }, "光标在代码段外贴着开头 → 包裹而不是误取消");
 
 console.log("\n行内代码：不动作\n");
@@ -69,6 +71,18 @@ console.log("\n标题切换\n");
   // 缩进行
   eq(headingToggleAt("  缩进行", 1, 4), { text: "#   缩进行", headCol: 6 }, "缩进行也直接加前缀");
 }
+
+// ============================================================ 内部链接（0.35.1）
+console.log("\n内部链接：包裹 / 取消\n");
+// 文档布局："x [[aa|bb]] y"：[[在2-3，aa=4-5，|=6，bb=7-8，]]在9-10，y=12
+eq(wikiLinkToggleAt("x [[aa|bb]] y", 13, 13), { wrap: [13, 13] }, "链接外空选区 → 包裹（插入 [[]]）");
+eq(wikiLinkToggleAt("x [[aa|bb]] y", 4, 6), { remove: [2, 11], text: "bb" }, "选区落在链接内（跨目标与别名）→ 取消并还原显示文本");
+eq(wikiLinkToggleAt("x [[aa|bb]] y", 2, 11), { remove: [2, 11], text: "bb" }, "选区=整条链接 → 同样取消还原别名");
+eq(wikiLinkToggleAt("x [[aa]] y", 5, 5), { remove: [2, 8], text: "aa" }, "无别名链接取消 → 还原目标名");
+eq(wikiLinkToggleAt("x [[|bb]] y", 5, 5), { remove: [2, 9], text: "bb" }, "别名态（目标空）取消 → 只留别名，不剩孤立竖线");
+eq(wikiLinkToggleAt("x ![[p.png]] y", 7, 7), { remove: [2, 12], text: "p.png" }, "嵌入 ![[ ]] 里取消 → 连感叹号一起剥");
+eq(wikiLinkToggleAt("x [[aa|bb]] y", 0, 1), { wrap: [0, 1] }, "光标贴着前面普通文字 → 包裹而不是误取消");
+eq(wikiLinkToggleAt("x [[aa b", 0, 8), null, "选区里已有链接括号 → 不包裹");
 
 console.log(failures === 0 ? "\n代码切换逻辑验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);
 process.exit(failures === 0 ? 0 : 1);
