@@ -167,6 +167,12 @@ export interface Settings {
    */
   ddlFilePath: string;
   /**
+   * Java 实体库的笔记路径（0.34.13 用户反馈「对于 java 中的实体也类似处理」，
+   * 仓库内相对路径）。```java 围栏块里的 class/interface/enum/record 按类名
+   * 收录，悬浮显示类源码；`## 项目名` 段落区分同名类（多项目复用）。
+   */
+  javaEntityFilePath: string;
+  /**
    * 编辑器字号缩放（0.33.0 批C）：仅移动端消费（桌面 CSS 变量恒 1），
    * 0.85~1.3，写入 html 的 --qn-edit-scale，正文/标题/行高等 em 系全部跟随。
    */
@@ -238,6 +244,7 @@ const DEFAULTS: Settings = {
   ddlHover: true,
   // 仓库根的普通笔记：用户要能直接看到、手工编辑（同步也覆盖），不走隐藏目录
   ddlFilePath: "数据库表DDL.md",
+  javaEntityFilePath: "Java实体.md",
   mobileFontScale: 1,
 };
 

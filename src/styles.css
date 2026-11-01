@@ -6735,6 +6735,112 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   flex: 1;
 }
 
+/* ------------------------------------------------- JSON 格式转换面板 */
+/* 同一弹窗语系（0.34.13）：600px 淡入缩放，双 textarea + 按钮行 */
+
+.jsonfmt {
+  position: fixed;
+  top: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 950;
+  width: 640px;
+  max-width: calc(100vw - 48px);
+  padding: 14px 16px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-2);
+  animation: qcPop 0.18s ease;
+}
+
+.jsonfmt-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.jsonfmt-title {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.jsonfmt-io {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  resize: vertical;
+  min-height: 96px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.jsonfmt-io::placeholder {
+  color: var(--text-faint);
+}
+
+.jsonfmt-io:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--surface-3);
+}
+
+.jsonfmt-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+.jsonfmt-actions button {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 11px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.13s ease, border-color 0.13s ease;
+}
+
+.jsonfmt-actions button:hover:not(:disabled) {
+  background: var(--surface-3);
+  border-color: var(--accent);
+}
+
+.jsonfmt-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.jsonfmt-error {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.jsonfmt-help {
+  display: flex;
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-faint);
+  user-select: none;
+}
+
 /* 标签 chip 输入：Enter 生成、Backspace 删尾、× 移除 */
 .quick-capture-tags {
   display: flex;
@@ -7740,6 +7846,10 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   /* 0.34.6 用户反馈「速记行要支持内容的换行展示」：两行截断改成完整换行
      （管理面板本体可滚动，长速记全部可见） */
   overflow-wrap: anywhere;
+  /* 0.34.13 用户反馈「速记内容输入了换行却没有显示出换行」：多行速记落盘
+     本来就是缩进续行、解析也并回 \n（capture.ts 协议完整），只差显示层——
+     pre-wrap 把正文里真实的换行画出来，长行照旧自动折行 */
+  white-space: pre-wrap;
 }
 
 /* 正文下的图片缩略图条（0.20：管理面板支持预览图片） */
@@ -9601,6 +9711,31 @@ button.cm-tag:hover {
   .quick-capture-help {
     display: none;
   }
+  /* ---------- JSON 格式转换面板同走 Bottom Sheet（0.34.13：命令面板手机也能开） */
+  .jsonfmt {
+    top: auto;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    transform: none;
+    width: 100%;
+    max-width: none;
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    padding: 14px 16px 12px;
+    padding-bottom: calc(12px + var(--qn-inset-bottom, 0px));
+    border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+    animation: qcSheet 0.22s ease;
+    overflow-y: auto;
+  }
+  .jsonfmt-io {
+    flex: none;
+    min-height: 130px;
+    font-size: 14px;
+  }
   /* 关闭 = 右上角图标（弱化） */
   .quick-capture-esc {
     padding: 8px;
@@ -11435,6 +11570,40 @@ button.cm-tag:hover {
   white-space: nowrap;
 }
 
+/* 多项目切换 chips（0.34.13）：同一表名/类名在多个 `## 项目` 段落里各有一条
+   语句时出现，点击切换展示与保存目标；默认选中的是笔记标签匹配的项目 */
+.qn-ddl-tip-projects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 7px 12px 0;
+  flex: none;
+}
+
+.qn-ddl-tip-proj {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
+}
+
+.qn-ddl-tip-proj:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.qn-ddl-tip-proj.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 650;
+}
+
 /* 编辑态（0.34.5）：textarea 聚焦/组词中的弹窗——ddlHover 的隐藏通道见类即退避；
    从 CM tooltip 脱管到 body 后追加 .qn-ddl-detached 补上容器外框（失去
    cm-tooltip 的主题底） */
@@ -11616,6 +11785,34 @@ button.cm-tag:hover {
 .ddl-textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+/* 收录弹窗的项目行（0.34.13 多项目）：语句归入该项目段落，datalist 给出库里
+   已有的项目名候选，也可以直接输入新项目名；留空 = 未分组 */
+.ddl-project-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.ddl-project-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.ddl-project-row input:focus {
+  border-color: var(--accent);
 }
 
 /* ------------------------------------------------ 分屏查看（0.31） */

@@ -8,6 +8,7 @@
  */
 
 import { Facet } from "@codemirror/state";
+import type { DdlEntry } from "./ddl.ts";
 
 /** 资源解析上下文：仓库根目录 + 当前笔记的仓库相对路径 + 文件名索引。 */
 export interface LivePreviewContext {
@@ -36,11 +37,24 @@ export interface LivePreviewContext {
    */
   altActions?: AltActions;
   /**
-   * 建表语句库（0.31）：表名（小写）→ CREATE TABLE 语句。App 打开仓库/收录
-   * 语句后就地更新；编辑器的表名悬浮预览（ddlHover 扩展）读——同一套约定。
-   * null/空 = 库没加载或没收录，悬浮不触发。
+   * 建表语句库（0.31）：表名（小写）→ 该表在各项目里的语句（0.34.13 多项目，
+   * `## 项目名` 段落；未分组 = ""）。App 打开仓库/收录语句后就地更新；编辑器
+   * 的表名悬浮预览（ddlHover 扩展）读——同一套约定。null/空 = 库没加载或没
+   * 收录，悬浮不触发。
    */
-  ddlTables?: Map<string, string>;
+  ddlTables?: Map<string, DdlEntry[]>;
+  /**
+   * Java 实体库（0.34.13 用户反馈「对于 java 中的实体也类似处理」）：类名 →
+   * 该类在各项目里的源码。与 DDL 库同一套交互（悬浮/收录/`## 项目` 段落）；
+   * 库笔记路径在设置 javaEntityFilePath。
+   */
+  javaClasses?: Map<string, DdlEntry[]>;
+  /**
+   * 全库笔记标签索引（路径 → 标签数组）。App 的标签扫描后就地更新；DDL/实体
+   * 悬浮弹窗用它把「笔记的标签」映射成默认项目（用户笔记里打 #项目名 标签，
+   * 弹窗默认展示该项目的语句，可手动切换）。
+   */
+  noteTags?: Map<string, string[]>;
 }
 
 /** Alt+点击触发的动作，由 App 实现（剪贴板、资源管理器、提示）。 */

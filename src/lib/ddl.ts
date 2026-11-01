@@ -8,6 +8,13 @@
  * `CREATE TABLE [IF NOT EXISTS] \`tbl\` (...)` 按**表名**收录，值是从 CREATE
  * 到语句结束分号的完整文本。同名表以最后一次出现为准（手工编辑不必先删旧的）。
  *
+ * ## 多项目（0.34.13 用户反馈「同时开发多个项目，存在表名复用」）
+ *
+ * 笔记里用 `## 项目名`（h2~h6）起段落，段落里的语句归属该项目；第一个 `##`
+ * 标题之前的语句属「未分组」（project = ""，兼容老笔记——老笔记没有段落，
+ * 全部语句落在这里，行为与单项目版完全一致）。同名表可以在不同项目里各存
+ * 一份（悬浮弹窗里可切换）；同一项目内同名仍以最后一次出现为准。
+ *
  * ## 纯函数
  *
  * 不碰 DOM、不碰 Tauri，Node 里直接断言（verify-all 的一节）。
@@ -15,6 +22,77 @@
 
 const CREATE_RE =
   /create\s+table\s+(?:if\s+not\s+exists\s+)?[`"[]?([A-Za-z_][A-Za-z0-9_$#.]*)[`"\]]?/gi;
+
+/** 库里的一条语句：project "" = 未分组（老笔记兼容）。 */
+export interface DdlEntry {
+  project: string;
+  ddl: string;
+}
+
+/** 表名（小写）→ 该表在各项目里的语句（出现顺序）。 */
+export type DdlLibrary = Map<string, DdlEntry[]>;
+
+/** 一个项目段落在文本中的区间 [from, to)（to 是下一个 `##` 标题的起点或文末）。 */
+export interface DdlSection {
+  project: string;
+  from: number;
+  to: number;
+}
+
+/** `## 项目名`（h2~h6 都算；`# ` 一级标题是文档题头，不算项目段落）。 */
+const SECTION_RE = /^#{2,6}[ \t]+(.+?)[ \t]*$/;
+
+/**
+ * 把笔记切成项目段落。第一个 `##` 之前的区域是「未分组」（project = ""），
+ * 永远存在于返回值里（可能是空区间）。段落区间含标题行本身（合并时要往段落
+ * 末尾插入，标题行只是边界参照）。
+ *
+ * 逐行扫描而不是全文正则：``` 围栏里的行不算标题（MySQL 的 `#` 行注释、
+ * SQL 里的 `##` 开头注释不该把段落劈开）；按字符下标扫描，CRLF 也对齐。
+ */
+export function ddlSections(text: string): DdlSection[] {
+  const sections: DdlSection[] = [{ project: "", from: 0, to: text.length }];
+  let pos = 0;
+  let inFence = false;
+  for (;;) {
+    const nl = text.indexOf("\n", pos);
+    const lineEnd = nl < 0 ? text.length : text[nl - 1] === "\r" ? nl - 1 : nl;
+    const line = text.slice(pos, lineEnd);
+    if (/^[ \t]*```/.test(line)) inFence = !inFence;
+    const head = inFence ? null : SECTION_RE.exec(line);
+    if (head) {
+      const prev = sections[sections.length - 1];
+      prev.to = pos;
+      sections.push({ project: head[1].trim(), from: pos, to: nl < 0 ? text.length : nl + 1 });
+    } else if (sections.length > 0) {
+      const prev = sections[sections.length - 1];
+      prev.to = nl < 0 ? text.length : nl + 1;
+    }
+    if (nl < 0) break;
+    pos = nl + 1;
+  }
+  return sections;
+}
+
+/** pos 落在哪个段落里（段落按 from 升序；返回最后一个 from ≤ pos 的段落）。 */
+export function sectionProjectAt(sections: DdlSection[], pos: number): string {
+  let project = "";
+  for (const section of sections) {
+    if (section.from > pos) break;
+    project = section.project;
+  }
+  return project;
+}
+
+/** 文本里出现过的全部项目名（按出现顺序去重；"" = 未分组，有未分组语句才含）。 */
+export function ddlProjectNames(text: string): string[] {
+  const names: string[] = [];
+  for (const section of ddlSections(text)) {
+    if (!names.includes(section.project)) names.push(section.project);
+  }
+  return names;
+}
+
 
 /**
  * 语句结束分号的位置：跳过 `'...'` 字符串与 `--` 行注释里的分号（COMMENT
@@ -44,13 +122,15 @@ export function endOfStatement(text: string): number {
 }
 
 /**
- * 从一段 DDL 文本（可以是整篇笔记）里抽出全部建表语句。
+ * 从一段 DDL 文本（可以是整篇笔记）里抽出全部建表语句，按项目分段归组。
  *
  * `create table t (` 没有收口分号的（粘贴残段）按「到 4000 字符」兜底收录——
- * 悬浮预览宁可多给半条，也好过给了表名却悬浮不出来。
+ * 悬浮预览宁可多给半条，也好过给了表名却悬浮不出来。同名表：不同项目各留一条；
+ * 同一项目内以最后一次出现为准（手工编辑不必先删旧的）。
  */
-export function parseDdlTables(text: string): Map<string, string> {
-  const out = new Map<string, string>();
+export function parseDdlTables(text: string): DdlLibrary {
+  const out: DdlLibrary = new Map();
+  const sections = ddlSections(text);
   CREATE_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = CREATE_RE.exec(text)) !== null) {
@@ -58,7 +138,13 @@ export function parseDdlTables(text: string): Map<string, string> {
     const rest = text.slice(match.index);
     const { cut, advance } = statementSpan(rest, match[0].length);
     const ddl = stripFenceLines(rest.slice(0, cut));
-    if (table && ddl) out.set(table.toLowerCase(), ddl);
+    if (table && ddl) {
+      const key = table.toLowerCase();
+      const project = sectionProjectAt(sections, match.index);
+      const entries = (out.get(key) ?? []).filter((entry) => entry.project !== project);
+      entries.push({ project, ddl });
+      out.set(key, entries);
+    }
     // 消费掉语句体再继续扫（advance ≥ 匹配头部长度，游标永远向前）
     CREATE_RE.lastIndex = match.index + advance;
   }
@@ -172,32 +258,59 @@ function tableAt(table: string, flags: string): RegExp {
 /**
  * 把新的一批建表语句合进 DDL 笔记的现有文本（弹窗「收录」用）。
  *
- * 策略：同名表的旧段**整段替换**（旧 CREATE 到它的分号，分号定位同样跳过
- * 字符串/注释）；笔记里没有旧段的追加到文末一个 ```sql 围栏块。用户自己的
- * 说明文字原样保留。返回新文本；无变化返回原串（调用方据此跳过写盘）。
+ * 策略（0.34.13 多项目）：`project` 对整批语句生效（弹窗里选定的项目）。同名
+ * 表的旧段在**目标项目的段落内**整段替换（旧 CREATE 到它的分号，分号定位同样
+ * 跳过字符串/注释；多张表从后往前替换，位置不漂移）；段落内没有的追加到该段
+ * 落末尾（下一个 `##` 标题之前），项目不存在就在文末新建 `## 项目` 段落；
+ * 未分组（project = ""）没有段落时追加到文末——与单项目版行为一致。
+ * 用户自己的说明文字原样保留。返回新文本；无变化返回原串（调用方据此跳过写盘）。
  */
-export function mergeDdlIntoNote(existing: string, incoming: string): string {
+export function mergeDdlIntoNote(existing: string, incoming: string, project = ""): string {
   const fresh = parseDdlTables(incoming);
   if (fresh.size === 0) return existing;
+  // 收录弹窗选定的项目对整批生效；同表多次出现取最后一次（与旧约定一致）
+  const batch = new Map<string, string>();
+  for (const [table, entries] of fresh) {
+    batch.set(table, entries[entries.length - 1].ddl);
+  }
+
   let text = existing;
-  for (const [table, ddl] of fresh) {
-    const at = tableAt(table, "gi").exec(text);
-    if (!at) continue;
-    // 替换范围与解析同源（statementSpan）：旧段没有分号时也不能吃到别人家
-    // 语句的分号——否则整段替换会吞掉后面的围栏与下一张表（0.32 修复）
-    const { advance } = statementSpan(text.slice(at.index), at[0].length);
-    text = text.slice(0, at.index) + ddl + text.slice(at.index + advance);
+  const replaced = new Set<string>();
+  const target = ddlSections(text).find((section) => section.project === project);
+  if (target) {
+    const span = text.slice(target.from, target.to);
+    const hits: Array<{ at: number; headLen: number; ddl: string }> = [];
+    for (const [table, ddl] of batch) {
+      const at = tableAt(table, "gi").exec(span);
+      if (at) {
+        hits.push({ at: at.index, headLen: at[0].length, ddl });
+        replaced.add(table);
+      }
+    }
+    // 从后往前替换：前面的位置不受后面替换影响
+    hits.sort((a, b) => b.at - a.at);
+    for (const hit of hits) {
+      const abs = target.from + hit.at;
+      const { advance } = statementSpan(text.slice(abs), hit.headLen);
+      text = text.slice(0, abs) + hit.ddl + text.slice(abs + advance);
+    }
   }
-  // 笔记里还找不到落脚点的（前面替换过的不在此列）追加到文末
-  const remaining = new Map<string, string>();
-  for (const [table, ddl] of fresh) {
-    if (!tableAt(table, "i").exec(text)) remaining.set(table, ddl);
+
+  const pending = [...batch].filter(([table]) => !replaced.has(table)).map(([, ddl]) => ddl);
+  if (pending.length === 0) return text;
+  const block = pending.join("\n\n");
+  const targetNow = ddlSections(text).find((section) => section.project === project);
+  if (targetNow) {
+    // 插到目标段落末尾：段落边界收干净空白，新语句用 ```sql 围栏块垫进去
+    const insert = `\n\n\`\`\`sql\n${block}\n\`\`\`\n`;
+    const head = text.slice(0, targetNow.to).replace(/\s*$/, "\n");
+    const tail = text.slice(targetNow.to).replace(/^\n*/, "");
+    return head + insert + tail;
   }
-  const base = text.replace(/\s*$/, "");
-  if (remaining.size === 0) return base === existing ? existing : base;
-  const block = [...remaining.values()].join("\n\n");
-  const head = base.length === 0 ? "" : base + "\n\n";
-  return `${head}\`\`\`sql\n${block}\n\`\`\`\n`;
+  // 项目还不存在：文末新建段落。未分组（""）也走到这里吗？不会——未分组
+  // 段落永远存在（ddlSections 恒含 "" 段），只有具名项目才会新建
+  const section = `\n\n## ${project}\n\n\`\`\`sql\n${block}\n\`\`\`\n`;
+  return text.replace(/\s*$/, "") + section;
 }
 
 /** DDL 笔记的初始内容（第一次收录时创建）。 */
@@ -217,7 +330,7 @@ export function ddlNoteIntro(): string {
 
 /** 文本里第一个已收录的表名：单元格内容可能是「ids_task、ids_task_itf」这类
  * 复合文本，逐词试库；找不到返回 null。 */
-export function tableWordInText(text: string, tables: Map<string, string>): string | null {
+export function tableWordInText(text: string, tables: DdlLibrary): string | null {
   for (const token of text.toLowerCase().split(/[^a-z0-9_$.]+/)) {
     if (token && tables.has(token)) return token;
   }

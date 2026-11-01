@@ -76,6 +76,13 @@ export const COMMAND_KEYS: CommandKeys[] = [
     group: "edit",
     keys: ["Mod-Alt-J"],
   },
+  {
+    id: "jsonPanel",
+    label: "JSON 格式转换面板…",
+    desc: "格式化 / 压缩 JSON，文本与 JSON 字符串互转（字符串化的多层一次解开）；打开时带入选区，结果可写回笔记或复制",
+    group: "edit",
+    keys: ["Mod-Alt-F"],
+  },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },
   { id: "heading2", label: "标题 2", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-2"] },

@@ -2175,8 +2175,6 @@ function toggleCellInlineCode(cell: HTMLElement): void {  const got = cellSelect
     if (before === "`" && after === "`") {
       // 已包裹：剥掉两侧反引号，保持文字选中
       const inner = text.slice(start, end);
-      const whole = document.createRange();
-      whole.setStart(cell, 0);
       // 用整格替换最稳：``inner`` → inner
       const replaceStart = start - 1;
       const replaceEnd = end + 1;
@@ -2185,7 +2183,11 @@ function toggleCellInlineCode(cell: HTMLElement): void {  const got = cellSelect
       reselectCellRange(cell, replaceStart, replaceStart + inner.length);
       return;
     }
-    document.execCommand("insertText", false, `\`${text}\``);
+    // 0.34.13 用户反馈「选中[]所包含内容按 Ctrl+` 会把格子里其他内容一起带进来」：
+    // insertText 只替换**选区**，包裹串里却放了整格文本 text——选区是格子一部分时
+    // 选区外的内容跟着重复了一份。只包选中的那一段（与 wrapCellSelection 同一口径）。
+    const selected = text.slice(start, end);
+    document.execCommand("insertText", false, `\`${selected}\``);
     reselectCellRange(cell, start + 1, end + 1);
     return;
   }

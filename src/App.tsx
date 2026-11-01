@@ -15,6 +15,7 @@ import RecentFilesDialog from "./components/RecentFilesDialog";
 import QuickTodoDialog from "./components/QuickTodoDialog";
 import AddWordDialog from "./components/AddWordDialog";
 import DdlDialog from "./components/DdlDialog";
+import JsonFormatDialog from "./components/JsonFormatDialog";
 import SplitPane from "./components/SplitPane";
 import CaptureManager from "./components/CaptureManager";
 import ScreenshotDialog from "./components/ScreenshotDialog";
@@ -24,7 +25,7 @@ import VocabularyPanel from "./components/VocabularyPanel";
 import TagDashboard from "./components/TagDashboard";
 import TagPopover from "./components/TagPopover";
 import WeekReviewDialog from "./components/WeekReviewDialog";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, PhysicalSize } from "@tauri-apps/api/window";
 import {
   IconCalendar,
   IconCalendarPlus,
@@ -93,7 +94,13 @@ import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
-import { ddlNoteIntro, extractTableNames, mergeDdlIntoNote, parseDdlTables } from "./lib/ddl";
+import { ddlNoteIntro, ddlProjectNames, extractTableNames, mergeDdlIntoNote, parseDdlTables } from "./lib/ddl";
+import {
+  extractClassNames,
+  javaNoteIntro,
+  mergeClassesIntoNote,
+  parseClassLibrary,
+} from "./lib/javaEntity";
 import { closeDdlTip, installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
 import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
 import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
@@ -526,6 +533,66 @@ export default function App() {
 
   /** 无边框窗口：自绘最小化 / 最大化（还原）/ 关闭，顶栏即标题栏。 */
   const appWindow = useMemo(() => getCurrentWindow(), []);
+
+  // ---------------------------------------------------------------- 窗口几何自愈
+  // 0.34.13 用户反馈「有时候会出现界面元素上移」：状态栏下方露出一条背景，
+  // 即 WebView2 的 CSS 布局视口与原生窗口偶尔失同步（改窗尺寸/最大化往返的
+  // 某个消息竞态，差多少就停多少）。resize 稳定后比对原生 client 区与 CSS
+  // 视口，差值离谱时把窗口原尺寸重设一遍（±1 物理像素绕过「同尺寸不发
+  // WM_SIZE」的短路），逼 WebView2 按真实窗口重算视口。仅桌面；最大化期间
+  // 不动手（几何由显示器推得，是安全的另一条路径）；页面缩放（Ctrl+滚轮）
+  // 时 CSS 视口本来就不等于原生尺寸，按 devicePixelRatio ≠ scaleFactor 让路。
+  useEffect(() => {
+    if (isMobile()) return;
+    let timer: number | null = null;
+    let healing = false;
+    const check = async () => {
+      if (healing || document.hidden) return;
+      try {
+        const win = getCurrentWindow();
+        if (await win.isMaximized()) return;
+        const [size, factor] = await Promise.all([win.innerSize(), win.scaleFactor()]);
+        if (Math.abs(window.devicePixelRatio - factor) > 0.02) return;
+        const nativeH = Math.round(size.height / factor);
+        const cssH = window.innerHeight;
+        if (nativeH < 100 || cssH < 100) return;
+        const drift = Math.abs(nativeH - cssH);
+        // 只救小漂移（截图里那条 ~30px 的缝）：这种状态下原生改窗路径还是好的，
+        // 重设一次就能让 WebView2 按真实窗口重算。大差值（数百像素起）说明窗口
+        // 几何本身已被外部 resize 弄坏（实测 150% DPI 下 SetWindowPos 会把高度
+        // 打到 0xFFFF 且每次放大 1.5 倍）——那时再 setSize 只会火上浇油，交给
+        // 用户最大化/重开窗口恢复。
+        if (drift <= 2 || drift > 200) return;
+        healing = true;
+        try {
+          await win.setSize(new PhysicalSize(size.width, size.height + 1));
+          await win.setSize(new PhysicalSize(size.width, size.height));
+        } finally {
+          healing = false;
+        }
+      } catch {
+        // 窗口正在关闭等：静默放过
+      }
+    };
+    const schedule = () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void check();
+      }, 320);
+    };
+    window.addEventListener("resize", schedule);
+    let unlisten: (() => void) | null = null;
+    void getCurrentWindow()
+      .onResized(() => schedule())
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+      unlisten?.();
+    };
+  }, []);
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -1690,6 +1757,11 @@ export default function App() {
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
   /** 建表语句收录弹窗（0.31；默认键 0.32.1 起 Ctrl+Alt+J，可改绑）。 */
   const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
+  /** DDL 库笔记里出现过的项目名（收录弹窗的项目下拉候选；loadDdlLibrary 维护）。 */
+  const [ddlProjects, setDdlProjects] = useState<string[]>([]);
+  // JSON 格式转换面板（0.34.13 用户反馈）：打开时带入编辑器选区，转换完成后写回
+  const [jsonPanelOpen, setJsonPanelOpen] = useState(false);
+  const [jsonSeed, setJsonSeed] = useState("");
   /**
    * 分栏（0.31 只读渲染 → 0.32 双编辑器 → 0.32.2 Obsidian 式分栏）：标签栏
    * 随窗格分成两段——左栏（主标签栏 + 主编辑器）与右栏（自己的标签栏 + 第二
@@ -1955,6 +2027,14 @@ export default function App() {
     tags: { name: string; notes: string[] }[];
     noteTags: Record<string, string[]>;
   }>({ loading: false, tags: [], noteTags: {} });
+  // 标签索引的 ref 镜像（0.34.13）：DDL/实体悬浮弹窗按「当前笔记的标签」选默认
+  // 项目——hover 通道不走 React，从资源上下文读；与 ddlTables 同一套可变引用约定
+  useEffect(() => {
+    const map = new Map<string, string[]>();
+    for (const [path, tags] of Object.entries(tagIndex.noteTags)) map.set(path, tags);
+    resourcesRef.current.noteTags = map;
+    if (splitCtxRef.current) splitCtxRef.current.noteTags = map;
+  }, [tagIndex.noteTags]);
   const [tagDashTag, setTagDashTag] = useState<string | null>(null);
   const [tagScanToken, setTagScanToken] = useState(0);
   /** 标签列表置顶的标签名（按仓库分桶；0.27 用户反馈）。 */
@@ -2165,23 +2245,39 @@ export default function App() {
   );
 
   /**
-   * 建表语句悬浮库（0.31）：读仓库内的 DDL 笔记 → 「表名 → 语句」映射塞进资源
-   * 上下文（就地改字段，同一可变对象约定）。打开仓库、DDL 笔记变化、收录弹窗
-   * 保存后都要走一遍。文件不存在/解析为空都清空映射（悬浮随之失活）。
+   * 语句悬浮库（0.31 DDL；0.34.13 扩到 Java 实体库）：读仓库内的 DDL 笔记与
+   * Java 实体笔记 → 「表名/类名 → 各项目语句」映射塞进资源上下文（就地改字段，
+   * 同一可变对象约定）。打开仓库、库笔记变化、收录弹窗保存后都要走一遍。
+   * 文件不存在/解析为空都清空映射（悬浮随之失活）。
    */
   const loadDdlLibrary = useCallback(async (dir: string) => {
     try {
-      const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
-      const note = await readNoteOptional(dir, path);
-      const tables = note ? parseDdlTables(note.content) : new Map();
+      const cfg = getSettings();
+      const ddlPath = cfg.ddlFilePath.trim() || "数据库表DDL.md";
+      const javaPath = cfg.javaEntityFilePath.trim();
+      const [ddlNote, javaNote] = await Promise.all([
+        readNoteOptional(dir, ddlPath),
+        javaPath ? readNoteOptional(dir, javaPath) : Promise.resolve(null),
+      ]);
+      const tables = ddlNote ? parseDdlTables(ddlNote.content) : new Map();
+      const classes = javaNote ? parseClassLibrary(javaNote.content) : new Map();
       resourcesRef.current.ddlTables = tables;
+      resourcesRef.current.javaClasses = classes;
       // 分屏上下文是 spread 拷贝（notePath 不同）：换 Map 的赋值不传播，手动同步
-      if (splitCtxRef.current) splitCtxRef.current.ddlTables = tables;
+      if (splitCtxRef.current) {
+        splitCtxRef.current.ddlTables = tables;
+        splitCtxRef.current.javaClasses = classes;
+      }
+      setDdlProjects(ddlProjectNames(ddlNote?.content ?? ""));
     } catch {
       resourcesRef.current.ddlTables = new Map();
-      if (splitCtxRef.current) splitCtxRef.current.ddlTables = new Map();
+      resourcesRef.current.javaClasses = new Map();
+      if (splitCtxRef.current) {
+        splitCtxRef.current.ddlTables = new Map();
+        splitCtxRef.current.javaClasses = new Map();
+      }
     } finally {
-      // 库变了没有文档事务：通知表名着色插件重扫（0.34.2 表名变色）
+      // 库变了没有文档事务：通知表名/类名着色插件重扫（0.34.2 表名变色）
       notifyDdlLibraryUpdated();
     }
   }, []);
@@ -2228,32 +2324,105 @@ export default function App() {
   );
 
   /**
-   * DDL 语句落盘：读 DDL 笔记 → 同名表整段替换（新表追加文末）→ 写回 →
-   * 重载悬浮库。收录弹窗（Ctrl+Alt+J）与悬浮卡「编辑」（0.34.2 用户反馈
-   * 「支持在这个视图中直接修改 DDL 语句」）共用这一条通道。
+   * DDL 语句落盘：读 DDL 笔记 → 目标项目段落内同名表整段替换（段落内没有的
+   * 追加到段落末尾，新项目新建 `## 项目` 段落）→ 写回 → 重载悬浮库。
+   * 收录弹窗（Ctrl+Alt+J）与悬浮卡「编辑」（0.34.2 用户反馈「支持在这个视图
+   * 中直接修改 DDL 语句」）共用这一条通道。
    */
   const saveDdlStatements = useCallback(
-    async (ddlText: string) => {
+    async (ddlText: string, project = "") => {
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能保存建表语句");
       const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
       const existing = await readNoteOptional(dir, path);
       const base = existing?.content ?? ddlNoteIntro();
-      const merged = mergeDdlIntoNote(base, ddlText);
+      const merged = mergeDdlIntoNote(base, ddlText, project);
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
       await loadDdlLibrary(dir);
       void refresh(dir);
       const names = extractTableNames(ddlText);
-      return `已保存 ${names.length} 张表 → ${path}`;
+      return `已保存 ${names.length} 张表${project ? `（项目 ${project}）` : ""} → ${path}`;
     },
     [loadDdlLibrary, refresh],
   );
 
+  /** Java 实体落盘（0.34.13）：与 DDL 同一条通道，库笔记路径独立配置。 */
+  const saveJavaStatements = useCallback(
+    async (ddlText: string, project = "") => {
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能保存实体类");
+      const path = getSettings().javaEntityFilePath.trim();
+      if (!path) throw new Error("实体库路径为空（设置 → 编辑 可配置）");
+      const existing = await readNoteOptional(dir, path);
+      const base = existing?.content ?? javaNoteIntro();
+      const merged = mergeClassesIntoNote(base, ddlText, project);
+      await writeNote(dir, path, merged, existing?.hasBom ?? false);
+      await loadDdlLibrary(dir);
+      void refresh(dir);
+      const names = extractClassNames(ddlText);
+      return `已保存 ${names.length} 个类${project ? `（项目 ${project}）` : ""} → ${path}`;
+    },
+    [loadDdlLibrary, refresh],
+  );
+
+  /**
+   * 收录统一入口：按粘贴内容自动路由——识别到 CREATE TABLE 走 DDL 库，
+   * 识别到 class/interface/enum/record 走实体库，两者都有就两边都收。
+   */
+  const saveLibraryStatements = useCallback(
+    async (ddlText: string, project = "") => {
+      const messages: string[] = [];
+      if (extractTableNames(ddlText).length > 0) {
+        messages.push(await saveDdlStatements(ddlText, project));
+      }
+      if (extractClassNames(ddlText).length > 0) {
+        messages.push(await saveJavaStatements(ddlText, project));
+      }
+      if (messages.length === 0) {
+        throw new Error("没有识别到 CREATE TABLE 语句或 Java 类定义");
+      }
+      return messages.join("；");
+    },
+    [saveDdlStatements, saveJavaStatements],
+  );
+
   // 悬浮卡的「编辑」走模块级钩子注入（ddlHover.ts 的 saver；卸载时清除）
   useEffect(() => {
-    setDdlSaver((_table, ddl) => saveDdlStatements(ddl));
+    setDdlSaver((_table, ddl, project) => saveLibraryStatements(ddl, project));
     return () => setDdlSaver(null);
-  }, [saveDdlStatements]);
+  }, [saveLibraryStatements]);
+
+  /**
+   * 批量归组（0.34.13 用户反馈「添加设置，用来初始化所有的 ddl 所属的项目，
+   * 我已经添加了很多 ddl，他们都是同一个项目的」）：在 DDL 笔记的第一个语句
+   * （首个 ```sql 围栏 / 首条 CREATE）之前插入 `## 项目名` 标题——之后的所有
+   * 未分组语句都归入该项目。已有段落包住全部语句时没有可归组的区域，报错说明。
+   */
+  const assignDdlProject = useCallback(
+    async (project: string) => {
+      const name = project.trim();
+      if (!name) throw new Error("先填项目名");
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能整理 DDL 库");
+      const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
+      const note = await readNoteOptional(dir, path);
+      const content = note?.content ?? "";
+      if (!content.trim()) throw new Error("DDL 库笔记还是空的，先收录语句");
+      const firstSection = /^#{2,6}[ \t]/m.exec(content)?.index ?? -1;
+      const firstFence = content.indexOf("```");
+      const firstCreate = /create\s+table/i.exec(content)?.index ?? -1;
+      const candidates = [firstFence, firstCreate].filter((at) => at >= 0);
+      const anchor = candidates.length > 0 ? Math.min(...candidates) : -1;
+      if (anchor < 0 || (firstSection >= 0 && anchor > firstSection)) {
+        throw new Error("没有找到未分组的语句（可能已经都用 ## 项目段落归组过了）");
+      }
+      const next = `${content.slice(0, anchor)}## ${name}\n\n${content.slice(anchor)}`;
+      await writeNote(dir, path, next, note?.hasBom ?? false);
+      await loadDdlLibrary(dir);
+      return `已把现有语句归入项目「${name}」（可在笔记里用 ## 标题调整）`;
+    },
+    [loadDdlLibrary],
+  );
 
   /** 笔记数量（目录与非 md 文件不计入）。 */
   const noteCount = useMemo(
@@ -5598,6 +5767,13 @@ export default function App() {
         }
         setDdlDialogOpen(true);
       },
+      jsonPanel: () => {
+        // 预填当前选区（有选区时）；面板内转换，写回时替换原选区/插入光标处
+        const view = viewRef.current;
+        const sel = view?.state.selection.main;
+        setJsonSeed(view && sel && !sel.empty ? view.state.sliceDoc(sel.from, sel.to) : "");
+        setJsonPanelOpen(true);
+      },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
     [beginCreate, changeMode, openVault, insertAtCursor, gotoDocEnd, daily.today, notice, addWordToVocabulary, vault, openPalette],
@@ -5895,6 +6071,7 @@ export default function App() {
       { id: "quick-capture", title: "快速笔记（收件箱）", hint: keyHint("quickCapture"), icon: "📥", run: shortcuts.quickCapture },
       { id: "quick-todo", title: "快速添加待办…", hint: keyHint("quickTodo"), icon: "✅", run: shortcuts.quickTodo },
       { id: "ddl-capture", title: "收录建表语句…", hint: keyHint("ddlCapture"), icon: "🗄️", run: shortcuts.ddlCapture },
+      { id: "json-panel", title: "JSON 格式转换面板…", hint: keyHint("jsonPanel"), icon: "{ }", run: shortcuts.jsonPanel },
       { id: "recent-files", title: "最近文件…", hint: keyHint("recentFiles"), icon: "🕘", run: shortcuts.recentFiles },
       { id: "capture-manager", title: "速记管理（收件箱整理）", hint: keyHint("captureManager"), icon: "🗂️", run: shortcuts.captureManager },
       { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: keyHint("toggleMode"), icon: "🔀", run: shortcuts.toggleMode },
@@ -6464,12 +6641,25 @@ export default function App() {
       {ddlDialogOpen && (
         <DdlDialog
           ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
+          projects={ddlProjects}
           onClose={() => setDdlDialogOpen(false)}
-          onSubmit={async (ddlText) => {
-            const message = await saveDdlStatements(ddlText);
+          onSubmit={async (ddlText, project) => {
+            const message = await saveLibraryStatements(ddlText, project);
             setStatus(message);
             return message;
           }}
+        />
+      )}
+
+      {/* JSON 格式转换面板（默认键 Ctrl+Alt+F）：写回 = 替换原选区 / 插入光标处 */}
+      {jsonPanelOpen && (
+        <JsonFormatDialog
+          initialText={jsonSeed}
+          onApply={(text) => {
+            insertAtCursor(text);
+            setJsonPanelOpen(false);
+          }}
+          onClose={() => setJsonPanelOpen(false)}
         />
       )}
 
@@ -6631,6 +6821,7 @@ export default function App() {
         openReleasePage={(url) => void openReleasePage(url)}
         noteCount={noteCount}
         attachmentCount={attachmentCount}
+        onDdlAssignProject={assignDdlProject}
       />
 
       {/* 发现新版本的弹窗：启动自动检查或手动检查发现可用更新时出现，展示新版本介绍。

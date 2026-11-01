@@ -15,8 +15,9 @@ import { EditorView, hoverTooltip } from "@codemirror/view";
 import type { Extension } from "@codemirror/state";
 import { livePreviewContext } from "./paths.ts";
 import { getSettings } from "./settings.ts";
-import { buildDdlTipDom, revealDdlLine } from "./ddlTip.ts";
-import { tableWordInText } from "./ddl.ts";
+import { buildDdlTipDom, revealDdlLine, type DdlTipOptions, type TipLang } from "./ddlTip.ts";
+import { tableWordInText, type DdlEntry } from "./ddl.ts";
+import { classWordInText } from "./javaEntity.ts";
 
 /** 表名词法字符：字母数字下划线 $ # 与库名前缀的点。 */
 function isWordChar(ch: string | undefined): boolean {
@@ -25,11 +26,11 @@ function isWordChar(ch: string | undefined): boolean {
 
 // -------------------------------------------------------- 悬浮卡直接编辑（0.34.2）
 //
-// 弹窗里的「编辑」要写回 DDL 笔记——落盘通道（读笔记→同名表替换→写回→重载库）
+// 弹窗里的「编辑」要写回库笔记——落盘通道（读笔记→同名表替换→写回→重载库）
 // 都在 App 侧，这里挂一个模块级钩子：App 挂载时 setDdlSaver 注入，两处 build
 // DdlTipDom 的调用点据此决定要不要渲染编辑钮。卸载时置回 null。
 
-export type DdlSaver = (table: string, ddl: string) => Promise<string>;
+export type DdlSaver = (table: string, ddl: string, project: string) => Promise<string>;
 
 let ddlSaver: DdlSaver | null = null;
 
@@ -39,18 +40,39 @@ export function setDdlSaver(fn: DdlSaver | null): void {
 }
 
 /** 带当前 saver 的弹窗装配参数（saver 不在时不渲染编辑钮）。 */
-function tipOptions(): { onSave: (table: string, ddl: string) => Promise<string> } | undefined {
+function tipOptions(lang: TipLang, defaultProject?: string): DdlTipOptions | undefined {
   const saver = ddlSaver;
-  return saver ? { onSave: (table, ddl) => saver(table, ddl) } : undefined;
+  if (!saver) return undefined;
+  return {
+    lang,
+    defaultProject,
+    onSave: (table, ddl, project) => saver(table, ddl, project),
+  };
+}
+
+/**
+ * 默认项目：当前笔记的标签里第一个命中条目项目的名字（0.34.13 用户反馈
+ * 「笔记里一般会有一个标签提示属于哪个项目，默认显示标签中指定的项目」）。
+ * 没有标签 / 标签对不上条目 → undefined（退回第一条）。
+ */
+function defaultProjectFor(view: EditorView, entries: DdlEntry[]): string | undefined {
+  if (entries.length <= 1) return undefined;
+  const ctx = view.state.facet(livePreviewContext);
+  const tags = (ctx.noteTags?.get(ctx.notePath ?? "") ?? []).map((t) => t.toLowerCase());
+  if (tags.length === 0) return undefined;
+  const hit = entries.find((entry) => tags.includes(entry.project.toLowerCase()));
+  return hit?.project;
 }
 
 export function ddlHover(): Extension {
   return hoverTooltip(
     (view, pos) => {
       if (!getSettings().ddlHover) return null;
-      const tables = view.state.facet(livePreviewContext).ddlTables;
-      if (!tables || tables.size === 0) return null;
-      // 光标向两侧扩成完整词（表名可能带 db. 前缀），再按小写全名查库。
+      const ctx = view.state.facet(livePreviewContext);
+      const tables = ctx.ddlTables;
+      const classes = ctx.javaClasses;
+      if ((!tables || tables.size === 0) && (!classes || classes.size === 0)) return null;
+      // 光标向两侧扩成完整词（表名可能带 db. 前缀），再按全名查库。
       // 查不到就不显示——悬浮只在确定有货时出现，不打扰普通英文词。
       const line = view.state.doc.lineAt(pos);
       const text = line.text;
@@ -58,15 +80,22 @@ export function ddlHover(): Extension {
       let to = from;
       while (from > 0 && isWordChar(text[from - 1])) from -= 1;
       while (to < text.length && isWordChar(text[to])) to += 1;
-      const word = text.slice(from, to).toLowerCase();
-      if (!word) return null;
-      const ddl = tables.get(word);
-      if (!ddl) return null;
+      if (from === to) return null;
+      const raw = text.slice(from, to);
+      // 先查 DDL 库（小写键），再查 Java 实体库（大小写敏感键）
+      const sqlEntries = tables?.get(raw.toLowerCase());
+      const javaEntries = classes?.get(raw);
+      const entries = sqlEntries ?? javaEntries;
+      if (!entries || entries.length === 0) return null;
+      const lang: TipLang = sqlEntries ? "sql" : "java";
+      const word = lang === "sql" ? raw.toLowerCase() : raw;
       return {
         pos: line.from + from,
         end: line.from + to,
         above: true,
-        create: () => ({ dom: buildDdlTipDom(word, ddl, tipOptions()) }),
+        create: () => ({
+          dom: buildDdlTipDom(word, entries, tipOptions(lang, defaultProjectFor(view, entries))),
+        }),
       };
     },
     // 默认 750ms 太迟钝；350ms 接近 Obsidian 的悬浮手感
@@ -144,9 +173,15 @@ export function installDdlCellHover(): () => void {
     }, LEAVE_GRACE_MS);
   };
 
-  const show = (cell: HTMLElement, word: string, ddl: string) => {
+  const show = (
+    cell: HTMLElement,
+    word: string,
+    entries: DdlEntry[],
+    lang: TipLang,
+    defaultProject?: string,
+  ) => {
     hide();
-    const tip = buildDdlTipDom(word, ddl, tipOptions());
+    const tip = buildDdlTipDom(word, entries, tipOptions(lang, defaultProject));
     tip.id = CELL_TIP_ID;
     tip.classList.add("qn-ddl-cell-tip");
     document.body.appendChild(tip);
@@ -201,11 +236,24 @@ export function installDdlCellHover(): () => void {
       cellTimer = null;
       const editor = cell.closest(".cm-editor");
       const view = editor ? EditorView.findFromDOM(editor as HTMLElement) : null;
-      const tables = view?.state.facet(livePreviewContext).ddlTables;
-      if (!tables || tables.size === 0) return;
-      const word = tableWordInText(cell.textContent ?? "", tables);
-      if (!word) return;
-      show(cell, word, tables.get(word)!);
+      if (!view) return;
+      const ctx = view.state.facet(livePreviewContext);
+      const tables = ctx.ddlTables;
+      const classes = ctx.javaClasses;
+      if ((!tables || tables.size === 0) && (!classes || classes.size === 0)) return;
+      const text = cell.textContent ?? "";
+      // 先查 DDL 库（小写词），再查 Java 实体库（大小写敏感词）
+      const sqlWord = tables ? tableWordInText(text, tables) : null;
+      if (sqlWord) {
+        const entries = tables!.get(sqlWord)!;
+        show(cell, sqlWord, entries, "sql", defaultProjectFor(view, entries));
+        return;
+      }
+      const javaWord = classes ? classWordInText(text, classes) : null;
+      if (classes && javaWord) {
+        const entries = classes.get(javaWord)!;
+        show(cell, javaWord, entries, "java", defaultProjectFor(view, entries));
+      }
     }, CELL_HOVER_MS);
   };
 

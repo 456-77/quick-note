@@ -36,9 +36,14 @@ export function notifyDdlLibraryUpdated(): void {
 
 const ESCAPE_RE = /[.*+?^${}()|[\]\\]/g;
 
-/** 表名库 → 整词交替正则（gi）。库空返回 null。 */
-function buildWordRegex(tables: Map<string, string>): RegExp | null {
-  const names = [...tables.keys()]
+/** 表名/类名库 → 整词交替正则（gi）。库空返回 null。 */
+function buildWordRegex(tables: Map<string, unknown>, classes: Map<string, unknown> | undefined): RegExp | null {
+  const seen = new Set<string>();
+  for (const key of tables.keys()) seen.add(key);
+  if (classes) {
+    for (const key of classes.keys()) seen.add(key.toLowerCase());
+  }
+  const names = [...seen]
     .filter((name) => name.length >= 2 && name.length <= 64)
     .sort((a, b) => b.length - a.length)
     .slice(0, MAX_NAMES)
@@ -71,8 +76,12 @@ export function ddlKnownMarks(): Extension {
           this.decorations = Decoration.none;
           return;
         }
-        const tables = view.state.facet(livePreviewContext).ddlTables;
-        const re = tables && tables.size > 0 ? buildWordRegex(tables) : null;
+        const ctx = view.state.facet(livePreviewContext);
+        const tables = ctx.ddlTables;
+        const classes = ctx.javaClasses;
+        const hasNames =
+          (tables && tables.size > 0) || (classes && classes.size > 0);
+        const re = hasNames ? buildWordRegex(tables ?? new Map(), classes) : null;
         if (!re) {
           this.decorations = Decoration.none;
           return;

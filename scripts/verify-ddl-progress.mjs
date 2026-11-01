@@ -58,15 +58,15 @@ const noteText = [
 const tables = parseDdlTables(noteText);
 check(tables.size === 3, "围栏内两条 + 正文一条都收录", [...tables.keys()].join(","));
 check(
-  tables.get("ids_check_scenario")?.includes("COMMENT='检查场景';"),
+  tables.get("ids_check_scenario")?.at(-1)?.ddl.includes("COMMENT='检查场景';"),
   "含字符串分号的语句完整收录到分号",
 );
 check(
-  tables.get("ids_check_scenario")?.startsWith("CREATE TABLE IF NOT EXISTS"),
+  tables.get("ids_check_scenario")?.at(-1)?.ddl.startsWith("CREATE TABLE IF NOT EXISTS"),
   "语句从 CREATE 开始",
 );
 check(
-  !tables.get("ids_check_plan")?.includes("ids_task"),
+  !tables.get("ids_check_plan")?.at(-1)?.ddl.includes("ids_task"),
   "第二条语句不含下一条的内容",
 );
 check(extractTableNames(noteText).join(",") === "ids_check_scenario,ids_check_plan,ids_task", "表名按出现顺序去重");
@@ -132,15 +132,15 @@ check(nextStatementBoundary("x int -- 注释里有 create table\n, y int", 0) ==
 
 const fenceTables = parseDdlTables(fenceNote);
 check(fenceTables.size === 2, "围栏内两条语句都收录", [...fenceTables.keys()].join(","));
-const taskDdl = fenceTables.get("ids_task") ?? "";
+const taskDdl = fenceTables.get("ids_task")?.at(-1)?.ddl ?? "";
 check(taskDdl.startsWith("CREATE TABLE `ids_task`"), "残段语句从 CREATE 开始", taskDdl.slice(0, 40));
 check(!taskDdl.includes("```"), "悬浮内容不含围栏标记");
 check(!taskDdl.includes("ids_task_itf"), "残段语句不吞下一张表");
 check(taskDdl.includes("AUTO_INCREMENT=74523") && taskDdl.includes("COMMENT='检查任务表'"), "残段语句保留到 ENGINE 行");
 check(
-  (fenceTables.get("ids_task_itf") ?? "").endsWith(";"),
+  (fenceTables.get("ids_task_itf")?.at(-1)?.ddl ?? "").endsWith(";"),
   "有分号的语句照常收到分号",
-  fenceTables.get("ids_task_itf"),
+  fenceTables.get("ids_task_itf")?.at(-1)?.ddl,
 );
 
 // 合并不吞噬：旧段没有分号时，替换范围不能吃到下一条语句

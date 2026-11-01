@@ -14,7 +14,7 @@
 // - 阅读位置记忆：滚动停 800ms 落库，重开同一笔记恢复到上次位置
 // - 重启恢复上次仓库：切到别的仓库再关再开，显示的是最后所在仓库
 
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, appendFileSync, rmSync, existsSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -469,6 +469,155 @@ try {
       await sleep(300);
       const goneAfterOutside = await evaluate(ws, `!document.querySelector('.qn-ddl-tip')`);
       check(goneAfterOutside, "编辑态点弹窗外部收起（0.34.5）");
+    }
+  }
+
+  // ============================================== 6b. 多项目语句库（0.34.13：收录带项目 + Java 实体 + 弹窗项目切换）
+  {
+    // 1) 收录弹窗带项目：粘贴 Java 类 + 项目「测试项目A」→ 自动路由进实体库落盘
+    await key(ws, { mod: CTRL_ALT, key: "j" }, "KeyJ", 74);
+    let dlg2 = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
+    for (let i = 0; i < 3 && !dlg2; i += 1) {
+      await key(ws, { mod: CTRL_ALT, key: "j" }, "KeyJ", 74);
+      dlg2 = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
+    }
+    check(dlg2, "收录弹窗再次弹出（6b）");
+    await evaluate(ws, `(() => {
+      const set = ${nativeSet};
+      set(document.querySelector('.ddl-textarea'), "public class Qn31User {\\n  private Long id; // 主键\\n}");
+      set(document.querySelector('.ddl-project-row input'), "测试项目A");
+      return true;
+    })()`);
+    const recognizedJava = await waitFor(ws, `(document.querySelector('.quick-capture-help')?.textContent ?? '').includes('1 个类')`, 5000);
+    check(recognizedJava, "粘贴类源码自动识别（双库路由 0.34.13）", await evaluate(ws, `document.querySelector('.quick-capture-help')?.textContent ?? ''`));
+    await key(ws, { mod: CTRL, key: "Enter" }, "Enter", 13);
+    const savedJava = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已保存')`, 6000);
+    check(savedJava, "类收录成功", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
+    const javaFile = join(vaultA, "Java实体.md");
+    let javaOk = false;
+    let javaText = "";
+    for (let i = 0; i < 20 && !javaOk; i += 1) {
+      javaOk = existsSync(javaFile);
+      if (javaOk) {
+        javaText = readFileSync(javaFile, "utf8");
+        javaOk = javaText.includes("## 测试项目A") && javaText.includes("public class Qn31User");
+      }
+      if (!javaOk) await sleep(300);
+    }
+    check(javaOk, "Java实体.md 落盘且带 ## 测试项目A 段落", javaText.slice(0, 80));
+    await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
+    await sleep(300);
+
+    // 2) 悬浮类名 → Class: 卡（java 高亮）
+    const inserted = await evaluate(ws, `(() => {
+      const view = window.__qnView;
+      if (!view) return false;
+      view.dispatch({ changes: { from: view.state.doc.length, insert: "\\n\\n实体类 Qn31User 悬停试卡。" } });
+      return true;
+    })()`);
+    await sleep(500);
+    const classPos = await evaluate(ws, `(() => {
+      const view = window.__qnView;
+      if (!view) return null;
+      const doc = view.state.doc.toString();
+      const lineNo = doc.split('\\n').findIndex((l) => l.includes('Qn31User'));
+      if (lineNo < 0) return null;
+      const lineText = doc.split('\\n')[lineNo];
+      const at = view.state.doc.line(lineNo + 1).from + lineText.indexOf('Qn31User') + 4;
+      const coords = view.coordsAtPos(at);
+      if (!coords) return null;
+      const host = view.dom.getBoundingClientRect();
+      return { x: Math.round(coords.left - host.left + 30), y: Math.round((coords.top + coords.bottom) / 2 - host.top) };
+    })()`);
+    if (inserted && classPos) {
+      const scroller2 = await evaluate(ws, `(() => { const s = document.querySelector('.editor-host .cm-scroller'); const r = s.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top) }; })()`);
+      for (let i = 0; i < 4; i += 1) {
+        await mouse(ws, "mouseMoved", scroller2.x + classPos.x + i, scroller2.y + classPos.y);
+        await sleep(120);
+      }
+      const classTip = await waitFor(ws, `!!document.querySelector('.qn-ddl-tip')`, 4000);
+      const classHead = await evaluate(ws, `document.querySelector('.qn-ddl-tip-head')?.textContent ?? ''`);
+      check(classTip && classHead.includes("Class: Qn31User"), "悬停类名浮出实体卡（Class: 标题）", classHead);
+      // CM hoverTooltip 只认真实鼠标移出来收（body mousedown 对它无效）；
+      // 大面板 46vh 会盖住表名区域，不收掉后面悬停表名永远打在弹窗上
+      await mouse(ws, "mouseMoved", 6, 6);
+      await waitFor(ws, `!document.querySelector('.qn-ddl-tip')`, 3000);
+      await sleep(200);
+    } else {
+      check(false, "悬浮类名坐标取到（6b）", JSON.stringify({ inserted, classPos }));
+    }
+
+    // 3) 双项目 chips：往 DDL 库追加「测试项目B」段落（同表名），悬停出现切换 chips；
+    //    给当前笔记打 #测试项目B 标签 → 默认选中 B（笔记标签指定项目）
+    appendFileSync(join(vaultA, "数据库表DDL.md"), "\n## 测试项目B\n\n```sql\nCREATE TABLE ids_qn31_tab (\n  name varchar(10) COMMENT 'B项目版'\n);\n```\n");
+    await evaluate(ws, `(() => {
+      const view = window.__qnView;
+      view?.dispatch({ changes: { from: 0, to: 0, insert: "标签行 #测试项目B\\n" } });
+      return true;
+    })()`);
+    // 标签索引扫描（600ms 防抖）+ 文件监听重载库，等 chips 出现
+    let chipsOk = false;
+    for (let i = 0; i < 15 && !chipsOk; i += 1) {
+      const wordPos2 = await evaluate(ws, `(() => {
+        const view = window.__qnView;
+        if (!view) return null;
+        const doc = view.state.doc.toString();
+        const lineNo = doc.split('\\n').findIndex((l) => l.includes('ids_qn31_tab'));
+        if (lineNo < 0) return null;
+        const lineText = doc.split('\\n')[lineNo];
+        const at = view.state.doc.line(lineNo + 1).from + lineText.indexOf('ids_qn31_tab') + 4;
+        const coords = view.coordsAtPos(at);
+        if (!coords) return null;
+        const host = view.dom.getBoundingClientRect();
+        return { x: Math.round(coords.left - host.left + 30), y: Math.round((coords.top + coords.bottom) / 2 - host.top) };
+      })()`);
+      if (!wordPos2) { await sleep(600); continue; }
+      const scroller3 = await evaluate(ws, `(() => { const s = document.querySelector('.editor-host .cm-scroller'); const r = s.getBoundingClientRect(); return { x: Math.round(r.left), y: Math.round(r.top) }; })()`);
+      for (let k = 0; k < 4; k += 1) {
+        await mouse(ws, "mouseMoved", scroller3.x + wordPos2.x + k, scroller3.y + wordPos2.y);
+        await sleep(120);
+      }
+      // hoverTime 350ms：最后一次移动后弹窗要再等一个悬停周期才出现——必须
+      // waitFor，否则检查跑在弹窗出现之前（门禁首跑踩中，永远差半拍）
+      const tipUp = await waitFor(ws, `!!document.querySelector('.qn-ddl-tip')`, 4000);
+      chipsOk = !!tipUp && await evaluate(ws, `document.querySelectorAll('.qn-ddl-tip-projects .qn-ddl-tip-proj').length >= 2`);
+      if (!chipsOk && i >= 12) {
+        // 诊断：磁盘上的库文件 vs 页面里弹窗的实态（门禁排查用，不影响判定）
+        const ddlOnDisk = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
+        const diag = await evaluate(ws, `({
+          tip: !!document.querySelector('.qn-ddl-tip'),
+          chips: document.querySelectorAll('.qn-ddl-tip-projects .qn-ddl-tip-proj').length,
+          head: document.querySelector('.qn-ddl-tip-head')?.textContent ?? '',
+          value: (document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? '').slice(0, 60),
+        })`);
+        console.log(`  [diag i=${i}] 盘里含B段=${ddlOnDisk.includes("测试项目B")} 页面=${JSON.stringify(diag)}`);
+      }
+      if (!chipsOk) {
+        // 收卡走真实鼠标移开（CM tooltip 不理 body mousedown），别让它盖住下一轮目标
+        await mouse(ws, "mouseMoved", 6, 6);
+        await waitFor(ws, `!document.querySelector('.qn-ddl-tip')`, 2500);
+        await sleep(300);
+      }
+    }
+    check(chipsOk, "同表名双项目时悬浮出现项目切换 chips（0.34.13）");
+    if (chipsOk) {
+      const chipInfo = await evaluate(ws, `({
+        labels: [...document.querySelectorAll('.qn-ddl-tip-proj')].map((c) => c.textContent),
+        onAt: [...document.querySelectorAll('.qn-ddl-tip-proj')].findIndex((c) => c.classList.contains('is-on')),
+        value: document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? '',
+      })`);
+      // 默认选中：笔记刚打了 #测试项目B 标签 → 应落在 B（若标签索引还没扫到则退回第一条，这里两者都提示）
+      check(chipInfo.labels.length >= 2, "chips 文案含两个项目", chipInfo.labels.join("|"));
+      const bIndex = chipInfo.labels.findIndex((l) => l === "测试项目B");
+      if (bIndex >= 0) {
+        await evaluate(ws, `document.querySelectorAll('.qn-ddl-tip-proj')[${bIndex}]?.click()`);
+        await sleep(300);
+        const switched = await evaluate(ws, `document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? ''`);
+        check(switched.includes("B项目版"), "点击 chip 切换到对应项目的语句", switched.slice(0, 50));
+      }
+      await mouse(ws, "mouseMoved", 6, 6);
+      await waitFor(ws, `!document.querySelector('.qn-ddl-tip')`, 3000);
+      await sleep(200);
     }
   }
 

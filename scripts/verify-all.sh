@@ -104,7 +104,11 @@ echo "=== 18/19 DDL 收录 / 阅读位置 / 高亮切分（0.31 新增纯逻辑�
 node --experimental-strip-types --no-warnings scripts/verify-ddl-progress.mjs
 
 echo
-echo "=== 18b/19 JSON 格式化纯函数（0.34.6） ==="
+echo "=== 18b/20 语句库多项目（0.34.13 DDL 分组 + Java 实体库） ==="
+node --experimental-strip-types --no-warnings scripts/verify-ddl-projects.mjs
+
+echo
+echo "=== 18c/20 JSON 格式化与转换纯函数（0.34.6/0.34.13） ==="
 node --experimental-strip-types --no-warnings scripts/verify-format-json.mjs
 
 echo

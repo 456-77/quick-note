@@ -23,7 +23,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { bgFilterCss } from "../lib/background";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
 import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, type AppDataPaths, type DirStat } from "../lib/api";
-import { bgSettingsFor, type BgSettings, type Settings } from "../lib/settings";
+import { bgSettingsFor, getSettings, type BgSettings, type Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import type { SyncController } from "../lib/useSync";
 import { isMobile } from "../lib/platform";
@@ -96,6 +96,8 @@ interface Props {
   noteCount: number | null;
   /** 仓库附件目录里的文件数量。 */
   attachmentCount: number | null;
+  /** 批量归组（0.34.13 多项目）：把 DDL 库现有未分组语句归到指定项目。 */
+  onDdlAssignProject?: (name: string) => Promise<string>;
   /** Android 系统返回消费（0.34.6 用户反馈：二级详情页按返回应回到分类列表，
       而不是直接退出设置）——二级页时消费返回 true，一级页返回 false 让外层关面板。 */
   backConsumerRef?: MutableRefObject<(() => boolean) | null>;
@@ -137,6 +139,96 @@ function Row({
  * 键盘读屏与 GUI 验收脚本都还按 select 找控件、写 value、派发 change。
  * 菜单用 portal + fixed：设置区是可滚动容器，绝对定位的菜单会被裁掉。
  */
+/**
+ * 滑杆（0.34.13 用户反馈「设置页面感觉卡卡的」）：拖动时本地即时显值，落库
+ * 节流 120ms 尾随 + 松手立即冲刷。
+ *
+ * 为什么要节流：每次 applySettings/saveBg 都会触发**整个 App**（单体组件）的
+ * 重渲，滑杆逐档 onChange 提交等于拖一下重渲几十次——实测 8 档连拨 311ms
+ * 长任务（真实仓库更大），分区切换与开关点击都没有长任务，滑杆是设置页
+ * 卡顿的主因。缩略图走本地 state 所以手感不受影响；旁边的数值标签最多
+ * 慢 120ms。收尾在 pointerup/keyup/blur 立即提交，弹窗关掉也不丢值
+ * （卸载时冲刷未落库的尾值）。
+ */
+function DeferredSlider({
+  min,
+  max,
+  step,
+  value,
+  onCommit,
+  disabled = false,
+  title,
+  ariaLabel,
+}: {
+  min?: number;
+  max?: number;
+  step?: number;
+  value: number;
+  onCommit: (value: number) => void;
+  disabled?: boolean;
+  title?: string;
+  ariaLabel?: string;
+}) {
+  const [drag, setDrag] = useState<number | null>(null);
+  const latest = useRef(value);
+  const timer = useRef<number | null>(null);
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+
+  const flush = useCallback(() => {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+    onCommitRef.current(latest.current);
+  }, []);
+
+  // 卸载冲刷：拖完直接关弹窗/切分区，最后一档还没到节流点就丢了
+  useEffect(
+    () => () => {
+      if (timer.current !== null) {
+        window.clearTimeout(timer.current);
+        timer.current = null;
+        onCommitRef.current(latest.current);
+      }
+    },
+    [],
+  );
+
+  return (
+    <input
+      type="range"
+      min={min}
+      max={max}
+      step={step}
+      value={drag ?? value}
+      disabled={disabled}
+      title={title}
+      aria-label={ariaLabel}
+      onChange={(event) => {
+        const next = Number(event.target.value);
+        latest.current = next;
+        setDrag(next);
+        // 尾随节流：窗口内只排一次定时器，到点提交最新值
+        if (timer.current === null) {
+          timer.current = window.setTimeout(() => {
+            timer.current = null;
+            onCommitRef.current(latest.current);
+          }, 120);
+        }
+      }}
+      onPointerUp={flush}
+      onKeyUp={flush}
+      onBlur={() => {
+        if (drag !== null) {
+          setDrag(null);
+          flush();
+        }
+      }}
+    />
+  );
+}
+
 function SettingsSelect<T extends string>({
   value,
   options,
@@ -397,6 +489,7 @@ export default function SettingsDialog({
   openReleasePage,
   noteCount,
   attachmentCount,
+  onDdlAssignProject,
   backConsumerRef,
 }: Props) {
   const [active, setActive] = useState<SectionId>("general");
@@ -495,17 +588,42 @@ export default function SettingsDialog({
     [applySettings],
   );
 
+  /** 批量归组（0.34.13 多项目）：结果/错误走「已保存」闪现通道。 */
+  const [ddlAssignBusy, setDdlAssignBusy] = useState(false);
+  const runDdlAssign = useCallback(
+    async (name: string) => {
+      if (!onDdlAssignProject || !name.trim() || ddlAssignBusy) return;
+      setDdlAssignBusy(true);
+      try {
+        const ok = await onDdlAssignProject(name);
+        setBgNotice(ok);
+      } catch (e) {
+        setBgNotice(e instanceof Error ? e.message : String(e));
+      } finally {
+        setDdlAssignBusy(false);
+      }
+    },
+    [onDdlAssignProject, ddlAssignBusy],
+  );
+
   /** 背景参数（当前仓库生效值）；没开仓库时给默认值，控件渲染为禁用。 */
   const bg = bgSettingsFor(vault, settings);
   /** 把一批背景改动写进当前仓库的 per-vault 条目。 */
+  // 背景参数合并提交时**读实时设置**而不是渲染闭包里的快照：DeferredSlider 的
+  // 尾随节流让两次提交可能相隔几十毫秒（批测背靠背设两个滑杆即触发），第二个
+  // 若基于旧快照合并会把第一个刚写入的字段抹掉（0.35.0 门禁实测踩中）。
   const saveBg = useCallback(
     (patch: Partial<BgSettings>) => {
       if (!vault) return;
+      const cur = getSettings();
       saveWithFlash({
-        bgPerVault: { ...(settings.bgPerVault ?? {}), [vault]: { ...bg, ...patch } },
+        bgPerVault: {
+          ...(cur.bgPerVault ?? {}),
+          [vault]: { ...bgSettingsFor(vault, cur), ...patch },
+        },
       });
     },
-    [vault, settings.bgPerVault, bg, saveWithFlash],
+    [vault, saveWithFlash],
   );
 
   // 0.34.6 相册选壁纸的原生回调：挂 __qnBgPickDone（桥在 MainActivity 注入）。
@@ -971,12 +1089,10 @@ export default function SettingsDialog({
             keywords="搜索 数量 上限 分页 滚动"
           >
             <span className="settings-slider">
-              <input
-                type="range" min={20} max={300} step={10}
+              <DeferredSlider
+                min={20} max={300} step={10}
                 value={settings.paletteContentLimit}
-                onChange={(event) =>
-                  saveWithFlash({ paletteContentLimit: Number(event.target.value) })
-                }
+                onCommit={(value) => saveWithFlash({ paletteContentLimit: value })}
               />
               <span className="settings-slider-value">{settings.paletteContentLimit} 个文件</span>
             </span>
@@ -1024,7 +1140,7 @@ export default function SettingsDialog({
           <Row
             label="DDL 笔记路径"
             desc="收录建表语句的仓库内笔记路径。"
-            tip="仓库内相对路径。整篇笔记里的 CREATE TABLE 语句都会被扫描（说明文字随意写）；同名表以最后一次出现为准。改路径后悬浮库在下次仓库刷新/收录时切换到新文件。"
+            tip="仓库内相对路径。整篇笔记里的 CREATE TABLE 语句都会被扫描（说明文字随意写）；`## 项目名` 段落归组多项目的同名表，未分组的语句属「默认」。改路径后悬浮库在下次仓库刷新/收录时切换到新文件。"
             keywords="DDL 建表 路径"
           >
             <span className="settings-inline">
@@ -1040,6 +1156,63 @@ export default function SettingsDialog({
                 className="btn btn-mini"
                 title="恢复默认路径"
                 onClick={() => saveWithFlash({ ddlFilePath: "数据库表DDL.md" })}
+              >
+                重置
+              </button>
+            </span>
+          </Row>
+          <Row
+            label="批量归入项目"
+            desc="把库里现有（未分组）的语句全部归到指定项目。"
+            tip="0.34.13 多项目：已经收录了很多语句、它们都属同一个项目时，在这里填项目名点一次——笔记里第一个语句前会插入 `## 项目名` 段落标题。之后的收录弹窗里也可以逐条填项目；同名表在不同项目里各存一份，悬浮弹窗里切换。"
+            keywords="DDL 项目 归组 批量 多项目"
+          >
+            <span className="settings-inline">
+              <input
+                type="text"
+                id="ddl-assign-project"
+                className="settings-text"
+                style={{ maxWidth: 140 }}
+                placeholder="项目名…"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void runDdlAssign((event.target as HTMLInputElement).value);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="btn btn-mini"
+                disabled={ddlAssignBusy}
+                onClick={() => {
+                  const input = document.getElementById("ddl-assign-project") as HTMLInputElement | null;
+                  void runDdlAssign(input?.value ?? "");
+                }}
+              >
+                {ddlAssignBusy ? "整理中…" : "归组"}
+              </button>
+            </span>
+          </Row>
+          <Row
+            label="Java 实体笔记路径"
+            desc="收录实体类源码的仓库内笔记路径（悬浮类名显示类源码）。"
+            tip="0.34.13：与 DDL 库同一套交互——收录弹窗粘贴 class/interface/enum/record 自动识别类名；笔记里悬停类名浮出源码；`## 项目名` 段落区分同名类（多项目复用）。留空关闭实体库。"
+            keywords="Java 实体 类 路径 悬浮"
+          >
+            <span className="settings-inline">
+              <input
+                type="text"
+                className="settings-text"
+                value={settings.javaEntityFilePath}
+                placeholder="Java实体.md"
+                onChange={(event) => saveWithFlash({ javaEntityFilePath: event.target.value })}
+              />
+              <button
+                type="button"
+                className="btn btn-mini"
+                title="恢复默认路径"
+                onClick={() => saveWithFlash({ javaEntityFilePath: "Java实体.md" })}
               >
                 重置
               </button>
@@ -1202,13 +1375,12 @@ export default function SettingsDialog({
               keywords="字号 缩放 正文大小"
             >
               <span className="settings-slider">
-                <input
-                  type="range"
+                <DeferredSlider
                   min={0.85}
                   max={1.3}
                   step={0.05}
                   value={settings.mobileFontScale || 1}
-                  onChange={(event) => saveWithFlash({ mobileFontScale: Number(event.target.value) })}
+                  onCommit={(value) => saveWithFlash({ mobileFontScale: value })}
                 />
                 <span className="settings-slider-value">{Math.round((settings.mobileFontScale || 1) * 100)}%</span>
               </span>
@@ -1417,22 +1589,22 @@ export default function SettingsDialog({
           </Row>
           <Row label="不透明度" desc="背景图整体的可见程度。" keywords="背景 淡 透明">
             <span className="settings-slider">
-              <input
-                type="range" min={0} max={100} step={5}
+              <DeferredSlider
+                min={0} max={100} step={5}
                 value={Math.round(bg.bgOpacity * 100)}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgOpacity: Number(event.target.value) / 100 })}
+                onCommit={(value) => saveBg({ bgOpacity: value / 100 })}
               />
               <span className="settings-slider-value">{Math.round(bg.bgOpacity * 100)}%</span>
             </span>
           </Row>
           <Row label="模糊" desc="背景图的高斯模糊半径。" keywords="背景">
             <span className="settings-slider">
-              <input
-                type="range" min={0} max={30} step={1}
+              <DeferredSlider
+                min={0} max={30} step={1}
                 value={bg.bgBlur}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgBlur: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgBlur: value })}
               />
               <span className="settings-slider-value">{bg.bgBlur}px</span>
             </span>
@@ -1444,66 +1616,66 @@ export default function SettingsDialog({
             tip="背景图被 cover 放大到窗口尺寸后，浏览器插值会让边缘发软。这里用 3×3 卷积做锐化（不是单纯提对比度）；滑杆越大边缘越硬，拉满会有轻微白边。若整体仍觉得雾蒙蒙，多半是被界面浓度盖住了——把下面的「界面浓度」调低更直接。"
           >
             <span className="settings-slider">
-              <input
-                type="range" min={0} max={100} step={5}
+              <DeferredSlider
+                min={0} max={100} step={5}
                 value={bg.bgSharpen}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgSharpen: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgSharpen: value })}
               />
               <span className="settings-slider-value">{bg.bgSharpen}%</span>
             </span>
           </Row>
           <Row label="亮度" desc="背景图的明暗。" keywords="背景">
             <span className="settings-slider">
-              <input
-                type="range" min={30} max={150} step={5}
+              <DeferredSlider
+                min={30} max={150} step={5}
                 value={bg.bgBrightness}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgBrightness: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgBrightness: value })}
               />
               <span className="settings-slider-value">{bg.bgBrightness}%</span>
             </span>
           </Row>
           <Row label="对比度" desc="背景图的浓淡对比。" keywords="背景">
             <span className="settings-slider">
-              <input
-                type="range" min={30} max={150} step={5}
+              <DeferredSlider
+                min={30} max={150} step={5}
                 value={bg.bgContrast}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgContrast: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgContrast: value })}
               />
               <span className="settings-slider-value">{bg.bgContrast}%</span>
             </span>
           </Row>
           <Row label="水平位置" desc="图片的横向焦点。" keywords="背景">
             <span className="settings-slider">
-              <input
-                type="range" min={0} max={100} step={5}
+              <DeferredSlider
+                min={0} max={100} step={5}
                 value={bg.bgPosX}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgPosX: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgPosX: value })}
               />
               <span className="settings-slider-value">{bg.bgPosX}%</span>
             </span>
           </Row>
           <Row label="垂直位置" desc="图片的纵向焦点。" keywords="背景">
             <span className="settings-slider">
-              <input
-                type="range" min={0} max={100} step={5}
+              <DeferredSlider
+                min={0} max={100} step={5}
                 value={bg.bgPosY}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgPosY: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgPosY: value })}
               />
               <span className="settings-slider-value">{bg.bgPosY}%</span>
             </span>
           </Row>
           <Row label="缩放" desc="在适配基础上再放大/缩小。" keywords="背景">
             <span className="settings-slider">
-              <input
-                type="range" min={50} max={200} step={5}
+              <DeferredSlider
+                min={50} max={200} step={5}
                 value={bg.bgScale}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgScale: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgScale: value })}
               />
               <span className="settings-slider-value">{bg.bgScale}%</span>
             </span>
@@ -1515,11 +1687,11 @@ export default function SettingsDialog({
             tip="背景图上盖着一层半透明的界面底色保证正文可读——「不透明度」拉满背景还是淡，就是被它盖住了（0.29 用户反馈）。80 是默认观感；调低各表面更透、背景更明显，正文可读性随之下降，按自己眼睛的舒适度取值。"
           >
             <span className="settings-slider">
-              <input
-                type="range" min={0} max={100} step={5}
+              <DeferredSlider
+                min={0} max={100} step={5}
                 value={bg.bgSurface ?? 80}
                 disabled={!vault}
-                onChange={(event) => saveBg({ bgSurface: Number(event.target.value) })}
+                onCommit={(value) => saveBg({ bgSurface: value })}
               />
               <span className="settings-slider-value">{bg.bgSurface ?? 80}%</span>
             </span>
