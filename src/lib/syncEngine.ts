@@ -25,20 +25,22 @@
  *    写入前比较内容、一致则不触碰文件（不刷 mtime）。插件的 `vault.modify` 会把
  *    BOM 丢掉。
  *
- * ## 附件的同步策略（与插件一致）
+ * ## 附件的同步策略（M8 全类型同步）
  *
  * 附件走独立的字节接口（`/api/v1/sync/attachments`，一条一个请求）：
  *
- * - **按引用扫，不按目录扫**：只同步被范围内笔记引用到的附件。粘贴图片的落点取决于
- *   用户配置，盯目录必然漏；按引用扫与落点无关。没被引用的图片不上云——不镜像无用的
- *   二进制。引用的解析（名字 → 路径，同目录优先 → 最短路径 → 字典序）在 Rust 侧完成，
- *   与服务端 `AttachmentService.resolveByName` 同一套顺序。
- * - **本地缺的图按文件名去云端补**。本地没有这个文件时引用是解析不到的，所以"本地缺图"
- *   恰好只会表现为"引用得到名字、找不到文件"；按名去问，服务端用 `X-Attachment-Path`
- *   回真实路径——必须落到那个路径上，否则下一轮扫描会把它当成另一个附件重复上传。
- * - 上传与下载都有每轮上限（条数 + 字节），被推迟的下一轮由引用重新推导出来继续，不会漏。
- * - 同步过、但现在既没被引用、本地也没了的附件推墓碑；只删引用、文件还留着的不推——
- *   云端那份留着更保守，用户日后重新引用无需重传。
+ * - **按目录扫全量同步 + 引用反推补缺**：范围内一切非 `.md` 文件（任意扩展名、
+ *   无扩展名）都上云，孤儿文件（无任何引用）也同步——这是目的而非回归；纯观感
+ *   文件（背景图等）由 `excludedSyncPaths` 排除。引用的解析（名字 → 路径，同目录
+ *   优先 → 最短路径 → 字典序）在 Rust 侧完成，与服务端
+ *   `AttachmentService.resolveByName` 同一套顺序。
+ * - **本地缺的被引用文件按文件名去云端补**。本地没有这个文件时引用解析不到，
+ *   所以"本地缺文件"恰好只会表现为"引用得到名字、找不到文件"；按名去问（名字
+ *   不按扩展名过滤，404 由引擎静默处理），服务端用 `X-Attachment-Path` 回真实
+ *   路径——必须落到那个路径上，否则下一轮扫描会把它当成另一个附件重复上传。
+ * - 上传与下载都有每轮上限（条数 + 字节），被推迟的下一轮由扫描重新推导出来继续，不会漏。
+ * - 同步过、但现在盘上没有的附件推墓碑，让其他设备跟着清掉；只是移出了同步范围
+ *   （还在盘上）的不推——否则改一次日记目录就会把云端整个目录删掉。
  */
 
 import {
@@ -261,8 +263,8 @@ export class SyncEngine {
    * 去抖，早已错过那个窗口，靠哈希判定反而更可靠——M1 处理"自己写入的回声"
    * 用的就是同一招。
    *
-   * 附件（粘贴图片等）同样从这条路径入队：只排 `.md` 的话，粘贴图片要等到下一次
-   * 手动同步或周期扫描才会上云——网页端在那几分钟里看到的是裂图。
+   * 附件（粘贴图片等）同样从这条路径入队：目录扫（M8）兜底终究要等下一轮扫描，
+   * 事件入队让粘贴的图片/文件即刻排上——网页端在那几分钟里看到的是裂图。
    */
   touchPaths(paths: string[]): void {
     if (this.virtualOnly) return; // 纯虚拟模式没有文件事件
@@ -481,14 +483,14 @@ export class SyncEngine {
       result.missing.filter((item) => !excluded.has(item.from.replace(/\\/g, "/"))).map((item) => [item.name, item.from]),
     );
 
-    // 同步过、但现在既没被引用、本地也没了的 → 推墓碑，让其他设备跟着清掉。
-    // 只删引用、文件还留着的**不**推墓碑：云端那份留着更保守，用户日后重新引用无需重传。
-    // 文件名仍被引用着（哪怕链接解析不到）也不删：交给"按名取回"去把它补回来。
+    // 同步过、现在盘上没有 → 推墓碑，让其他设备跟着清掉（M8 目录扫后 referenced
+    // 已是"范围内盘上文件"全集，不再需要看引用/缺失名）。
+    // 必须保留 pathExists 这一问：文件只是**移出了同步范围**（缩小日记目录）时
+    // 它还在盘上——此时不推墓碑，否则改一次日记目录就会把云端整个目录删掉
+    // （与 scanLocalFiles 正文删除传播用的是同一条教训）。
     const referencedPaths = new Set(result.referenced.map((item) => item.path));
-    const missingNames = new Set(result.missing.map((item) => item.name));
     for (const path of Object.keys(this.state.attachmentHashes)) {
       if (referencedPaths.has(path)) continue;
-      if (missingNames.has(basename(path))) continue;
       if (await this.pathExists(path)) continue;
       this.dirtyAttachments.set(path, "del");
     }
@@ -703,9 +705,10 @@ export class SyncEngine {
   /**
    * 处理附件队列：上传/覆盖、墓碑、以及从云端补下本地缺的。
    *
-   * 上传前先刷新引用集：文件事件只能说明"某个二进制文件动了"，它该不该上云由
-   * "有没有被范围内日记引用"决定。不在引用集里就从队列丢掉，免得用户往库里丢了
-   * 一堆还没打算用的图片也全推上去。
+   * 上传前先刷新"范围内盘上文件"集（M8 目录扫语义，`referenced` 字段名沿用）：
+   * 文件事件只能说明"某个二进制文件动了"，它该不该上云由**是否在同步范围内**决定。
+   * 不在范围里就从队列丢掉——文件只是被移出了同步范围（如挪出日记目录），排队中的
+   * 上传正该作废；留在盘上则下一轮扫描也不会再扫到它，云端版本原样保留。
    *
    * 单条失败不拖垮整轮：记下第一个错误继续处理剩下的，最后再抛出，让状态栏如实报错。
    */
@@ -764,7 +767,7 @@ export class SyncEngine {
     }
     const content = await readBinary(this.vault, path);
     if (content.size > MAX_ATTACHMENT_BYTES) {
-      this.host.onNotice(`云同步：附件 ${path} 超过 10MB 上限，已跳过`, "error");
+      this.host.onNotice(`云同步：附件 ${path} 超过 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB 上限，已跳过`, "error");
       return;
     }
     this.state.attachmentStamps[path] = attachmentStamp(content.modified, content.size);
@@ -1214,9 +1217,4 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
   }
   return btoa(binary);
-}
-
-/** 取路径的文件名部分。 */
-function basename(path: string): string {
-  return path.substring(path.lastIndexOf("/") + 1);
 }

@@ -34,6 +34,8 @@ interface Props {
   vault: string;
   path: string;
   onClose: () => void;
+  /** true = 嵌在内容区标签页里（0.35.3），不再是全屏浮层；默认 false = 浮层。 */
+  embedded?: boolean;
 }
 
 /** PDF 手动缩放范围：下限防糊、上限防画布爆内存（3× A4 = 约 1800×2400 CSS px）。 */
@@ -142,7 +144,7 @@ function scheduleOrphanSweep(): void {
   }, IDLE_RELEASE_MS);
 }
 
-export default function FilePreview({ vault, path, onClose }: Props) {
+export default function FilePreview({ vault, path, onClose, embedded = false }: Props) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const kind = fileKindOf(name);
   const [error, setError] = useState<string | null>(null);
@@ -155,6 +157,9 @@ export default function FilePreview({ vault, path, onClose }: Props) {
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const docxHostRef = useRef<HTMLDivElement | null>(null);
   const pdfHostRef = useRef<HTMLDivElement | null>(null);
+  /** 组件根：PDF 的 Ctrl+滚轮缩放绑在这里（0.35.3 嵌入化后绑 pdfHost 会出现
+      命中层差异，绑根对浮层/嵌入两种形态都稳定）。 */
+  const rootRef = useRef<HTMLDivElement | null>(null);
   const docRef = useRef<import("pdfjs-dist").PDFDocumentProxy | null>(null);
   const taskRef = useRef<import("pdfjs-dist").PDFDocumentLoadingTask | null>(null);
   const observerRef = useRef<IntersectionObserver | null>(null);
@@ -294,9 +299,11 @@ export default function FilePreview({ vault, path, onClose }: Props) {
 
   // Ctrl + 滚轮缩放 PDF（0.28 用户反馈）。只拦 Ctrl+wheel：普通滚轮留给
   // 纵向翻页；listener 必须非 passive，否则 preventDefault 无效、页面会缩放。
+  // 绑在组件根（冒泡覆盖画布/文本层一切子元素），不绑 pdfHost——嵌入化后
+  // host 的命中层会随布局形态漂（0.35.3）。
   useEffect(() => {
     if (kind !== "pdf") return;
-    const host = pdfHostRef.current;
+    const host = rootRef.current;
     if (!host) return;
     const onWheel = (event: WheelEvent) => {
       if (!event.ctrlKey || event.deltaY === 0) return;
@@ -697,7 +704,7 @@ export default function FilePreview({ vault, path, onClose }: Props) {
   const canZoomIn = pdfScaleNow < PDF_ZOOM_MAX - 0.001;
 
   return (
-    <div className="file-preview" role="dialog" aria-label={`预览 ${name}`}>
+    <div ref={rootRef} className={`file-preview${embedded ? " is-embedded" : ""}`} role="dialog" aria-label={`预览 ${name}`}>
       <div className="file-preview-bar">
         <span className="file-preview-name" title={path}>
           {name}

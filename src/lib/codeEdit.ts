@@ -454,6 +454,79 @@ export function toggleNumberList(view: EditorView): boolean {
   return toggleList(view, "ordered");
 }
 
+// ---------------------------------------------------------------- 松散列表回车（0.35.3）
+
+/** 列表项的「头部」：缩进 + 标记 + 可选任务框（不含内容）。 */
+export interface ListHead {
+  indent: string;
+  /** 标记本体：`-` / `*` / `+` / `12.` / `3)`。 */
+  marker: string;
+  /** 任务框原文（` [x]` 含前导空格）；无任务框是空串。 */
+  task: string;
+}
+
+/**
+ * 解析一行的列表头部；不是列表项返回 null（`-没有空格` 也不算）。
+ * 与 listMarkerOf 的差别：空项（`- ` 标记后没内容）也认——回车接管需要它。
+ */
+export function listHeadOf(lineText: string): ListHead | null {
+  const match = /^([ \t]*)(?:([-*+])|(\d{1,9})([.)]))([ \t]+\[[xX ]\])?[ \t]+/.exec(lineText);
+  if (!match) return null;
+  return {
+    indent: match[1],
+    marker: match[3] !== undefined ? `${match[3]}${match[4]}` : match[2]!,
+    task: match[5] ?? "",
+  };
+}
+
+/**
+ * 松散列表回车决策（0.35.3 用户反馈「当前序号和上一个序号中间空了一行及以上，
+ * 回车时，会自动空一行生成一个序号」——lang-markdown 的续行会复制「空行 + 新
+ * 序号」来维持松散列表，隔空行的序号列表越按越散）。
+ *
+ * 入参：`lineText` 是光标行全文；`prevLines` 是从紧邻上一行**向上**收集的行
+ * 文本（调用方收集到遇到首个非空行为止，含那一行，到文档头自然截断）。
+ * 接管条件：光标行是列表项、上方首个非空行是**同缩进**的列表项、两者之间隔
+ * 了至少一个空行（=松散延续，正是内置命令会"维持松散"的场景）。
+ *
+ * 返回：
+ * - `{ action: "exit", indent }`：松散延续的空项回车 → 删标记退出列表；
+ * - `{ action: "continue", insert }`：非空项回车 → 紧凑续行，`insert` 是要
+ *   插入的文本（`\n` + 缩进 + 下一标记 + 空格，有序号自动 +1，任务框新项未勾选）；
+ * - null：不接管（紧凑列表/跨缩进/非列表），交给内置命令与既有空项退出逻辑。
+ */
+export function looseListEnterAt(
+  lineText: string,
+  prevLines: string[],
+): { action: "exit"; indent: string } | { action: "continue"; insert: string } | null {
+  const head = listHeadOf(lineText);
+  if (!head) return null;
+  let sawBlank = false;
+  let sibling: ListHead | null = null;
+  for (const text of prevLines) {
+    if (text.trim() === "") {
+      sawBlank = true;
+      continue;
+    }
+    const prevHead = listHeadOf(text);
+    if (prevHead && prevHead.indent === head.indent) sibling = prevHead;
+    break;
+  }
+  if (!sibling || !sawBlank) return null;
+  const rest = lineText
+    .slice(head.indent.length + head.marker.length + head.task.length)
+    .trim();
+  if (rest === "") return { action: "exit", indent: head.indent };
+  let marker = head.marker;
+  const ordered = /^(\d+)([.)])$/.exec(head.marker);
+  if (ordered) {
+    marker = `${Math.min(parseInt(ordered[1], 10) + 1, 999999999)}${ordered[2]}`;
+  }
+  // 任务框的新项一律未勾选（`[x]` 上续行给 `[ ]`）
+  const task = head.task ? " [ ]" : "";
+  return { action: "continue", insert: `\n${head.indent}${marker}${task} ` };
+}
+
 // ---------------------------------------------------------------- Tab 缩进
 
 /**

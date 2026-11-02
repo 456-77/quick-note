@@ -21,7 +21,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { buildLivePreviewDecorations, computeBlockDecorations } from "../src/lib/livePreview.ts";
-import { prepareEmbedMarkdown, sliceSection } from "../src/lib/embed.ts";
+import { prepareEmbedMarkdown, sliceSection, splitEmbedTarget } from "../src/lib/embed.ts";
 import { externalUrlAt } from "../src/lib/markdownExtras.ts";
 import { resolveResource, resolveWikiTarget } from "../src/lib/paths.ts";
 
@@ -596,6 +596,24 @@ check(
 );
 check(!sliceSection(embedded, "^blockid").includes("结尾段落"), "块引用不会取到后面的段落");
 check(sliceSection(embedded, "^nosuchblock") === "", "找不到块引用返回空串");
+
+// splitEmbedTarget：`[[笔记### 标题]]` 的宽容写法要剥掉前导 #（0.35.3 用户反馈
+// 「当前链接文件的段落功能没有实现」——不清洗的话带着 "## " 前缀，标题匹配永远落空）
+check(splitEmbedTarget("资料/某笔记.md").section === "", "无小节");
+check(splitEmbedTarget("资料/某笔记.md#标题文本").section === "标题文本", "标准单 # 语法");
+check(
+  splitEmbedTarget("资料/某笔记.md### 标题文本").section === "标题文本",
+  "### 宽容写法剥前导 #",
+  JSON.stringify(splitEmbedTarget("资料/某笔记.md### 标题文本")),
+);
+check(splitEmbedTarget("笔记.md###标题").section === "标题", "### 紧贴不剥空格");
+check(splitEmbedTarget("某笔记.md##generatorTask 方法").section === "generatorTask 方法", "## 前缀剥掉");
+check(splitEmbedTarget("某笔记.md#^blockid").section === "^blockid", "块引用 ^id 不剥");
+check(
+  splitEmbedTarget("资料/智能审核二开方法-海亮.md### generatorTask 方法").path ===
+    "资料/智能审核二开方法-海亮.md",
+  "# 切分取第一处（path 保留）",
+);
 
 // prepareEmbedMarkdown：把嵌入内容里的 wiki 语法转成 Markdown
 const prepared = prepareEmbedMarkdown(

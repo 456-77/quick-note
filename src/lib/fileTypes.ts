@@ -2,8 +2,9 @@
  * 文件类型分类：哪些能当笔记编辑（Markdown / 文本数据文件）、哪些走预览
  * （PDF / Word / Excel / PPT）、哪些只是列出来（其他二进制）。
  *
- * `.txt` 刻意**不在**可编辑清单里：纯文本没有结构，误开二进制/乱码文件的风险
- * 大于收益，且 GUI 契约依赖 `.txt` 保持"列出来但不可编辑"的现状。
+ * `.txt` 旧版刻意排除（当时担心误开二进制/乱码文件）；0.35.3 用户要求
+ * 「添加对 txt 文件的预览和编辑支持」——纯文本按普通文本数据文件对待：
+ * 进编辑器（plain 语法、仅源码视图）与标签页，随 TEXT_EXTS 生效。
  */
 
 export type FileKind =
@@ -19,7 +20,7 @@ export type FileKind =
 
 /** 可在编辑器里当作文本编辑的数据文件扩展名（小写、不含点）。 */
 export const TEXT_EXTS = new Set([
-  "json", "jsonc", "sql", "yaml", "yml", "toml", "ini", "cfg", "conf",
+  "txt", "json", "jsonc", "sql", "yaml", "yml", "toml", "ini", "cfg", "conf",
   "xml", "css", "js", "mjs", "ts", "jsx", "tsx", "py", "java", "rs", "go",
   "sh", "bat", "ps1",
 ]);

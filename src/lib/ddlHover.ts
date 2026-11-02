@@ -17,11 +17,27 @@ import { livePreviewContext } from "./paths.ts";
 import { getSettings } from "./settings.ts";
 import { buildDdlTipDom, revealDdlLine, type DdlTipOptions, type TipLang } from "./ddlTip.ts";
 import { tableWordInText, type DdlEntry } from "./ddl.ts";
-import { classWordInText } from "./javaEntity.ts";
 
 /** 表名词法字符：字母数字下划线 $ # 与库名前缀的点。 */
 function isWordChar(ch: string | undefined): boolean {
   return !!ch && /[A-Za-z0-9_$#.]/.test(ch);
+}
+
+/**
+ * Java 实体库查词：先原名精确命中，再退到大小写不敏感匹配（0.35.3 用户反馈
+ * 「光标已经聚焦到实体上，为什么没有显示弹窗」——手打的 hocrTaskItf 与库里的
+ * HocrTaskItf 大小写不同；着色层 ddlMark 的交替正则带 gi 不区分大小写，悬浮
+ * 查库同口径，否则出现「有下划线却不弹窗」的割裂）。撞键时取先遍历到的一条。
+ */
+function javaEntriesFor(classes: Map<string, DdlEntry[]> | undefined, raw: string): DdlEntry[] | undefined {
+  if (!classes) return undefined;
+  const exact = classes.get(raw);
+  if (exact) return exact;
+  const lower = raw.toLowerCase();
+  for (const [key, value] of classes) {
+    if (key.toLowerCase() === lower) return value;
+  }
+  return undefined;
 }
 
 // -------------------------------------------------------- 悬浮卡直接编辑（0.34.2）
@@ -82,9 +98,9 @@ export function ddlHover(): Extension {
       while (to < text.length && isWordChar(text[to])) to += 1;
       if (from === to) return null;
       const raw = text.slice(from, to);
-      // 先查 DDL 库（小写键），再查 Java 实体库（大小写敏感键）
+      // 先查 DDL 库（小写键），再查 Java 实体库（原名→大小写不敏感兜底）
       const sqlEntries = tables?.get(raw.toLowerCase());
-      const javaEntries = classes?.get(raw);
+      const javaEntries = sqlEntries ? undefined : javaEntriesFor(classes, raw);
       const entries = sqlEntries ?? javaEntries;
       if (!entries || entries.length === 0) return null;
       const lang: TipLang = sqlEntries ? "sql" : "java";
@@ -242,17 +258,21 @@ export function installDdlCellHover(): () => void {
       const classes = ctx.javaClasses;
       if ((!tables || tables.size === 0) && (!classes || classes.size === 0)) return;
       const text = cell.textContent ?? "";
-      // 先查 DDL 库（小写词），再查 Java 实体库（大小写敏感词）
+      // 先查 DDL 库（小写词），再查 Java 实体库（原名→大小写不敏感兜底）
       const sqlWord = tables ? tableWordInText(text, tables) : null;
       if (sqlWord) {
         const entries = tables!.get(sqlWord)!;
         show(cell, sqlWord, entries, "sql", defaultProjectFor(view, entries));
         return;
       }
-      const javaWord = classes ? classWordInText(text, classes) : null;
-      if (classes && javaWord) {
-        const entries = classes.get(javaWord)!;
-        show(cell, javaWord, entries, "java", defaultProjectFor(view, entries));
+      if (classes) {
+        for (const token of text.split(/[^A-Za-z0-9_$]+/)) {
+          const entries = token ? javaEntriesFor(classes, token) : undefined;
+          if (entries) {
+            show(cell, token, entries, "java", defaultProjectFor(view, entries));
+            return;
+          }
+        }
       }
     }, CELL_HOVER_MS);
   };

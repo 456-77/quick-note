@@ -27,7 +27,13 @@ import {
 export function splitEmbedTarget(target: string): { path: string; section: string } {
   const hash = target.indexOf("#");
   if (hash < 0) return { path: target, section: "" };
-  return { path: target.slice(0, hash), section: target.slice(hash + 1) };
+  let section = target.slice(hash + 1);
+  // 0.35.3 用户反馈「当前链接文件的段落功能没有实现」：按直觉会写成
+  // `[[笔记### 标题]]`（以为 # 个数要对应标题级别），标准语法是 `[[笔记#标题]]`——
+  // 不清洗的话 section 带着 "## " 前缀，标题匹配永远落空，只剩"打开整篇"。
+  // 剥掉小节名前导的 `#`（块引用 `^id` 不动），标题匹配只认文本。
+  if (!section.startsWith("^")) section = section.replace(/^#+\s*/, "");
+  return { path: target.slice(0, hash), section };
 }
 
 /**

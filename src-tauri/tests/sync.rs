@@ -475,8 +475,9 @@ fn binary(vault: &PathBuf, rel: &str) -> quick_note_lib::vault::BinaryContent {
     read_binary(vault.to_string_lossy().to_string(), rel.into()).expect("读取附件应当成功")
 }
 
-/// 附件扫描是"从云端把图拉下来"唯一的入口：本地缺的图只会表现为"引用得到名字、
-/// 找不到文件"。这条链路的判定错了，图片就永远下不来。
+/// 附件扫描（M8 全类型同步）：**按目录扫**——范围内一切非 .md 文件都进 referenced
+/// （孤儿文件也上云，这正是目的）；「引用得到名字、却找不到文件」仍走 missing
+/// 上报（引用反推补缺，扩展名不再过滤）。
 #[test]
 fn attachment_scan_resolves_references_and_reports_missing() {
     let vault = temp_vault("att");
@@ -494,46 +495,71 @@ fn attachment_scan_resolves_references_and_reports_missing() {
             "# 日记\n",
             "![[被引用.png|300]]\n",
             "![[丢失.pdf]]\n",
-            "![](attachments/被引用.png)\n",   // 同一张图的另一种写法：去重
+            "![](attachments/被引用.png)\n",   // 同一张图的另一种写法
             "写成 `![[示例.png]]` 的不算引用\n",
             "```md\n![[围栏里.png]]\n```\n",
         )
         .as_bytes(),
     );
 
-    let result = scan_attachments(&vault, "folder", "日记");
-
+    // 整库范围：按目录扫，孤儿附件也上云（M8 目的本身）
+    let result = scan_attachments(&vault, "vault", "");
     let paths: Vec<&str> = result.referenced.iter().map(|r| r.path.as_str()).collect();
     assert_eq!(
         paths,
-        vec!["attachments/被引用.png"],
-        "同一张图的两种写法只算一次；孤儿附件与围栏/行内代码里的名字不出现"
+        vec!["attachments/没人引用.png", "attachments/被引用.png"],
+        "按目录扫全量上云：没被引用的附件也在（referenced 按路径排序）"
     );
+    assert_eq!(result.referenced[0].name, "没人引用.png", "name = basename（按名拉取的请求键）");
 
     let missing: Vec<&str> = result.missing.iter().map(|m| m.name.as_str()).collect();
-    assert_eq!(missing, vec!["丢失.pdf"], "本地缺的附件按名字上报");
+    assert_eq!(missing, vec!["丢失.pdf"], "本地缺的附件按名字上报（扩展名不再过滤）");
     assert_eq!(result.missing[0].from, "日记/2026-09-15.md", "带上引用它的日记路径（服务端解析同名文件时同目录优先）");
+
+    // folder 范围：范围外的附件目录——**孤儿**不上（目录扫只收范围内），
+    // **被引用的**照常上（并集语义：附件目录常在日记目录外，按引用上传是既有约定）；
+    // missing 判定不受影响——引用解析是全库的
+    let scoped = scan_attachments(&vault, "folder", "日记");
+    let scoped_paths: Vec<&str> = scoped.referenced.iter().map(|r| r.path.as_str()).collect();
+    assert_eq!(
+        scoped_paths,
+        vec!["attachments/被引用.png"],
+        "范围外：没人引用的「没人引用.png」不进 referenced，被引用的照常进"
+    );
+    assert_eq!(
+        scoped.missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+        vec!["丢失.pdf"],
+        "范围外的附件照样能满足引用（解析不套 scope）"
+    );
 
     let _ = fs::remove_dir_all(&vault);
 }
 
-/// 点开头的路径段与白名单之外的扩展名，无论引用与否都不进结果。
+/// 点开头的路径段不同步（无论引用与否都不进结果）；todo 快照名不参与附件通道；
+/// 无扩展名文件也是合法附件（M8 全类型）。
 ///
 /// .trash 里的同名文件**不能**把引用满足掉：那会导致"从云端把已删除的图拉回来"，
 /// 而这里期望它被当成 missing（云端有就取回，没有就静默跳过——与插件一致）。
 #[test]
-fn attachment_scan_ignores_hidden_and_unsupported() {
+fn attachment_scan_ignores_hidden_dirs_and_todo_snapshot() {
     let vault = temp_vault("att2");
     write_bytes(&vault, ".trash/被引用.png", b"X");
     write_bytes(&vault, "attachments/图.svg", b"<svg/>");
+    write_bytes(&vault, "attachments/README", b"plain");
+    write_bytes(&vault, "daily-sync-todos.json", b"{}");
     write_bytes(&vault, "日记/a.md", "![[被引用.png]]\n![[图.svg]]\n".as_bytes());
 
     let result = scan_attachments(&vault, "vault", "");
-    assert!(result.referenced.is_empty(), "点开头目录里的文件不能被引用到");
+    let paths: Vec<&str> = result.referenced.iter().map(|r| r.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        vec!["attachments/README", "attachments/图.svg"],
+        "svg 与无扩展名文件都是合法附件；todo 快照与点开头目录不参与"
+    );
     assert_eq!(
         result.missing.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
         vec!["被引用.png"],
-        ".trash 里的同名文件不算数；svg 被白名单挡掉，刻意不同步"
+        ".trash 里的同名文件不算数（不能把引用满足掉）"
     );
 
     let _ = fs::remove_dir_all(&vault);

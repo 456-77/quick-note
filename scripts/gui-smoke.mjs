@@ -26,8 +26,8 @@ const EXPECTED = [
   "日记/2026-09-14.md",
   "日记/2026-W37 周记.md",
 ];
-/** 不应出现：隐藏文件、.obsidian 下的文件、非 md 文件。 */
-const FORBIDDEN = [".hidden-note.md", "app.json", "notes.txt"];
+/** 不应出现：隐藏文件、.obsidian 下的文件。txt 已进可编辑清单（0.35.3），notes.txt 应出现在树里。 */
+const FORBIDDEN = [".hidden-note.md", "app.json"];
 
 let nextId = 1;
 
@@ -125,6 +125,7 @@ for (const want of EXPECTED) {
 for (const bad of FORBIDDEN) {
   check(!treePaths.some((t) => t.includes(bad)), `树中不包含 ${bad}`);
 }
+check(treePaths.some((t) => t.includes("notes.txt")), "txt 在树中可见且可打开（0.35.3 txt 支持）");
 
 // 5) 打开一篇 CRLF 笔记，验证编辑器渲染内容（走 read_note）
 const target = "日记/2026-W37 周记.md";

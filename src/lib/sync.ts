@@ -9,7 +9,7 @@
  * 服务端与同一份仓库：常量一旦分叉，最轻的后果是两边互相把对方推的变更又推一遍。
  */
 
-import { mergeTodos, parseSnapshot, type TodoMap } from "./todos.ts";
+import { mergeTodos, parseSnapshot, TODO_SYNC_PATH, type TodoMap } from "./todos.ts";
 
 /** 本设备独立的同步配置与状态（落盘在应用配置目录，**不进仓库**）。 */
 export interface SyncDeviceState {
@@ -214,23 +214,16 @@ export const PULL_LIMIT = 500;
 /** 服务端限制：path ≤255 字符。 */
 export const MAX_PATH_CHARS = 255;
 
-/**
- * 允许同步的附件扩展名（与后端 `AttachmentService.ALLOWED_EXTENSIONS` 一一对应）。
- *
- * 刻意不含 svg：svg 能内联脚本，浏览器直出等于开了一条 XSS 通道。
- * 白名单必须与服务端一致——不一致的话本地会把注定被 400 拒的文件反复往上推。
- */
-export const ATTACHMENT_EXTENSIONS = ["png", "jpg", "jpeg", "gif", "webp", "pdf"] as const;
-/** 服务端单文件上限 10MB。本地先挡一道，省一次注定被 413 拒的上传。 */
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+/** 服务端单文件上限 50MB（daily-sync.attachments.max-file-bytes 默认值，M8）。本地先挡一道，省一次注定被 413 拒的上传。 */
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 /**
  * 每个同步周期最多补下多少个附件、多少字节。
  *
- * 新设备首次同步时云端可能挂着上百张图，一口气拉完会让界面卡住几分钟；分轮完成，
- * 被跳过的下一轮（5 分钟）继续，引用还在不会漏。
+ * 新设备首次同步时云端可能挂着上百个附件，一口气拉完会让界面卡住几分钟；分轮完成，
+ * 被跳过的下一轮（5 分钟）继续，引用还在不会漏。50MB 文件一周期至少能完整下 4 个。
  */
 export const ATTACHMENT_DOWNLOAD_PER_CYCLE = 20;
-export const ATTACHMENT_DOWNLOAD_BYTES_PER_CYCLE = 50 * 1024 * 1024;
+export const ATTACHMENT_DOWNLOAD_BYTES_PER_CYCLE = 200 * 1024 * 1024;
 
 /** 取路径的文件名部分。 */
 export function basenameOf(path: string): string {
@@ -382,18 +375,15 @@ export function decideRecord(input: RecordDecisionInput): RecordAction {
 
 // ---------------------------------------------------------------- 附件
 
-/** 附件路径是否值得考虑同步：白名单扩展名 + 不在任何点开头的目录里。 */
+/**
+ * 路径是否走附件（字节）通道：非 .md（区分大小写）即附件（M8 全类型同步，与
+ * Rust 侧 `vault::is_attachment_path` 同一套规则）。
+ * 待办快照是虚拟文件走正文通道，盘上残留的同名文件不参与；点开头路径段排除。
+ */
 export function isAttachmentPath(path: string): boolean {
-  if (path.endsWith(".md") || path.endsWith(".json")) return false;
-  if (path.split("/").some((segment) => segment.startsWith("."))) return false;
-  return (ATTACHMENT_EXTENSIONS as readonly string[]).includes(extensionOf(path));
-}
-
-/** 取路径的扩展名（小写）；目录名里的点不算。 */
-export function extensionOf(path: string): string {
-  const dot = path.lastIndexOf(".");
-  const slash = path.lastIndexOf("/");
-  return dot > slash + 1 ? path.substring(dot + 1).toLowerCase() : "";
+  if (path.endsWith(".md")) return false;
+  if (path === TODO_SYNC_PATH) return false;
+  return !path.split("/").some((segment) => segment.startsWith("."));
 }
 
 /** 附件的旁路缓存键：mtime 与 size 都没变就跳过重读重算。 */

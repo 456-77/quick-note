@@ -6,7 +6,7 @@ import { EditorView } from "@codemirror/view";
 import CalendarPanel from "./components/CalendarPanel";
 import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
 import FilePreview from "./components/FilePreview";
-import FileTree, { topLevelDirs } from "./components/FileTree";
+import FileTree, { topLevelDirs, TREE_DRAG_MIME } from "./components/FileTree";
 import HeadingLevelDialog from "./components/HeadingLevelDialog";
 import ImageCropDialog from "./components/ImageCropDialog";
 import OutlinePanel from "./components/OutlinePanel";
@@ -73,13 +73,12 @@ import { editorLanguageOf, fileKindOf, isMarkdownPath } from "./lib/fileTypes";
 import { normalizeTagName, noteTags, tagAddEdit, tagRemoveEdit, tagRenameEdits } from "./lib/tags";
 import { buildCaptureLines, detectEol } from "./lib/capture";
 import { attachmentNameFor, linkTextFor } from "./lib/attachments";
-import { saveAndLink, toBase64 } from "./lib/paste";
+import { blockInsertPadding, isInsideFence, saveAndLink, toBase64, type CodePasteOptions } from "./lib/paste";
 import { readBinaryFile } from "./lib/api";
 import type { CaptureImage } from "./components/QuickCaptureDialog";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache, renderMarkdownToHtml, splitEmbedTarget } from "./lib/embed";
 import { applyMermaidTheme, clearMermaidCache, requestDecorationRefresh, setMermaidNotice, toggleableBlockAt } from "./lib/livePreview";
-import { blockInsertPadding, type CodePasteOptions } from "./lib/paste";
 import { EMPTY_CONTEXT, absoluteInVault, resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { bgSettingsFor, getSettings, onSettingsChange, updateBgSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
@@ -465,8 +464,24 @@ export default function App() {
   const [vaultMenu, setVaultMenu] = useState<{ x: number; y: number } | null>(null);
   /** 应用数据目录信息（设置 → 存储）。 */
   const [dataPaths, setDataPaths] = useState<AppDataPaths | null>(null);
-  /** 预览窗格：打开的 pdf/docx/xlsx 路径（不进标签，独立浮层）。 */
-  const [previewPath, setPreviewPath] = useState<string | null>(null);
+  /** 预览标签页（0.35.3 四轮反馈：预览保留标签页形式；语句库另走 Inbox 式整页）。
+   * 不进 openTabs/stateStore 的特殊标签，标签栏常驻可点回。 */
+  const [previewTabs, setPreviewTabs] = useState<string[]>([]);
+  /** 激活的预览标签（文件路径；null = 编辑器显示）。 */
+  const [activePreview, setActivePreview] = useState<string | null>(null);
+  /** 语句库管理整页（0.35.3 四轮反馈：不再占用标签页外壳，Ctrl+Alt+K / Esc /
+      菜单切换——与收件箱（Inbox）同一种页面形态）。 */
+  const [libraryPageOpen, setLibraryPageOpen] = useState(false);
+  /** 开预览标签：已有同路径的标签就只激活它；标签栏常驻，点笔记随时切回。 */
+  const openPreviewTab = useCallback((path: string) => {
+    setPreviewTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
+    setActivePreview(path);
+  }, []);
+  /** 关预览标签；关的是激活页就回编辑器。 */
+  const closeSpecialTab = useCallback((path: string) => {
+    setPreviewTabs((prev) => prev.filter((p) => p !== path));
+    setActivePreview((cur) => (cur === path ? null : cur));
+  }, []);
   /** 知识库内"复制"的文件（Ctrl+V 粘贴进选中的目录；同时已写入系统剪贴板）。 */
   const [treeClipboard, setTreeClipboard] = useState<{ path: string; isDir: boolean } | null>(null);
   /** 左侧树当前选中的目录（粘贴目标）。 */
@@ -506,6 +521,10 @@ export default function App() {
   const [cropPath, setCropPath] = useState<string | null>(null);
   /** 标签页右键菜单（固定 / 关闭左侧·右侧·其他·全部）。 */
   const [tabMenu, setTabMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  /** 标题行右键菜单（0.35.3 用户需求：光标定位在标题上，右键复制该标题的链接）。 */
+  const [headingMenu, setHeadingMenu] = useState<{ x: number; y: number; text: string } | null>(
+    null,
+  );
   /** 固定的标签页路径（本机 localStorage 按仓库分桶）。固定 = 置顶显示、不可误关。 */
   const [pinnedTabs, setPinnedTabs] = useState<string[]>([]);
 
@@ -913,16 +932,33 @@ export default function App() {
 
   /** 应用内更新：下载（带进度）→ 静默安装 → 重启。失败后按钮变「重试更新」，原地再下。 */
   const installUpdate = useCallback(async () => {
-    const update = updateRef.current;
-    if (!update || updatingRef.current) return;
+    if (updatingRef.current) return;
     updatingRef.current = true;
-    // 0.34.8 用户反馈「点击更新后按钮还存在且还可以点」：点下瞬间就切进度态——
-    // 原先要等首个进度事件（网络 Started 往返）才切，慢网时按钮停留数秒像没反应
-    setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新… 0%", progress: 0 }));
-    // 弹窗关着（或下载中途关掉）= 后台下载：进度按 25% 一档发系统通知
-    let background = updateDismissedRef.current;
-    let notifiedAt = 0;
     try {
+      let update = updateRef.current;
+      // 0.35.3 用户反馈「点过一次更新按钮后，面板显示就应该改变啊，就算没从
+      // 服务器获取到数据，不然网卡的时候用户点击后没反应会一直点击」：检查
+      // 更新若走的 GitHub API 回退路径（插件路径当时没走通），updateRef 是
+      // 空的——旧版这里直接 return，按钮点了毫无反应。现在立即给出可见状态
+      // 并自动重取更新源（期间 updatingRef 挡住连点）。
+      if (!update) {
+        setUpdateCheck((prev) => ({ ...prev, state: "checking", message: "正在连接更新服务器…" }));
+        update = await checkViaPlugin();
+        if (!update) {
+          setUpdateCheck((prev) => ({
+            ...prev,
+            state: "error",
+            message: "连不上更新服务器：请检查网络后重试，或到发布页手动下载安装包",
+            available: true,
+          }));
+          return;
+        }
+        updateRef.current = update;
+      }
+      // 弹窗关着（或下载中途关掉）= 后台下载：进度按 25% 一档发系统通知
+      let background = updateDismissedRef.current;
+      let notifiedAt = 0;
+      setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新… 0%", progress: 0 }));
       await installAndRelaunch(update, (pct) => {
         background = background || updateDismissedRef.current;
         setUpdateCheck((prev) => ({
@@ -942,6 +978,7 @@ export default function App() {
     } catch (e) {
       // 保留 available/notes/url：错误提示归位后「立即更新」（此时显示为
       // 「重试更新」）和更新弹窗仍在，用户可以直接再试，不必去发布页
+      const background = updateDismissedRef.current;
       if (background) void notifyUpdateBackground(`更新下载失败：${e}`);
       setUpdateCheck((prev) => ({
         ...prev,
@@ -1761,8 +1798,6 @@ export default function App() {
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
   /** 建表语句收录弹窗（0.31；默认键 0.32.1 起 Ctrl+Alt+J，可改绑）。 */
   const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
-  /** 语句库管理面板（0.35.1）：DDL / Java 实体同一个面板，Ctrl+Alt+K 唤起。 */
-  const [libraryPanelOpen, setLibraryPanelOpen] = useState(false);
   /** DDL 库笔记里出现过的项目名（收录弹窗的项目下拉候选；loadDdlLibrary 维护）。 */
   const [ddlProjects, setDdlProjects] = useState<string[]>([]);
   // JSON 格式转换面板（0.34.13 用户反馈）：打开时带入编辑器选区，转换完成后写回
@@ -1897,6 +1932,12 @@ export default function App() {
   useEffect(() => {
     if (!captureManagerOpen) viewRef.current?.requestMeasure();
   }, [captureManagerOpen]);
+
+  // 特殊页（预览标签/语句库整页，0.35.3）同一条纪律：display:none 回编辑器后
+  // 立刻重测，防高度图陈旧导致行号/点击整体漂移
+  useEffect(() => {
+    if (!activePreview && !libraryPageOpen) viewRef.current?.requestMeasure();
+  }, [activePreview, libraryPageOpen]);
 
   const submitQuickCapture = useCallback(
     async (
@@ -3017,7 +3058,7 @@ export default function App() {
             if (!file) return;
             const normalized = file.replace(/\\/g, "/");
             if (!normalized.toLowerCase().endsWith(".md")) {
-              setPreviewPath(normalized);
+              openPreviewTab(normalized);
               return;
             }
             const prefix = dir.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
@@ -3027,7 +3068,7 @@ export default function App() {
             window.setTimeout(() => void openEntryRef.current(relative), 600);
           });
       });
-  }, [refresh, activateVault, recordVault]);
+  }, [refresh, activateVault, recordVault, openPreviewTab]);
 
   // 窗口关闭时把**本窗口**的仓库写回 VAULT_KEY（0.31）：localStorage 是所有
   // 窗口共享的，多窗口各开各的仓库时，任何一次切仓都会改写它——下次启动恢复
@@ -3081,7 +3122,10 @@ export default function App() {
       localStorage.setItem(VAULT_KEY, picked);
       recordVault(picked);
       setVault(picked);
-      setPreviewPath(null);
+      // 切仓库：预览标签与语句库页一并清掉——面板数据与新仓库无关
+      setPreviewTabs([]);
+      setActivePreview(null);
+      setLibraryPageOpen(false);
       setSelectedPath(null);
       setTagDashTag(null);
       setTreeClipboard(null);
@@ -3605,10 +3649,12 @@ export default function App() {
   const openNote = useCallback(
     async (path: string) => {
       if (!vault) return;
-      // 打开任何笔记都收起预览窗格（预览与编辑互斥，对齐 Obsidian 的点击语义）；
-      // 收件箱面板同理——它盖住编辑区（display:none），不收起的话用户在左侧树里
-      // 点笔记毫无反应，看起来像"点不动、要手动关面板"（0.20 用户反馈）。
-      setPreviewPath(null);
+      // 打开笔记 = 离开特殊页（预览/语句库标签**保留**在标签栏，随时点得回来，
+      // 0.35.3 用户反馈「关闭后只能从左侧文件列表中选择打开，可以复用笔记的
+      // 标签页形式吗」）；收件箱面板同理——它盖住编辑区（display:none），不收起
+      // 的话用户在左侧树里点笔记毫无反应，看起来像"点不动"（0.20 用户反馈）。
+      setActivePreview(null);
+      setLibraryPageOpen(false);
       setCaptureManagerOpen(false);
       // 0.32.2 分栏路由：标签唯一归属一栏——右栏的标签在右栏激活，左栏的在左栏
       // 激活；还没有标签的新文件落在**最后聚焦的窗格**（Obsidian 语义）。
@@ -3809,8 +3855,8 @@ export default function App() {
   );
 
   /**
-   * 文件树的打开入口（按类型路由）：预览类（pdf/docx/xlsx）开预览窗格，
-   * markdown 与数据文件（json/sql/yaml 等）进编辑器。
+   * 文件树的打开入口（按类型路由）：预览类（pdf/docx/xlsx）开预览标签页，
+   * markdown 与数据文件（json/sql/yaml/txt 等）进编辑器。
    */
   const openEntry = useCallback(
     async (path: string) => {
@@ -3821,17 +3867,19 @@ export default function App() {
         // 切到预览页同样收起文件内搜索面板（0.23 用户反馈：换页面不残留）
         closeSearchPanelIfOpen();
         setSelectedPath(path);
-        setPreviewPath(path);
+        // 0.35.3：预览从独立浮层改为标签页——关闭/切走后从标签栏点得回来
+        openPreviewTab(path);
         // 预览类文件同样进「最近」列表（此前只记笔记，最近里永远看不到 pdf/docx）
         recordRecent(path);
         return;
       }
-      // 打开编辑类文件时关掉预览（与 Obsidian 一致：点击文件切换内容）
-      setPreviewPath(null);
+      // 打开编辑类文件时离开预览/语句库页（预览标签保留在标签栏，可点回）
+      setActivePreview(null);
+      setLibraryPageOpen(false);
       setSelectedPath(path);
       await openNote(path);
     },
-    [openNote, recordRecent],
+    [openNote, recordRecent, openPreviewTab],
   );
 
   /** 最新 openEntry：启动参数「双击 .md 打开」的 effect 只跑一次，用它避免旧闭包。 */
@@ -3839,6 +3887,43 @@ export default function App() {
   useEffect(() => {
     openEntryRef.current = openEntry;
   }, [openEntry]);
+
+  /**
+   * 文件树条目拖到某一栏的落点（0.35.3 五轮反馈「直接拖动文件到左右侧后实现
+   * 左右两种情况分屏」）：拖到右栏=在右栏打开（右栏没开就开出分屏）；拖到
+   * 左栏=在左栏打开（该文件若在右栏则移回）。预览类（pdf/docx…）不进分屏，
+   * 维持 openEntry 的预览标签页语义。
+   */
+  const paneFileDropRef = useRef<(path: string, side: "main" | "split") => void>(() => {});
+  useEffect(() => {
+    paneFileDropRef.current = (path, side) => {
+      const kind = fileKindOf(path);
+      if (kind !== "markdown" && kind !== "text") {
+        void openEntryRef.current(path);
+        return;
+      }
+      setActivePreview(null);
+      setLibraryPageOpen(false);
+      setCaptureManagerOpen(false);
+      if (side === "split") {
+        focusedPaneRef.current = "split";
+        if (!rightTabsRef.current.includes(path)) {
+          const next = [...rightTabsRef.current, path];
+          rightTabsRef.current = next;
+          setRightTabPaths(next);
+        }
+      } else {
+        focusedPaneRef.current = "main";
+        if (rightTabsRef.current.includes(path)) {
+          const remaining = rightTabsRef.current.filter((p) => p !== path);
+          rightTabsRef.current = remaining;
+          setRightTabPaths(remaining);
+          if (splitActiveRef.current === path) setSplitActiveTab(remaining[0] ?? null);
+        }
+      }
+      void openNote(path);
+    };
+  });
 
   /**
    * 读取模板文件并展开占位符。
@@ -4449,13 +4534,38 @@ export default function App() {
         setStatus("该文件类型仅支持源码查看");
         return;
       }
+      // 0.35.3 用户反馈「切换回源文件后，显示的位置是之前离开时位置的偏下一点」：
+      // live 与源码行高不同（渲染态标题/代码块更高），按原 scrollTop 像素恢复会
+      // 偏到别的内容上。记录切换前视口顶部的行号，模式应用完（装饰重建、高度图
+      // 重排）后把同一行滚回视口顶，视觉位置就不漂。
+      const anchor = (view: EditorView | null) => {
+        if (!view) return 0;
+        const rect = view.scrollDOM.getBoundingClientRect();
+        const pos = view.posAtCoords({ x: rect.left + 1, y: rect.top + 1 });
+        return pos === null ? 0 : view.state.doc.lineAt(pos).number;
+      };
+      const mainAnchor = anchor(viewRef.current);
+      const splitView = splitViewRef.current;
+      const splitAnchor = splitView && splitActiveRef.current ? anchor(splitView) : 0;
       setMode(next);
       localStorage.setItem(MODE_KEY, next);
       const view = viewRef.current;
       if (view && current) applyMode(view, effectiveViewMode(next));
       // 右栏视图同一套模式（0.32 双编辑器；右栏仅桌面，包装无副作用）
-      const splitView = splitViewRef.current;
       if (splitView && splitActiveRef.current) applyMode(splitView, effectiveViewMode(next));
+      // 高度重排要等 CM 下一轮测量：两帧后按锚行对齐（openNote 的 align 同款节奏）
+      const realign = (v: EditorView, lineNo: number) => {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const target = v.state.doc.line(Math.min(lineNo, v.state.doc.lines));
+            v.dispatch({
+              effects: EditorView.scrollIntoView(target.from, { y: "start", yMargin: 0 }),
+            });
+          }),
+        );
+      };
+      if (view) realign(view, mainAnchor);
+      if (splitView && splitActiveRef.current) realign(splitView, splitAnchor);
     },
     [current],
   );
@@ -4670,7 +4780,7 @@ export default function App() {
             ? locateDdlEntry(note.content, name, project)
             : locateClassEntry(note.content, name, project);
         if (!hit) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
-        setLibraryPanelOpen(false);
+        setLibraryPageOpen(false); // 离开语句库页回编辑器看定位结果
         await openNoteAt(path, hit.line);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
@@ -4722,8 +4832,15 @@ export default function App() {
         rightTabsRef.current = remaining;
         setRightTabPaths(remaining);
         if (splitActiveRef.current === path) {
-          if (remaining.length === 0) setSplitActiveTab(null);
-          else {
+          if (remaining.length === 0) {
+            // 右栏收起：被移走的正是激活标签——与 closeRightPane 同一套收尾，
+            // 滚动位置留存、脏内容先落盘、挂在右栏视图上的搜索面板正常关
+            const view = splitViewRef.current;
+            if (view) scrollStore.current.set(path, view.scrollDOM.scrollTop);
+            if (splitDirtyRef.current) void splitSaveRef.current();
+            closeSearchPanelIfOpen();
+            setSplitActiveTab(null);
+          } else {
             // 右栏内的相邻标签：按右栏自己的顺序取后一个，没有则最后一个
             const index = rightNow.indexOf(path);
             setSplitActiveTab(remaining[Math.min(index, remaining.length - 1)]);
@@ -4749,11 +4866,215 @@ export default function App() {
         if (leftTabs.length > 0) activateTab(leftTabs[0].path);
       }
     },
-    [activateTab, orderedOpenTabs],
+    [activateTab, orderedOpenTabs, closeSearchPanelIfOpen],
+  );
+  // 标签头拖动换位（0.35.3 用户需求；三轮反馈补「直接拖到分屏栏中」）：
+  // HTML5 拖放，三层落点——
+  // - 落在某个标签上：同栏=插到它前面（左缘分界线）；跨栏=换归属再插到它前面；
+  // - 落在标签栏空白 / 编辑区（栏级）：把标签移到该栏末尾（Obsidian 式整栏接纳，
+  //   跨栏时顺带激活）。固定标签不参与（不可拖也不当落点）。
+  const dragTabRef = useRef<{ path: string; side: "main" | "split" } | null>(null);
+  /** 拖动悬停指示：标签前分界线 / 整栏接纳描边；drop/dragEnd 即清。 */
+  type DropHint =
+    | { kind: "before"; path: string; side: "main" | "split" }
+    | { kind: "pane"; side: "main" | "split" }
+    | null;
+  const [dropHint, setDropHint] = useState<DropHint>(null);
+
+  /** 把 dragged 移到 target 前面（仅同栏、两者都不固定时）。 */
+  const reorderTab = useCallback((dragged: string, target: string) => {
+    setOpenTabs((prev) => {
+      const from = prev.findIndex((tab) => tab.path === dragged);
+      const to = prev.findIndex((tab) => tab.path === target);
+      if (from < 0 || to < 0 || from === to) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(from, 1);
+      const targetIdx = next.findIndex((tab) => tab.path === target);
+      next.splice(targetIdx, 0, moved);
+      return next;
+    });
+  }, []);
+
+  /** 把 dragged 挪到清单末尾（栏级落点：该栏标签组的最末位）。 */
+  const reorderTabToEnd = useCallback((dragged: string) => {
+    setOpenTabs((prev) => {
+      const from = prev.findIndex((tab) => tab.path === dragged);
+      if (from < 0 || from === prev.length - 1) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(from, 1);
+      next.push(moved);
+      return next;
+    });
+  }, []);
+
+  /** 跨栏落地的公共尾巴：换归属 → 排位 → 激活（Obsidian 语义：拖进来的即激活）。 */
+  const dropTabCrossPane = useCallback(
+    (dragged: string, target: string | null, toSide: "main" | "split") => {
+      moveTabAcross(dragged); // 守卫失败（左栏仅剩一个）会给 status 提示且不动
+      if (target) reorderTab(dragged, target);
+      else reorderTabToEnd(dragged);
+      // 右→左要显式激活（moveTabAcross 只管右栏收尾）；左→右 moveTabAcross 已激活
+      if (toSide === "main") activateTab(dragged);
+    },
+    [moveTabAcross, reorderTab, reorderTabToEnd, activateTab],
   );
 
   /**
-   * 收起右栏（右栏标签栏的 ✕ / Esc）：右栏的标签**全部移回左栏**（不关标签、
+   * 标签头拖放的通用 props。side 是落点所在栏：同栏拖=换位；跨栏拖=换归属再插位。
+   * dragover/drop 都 stopPropagation——栏级（tabbar/编辑区）落点靠冒泡区分层级。
+   */
+  const tabDragProps = (path: string, side: "main" | "split") => ({
+    draggable: true,
+    onDragStart: (event: { dataTransfer: { effectAllowed: string } }) => {
+      dragTabRef.current = { path, side };
+      event.dataTransfer.effectAllowed = "move";
+    },
+    onDragOver: (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+      const drag = dragTabRef.current;
+      if (!drag || drag.path === path) return; // 拖到自己上不设落点
+      event.preventDefault();
+      event.stopPropagation();
+      setDropHint((cur) =>
+        cur?.kind === "before" && cur.path === path && cur.side === side
+          ? cur
+          : { kind: "before", path, side },
+      );
+    },
+    onDragLeave: () => {
+      setDropHint((cur) =>
+        cur?.kind === "before" && cur.path === path && cur.side === side ? null : cur,
+      );
+    },
+    onDrop: (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const drag = dragTabRef.current;
+      dragTabRef.current = null;
+      setDropHint(null);
+      if (!drag || drag.path === path) return;
+      if (drag.side === side) {
+        reorderTab(drag.path, path);
+      } else {
+        dropTabCrossPane(drag.path, path, side);
+      }
+    },
+    onDragEnd: () => {
+      dragTabRef.current = null;
+      setDropHint(null);
+    },
+  });
+
+  /**
+   * 栏级落点（标签栏空白与编辑区共用）：拖进来=整栏接纳，移到该栏末尾并激活。
+   * tabbar 与 editor-pane-col 各挂一份（标签上的 dragover 已 stopPropagation，
+   * 只有空白区事件会冒到这里）。
+   */
+  const paneDropProps = (side: "main" | "split") => ({
+    onDragOver: (event: {
+      preventDefault: () => void;
+      stopPropagation: () => void;
+      dataTransfer: { types: ReadonlyArray<string> };
+    }) => {
+      // 标签拖动与文件树条目拖动都接（文件落点见 paneFileDropRef）
+      if (!dragTabRef.current && !event.dataTransfer.types.includes(TREE_DRAG_MIME)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setDropHint((cur) =>
+        cur?.kind === "pane" && cur.side === side ? cur : { kind: "pane", side },
+      );
+    },
+    onDrop: (event: {
+      preventDefault: () => void;
+      stopPropagation: () => void;
+      dataTransfer: { types: ReadonlyArray<string>; getData: (type: string) => string };
+    }) => {
+      const treePath = event.dataTransfer.getData(TREE_DRAG_MIME);
+      const drag = dragTabRef.current;
+      if (!drag && !treePath) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragTabRef.current = null;
+      setDropHint(null);
+      if (treePath) {
+        paneFileDropRef.current?.(treePath, side);
+        return;
+      }
+      if (drag!.side === side) {
+        reorderTabToEnd(drag!.path);
+      } else {
+        dropTabCrossPane(drag!.path, null, side);
+      }
+    },
+    onDragEnd: () => {
+      dragTabRef.current = null;
+      setDropHint(null);
+    },
+  });
+
+  /**
+   * editor-main 半区落点（0.35.3 五轮反馈：**直接拖文件树条目到左右侧**即在该侧
+   * 打开——右栏没开时拖到右半也能开出分屏）。右栏开着时两个 col 已覆盖整区并
+   * stopPropagation，这里只接「右栏没开」与「拖拽起手不在 col 上」的兜底；
+   * 按 clientX 相对中点分半判侧。
+   */
+  const editorMainDropProps = {
+    onDragOver: (event: {
+      preventDefault: () => void;
+      stopPropagation: () => void;
+      clientX: number;
+      currentTarget: Element;
+      dataTransfer: { types: ReadonlyArray<string> };
+    }) => {
+      const hasTab = dragTabRef.current !== null;
+      const hasFile = event.dataTransfer.types.includes(TREE_DRAG_MIME);
+      if (!hasTab && !hasFile) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const side: "main" | "split" =
+        event.clientX - rect.left > rect.width / 2 ? "split" : "main";
+      setDropHint((cur) =>
+        cur?.kind === "pane" && cur.side === side ? cur : { kind: "pane", side },
+      );
+    },
+    onDrop: (event: {
+      preventDefault: () => void;
+      stopPropagation: () => void;
+      clientX: number;
+      currentTarget: Element;
+      dataTransfer: { types: ReadonlyArray<string>; getData: (type: string) => string };
+    }) => {
+      const hasTab = dragTabRef.current !== null;
+      const treePath = event.dataTransfer.getData(TREE_DRAG_MIME);
+      if (!hasTab && !treePath) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = event.currentTarget.getBoundingClientRect();
+      const side: "main" | "split" =
+        event.clientX - rect.left > rect.width / 2 ? "split" : "main";
+      if (treePath) {
+        setDropHint(null);
+        paneFileDropRef.current?.(treePath, side);
+        return;
+      }
+      const drag = dragTabRef.current;
+      dragTabRef.current = null;
+      setDropHint(null);
+      if (!drag) return;
+      if (drag.side === side) {
+        reorderTabToEnd(drag.path);
+      } else {
+        dropTabCrossPane(drag.path, null, side);
+      }
+    },
+    onDragEnd: () => {
+      dragTabRef.current = null;
+      setDropHint(null);
+    },
+  };
+
+  /**
+   * 收起右栏（Esc / 标签右键「收起分屏」）：右栏的标签**全部移回左栏**（不关标签、
    * 不丢内容），右栏激活的脏内容先落盘。
    */
   const closeRightPane = useCallback(() => {
@@ -5201,7 +5522,10 @@ export default function App() {
                   line.text.trim(),
                 );
             if (hit) {
-              view.dispatch({ selection: { anchor: line.from }, scrollIntoView: true });
+              view.dispatch({
+                selection: { anchor: line.from },
+                effects: EditorView.scrollIntoView(line.from, { y: "center" }),
+              });
               return;
             }
           }
@@ -5858,7 +6182,10 @@ export default function App() {
           notice("打开仓库后才能管理语句库", "error");
           return;
         }
-        setLibraryPanelOpen(true);
+        // 0.35.3 四轮反馈：语句库管理改成速记管理（Inbox）同款整页——不占用
+        // 标签页外壳。再按一次（或 Esc）=回编辑器
+        setLibraryPageOpen((value) => !value);
+        setCaptureManagerOpen(false);
       },
       jsonPanel: () => {
         // 预填当前选区（有选区时）；面板内转换，写回时替换原选区/插入光标处
@@ -5875,6 +6202,21 @@ export default function App() {
   /** 编辑器内命令的统一分发：命令面板搜到的快捷键命令（标题/列表/行内代码等）从这里走。 */
   const runEditorCommand = useCallback(
     (id: string) => {
+      // 应用级命令不依赖编辑器视图：焦点不在编辑器/还没开笔记时也要有响应
+      //（0.35.3 用户反馈「从全局搜索面板中选择语句库面板，没反应」——兜底分发
+      // 把它们塞进了这个编辑器命令分发器，开头的 !view 早退吞成了静默无响应）
+      if (id === "libraryManager") {
+        shortcuts.libraryManager();
+        return;
+      }
+      if (id === "ddlCapture") {
+        shortcuts.ddlCapture();
+        return;
+      }
+      if (id === "addWordDialog") {
+        shortcuts.addWordDialog();
+        return;
+      }
       const view = viewRef.current;
       if (!view) return;
       // 选区标题归一：0.20 起改为弹窗选级别（不再每级一条命令）
@@ -5966,9 +6308,6 @@ export default function App() {
         case "addWordDialog":
           shortcuts.addWordDialog();
           return;
-        case "ddlCapture":
-          shortcuts.ddlCapture();
-          return;
       }
     },
     [insertAtCursor, daily.today, shortcuts],
@@ -5982,6 +6321,49 @@ export default function App() {
     window.addEventListener("qn-clamp-heading", open);
     return () => window.removeEventListener("qn-clamp-heading", open);
   }, []);
+
+  // 标题行右键 → 「复制标题链接」（0.35.3 用户需求）。document 委托（表格单元格
+  // 右键菜单同款模式，重建竞态下依然命中）：右键落在 .cm-content 的标题行上时
+  // 接管默认菜单。链接格式跟设置里的 linkFormat（wiki / markdown）。
+  useEffect(() => {
+    const onContext = (event: MouseEvent) => {
+      const view = viewRef.current;
+      const target = event.target as HTMLElement | null;
+      if (!view || !target) return;
+      if (!target.closest(".cm-content")) return;
+      // 表格单元格右键有自己的菜单（livePreview 层已 preventDefault），不抢
+      if (target.closest("td,th")) return;
+      const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+      if (pos === null) return;
+      const line = view.state.doc.lineAt(pos);
+      const match = /^(#{1,6})\s+(.+?)\s*$/.exec(line.text);
+      if (!match) return;
+      // 围栏代码块里的 # 行（MySQL 注释等）不是标题
+      const docLines = view.state.sliceDoc().split("\n");
+      if (isInsideFence(docLines, line.number - 1)) return;
+      event.preventDefault();
+      setHeadingMenu({ x: event.clientX, y: event.clientY, text: match[2] });
+    };
+    document.addEventListener("contextmenu", onContext);
+    return () => document.removeEventListener("contextmenu", onContext);
+  }, []);
+
+  /** 复制标题链接：wiki = `[[笔记名#标题]]`，markdown = `[笔记 › 标题](笔记.md#标题)`。 */
+  const copyHeadingLink = useCallback(
+    (text: string) => {
+      const path = currentRef.current?.path ?? "";
+      const noteName = path ? baseName(path).replace(/\.md$/i, "") : "";
+      const link =
+        getSettings().linkFormat === "markdown"
+          ? `[${noteName} › ${text}](${noteName}.md#${text})`
+          : `[[${noteName}#${text}]]`;
+      void navigator.clipboard.writeText(link).then(
+        () => notice(`已复制标题链接：${link}`),
+        () => notice("复制失败：剪贴板不可用", "error"),
+      );
+    },
+    [notice],
+  );
 
   // 编辑器内部（editor.ts 键位）发起的轻提示：那里拿不到 React 回调，走事件桥。
   useEffect(() => {
@@ -6098,6 +6480,15 @@ export default function App() {
         setMenu(null);
         return;
       }
+      if (headingMenu) {
+        setHeadingMenu(null);
+        return;
+      }
+      // 语句库整页：Esc = 回编辑器
+      if (libraryPageOpen) {
+        setLibraryPageOpen(false);
+        return;
+      }
       if (captureManagerOpen) {
         setCaptureManagerOpen(false);
         return;
@@ -6122,7 +6513,7 @@ export default function App() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [renaming, creating, menu, vaultMenu, tabMenu, captureManagerOpen, addWordDialog, ddlDialogOpen, rightTabPaths, cancelRename, cancelCreate, closeRightPane]);
+  }, [renaming, creating, menu, vaultMenu, tabMenu, headingMenu, libraryPageOpen, captureManagerOpen, addWordDialog, ddlDialogOpen, rightTabPaths, cancelRename, cancelCreate, closeRightPane]);
 
   /** 命令面板的动作清单在 verifyRoundTrip 之后定义（动作里引用了它）。 */
 
@@ -6284,6 +6675,7 @@ export default function App() {
       version={vocabVersion}
       notice={notice}
       backConsumerRef={vocabBackRef}
+      addWordHint={keyHint("addWord") ?? "Ctrl+Alt+V"}
     />
   );
   const calendarPanelEl = (
@@ -6384,11 +6776,13 @@ export default function App() {
           type="button"
           className="searchbox"
           onClick={shortcuts.palette}
-          title="全局搜索笔记与内容，或执行命令（Ctrl+K）"
+          title={`全局搜索笔记与内容，或执行命令（${keyHint("palette") ?? "Ctrl+K"}）`}
         >
           <IconSearch size={14} />
           <span className="searchbox-placeholder">搜索笔记、全文内容，或输入命令…</span>
-          <kbd className="searchbox-kbd">Ctrl K</kbd>
+          {/* 键位提示跟随「设置 → 快捷键」的当前绑定（0.35.3 用户反馈：改了快捷键
+              这里没同步） */}
+          <kbd className="searchbox-kbd">{keyHint("palette") ?? "Ctrl K"}</kbd>
         </button>
 
         <div className="topbar-side topbar-end">
@@ -6754,27 +7148,8 @@ export default function App() {
         />
       )}
 
-      {/* 语句库管理（默认键 Ctrl+Alt+K）：DDL 与 Java 实体同一个面板，查看/定位/复制/删除 */}
-      {libraryPanelOpen && (
-        <LibraryManagerDialog
-          tables={resourcesRef.current.ddlTables ?? new Map()}
-          classes={resourcesRef.current.javaClasses ?? new Map()}
-          projects={ddlProjects}
-          ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
-          javaPath={getSettings().javaEntityFilePath.trim()}
-          onClose={() => setLibraryPanelOpen(false)}
-          onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
-          onDelete={deleteLibraryEntry}
-          onOpenNote={(kind) => {
-            setLibraryPanelOpen(false);
-            void openNoteAt(
-              kind === "ddl"
-                ? getSettings().ddlFilePath.trim() || "数据库表DDL.md"
-                : getSettings().javaEntityFilePath.trim(),
-            );
-          }}
-        />
-      )}
+      {/* 语句库管理（默认键 Ctrl+Alt+K）：DDL 与 Java 实体同一个面板，查看/定位/复制/删除。
+          0.35.3 起弹窗形态退役——面板作为特殊标签页渲染在编辑区（见 editor-pane 内）。 */}
 
       {/* JSON 格式转换面板（默认键 Ctrl+Alt+F）：写回 = 替换原选区 / 插入光标处 */}
       {jsonPanelOpen && (
@@ -6983,9 +7358,19 @@ export default function App() {
                 <button
                   type="button"
                   className="btn"
+                  // 每个瞬态都要有可见反馈且不可连点（0.35.3 用户反馈「网卡的时候
+                  // 用户点击后没反应会一直点击」）；弹窗在 downloading 态走进度条
+                  // 分支，按钮只会在 checking/error/available 下出现
+                  disabled={updateCheck.state === "checking"}
                   onClick={() => (isMobile() ? installUpdateMobile() : void installUpdate())}
                 >
-                  {updateCheck.state === "error" ? "重试更新" : isMobile() ? "下载并安装" : "立即更新"}
+                  {updateCheck.state === "checking"
+                    ? "连接中…"
+                    : updateCheck.state === "error"
+                      ? "重试更新"
+                      : isMobile()
+                        ? "下载并安装"
+                        : "立即更新"}
                 </button>
                 {updateCheck.url && (
                   <button type="button" className="btn btn-ghost" onClick={() => void openReleasePage(updateCheck.url!)}>
@@ -7358,13 +7743,15 @@ export default function App() {
                   type="button"
                   disabled={
                     rightTabPaths.includes(tabMenu.path)
-                      ? rightTabPaths.length <= 1
+                      ? // 右栏最后一个标签也允许移回：移过去右栏空了自然收起
+                        //（0.35.3 用户反馈「分屏到右侧的标签，移回到左侧功能失效」
+                        //——旧守卫把唯一标签禁成死按钮，点了毫无反应）
+                        false
                       : openTabs.filter((tab) => !rightTabPaths.includes(tab.path)).length <= 1
                   }
                   title={
-                    (rightTabPaths.includes(tabMenu.path)
-                      ? rightTabPaths.length <= 1
-                      : openTabs.filter((tab) => !rightTabPaths.includes(tab.path)).length <= 1)
+                    (!rightTabPaths.includes(tabMenu.path) &&
+                      openTabs.filter((tab) => !rightTabPaths.includes(tab.path)).length <= 1)
                       ? "原栏至少要留一个标签"
                       : undefined
                   }
@@ -7376,6 +7763,19 @@ export default function App() {
                 >
                   {rightTabPaths.includes(tabMenu.path) ? "移回左侧" : "分屏到右侧"}
                 </button>
+                {rightTabPaths.includes(tabMenu.path) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // 0.35.3 四轮反馈：右栏标签栏上的「收起分屏」按钮（✕）挪进
+                      // 右键菜单——右栏标签全部移回左侧并收起分屏
+                      closeRightPane();
+                      setTabMenu(null);
+                    }}
+                  >
+                    收起分屏（标签全部移回左侧）
+                  </button>
+                )}
                 <button
                   type="button"
                   disabled={left.length === 0}
@@ -7421,6 +7821,27 @@ export default function App() {
             </>
           );
         })()}
+
+      {headingMenu && (
+        <>
+          <div className="menu-backdrop" onClick={() => setHeadingMenu(null)} onContextMenu={(event) => { event.preventDefault(); setHeadingMenu(null); }} />
+          <div
+            className="context-menu"
+            ref={menuRefClampedToViewport(headingMenu.x, headingMenu.y)}
+            style={{ left: headingMenu.x, top: headingMenu.y }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                copyHeadingLink(headingMenu.text);
+                setHeadingMenu(null);
+              }}
+            >
+              复制标题链接
+            </button>
+          </div>
+        </>
+      )}
 
       <div className={`body${leftCollapsed ? " left-collapsed" : ""}${rightCollapsed ? " right-collapsed" : ""}`}>
         {/* 移动端抽屉遮罩：任一侧栏打开时盖住内容，点击收起（桌面渲染了也被 CSS 隐藏？不——
@@ -7859,14 +8280,19 @@ export default function App() {
         <main className="editor-pane">
           {/* 笔记内容**常驻挂载**（Inbox 打开时仅 CSS 隐藏）：条件卸载会让一次性
               创建的 EditorView 附着在已销毁的 host div 上，返回笔记后编辑器空白 */}
-          <div className={`editor-pane-notes${captureManagerOpen ? " is-hidden" : ""}`}>
+          <div className={`editor-pane-notes${captureManagerOpen || libraryPageOpen ? " is-hidden" : ""}`}>
           {/* 0.32.2 Obsidian 式分栏：标签栏随窗格分成两段——左栏管自己的标签，
               右栏（开着时）有自己的标签栏；每个标签唯一归属一栏 */}
-          <div className="editor-main">
-            <div className="editor-pane-col">
-          {leftTabs.length > 0 && (
+          <div
+            className={`editor-main${
+              dropHint?.kind === "pane" ? (dropHint.side === "split" ? " is-drop-right" : " is-drop-left") : ""
+            }`}
+            {...editorMainDropProps}
+          >
+            <div className={`editor-pane-col${dropHint?.kind === "pane" && dropHint.side === "main" ? " is-drop-pane" : ""}`} {...paneDropProps("main")}>
+            {(leftTabs.length > 0 || previewTabs.length > 0) && (
             <div
-              className="tabbar"
+              className={`tabbar${dropHint?.kind === "pane" && dropHint.side === "main" ? " is-drop-pane-end" : ""}`}
               role="tablist"
               aria-label="打开的笔记"
               onMouseDown={() => {
@@ -7892,9 +8318,14 @@ export default function App() {
                     tabIndex={0}
                     className={`tab${tab.path === activeTab ? " is-active" : ""}${
                       dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
-                    }${isPinned ? " is-pinned" : ""}`}
+                    }${isPinned ? " is-pinned" : ""}${
+                      dropHint?.kind === "before" && dropHint.path === tab.path && dropHint.side === "main"
+                        ? " is-drop-target"
+                        : ""
+                    }`}
                     title={isPinned ? `${tab.path}（已固定）` : tab.path}
                     onClick={() => void openNote(tab.path)}
+                    {...(isPinned ? {} : tabDragProps(tab.path, "main"))}
                     onAuxClick={(event) => {
                       // 中键关闭（固定标签不响应）
                       if (event.button === 1) {
@@ -7926,6 +8357,41 @@ export default function App() {
                   </div>
                 );
               })}
+              {/* 预览标签页（0.35.3）：不属于 openTabs 的特殊标签，常驻左栏标签组
+                  末尾；语句库管理走 Inbox 式整页，不再占标签外壳 */}
+              {previewTabs.map((path) => {
+                const title = baseName(path);
+                const isActive = activePreview === path;
+                return (
+                  <div
+                    key={`special-${path}`}
+                    role="tab"
+                    aria-selected={isActive}
+                    tabIndex={0}
+                    className={`tab tab-special${isActive ? " is-active" : ""}`}
+                    title={path}
+                    onClick={() => {
+                      setActivePreview(path);
+                      setCaptureManagerOpen(false);
+                      setLibraryPageOpen(false);
+                    }}
+                  >
+                    <span className="tab-title">{title}</span>
+                    <button
+                      type="button"
+                      className="tab-close"
+                      aria-label={`关闭 ${title}`}
+                      title="关闭标签页"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closeSpecialTab(path);
+                      }}
+                    >
+                      <IconX size={11} />
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
             <div
@@ -7941,6 +8407,15 @@ export default function App() {
                 if (isMobile() && !mobileEditRef.current) setMobileZen((v) => !v);
               }}
             />
+
+            {activePreview && vault && (
+              <FilePreview
+                embedded
+                vault={vault}
+                path={activePreview}
+                onClose={() => closeSpecialTab(activePreview)}
+              />
+            )}
             </div>
             {rightTabs.length > 0 && (
               <div
@@ -7953,9 +8428,9 @@ export default function App() {
               />
             )}
             {rightTabs.length > 0 && (
-              <div className="editor-pane-col is-split" style={{ flexBasis: `${splitPct}%` }}>
+              <div className={`editor-pane-col is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane" : ""}`} style={{ flexBasis: `${splitPct}%` }} {...paneDropProps("split")}>
                 <div
-                  className="tabbar is-split"
+                  className={`tabbar is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane-end" : ""}`}
                   role="tablist"
                   aria-label="分屏栏的笔记"
                   onMouseDown={() => {
@@ -7979,9 +8454,14 @@ export default function App() {
                         tabIndex={0}
                         className={`tab${tab.path === splitActiveTab ? " is-active" : ""}${
                           dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
-                        }${isPinned ? " is-pinned" : ""}`}
+                        }${isPinned ? " is-pinned" : ""}${
+                          dropHint?.kind === "before" && dropHint.path === tab.path && dropHint.side === "split"
+                            ? " is-drop-target"
+                            : ""
+                        }`}
                         title={isPinned ? `${tab.path}（已固定）` : tab.path}
                         onClick={() => void openNote(tab.path)}
+                        {...(isPinned ? {} : tabDragProps(tab.path, "split"))}
                         onAuxClick={(event) => {
                           if (event.button === 1) {
                             event.preventDefault();
@@ -8011,15 +8491,6 @@ export default function App() {
                       </div>
                     );
                   })}
-                  <button
-                    type="button"
-                    className="tabbar-pane-close"
-                    title="收起分屏栏（标签移回左侧，Esc 也可）"
-                    aria-label="收起分屏栏"
-                    onClick={closeRightPane}
-                  >
-                    <IconX size={12} />
-                  </button>
                 </div>
                 <SplitPane
                   hostClass={`editor-host${mode === "live" && (!splitActiveTab || isMarkdownPath(splitActiveTab)) ? " is-live" : " is-source"}`}
@@ -8136,9 +8607,6 @@ export default function App() {
               </button>
             </div>
           )}
-          {previewPath && vault && (
-            <FilePreview vault={vault} path={previewPath} onClose={() => setPreviewPath(null)} />
-          )}
           {/* 空状态只在**确实没有任何标签**时渲染：曾经 activeTab 与 openTabs
               短暂错位时（替换式打开的中间帧），这层会叠在上一篇内容上透出 */}
           {!current && openTabs.length === 0 && (
@@ -8182,9 +8650,10 @@ export default function App() {
                 </button>
               </div>
               <div className="editor-empty-keys">
-                <span><kbd>Ctrl K</kbd> 命令面板</span>
-                <span><kbd>Ctrl N</kbd> 新建笔记</span>
-                <span><kbd>Ctrl E</kbd> 切换实时 / 源码</span>
+                {/* 键位提示跟随「设置 → 快捷键」的当前绑定 */}
+                <span><kbd>{keyHint("palette") ?? "Ctrl K"}</kbd> 命令面板</span>
+                <span><kbd>{keyHint("newNote") ?? "Ctrl N"}</kbd> 新建笔记</span>
+                <span><kbd>{keyHint("toggleMode") ?? "Ctrl E"}</kbd> 切换实时 / 源码</span>
               </div>
             </div>
             )
@@ -8210,6 +8679,28 @@ export default function App() {
             </button>
           )}
           </div>
+          {/* 语句库管理整页（0.35.3 四轮反馈：速记管理同款形态，不占标签外壳） */}
+          {libraryPageOpen && vault && (
+            <LibraryManagerDialog
+              variant="page"
+              tables={resourcesRef.current.ddlTables ?? new Map()}
+              classes={resourcesRef.current.javaClasses ?? new Map()}
+              projects={ddlProjects}
+              ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
+              javaPath={getSettings().javaEntityFilePath.trim()}
+              onClose={() => setLibraryPageOpen(false)}
+              onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
+              onDelete={deleteLibraryEntry}
+              onOpenNote={(kind) => {
+                setLibraryPageOpen(false);
+                void openNoteAt(
+                  kind === "ddl"
+                    ? getSettings().ddlFilePath.trim() || "数据库表DDL.md"
+                    : getSettings().javaEntityFilePath.trim(),
+                );
+              }}
+            />
+          )}
           {captureManagerOpen && (
             <CaptureManager
               inboxVault={settings.quickCaptureVault}
@@ -8329,7 +8820,7 @@ export default function App() {
               revision={revision}
               // 预览 pdf/docx 等文件时编辑器还装着上一篇 md，大纲继续显示它会误导
               // （0.20 用户反馈"预览 pdf 时右侧目录还显示 md 的目录"），清空让空态接管
-              activeKey={previewPath ? null : outlineFollow === "split" ? splitActiveTab : activeTab}
+              activeKey={activePreview || libraryPageOpen ? null : outlineFollow === "split" ? splitActiveTab : activeTab}
               cursorLine={outlineFollow === "split" ? splitCursorLine : cursorLine}
               onJump={(line) => {
                 // 分屏模式下点击标题：在**分屏编辑器内**定位（0.32——此前只读时代

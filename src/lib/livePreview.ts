@@ -2462,7 +2462,8 @@ function wikiDisplayText(target: string): string {
   const hash = cleaned.indexOf("#");
   if (hash < 0) return cleaned;
   const note = cleaned.slice(0, hash);
-  const section = cleaned.slice(hash + 1);
+  // 前导 # 剥掉（0.35.3：`[[笔记### 标题]]` 的宽容写法会带着 "## " 进显示文本）
+  const section = cleaned.slice(hash + 1).replace(/^#+\s*/, "");
   return section ? `${note} › ${section}` : note;
 }
 

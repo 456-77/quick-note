@@ -548,17 +548,19 @@ console.log("\n协议常量（与插件、服务端一致）\n");
 console.log("\n附件同步（纯逻辑部分）\n");
 
 {
-  // 白名单与路径分类（与后端 AttachmentService 一致）
+  // 路径分类（M8 全类型同步：非 .md 即附件，与 Rust is_attachment_path 一致）
   check(isAttachmentPath("attachments/图.png"), "png 算附件");
   check(isAttachmentPath("a/b/c.pdf"), "pdf 算附件");
-  check(isAttachmentPath("图.JPEG"), "扩展名大小写不敏感");
+  check(isAttachmentPath("图.JPEG"), "路径判定不看扩展名（大写后缀也是附件）");
+  check(isAttachmentPath("图.svg"), "svg 也是附件（服务端强制 attachment 下载防 XSS）");
+  check(isAttachmentPath("a.txt"), "txt 算附件");
+  check(isAttachmentPath("没有扩展名"), "无扩展名也算附件");
+  check(isAttachmentPath("子目录/archive.tar.gz"), "多段后缀的压缩包也算附件");
   check(!isAttachmentPath("日记/a.md"), "正文不算附件");
-  check(!isAttachmentPath("quick-daily-note.json"), "库内配置不算附件");
+  check(!isAttachmentPath(TODO_SYNC_PATH), "待办快照走正文通道，盘上残留不参与附件");
+  check(isAttachmentPath("quick-daily-note.json"), "普通 json 也是附件（仅 todo 快照特判）");
   check(!isAttachmentPath(".trash/图.png"), "点开头目录里的不同步");
   check(!isAttachmentPath("a/.hidden/图.png"), "路径中任何一段点开头都不同步");
-  check(!isAttachmentPath("图.svg"), "svg 刻意不支持（能内联脚本）");
-  check(!isAttachmentPath("a.txt"), "白名单之外不同步");
-  check(!isAttachmentPath("没有扩展名"), "没有扩展名不同步");
 
   // 旁路缓存键
   check(attachmentStamp(123, 456) === "123:456", "stamp 是 mtime:size");
@@ -601,10 +603,10 @@ console.log("\n附件同步（纯逻辑部分）\n");
   countBudget.record(1);
   check(countBudget.exhausted(), "条数上限同样生效");
 
-  check(MAX_ATTACHMENT_BYTES === 10 * 1024 * 1024, "附件上限 10MB（与服务端一致）");
+  check(MAX_ATTACHMENT_BYTES === 50 * 1024 * 1024, "附件上限 50MB（与服务端 max-file-bytes 默认一致）");
   check(
-    ATTACHMENT_DOWNLOAD_PER_CYCLE === 20 && ATTACHMENT_DOWNLOAD_BYTES_PER_CYCLE === 50 * 1024 * 1024,
-    "每轮下载额度与插件一致（20 个 / 50MB）",
+    ATTACHMENT_DOWNLOAD_PER_CYCLE === 20 && ATTACHMENT_DOWNLOAD_BYTES_PER_CYCLE === 200 * 1024 * 1024,
+    "每轮下载额度（20 个 / 200MB，50MB 文件一周期至少完整下 4 个）",
   );
 }
 

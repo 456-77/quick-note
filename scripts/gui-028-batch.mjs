@@ -473,11 +473,17 @@ try {
     await sleep(500);
     const afterClick = await readZoom();
     check(afterClick.pct > before.pct && afterClick.width > before.width, "点击放大：比例和页面宽度同时变大", `${JSON.stringify(before)} → ${JSON.stringify(afterClick)}`);
-    // Ctrl+滚轮
-    const rect = await evaluate(ws, `(() => { const el = document.querySelector('.file-preview-pdf'); const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
-    await cdp(ws, "Input.dispatchMouseEvent", { type: "mouseWheel", x: rect.x, y: rect.y, deltaX: 0, deltaY: -120, modifiers: CTRL });
-    await sleep(600);
-    const afterWheel = await readZoom();
+    // Ctrl+滚轮（0.35.3 预览嵌入后 pdfHost 是 body 的滚动内容，rect 是完整几何、
+    // 中心可能落在视口外的不可见区——打点取 host 顶部必可见处）
+    const rectReady = await waitFor(ws, `(() => { const r = document.querySelector('.file-preview-pdf')?.getBoundingClientRect(); return !!r && r.width > 100 && r.height > 100; })()`, 8000);
+    check(rectReady, "PDF 预览容器有有效尺寸（可接收滚轮）");
+    const rect = await evaluate(ws, `(() => { const el = document.querySelector('.file-preview-pdf'); const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(Math.max(r.top, 0) + 60) }; })()`);
+    let afterWheel = await readZoom();
+    for (let i = 0; i < 3 && afterWheel.pct <= afterClick.pct; i += 1) {
+      await cdp(ws, "Input.dispatchMouseEvent", { type: "mouseWheel", x: rect.x, y: rect.y, deltaX: 0, deltaY: -120, modifiers: CTRL });
+      await sleep(600);
+      afterWheel = await readZoom();
+    }
     check(afterWheel.pct > afterClick.pct, "Ctrl+滚轮向上放大 PDF", `${afterClick.pct}% → ${afterWheel.pct}%`);
     // 一直点到上限
     for (let i = 0; i < 45; i += 1) {

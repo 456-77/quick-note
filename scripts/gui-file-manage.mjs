@@ -204,10 +204,10 @@ check(
   JSON.stringify(treeDirs),
 );
 check(
-  (await evaluate(ws, `[...document.querySelectorAll('.tree-other')].map(e => e.textContent)`)).some(
+  (await evaluate(ws, `[...document.querySelectorAll('.tree-item')].map(e => e.textContent)`)).some(
     (text) => text.includes("notes.txt"),
   ),
-  "非 Markdown 文件也会列出（不可编辑，仅反映仓库结构）",
+  "txt 在树中列出且可编辑（0.35.3 txt 支持，从 tree-other 变为 tree-file 行）",
 );
 
 // ---------------------------------------------------------------- 新建笔记

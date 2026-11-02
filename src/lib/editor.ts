@@ -5,6 +5,7 @@ import { keymap } from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree, type LanguageDescription } from "@codemirror/language";
 import { autocompletion, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
+import { looseListEnterAt } from "./codeEdit.ts";
 import { json } from "@codemirror/lang-json";
 import { sql } from "@codemirror/lang-sql";
 import { yaml } from "@codemirror/lang-yaml";
@@ -224,11 +225,10 @@ export function createEditorState(
       livePreviewCompartment.of(modeExtensions(effectiveMode)),
       attachment ? attachmentPaste(attachment) : [],
       codePasteOptions ? smartPaste(codePasteOptions) : [],
-      // 空列表项上回车 = 退出列表（删掉标记）。必须用 highest 压过 lang-markdown
-      // 内置 Enter——它同样包在 Prec.high 里，同级时先注册的它会赢，导致
-      // 「紧凑两元素列表的空项」不退出而是插空行转松散列表，连按回车退不出
-      // 列表。见 exitEmptyListItem。
-      Prec.highest(keymap.of([{ key: "Enter", run: exitEmptyListItem }])),
+      // 列表回车接管（highest 压过 lang-markdown 内置 Enter——它包在 Prec.high
+      // 里，同级时先注册的它会赢）：空项退出（0.22）+ 松散延续接管（0.35.3）。
+      // 见 listItemEnter / looseListEnter / exitEmptyListItem。
+      Prec.highest(keymap.of([{ key: "Enter", run: listItemEnter }])),
       linkClickHandler(),
       altClickHandler(),
       // 表名悬浮预览（0.31）：光标停在已收录的表名上显示建表语句
@@ -318,6 +318,51 @@ function exitEmptyListItem(view: EditorView): boolean {
     userEvent: "input.delete",
   });
   return true;
+}
+
+/**
+ * 松散列表的回车接管（0.35.3 用户反馈「当前序号和上一个序号中间空了一行及以上，
+ * 回车时，会自动空一行生成一个序号」）：lang-markdown 续行会复制「空行 + 新序号」
+ * 维持松散列表。决策在 codeEdit.looseListEnterAt（纯函数，可断言）——空项退出、
+ * 非空项紧凑续行。判定只查文档文本，免疫增量解析竞态。
+ */
+function looseListEnter(view: EditorView): boolean {
+  const { state } = view;
+  const selection = state.selection.main;
+  if (!selection.empty) return false;
+  const line = state.doc.lineAt(selection.head);
+  if (selection.head !== line.to) return false; // 光标在行尾才接管
+  if (line.from === 0) return false;
+  // 从紧邻上一行向上收集到首个非空行为止（含那一行）——决策函数按这段判松散
+  const prevLines: string[] = [];
+  let look = line.from - 1;
+  while (look >= 0) {
+    const prev = state.doc.lineAt(look);
+    prevLines.push(prev.text);
+    if (prev.text.trim() !== "") break;
+    look = prev.from - 1;
+  }
+  const decision = looseListEnterAt(line.text, prevLines);
+  if (!decision) return false;
+  if (decision.action === "exit") {
+    view.dispatch({
+      changes: { from: line.from, to: line.to, insert: decision.indent },
+      selection: { anchor: line.from + decision.indent.length },
+      userEvent: "input.delete",
+    });
+    return true;
+  }
+  view.dispatch({
+    changes: { from: selection.head, to: selection.head, insert: decision.insert },
+    selection: { anchor: selection.head + decision.insert.length },
+    userEvent: "input.type",
+  });
+  return true;
+}
+
+/** 列表回车统一入口：先松散接管，再走既有的紧凑空项退出。 */
+function listItemEnter(view: EditorView): boolean {
+  return looseListEnter(view) || exitEmptyListItem(view);
 }
 
 /**

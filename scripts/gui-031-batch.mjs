@@ -621,6 +621,34 @@ try {
     }
   }
 
+  // ============================================== 6c. 语句库管理整页（0.35.3 五轮：Inbox 式整页 + 两库筛选 chips，不占标签外壳）
+  {
+    await key(ws, { mod: CTRL_ALT, key: 'k' }, 'KeyK', 75);
+    const mgrPage = await waitFor(ws, `!!document.querySelector('.ddl-manager-page')`, 3000);
+    check(mgrPage, '语句库管理以整页形态打开（0.35.3）');
+    const noShell = await evaluate(ws, `!document.querySelector('.tab-special')`);
+    check(noShell, '不再占用标签页外壳（无 tab-special）');
+    const notesHidden = await evaluate(ws, `!!document.querySelector('.editor-pane-notes.is-hidden')`);
+    check(notesHidden, '整页打开时笔记区 display:none 隐藏（不卸载）');
+    const ddlChipOn = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-filter')].find((c) => c.textContent.includes('数据表'))?.classList.contains('is-on') ?? false`);
+    check(ddlChipOn, '默认选中「数据表」筛选 chip');
+    const ddlRows = await evaluate(ws, `document.querySelectorAll('.ddl-mgr-row').length`);
+    check(ddlRows >= 1, '数据表库列出已收录条目（6b 收录）', String(ddlRows));
+    const javaChip = await evaluate(ws, `(() => { const c = [...document.querySelectorAll('.ddl-mgr-filter')].find((x) => x.textContent.includes('Java 实体')); c?.click(); return !!c; })()`);
+    const javaRows = javaChip ? await waitFor(ws, `[...document.querySelectorAll('.ddl-mgr-filter')].find((c) => c.textContent.includes('Java 实体'))?.classList.contains('is-on') ?? false`, 2000) : false;
+    check(javaChip && javaRows, '切换「Java 实体」筛选 chip');
+    const javaRowN = await evaluate(ws, `document.querySelectorAll('.ddl-mgr-row').length`);
+    check(javaRowN >= 1, '实体库单独列出（两库分开看，不合并）', String(javaRowN));
+    await key(ws, { mod: 0, key: 'Escape' }, 'Escape', 27);
+    const editorBack = await waitFor(ws, `!document.querySelector('.editor-pane-notes.is-hidden') && !document.querySelector('.ddl-manager-page')`, 2500);
+    check(editorBack, 'Esc 回编辑器（笔记区恢复、整页退场）');
+    await key(ws, { mod: CTRL_ALT, key: 'k' }, 'KeyK', 75);
+    await waitFor(ws, `!!document.querySelector('.ddl-manager-page')`, 2500);
+    await key(ws, { mod: CTRL_ALT, key: 'k' }, 'KeyK', 75);
+    const toggledOff = await waitFor(ws, `!document.querySelector('.ddl-manager-page')`, 2500);
+    check(toggledOff, 'Ctrl+Alt+K 再按一次 = 回编辑器（toggle 语义）');
+  }
+
   // ============================================== 7. 阅读位置记忆
   {
     await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31长文')); t?.click(); return !!t; })()`);

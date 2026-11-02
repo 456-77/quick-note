@@ -1907,7 +1907,7 @@ export default function SettingsDialog({
           <Row
             label="云端仓库名"
             desc="留空即用仓库文件夹名。"
-            tip="仓库名要与插件所在库的名字一致，否则会同步到另一个云端仓库（表现为「同步成功但数据没过来」）。正文、待办与附件（按笔记引用上传、本地缺的从云端补下）都会同步；服务端地址、账号与密码只存在本机，不会写进仓库。"
+            tip="仓库名要与插件所在库的名字一致，否则会同步到另一个云端仓库（表现为「同步成功但数据没过来」）。正文（.md）按范围同步，范围内其余文件（任意类型）也会全量同步；本地缺的被引用文件会从云端按名补下。服务端地址、账号与密码只存在本机，不会写进仓库。"
           >
             <input
               type="text"
@@ -2045,14 +2045,18 @@ export default function SettingsDialog({
               <button
                 type="button"
                 className="btn btn-primary"
-                disabled={updateCheck.state === "downloading"}
+                // checking（重取更新源）期间也禁用：0.35.3 用户反馈「网卡的时候
+                // 用户点击后没反应会一直点击」——每个瞬态都要有反馈且不可连点
+                disabled={updateCheck.state === "downloading" || updateCheck.state === "checking"}
                 onClick={() => void installUpdate()}
               >
                 {updateCheck.state === "downloading"
                   ? "下载中…"
-                  : updateCheck.state === "error"
-                    ? "重试更新"
-                    : "立即更新"}
+                  : updateCheck.state === "checking"
+                    ? "连接中…"
+                    : updateCheck.state === "error"
+                      ? "重试更新"
+                      : "立即更新"}
               </button>
             )}
           </div>
@@ -2062,7 +2066,7 @@ export default function SettingsDialog({
             </p>
           )}
           <Group>资源</Group>
-          <div className="settings-actions about-links" data-keywords="github 文档 反馈 许可">
+          <div className="settings-actions about-links" data-keywords="github 文档 反馈 许可 license">
             <button type="button" className="btn" onClick={() => void openReleasePage("https://github.com/456-77/quick-note")}>
               GitHub
             </button>
@@ -2074,6 +2078,14 @@ export default function SettingsDialog({
             </button>
             <button type="button" className="btn" onClick={() => void openReleasePage("https://github.com/456-77/quick-note/issues")}>
               问题反馈
+            </button>
+            <button
+              type="button"
+              className="btn"
+              title="查看完整的开源协议文本"
+              onClick={() => void openReleasePage("https://github.com/456-77/quick-note/blob/main/LICENSE")}
+            >
+              开源协议 MIT
             </button>
           </div>
           <p className="settings-hint">

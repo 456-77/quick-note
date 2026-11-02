@@ -45,6 +45,8 @@ interface Props {
   notice: (message: string, kind?: "info" | "error") => void;
   /** Android 返回键消费链（App 的 backConsumeRef 在抽屉收起前先问这里）。 */
   backConsumerRef?: MutableRefObject<(() => boolean) | null>;
+  /** 收词快捷键提示（跟随「设置 → 快捷键」的当前绑定，0.35.3）。 */
+  addWordHint?: string;
 }
 
 type Filter = "all" | "todo" | "done" | "recent";
@@ -173,7 +175,7 @@ interface ReviewState {
 
 const LOOKUP_IDLE: LookupState = { status: "idle", result: null, manualMeaning: "", manualOpen: false };
 
-export default function VocabularyPanel({ vault, revision, version, notice, backConsumerRef }: Props) {
+export default function VocabularyPanel({ vault, revision, version, notice, backConsumerRef, addWordHint = "Ctrl+Alt+V" }: Props) {
   const [entries, setEntries] = useState<VocabEntry[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -1010,7 +1012,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
           <span className="vocab-empty-icon" aria-hidden>✦</span>
           <p>还没有记录单词</p>
           <div className="vocab-empty-tips">
-            在笔记里选中一个词按 <kbd>Ctrl+Alt+V</kbd>，或直接在上面的搜索框输入一个
+            在笔记里选中一个词按 <kbd>{addWordHint}</kbd>，或直接在上面的搜索框输入一个
             单词——搜不到时点「收录」即可查释义入库。单词本按账户共用一份（所有仓库
             共享，存本机），随时可手改。
           </div>

@@ -998,18 +998,8 @@ fn in_sync_scope(path: &str, scope: &str, folder: &str) -> bool {
     if !path.ends_with(".md") {
         return false;
     }
-    if scope != "folder" {
-        return true;
-    }
-    let folder = folder
-        .trim()
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_string();
-    if folder.is_empty() {
-        return true;
-    }
-    path.starts_with(&format!("{folder}/"))
+    // folder 归一化与前缀判定与附件通道共用一份（避免两处漂移）
+    in_attachment_scope(path, scope, folder)
 }
 
 /// 扫描同步范围内的笔记，返回每个文件的同步哈希（**不返回内容**——内容只在真要推送时读）。
@@ -1338,32 +1328,38 @@ pub fn write_binary(vault: String, path: String, data_base64: String) -> Result<
 
 // ---------------------------------------------------------------- 附件引用扫描
 
-/// 允许同步的附件扩展名（与后端 `AttachmentService.ALLOWED_EXTENSIONS` 一一对应）。
+/// 库内路径是否走附件（字节）通道：非 .md（区分大小写）即附件（M8 全类型同步）。
 ///
-/// 刻意不含 svg：svg 能内联脚本，浏览器直出等于开了一条 XSS 通道。
-/// 白名单必须与服务端一致——不一致的话本地会把注定被 400 拒的文件反复往上推。
-const ATTACHMENT_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "pdf"];
-
-/// 取路径的扩展名（小写）；目录名里的点不算。
-fn extension_of(path: &str) -> String {
-    let dot = path.rfind('.');
-    let slash = path.rfind('/');
-    match dot {
-        Some(dot) if slash.map(|slash| dot > slash + 1).unwrap_or(true) => {
-            path[dot + 1..].to_lowercase()
-        }
-        _ => String::new(),
+/// - `.md` 后缀区分大小写，与正文白名单同一口径：`笔记.MD` 两边都不收，避免歧义；
+/// - 待办快照是**虚拟文件**（不落盘、走正文 JSON 通道），盘上残留的同名文件不参与，
+///   否则同一路径会同时走两条通道（文本推送 + 字节上传），内容互相覆盖；
+/// - 点开头的路径段排除（walk_entries 已滤，这里是双保险，供其他调用方复用）。
+fn is_attachment_path(path: &str) -> bool {
+    if path.ends_with(".md") {
+        return false;
     }
+    if path == "daily-sync-todos.json" {
+        // TODO_SYNC_PATH，与 src/lib/todos.ts 的常量一致（两处必须同步改）
+        return false;
+    }
+    !path.split('/').any(|segment| segment.starts_with('.'))
 }
 
-fn is_attachment_path(path: &str) -> bool {
-    if path.ends_with(".md") || path.ends_with(".json") {
-        return false;
+/// 附件通道的范围判定：与 in_sync_scope 同一套 folder 归一化与前缀逻辑，但不限 .md
+/// （M8 全类型同步：范围内的一切非 .md 文件都走字节通道）。
+fn in_attachment_scope(path: &str, scope: &str, folder: &str) -> bool {
+    if scope != "folder" {
+        return true;
     }
-    if path.split('/').any(|segment| segment.starts_with('.')) {
-        return false;
+    let folder = folder
+        .trim()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
+    if folder.is_empty() {
+        return true;
     }
-    ATTACHMENT_EXTENSIONS.contains(&extension_of(path).as_str())
+    path.starts_with(&format!("{folder}/"))
 }
 
 /// 取路径的文件名部分。
@@ -1582,14 +1578,14 @@ fn resolve_by_name(candidates: &[String], name: &str, from: &str) -> Option<Stri
     sorted.first().map(|path| (*path).clone())
 }
 
-/// 扫描被范围内笔记引用到的附件：本地有的给路径，本地缺的给名字。
+/// 扫描同步范围内的一切非 `.md` 文件（M8 全类型同步：**按目录扫**），并集上
+/// 「范围内笔记引用到、全库解析得到的文件」——附件目录常在日记目录之外
+/// （用户贴图默认落点），按引用上传是既有语义，目录扫是补充而非替代；两者
+/// 取并集，孤儿文件（无引用）也上云正是全类型同步的目的。
 ///
-/// 与插件同一套策略——**按引用扫，不按目录扫**。粘贴图片的落点取决于用户配置
-/// （`pastedImageFolder`，或 Obsidian 原生的附件目录），盯目录必然漏；而按引用扫
-/// 与落点无关。代价是没被任何笔记引用的图片不会上云，这正是要的效果：不镜像无用的二进制。
-///
-/// 这里是"从云端把图拉下来"唯一的入口：本地没有这个文件时，笔记里的链接在 Obsidian 里
-/// 是**解析不到**的，所以"本地缺图"这件事恰好只会表现为"引用得到名字、却找不到文件"。
+/// 另有「引用得到名字、却找不到文件」的 missing 上报（**引用反推补缺**——
+/// 从云端按名拉回唯一的入口）。名字不再按扩展名过滤（任意类型都允许按名去
+/// 云端问，404 由引擎静默处理）。
 #[tauri::command]
 pub async fn sync_scan_attachments(
     vault: String,
@@ -1601,7 +1597,8 @@ pub async fn sync_scan_attachments(
         let mut entries = Vec::new();
         walk_entries(&root, &root, &mut entries, 0);
 
-        // 全库的附件路径（含范围外的目录：图片常躺在附件目录里，而那是日记目录之外）
+        // 引用解析的候选：全库非 .md 且非 todo 快照的文件（**不**套 scope：
+        // 引用解析与 Obsidian 一致是全库的）
         let candidates: Vec<String> = entries
             .iter()
             .filter(|entry| !entry.is_dir && is_attachment_path(&entry.path))
@@ -1615,10 +1612,33 @@ pub async fn sync_scan_attachments(
                 .unwrap_or((0, 0))
         };
 
+        // 并集收集：目录扫（范围内全部）+ 引用解析（被范围内笔记引用、全库命中）
         let mut referenced: Vec<ReferencedAttachment> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut push_referenced = |path: String, seen: &mut HashSet<String>, out: &mut Vec<ReferencedAttachment>| {
+            if seen.insert(path.clone()) {
+                let name = basename_of(&path).to_string();
+                let (size, modified) = meta_of(&path);
+                out.push(ReferencedAttachment {
+                    path,
+                    name,
+                    size,
+                    modified,
+                });
+            }
+        };
+        // ① 目录扫：范围内全部非 .md 文件都上云（孤儿文件也是目的本身）
+        for entry in &entries {
+            if entry.is_dir
+                || !is_attachment_path(&entry.path)
+                || !in_attachment_scope(&entry.path, &scope, &folder)
+            {
+                continue;
+            }
+            push_referenced(entry.path.clone(), &mut seen, &mut referenced);
+        }
+        // ② 引用解析：范围内 .md 引用到、全库解析得到的文件（含范围外的附件目录）
         let mut missing: Vec<MissingAttachment> = Vec::new();
-        let mut seen_referenced: HashSet<String> = HashSet::new();
-
         for entry in &entries {
             if entry.is_dir || !in_sync_scope(&entry.path, &scope, &folder) {
                 continue;
@@ -1631,21 +1651,8 @@ pub async fn sync_scan_attachments(
                 continue; // 不是合法 UTF-8 的笔记已在 sync_scan 里报告过
             };
             for name in extract_attachment_names(content) {
-                if !ATTACHMENT_EXTENSIONS.contains(&extension_of(&name).as_str()) {
-                    continue;
-                }
                 match resolve_by_name(&candidates, &name, &entry.path) {
-                    Some(path) => {
-                        if seen_referenced.insert(path.clone()) {
-                            let (size, modified) = meta_of(&path);
-                            referenced.push(ReferencedAttachment {
-                                path,
-                                name,
-                                size,
-                                modified,
-                            });
-                        }
-                    }
+                    Some(path) => push_referenced(path, &mut seen, &mut referenced),
                     None => {
                         // 同一个名字在多篇笔记里被引用时只取第一处（服务端只需要一个"从哪来"）
                         if !missing.iter().any(|item| item.name == name) {
@@ -1945,19 +1952,20 @@ mod tests {
 
     #[test]
     fn classifies_attachment_paths() {
+        // M8 全类型同步：非 .md 即附件（扩展名不再参与判定）
         assert!(is_attachment_path("attachments/图.png"));
-        assert!(is_attachment_path("图.JPEG"), "扩展名大小写不敏感");
+        assert!(is_attachment_path("图.JPEG"));
         assert!(is_attachment_path("a/b/c.pdf"));
-        // 正文与配置不算附件
+        assert!(is_attachment_path("图.svg"), "svg 也是附件（服务端强制 attachment 下载防 XSS）");
+        assert!(is_attachment_path("a.txt"));
+        assert!(is_attachment_path("没有扩展名"));
+        assert!(is_attachment_path("quick-daily-note.json"), "普通 json 也是附件");
+        // 正文与 todo 快照（虚拟文件）不走附件通道
         assert!(!is_attachment_path("日记/a.md"));
-        assert!(!is_attachment_path("quick-daily-note.json"));
+        assert!(!is_attachment_path("daily-sync-todos.json"));
         // 点开头的目录整体不同步（.trash 里的东西不该上云）
         assert!(!is_attachment_path(".trash/图.png"));
         assert!(!is_attachment_path("a/.hidden/图.png"));
-        // 白名单之外
-        assert!(!is_attachment_path("图.svg"), "svg 能内联脚本，刻意不支持");
-        assert!(!is_attachment_path("a.txt"));
-        assert!(!is_attachment_path("没有扩展名"));
     }
 
     #[test]

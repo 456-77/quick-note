@@ -1397,6 +1397,10 @@ div.tree-item:focus-visible {
   flex: 1;
   overflow: auto;
   padding: 14px;
+  /* flex 子项默认 min-height:auto 会被内容（一页 PDF 800px+）撑爆——嵌入化后
+     preview 不再是 absolute 浮层，链条上必须钳住才能滚动（0.35.3 实测布局溢出：
+     容器 874px 高出视口，底部不可达） */
+  min-height: 0;
 }
 
 .file-preview-loading {
@@ -2647,6 +2651,48 @@ html.qn-alt-held .cm-line {
 .tab:hover {
   color: var(--text-dim);
   background: var(--hover);
+}
+
+/* 拖动落点分界线（0.35.3 二轮反馈，Obsidian 式）：悬停的标签左缘画一根竖线，
+   表示「松手后插到这个标签前面」 */
+.tab.is-drop-target {
+  box-shadow: inset 2px 0 0 var(--accent);
+  background: var(--accent-soft);
+}
+
+/* editor-main 半区落点（0.35.3 五轮反馈：文件树条目/标签直接拖到左右侧，
+   右栏没开也能拖出分屏）：半区虚线高亮，落点=高亮的那一半 */
+.editor-main.is-drop-right::after,
+.editor-main.is-drop-left::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  pointer-events: none;
+  border: 2px dashed var(--accent);
+  background: var(--accent-soft);
+  opacity: 0.55;
+  z-index: 4;
+}
+
+.editor-main.is-drop-left::before {
+  left: 0;
+}
+
+.editor-main.is-drop-right::after {
+  right: 0;
+}
+
+/* 栏级落点（0.35.3 三轮反馈「直接拖到分屏栏中」）：整栏虚线描边=松手移到该栏
+   末尾并激活；标签栏空白区附加淡色底提示 */
+.editor-pane-col.is-drop-pane {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+}
+
+.tabbar.is-drop-pane-end {
+  background: var(--accent-soft);
 }
 
 .tab.is-active {
@@ -11875,6 +11921,47 @@ button.cm-tag:hover {
   border-color: var(--accent);
 }
 
+/* 筛选 chips 行（0.35.3 五轮反馈：速记管理「未归档/已归档/全部」同位同款——
+   两库**分开看**，不合并；默认数据表） */
+.ddl-mgr-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-bottom: 10px;
+}
+
+.ddl-mgr-filter {
+  padding: 5px 14px;
+  font-size: 13px;
+  font-weight: 550;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.ddl-mgr-filter b {
+  font-weight: 650;
+  color: var(--text-faint);
+  margin-left: 4px;
+}
+
+.ddl-mgr-filter.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.ddl-mgr-filter.is-on b {
+  color: var(--accent);
+}
+
+.ddl-mgr-filter-spacer {
+  flex: 1;
+}
+
 .ddl-mgr-list {
   max-height: 48vh;
   overflow-y: auto;
@@ -11969,6 +12056,111 @@ button.cm-tag:hover {
   border-color: transparent;
 }
 
+/* —— 语句库管理的标签页形态（0.35.3 用户反馈「不应该使用弹窗，新建一个标签页」；
+   二轮反馈改用速记管理面板的版式）—— */
+.ddl-manager-page {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 18px 12px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+/* 标题行：cm-head 同款（标题 + 副标题 + 右侧 Esc 图标钮） */
+.ddl-mgr-page-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  margin-bottom: 10px;
+}
+
+.ddl-mgr-page-titles {
+  min-width: 0;
+}
+
+.ddl-mgr-page-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 650;
+  color: var(--text);
+  line-height: 1.25;
+}
+
+.ddl-mgr-page-subtitle {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ddl-mgr-page-spacer {
+  flex: 1;
+}
+
+.ddl-mgr-page-close {
+  flex: none;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.ddl-mgr-page-close:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+/* 工具行（页签 + 搜索）随内容行高固定，列表占满剩余高度平铺滚动 */
+.ddl-manager-page .ddl-mgr-tabs {
+  flex-shrink: 0;
+}
+
+.ddl-manager-page .ddl-mgr-list {
+  flex: 1;
+  max-height: none;
+  min-height: 0;
+  overflow-y: auto;
+  border: 0;
+  border-radius: 0;
+  padding: 0 2px;
+}
+
+.ddl-manager-page .quick-capture-foot {
+  flex-shrink: 0;
+  padding-top: 8px;
+}
+
+/* 特殊标签页激活时隐藏左栏编辑器宿主（同 Inbox 的 display:none 纪律：
+   回到笔记时 App 会 requestMeasure 重测，不条件卸载宿主 div） */
+.editor-host.is-special-hidden {
+  display: none;
+}
+
+/* 文件预览的标签页形态（0.35.3 用户反馈「预览文件可以复用笔记的标签页形式吗」）：
+   不再是 absolute 全屏浮层，占据左栏标签栏之下的内容区 */
+.file-preview.is-embedded {
+  position: static;
+  flex: 1;
+  min-height: 0;
+  z-index: auto;
+}
+
+/* 特殊标签页的标签外观：名称前缀菱形徽标，区别于普通笔记标签 */
+.tab-special .tab-title::before {
+  content: "◇ ";
+  color: var(--accent);
+  opacity: 0.75;
+}
+
 /* ------------------------------------------------ 分屏查看（0.31） */
 
 /* 编辑区主体：编辑器 + 可选分屏窗格横向排布 */
@@ -12041,25 +12233,7 @@ html.qn-bg-on .editor-pane-col.is-split {
   flex: none;
 }
 
-.tabbar-pane-close {
-  flex: none;
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-}
 
-.tabbar-pane-close:hover {
-  background: var(--surface-2);
-  color: var(--text);
-}
 
 /* 分屏装载失败提示（0.32.2：读盘重试 3 次仍失败时显示在右栏内，不再静默空白） */
 .split-pane-error {

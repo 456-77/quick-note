@@ -7,7 +7,7 @@
 //
 // 用法：node --experimental-strip-types --no-warnings scripts/verify-lists-daily.mjs
 
-import { listMarkerOf, listToggleLine } from "../src/lib/codeEdit.ts";
+import { listHeadOf, listMarkerOf, listToggleLine, looseListEnterAt } from "../src/lib/codeEdit.ts";
 import { dailyRenameName, parseTodoDateInput } from "../src/lib/daily.ts";
 
 let failures = 0;
@@ -52,6 +52,30 @@ eq(listToggleLine("- 正文", "bullet", "remove"), { text: "正文", delta: -2 }
 eq(listToggleLine("1. 正文", "ordered", "remove"), { text: "正文", delta: -3 }, "有序项去掉序号");
 eq(listToggleLine("- [ ] 任务", "bullet", "remove"), { text: "任务", delta: -6 }, "任务项连勾选框一起摘");
 eq(listToggleLine("- [x] 完成", "ordered", "add"), { text: "1. [x] 完成", delta: 1 }, "换类型保留勾选框");
+
+console.log("\n松散列表回车决策（0.35.3：隔空行的序号不再自动空一行续号）\n");
+eq(listHeadOf("- 任务"), { indent: "", marker: "-", task: "" }, "无序头部");
+eq(listHeadOf("  3) 子项"), { indent: "  ", marker: "3)", task: "" }, "有序右括号+缩进");
+eq(listHeadOf("- [x] 完成"), { indent: "", marker: "-", task: " [x]" }, "任务框捕获");
+eq(listHeadOf("-没有空格"), null, "标记后无空格不是列表");
+eq(listHeadOf("普通文本"), null, "普通行不是列表");
+eq(looseListEnterAt("2. 内容", ["1. 内容"]), null, "紧凑列表不接管");
+eq(
+  looseListEnterAt("2. 内容", ["", "1. 内容"]),
+  { action: "continue", insert: "\n3. " },
+  "松散非空项→紧凑续行，序号+1",
+);
+eq(looseListEnterAt("- ", ["", "- 上一个"]), { action: "exit", indent: "" }, "松散空项→退出列表");
+eq(looseListEnterAt("3. ", ["", "", "2. 上一项"]), { action: "exit", indent: "" }, "隔两行也算松散");
+eq(
+  looseListEnterAt("- [x] 完成", ["", "- [ ] 上一个"]),
+  { action: "continue", insert: "\n- [ ] " },
+  "任务框续行给未勾选",
+);
+eq(looseListEnterAt("  - 子项", ["", "  - 上一个"]), { action: "continue", insert: "\n  - " }, "同缩进嵌套项续行");
+eq(looseListEnterAt("- 子项", ["", "  - 缩进不同"]), null, "缩进不同不接管（交给内置降级）");
+eq(looseListEnterAt("普通文本", ["", "1. 序号"]), null, "光标行不是列表不接管");
+eq(looseListEnterAt("2. 内容", ["其他正文", "", "1. 序号"]), null, "上一非空行不是列表项不接管");
 eq(listToggleLine("1. 正文", "bullet", "add"), { text: "- 正文", delta: -1 }, "有序换无序");
 eq(listToggleLine("- 正文", "bullet", "add"), null, "已是目标类型不动作");
 eq(listToggleLine("- 正文", "bullet", "remove"), { text: "正文", delta: -2 }, "remove 模式对目标类型摘标记");
