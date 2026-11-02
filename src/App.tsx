@@ -2116,7 +2116,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (leftView !== "tags" || !vault) return;
+    // 桌面侧栏「标签」视图与移动端抽屉「标签」分区（drawerView，0.34.0）共用
+    // 这份索引——移动端只看 leftView 的话抽屉里永远扫不出来（0.35.3 用户反馈：
+    // 手机标签面板一直显示「还没有标签」）
+    if ((leftView !== "tags" && drawerView !== "tags") || !vault) return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
       setTagIndex((prev) => ({ ...prev, loading: true }));
@@ -2161,7 +2164,7 @@ export default function App() {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [leftView, vault, entries, tagScanToken]);
+  }, [leftView, drawerView, vault, entries, tagScanToken]);
 
   /**
    * 从仪表盘移除某篇笔记的标签。三种存放位置各走各路（与 syncFirstHeading 同纪律）：

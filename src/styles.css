@@ -12355,6 +12355,13 @@ html.qn-bg-on .editor-pane-col.is-split {
   html.qn-ime-open .m-bottom-bar {
     display: none;
   }
+  /* 0.35.3 用户反馈「文件搜索面板输入内容时会将底部的功能栏一同带起」：抽屉
+     底部的分区胶囊与仓库栏被 ime.bottom margin 顶到键盘上缘悬浮——输入场景
+     看不到也用不到它们，直接藏 */
+  html.qn-ime-open .m-drawer-sections,
+  html.qn-ime-open .m-drawer-foot {
+    display: none;
+  }
 
   /* 用户反馈「单词弹窗被截断了」：详情底弹层挂右栏抽屉的层叠上下文里
      （z-260 出不了 z-70 的父级）。0.34.0 起无底栏，直接贴屏底 */
