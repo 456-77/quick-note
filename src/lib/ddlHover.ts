@@ -55,6 +55,19 @@ export function setDdlSaver(fn: DdlSaver | null): void {
   ddlSaver = fn;
 }
 
+/**
+ * 收掉所有未处于编辑态的脱管浮层（0.36.1 用户反馈「光标已经点击别的区域，
+ * 这个弹窗依然会显示」）：从 CM tooltip 脱管到 body 的编辑浮层，失焦后
+ * （Esc 取消焦点/点到弹窗内其他元素导致 blur）编辑锁已摘，旧逻辑的关闭通道
+ * 只认单元格卡，脱管浮层永远留到切笔记（closeDdlTip）才清。两处调用：
+ * 点在弹窗外（onDocMouseDown）与新卡开出前（ddlHover 的 create，一次只留一张）。
+ */
+function closeIdleDetachedTips(): void {
+  document
+    .querySelectorAll(".qn-ddl-tip.qn-ddl-detached:not(.qn-ddl-editing)")
+    .forEach((el) => el.remove());
+}
+
 /** 带当前 saver 的弹窗装配参数（saver 不在时不渲染编辑钮）。 */
 function tipOptions(lang: TipLang, defaultProject?: string): DdlTipOptions | undefined {
   const saver = ddlSaver;
@@ -109,9 +122,13 @@ export function ddlHover(): Extension {
         pos: line.from + from,
         end: line.from + to,
         above: true,
-        create: () => ({
-          dom: buildDdlTipDom(word, entries, tipOptions(lang, defaultProjectFor(view, entries))),
-        }),
+        create: () => {
+          // 0.36.1：切到新的悬浮目标时先收掉失焦残留的旧脱管浮层，一次只留一张卡
+          closeIdleDetachedTips();
+          return {
+            dom: buildDdlTipDom(word, entries, tipOptions(lang, defaultProjectFor(view, entries))),
+          };
+        },
       };
     },
     // 默认 750ms 太迟钝；350ms 接近 Obsidian 的悬浮手感
@@ -133,6 +150,8 @@ const LEAVE_GRACE_MS = 200;
 // 否则切页瞬间 pending 的 350ms 计时还会把弹窗重新弹出来
 let cellTimer: number | null = null;
 let cellHideTimer: number | null = null;
+/** 当前卡对应的单元格：show() 记入、hide()/closeDdlTip() 清空（0.36.1 换卡判断用）。 */
+let cellCurrent: HTMLElement | null = null;
 
 /**
  * 关掉一切 DDL 弹窗（0.34.6 用户反馈「切换页面或者切换笔记后要自动隐藏」）：
@@ -149,6 +168,7 @@ export function closeDdlTip(): void {
     window.clearTimeout(cellHideTimer);
     cellHideTimer = null;
   }
+  cellCurrent = null;
   document.getElementById(CELL_TIP_ID)?.remove();
   document.querySelectorAll(".qn-ddl-tip.qn-ddl-detached").forEach((el) => el.remove());
 }
@@ -171,6 +191,7 @@ export function installDdlCellHover(): () => void {
       window.clearTimeout(cellHideTimer);
       cellHideTimer = null;
     }
+    cellCurrent = null;
     document.getElementById(CELL_TIP_ID)?.remove();
   };
 
@@ -218,6 +239,7 @@ export function installDdlCellHover(): () => void {
     }
     tip.style.left = `${left}px`;
     tip.style.top = `${top}px`;
+    cellCurrent = cell;
   };
 
   const onOver = (event: MouseEvent) => {
@@ -244,9 +266,12 @@ export function installDdlCellHover(): () => void {
     }
     // 落回单元格：取消宽限收起
     cancelHideSoon();
-    // 已在展示该单元格的弹窗：别重置计时闪掉
-    const current = document.getElementById(CELL_TIP_ID);
-    if (current && cell.contains(target)) return;
+    // 0.36.1 用户反馈「光标从下面移到上面/从上面移到下面，原弹窗不消失也不
+    // 换成当前表的」：旧判断 `current && cell.contains(target)` 在**任何**弹窗
+    // 开着时对**任何**单元格都早退——换目标永远不再调度 show，旧卡钉死（只在
+    // 表格里出现，因为这是单元格悬浮通道）。改为按「当前卡对应的单元格」
+    // 追踪：同一个单元格才跳过，换目标（含跨表）重置计时换卡
+    if (cellCurrent && cellCurrent === cell) return;
     if (cellTimer !== null) window.clearTimeout(cellTimer);
     cellTimer = window.setTimeout(() => {
       cellTimer = null;
@@ -297,6 +322,9 @@ export function installDdlCellHover(): () => void {
     const tip = document.getElementById(CELL_TIP_ID);
     if (tip && event.target instanceof Node && tip.contains(event.target)) return;
     hide();
+    // 0.36.1：失焦后（编辑锁已摘）的脱管浮层一并收掉——旧逻辑只收单元格卡，
+    // 脱管浮层点外面永远关不掉，只有重新打开文件（closeDdlTip）才消失
+    closeIdleDetachedTips();
   };
 
   const onScroll = (event: Event) => {

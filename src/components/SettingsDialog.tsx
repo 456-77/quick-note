@@ -828,15 +828,18 @@ export default function SettingsDialog({
   return (
     <div className={`settings-panel${mobileDetail ? " is-detail" : ""}`} role="dialog" aria-label="设置">
       <div className="settings-nav">
-        <div className="settings-nav-head">
+        <div className="settings-nav-head settings-page-head">
           {/* 0.34.1 用户反馈：一级标题去掉「/xx」后缀——分类名由下面的导航列表
-              呈现，一级页头只保留「设置」（桌面与移动端同步生效） */}
-          <span className="settings-nav-title">设置</span>
+              呈现，一级页头只保留「设置」（桌面与移动端同步生效）。
+              0.36.1 用户反馈「一级/二级标题头样式不一致」：两级头统一挂
+              .settings-page-head 模板类（移动端 CSS 里同款 56px 头 + 40dp
+              主题色 ‹ + 16px 标题），桌面样式不受影响 */}
+          <span className="settings-nav-title settings-page-title">设置</span>
           {savedFlash && <span className="settings-saved">已保存</span>}
           {/* 0.33.0 停点3：关闭入口也用 ‹（移动端习惯），不用 × */}
           <button
             type="button"
-            className="icon-btn settings-close"
+            className="icon-btn settings-close settings-page-back"
             onClick={onClose}
             title="关闭设置（Esc）"
             aria-label="关闭设置"
@@ -879,15 +882,16 @@ export default function SettingsDialog({
       </div>
 
       <div className="settings-body" ref={bodyRef} onClick={onBodyClick}>
-        {/* 移动端详情页头：返回分类列表 + 关闭（桌面 CSS 隐藏） */}
-        <div className="settings-mobile-head">
+        {/* 移动端详情页头：返回分类列表 + 关闭（桌面 CSS 隐藏）。
+            0.36.1：与一级头共用 .settings-page-head 模板 */}
+        <div className="settings-mobile-head settings-page-head">
           {/* 0.33.0 停点3 反馈：返回用 ‹ 图标（移动端习惯），纯图标不叠文字；
               关闭设置的 × 只留在一级页头部——二级页出现两个叉/箭头会混淆
               返回与关闭 */}
-          <button type="button" className="settings-back" onClick={() => setMobileDetail(false)} aria-label="返回设置目录">
+          <button type="button" className="settings-back settings-page-back" onClick={() => setMobileDetail(false)} aria-label="返回设置目录">
             <IconChevronLeft size={20} />
           </button>
-          <span className="settings-mobile-title">{SECTIONS.find((sec) => sec.id === active)?.label}</span>
+          <span className="settings-mobile-title settings-page-title">{SECTIONS.find((sec) => sec.id === active)?.label}</span>
         </div>
         {/* 顺序即 DOM 顺序：gui 验收依赖「第一个 checkbox 是粘贴开关」，不要调整分区先后。 */}
         <section className="settings-sec" data-sec="general" style={{ display: searching || active === "general" ? undefined : "none" }}>
@@ -1493,7 +1497,10 @@ export default function SettingsDialog({
                   // 0.34.6 用户反馈「点击选择目录没有反应」：安卓 plugin-dialog
                   // 未实现目录选择（Kotlin 侧 TODO）——手机走应用内目录浏览器
                   if (isMobile()) {
-                    void openDirAt("/storage/emulated/0", "wallpaper");
+                    // 0.36.1 用户反馈「选择壁纸目录时默认应该定位到当前仓库根目录」：
+                    // 起点从写死的存储根换成当前仓库根（按钮在 !vault 时本就禁用，
+                    // 兜底回存储根防万一）
+                    void openDirAt(vault || "/storage/emulated/0", "wallpaper");
                     return;
                   }
                   const picked = await pickDirectory("选择壁纸图片目录");

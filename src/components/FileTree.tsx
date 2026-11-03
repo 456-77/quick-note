@@ -506,6 +506,8 @@ export default function FileTree({
   pinnedFavorites,
   recents,
   hiddenDirs,
+  focusDir,
+  onFocusClear,
   selectedPath,
   onSelectPath,
   onOpen,
@@ -526,6 +528,10 @@ export default function FileTree({
   recents: string[];
   /** 被隐藏的一级目录集合（目录筛选，0.20 用户反馈：目录太多干扰阅读）。 */
   hiddenDirs?: ReadonlySet<string>;
+  /** 「只显示选定目录」焦点（0.36.1 用户反馈，移动端大仓库）：只列该目录子树。 */
+  focusDir?: string | null;
+  /** 清除焦点（树内退出芯片 ✕）。 */
+  onFocusClear?: () => void;
   /** 当前选中的目录（粘贴目标）。 */
   selectedPath: string | null;
   onSelectPath: (path: string) => void;
@@ -540,11 +546,14 @@ export default function FileTree({
   reveal?: TreeReveal | null;
 }) {
   const tree = useMemo(() => {
-    const visible = hiddenDirs && hiddenDirs.size > 0
+    let visible = hiddenDirs && hiddenDirs.size > 0
       ? entries.filter((entry) => !isUnderHiddenDirs(entry.path, hiddenDirs))
       : entries;
+    // 0.36.1「只显示选定目录」：只保留焦点目录子树（不含目录行本身，
+    // 焦点的子项直接作为树根，Obsidian 文件夹聚焦同款）
+    if (focusDir) visible = visible.filter((entry) => entry.path.startsWith(`${focusDir}/`));
     return buildTree(visible);
-  }, [entries, hiddenDirs]);
+  }, [entries, hiddenDirs, focusDir]);
   const favoriteSet = useMemo(() => new Set(favorites), [favorites]);
   /** 拖到根目录空白处的落点高亮。 */
   const [rootDrop, setRootDrop] = useState(false);
@@ -703,6 +712,25 @@ export default function FileTree({
         else onMoveEntry(source, "");
       }}
     >
+      {view === "files" && focusDir && (
+        <div className="tree-focus" role="status">
+          <span className="tree-focus-label" title={focusDir}>
+            只显示：{focusDir}
+          </span>
+          <button
+            type="button"
+            className="tree-focus-clear"
+            aria-label="显示全部目录"
+            title="显示全部目录"
+            onClick={onFocusClear}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+      {tree.length === 0 && view === "files" && focusDir && (
+        <div className="tree-empty">这个目录下暂时没有文件。</div>
+      )}
       {tree.map((node) => (
         <Node
           key={node.path}

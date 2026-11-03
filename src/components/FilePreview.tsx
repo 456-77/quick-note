@@ -28,6 +28,7 @@ import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readBinary, readNote } from "../lib/api";
 import { extOf, fileKindOf } from "../lib/fileTypes";
+import { isMobile } from "../lib/platform";
 import { IconMinus, IconPlus, IconX } from "./icons";
 
 interface Props {
@@ -703,8 +704,14 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   const canZoomOut = pdfScaleNow > PDF_ZOOM_MIN + 0.001;
   const canZoomIn = pdfScaleNow < PDF_ZOOM_MAX - 0.001;
 
+  // 0.36.1 用户反馈「预览标题条与标签栏重复，白白浪费空间」：桌面嵌入态下
+  // 标签栏已显示同名 ◇ 标签（含关闭钮），标题条纯冗余——隐藏；PDF 例外
+  // （缩放控件在条上），移动端例外（标签栏 display:none，这是唯一关闭入口）
+  const showBar = !embedded || kind === "pdf" || isMobile();
+
   return (
     <div ref={rootRef} className={`file-preview${embedded ? " is-embedded" : ""}`} role="dialog" aria-label={`预览 ${name}`}>
+      {showBar && (
       <div className="file-preview-bar">
         <span className="file-preview-name" title={path}>
           {name}
@@ -750,6 +757,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
           <IconX size={14} />
         </button>
       </div>
+      )}
 
       <div className="file-preview-body" ref={bodyRef}>
         {loading && <div className="file-preview-loading">正在加载…</div>}

@@ -469,6 +469,19 @@ export default function App() {
   const [previewTabs, setPreviewTabs] = useState<string[]>([]);
   /** 激活的预览标签（文件路径；null = 编辑器显示）。 */
   const [activePreview, setActivePreview] = useState<string | null>(null);
+  /** 分屏栏的预览标签（0.36.1 用户反馈「无法拖动预览文件移动到左右栏」）：
+      与左栏 previewTabs 同构，右栏可以是纯预览窗格。 */
+  const [previewTabsSplit, setPreviewTabsSplit] = useState<string[]>([]);
+  /** 分屏栏激活的预览标签（null = 右栏显示编辑器）。 */
+  const [activePreviewSplit, setActivePreviewSplit] = useState<string | null>(null);
+  const previewTabsRef = useRef<string[]>([]);
+  useEffect(() => {
+    previewTabsRef.current = previewTabs;
+  }, [previewTabs]);
+  const previewTabsSplitRef = useRef<string[]>([]);
+  useEffect(() => {
+    previewTabsSplitRef.current = previewTabsSplit;
+  }, [previewTabsSplit]);
   /** 语句库管理整页（0.35.3 四轮反馈：不再占用标签页外壳，Ctrl+Alt+K / Esc /
       菜单切换——与收件箱（Inbox）同一种页面形态）。 */
   const [libraryPageOpen, setLibraryPageOpen] = useState(false);
@@ -477,13 +490,87 @@ export default function App() {
     setPreviewTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
     setActivePreview(path);
   }, []);
-  /** 关预览标签；关的是激活页就回编辑器。 */
+  /** 关预览标签；关的是激活页就回编辑器。左右两栏各自判断归属。 */
   const closeSpecialTab = useCallback((path: string) => {
+    if (previewTabsSplitRef.current.includes(path)) {
+      setPreviewTabsSplit((prev) => prev.filter((p) => p !== path));
+      setActivePreviewSplit((cur) => (cur === path ? null : cur));
+      return;
+    }
     setPreviewTabs((prev) => prev.filter((p) => p !== path));
     setActivePreview((cur) => (cur === path ? null : cur));
   }, []);
+  /**
+   * 预览标签在左右栏之间移动 / 同栏重排（拖拽落点）。target 给定时插到该栏
+   * 预览组里 target 之前（仅同栏有意义），否则排到该栏预览组末尾；跨栏时
+   * 源栏摘除并清激活、目标栏落位并激活（Obsidian 语义：拖过去的即激活）。
+   */
+  const movePreviewTab = useCallback(
+    (path: string, toSide: "main" | "split", target?: string | null) => {
+      const fromSplit = previewTabsSplitRef.current.includes(path);
+      const fromLeft = previewTabsRef.current.includes(path);
+      if (!fromSplit && !fromLeft) return;
+      const fromSide: "main" | "split" = fromSplit ? "split" : "main";
+      const insert = (list: string[]) => {
+        const rest = list.filter((p) => p !== path);
+        if (target && rest.includes(target)) {
+          const idx = rest.indexOf(target);
+          return [...rest.slice(0, idx), path, ...rest.slice(idx)];
+        }
+        return [...rest, path];
+      };
+      if (toSide === fromSide) {
+        if (toSide === "main") setPreviewTabs((prev) => insert(prev));
+        else setPreviewTabsSplit((prev) => insert(prev));
+        return;
+      }
+      if (fromSide === "main") {
+        setPreviewTabs((prev) => prev.filter((p) => p !== path));
+        setActivePreview((cur) => (cur === path ? null : cur));
+        setPreviewTabsSplit((prev) => insert(prev));
+        setActivePreviewSplit(path);
+      } else {
+        setPreviewTabsSplit((prev) => prev.filter((p) => p !== path));
+        setActivePreviewSplit((cur) => (cur === path ? null : cur));
+        setPreviewTabs((prev) => insert(prev));
+        setActivePreview(path);
+      }
+      focusedPaneRef.current = toSide;
+    },
+    [],
+  );
   /** 知识库内"复制"的文件（Ctrl+V 粘贴进选中的目录；同时已写入系统剪贴板）。 */
   const [treeClipboard, setTreeClipboard] = useState<{ path: string; isDir: boolean } | null>(null);
+  /**
+   * 文件树「只显示选定目录」焦点（0.36.1 用户反馈，移动端大仓库浏览）：
+   * 按仓库记忆，右键目录 → 只看此目录；树内出退出芯片。null = 显示全部。
+   */
+  const [treeFocusMap, setTreeFocusMap] = useState<Record<string, string>>(() => {
+    try {
+      const raw = localStorage.getItem("quicknote.ui.treeFocus.v1");
+      return raw ? (JSON.parse(raw) as Record<string, string>) : {};
+    } catch {
+      return {};
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("quicknote.ui.treeFocus.v1", JSON.stringify(treeFocusMap));
+    } catch {
+      // 存不进去只影响下次启动的记忆
+    }
+  }, [treeFocusMap]);
+  const treeFocusDir = vault ? treeFocusMap[vault] ?? null : null;
+  const setTreeFocusDir = useCallback((dir: string | null) => {
+    const v = vaultRef.current;
+    if (!v) return;
+    setTreeFocusMap((prev) => {
+      const next = { ...prev };
+      if (dir) next[v] = dir;
+      else delete next[v];
+      return next;
+    });
+  }, []);
   /** 左侧树当前选中的目录（粘贴目标）。 */
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const selectedPathRef = useRef<string | null>(null);
@@ -1934,10 +2021,14 @@ export default function App() {
   }, [captureManagerOpen]);
 
   // 特殊页（预览标签/语句库整页，0.35.3）同一条纪律：display:none 回编辑器后
-  // 立刻重测，防高度图陈旧导致行号/点击整体漂移
+  // 立刻重测，防高度图陈旧导致行号/点击整体漂移。0.36.1：分屏预览同理，
+  // 右栏视图自己的宿主被 is-special-hidden 后回来也要重测
   useEffect(() => {
     if (!activePreview && !libraryPageOpen) viewRef.current?.requestMeasure();
   }, [activePreview, libraryPageOpen]);
+  useEffect(() => {
+    if (!activePreviewSplit) splitViewRef.current?.requestMeasure();
+  }, [activePreviewSplit]);
 
   const submitQuickCapture = useCallback(
     async (
@@ -2084,6 +2175,8 @@ export default function App() {
   }, [tagIndex.noteTags]);
   const [tagDashTag, setTagDashTag] = useState<string | null>(null);
   const [tagScanToken, setTagScanToken] = useState(0);
+  /** 最近一次完成标签扫描的仓库：判断 loading 首显与静默刷新（0.36.1 防闪烁）。 */
+  const lastTagScanVaultRef = useRef<string | null>(null);
   /** 标签列表置顶的标签名（按仓库分桶；0.27 用户反馈）。 */
   const [pinnedTagNames, setPinnedTagNames] = useState<string[]>([]);
 
@@ -2115,6 +2208,20 @@ export default function App() {
     setPinnedTagNames((prev) => (prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name]));
   }, []);
 
+  // 标签扫描的输入键：只认 md 文件**路径清单的内容**，不认 entries 数组引用——
+  // 0.36.1 用户反馈「手机上打开标签页面后顶部反复闪烁正在扫描仓库标签」：
+  // effect 原来依赖 entries 本体，后台同步/自动保存/监视器任何一次 refresh 都
+  // 换新数组引用 → 扫描反复重启、loading 反复闪烁。改为内容键后只在文件清单
+  // 真的变化（新建/删除/重命名）时重扫
+  const tagScanPathsKey = useMemo(
+    () =>
+      entries
+        .filter((entry) => !entry.isDir && isMarkdownPath(entry.path))
+        .map((entry) => entry.path)
+        .join("\n"),
+    [entries],
+  );
+
   useEffect(() => {
     // 桌面侧栏「标签」视图与移动端抽屉「标签」分区（drawerView，0.34.0）共用
     // 这份索引——移动端只看 leftView 的话抽屉里永远扫不出来（0.35.3 用户反馈：
@@ -2122,8 +2229,14 @@ export default function App() {
     if ((leftView !== "tags" && drawerView !== "tags") || !vault) return;
     let cancelled = false;
     const timer = window.setTimeout(async () => {
-      setTagIndex((prev) => ({ ...prev, loading: true }));
-      const paths = entries.filter((entry) => !entry.isDir && isMarkdownPath(entry.path)).map((entry) => entry.path);
+      // 已有当前仓库的索引数据时**静默刷新**（不闪 loading）：扫描期间旧列表
+      // 原样展示，扫完整体替换——重扫过程对用户不可见
+      setTagIndex((prev) =>
+        prev.tags.length > 0 && lastTagScanVaultRef.current === vault
+          ? prev
+          : { ...prev, loading: true },
+      );
+      const paths = tagScanPathsKey ? tagScanPathsKey.split("\n") : [];
       const map: Record<string, string[]> = {};
       let cursor = 0;
       const worker = async () => {
@@ -2159,12 +2272,13 @@ export default function App() {
           return b.notes.length - a.notes.length || a.name.localeCompare(b.name, "zh");
         });
       setTagIndex({ loading: false, tags: list, noteTags: map });
+      lastTagScanVaultRef.current = vault;
     }, 600);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [leftView, drawerView, vault, entries, tagScanToken]);
+  }, [leftView, drawerView, vault, tagScanPathsKey, tagScanToken]);
 
   /**
    * 从仪表盘移除某篇笔记的标签。三种存放位置各走各路（与 syncFirstHeading 同纪律）：
@@ -3060,15 +3174,21 @@ export default function App() {
           .then((file) => {
             if (!file) return;
             const normalized = file.replace(/\\/g, "/");
-            if (!normalized.toLowerCase().endsWith(".md")) {
-              openPreviewTab(normalized);
-              return;
-            }
+            // 0.36.1 用户反馈「资源管理器打开文件显示预览加载错误，从左侧列表
+            // 重开又正常」：readNote/readBinary 都按**仓库相对路径**解析，启动
+            // 参数却是绝对路径——此前只有 .md 分支剥了仓库前缀，json/图片/pdf
+            // 等预览类直接拿绝对路径必炸。统一剥前缀转相对后再分发
             const prefix = dir.replace(/\\/g, "/").replace(/\/+$/, "") + "/";
             const relative = normalized.toLowerCase().startsWith(prefix.toLowerCase())
               ? normalized.slice(prefix.length)
               : normalized;
-            window.setTimeout(() => void openEntryRef.current(relative), 600);
+            window.setTimeout(() => {
+              if (!normalized.toLowerCase().endsWith(".md")) {
+                openPreviewTab(relative);
+                return;
+              }
+              void openEntryRef.current(relative);
+            }, 600);
           });
       });
   }, [refresh, activateVault, recordVault, openPreviewTab]);
@@ -3667,6 +3787,8 @@ export default function App() {
         : focusedPaneRef.current === "split" && rightTabsRef.current.length > 0
           ? "split"
           : "main";
+      // 0.36.1：右栏开笔记 = 该栏预览让位（预览标签保留在右栏标签组可点回）
+      if (targetSide === "split") setActivePreviewSplit(null);
       // 已是这一栏的激活标签且没有外部改动：什么都不做（重置会丢光标位置）
       if (targetSide === "main" && path === activeTabRef.current && !staleTabs.current.has(path)) return;
       if (targetSide === "split" && path === splitActiveRef.current && !staleTabs.current.has(path)) return;
@@ -3902,7 +4024,15 @@ export default function App() {
     paneFileDropRef.current = (path, side) => {
       const kind = fileKindOf(path);
       if (kind !== "markdown" && kind !== "text") {
-        void openEntryRef.current(path);
+        // 0.36.1 用户反馈「无法拖动预览文件移动到左右栏」：预览类拖到哪栏就在
+        // 哪栏开预览标签（左栏走 openEntry 原语义；右栏进分屏预览组）
+        if (side === "split") {
+          setPreviewTabsSplit((prev) => (prev.includes(path) ? prev : [...prev, path]));
+          setActivePreviewSplit(path);
+          focusedPaneRef.current = "split";
+        } else {
+          void openEntryRef.current(path);
+        }
         return;
       }
       setActivePreview(null);
@@ -4876,13 +5006,27 @@ export default function App() {
   // - 落在某个标签上：同栏=插到它前面（左缘分界线）；跨栏=换归属再插到它前面；
   // - 落在标签栏空白 / 编辑区（栏级）：把标签移到该栏末尾（Obsidian 式整栏接纳，
   //   跨栏时顺带激活）。固定标签不参与（不可拖也不当落点）。
-  const dragTabRef = useRef<{ path: string; side: "main" | "split" } | null>(null);
+  const dragTabRef = useRef<{ path: string; side: "main" | "split"; kind: "note" | "preview" } | null>(null);
   /** 拖动悬停指示：标签前分界线 / 整栏接纳描边；drop/dragEnd 即清。 */
   type DropHint =
     | { kind: "before"; path: string; side: "main" | "split" }
     | { kind: "pane"; side: "main" | "split" }
     | null;
   const [dropHint, setDropHint] = useState<DropHint>(null);
+
+  // 0.36.1 用户反馈「新建文件后，内容编辑区一直存在蓝色虚线」：pane 级提示只靠
+  // drop/dragEnd 清理，而文件树条目没有 onDragEnd，拖拽半途取消（Esc）或松手
+  // 落在文件树/侧栏等无 handler 区域时 App 的提示无人清——窗口级兜底一清到底
+  // （成功路径的 handler 已各自清过，这里重复置 null 无副作用）
+  useEffect(() => {
+    const clear = () => setDropHint(null);
+    window.addEventListener("dragend", clear);
+    window.addEventListener("drop", clear);
+    return () => {
+      window.removeEventListener("dragend", clear);
+      window.removeEventListener("drop", clear);
+    };
+  }, []);
 
   /** 把 dragged 移到 target 前面（仅同栏、两者都不固定时）。 */
   const reorderTab = useCallback((dragged: string, target: string) => {
@@ -4925,12 +5069,22 @@ export default function App() {
   /**
    * 标签头拖放的通用 props。side 是落点所在栏：同栏拖=换位；跨栏拖=换归属再插位。
    * dragover/drop 都 stopPropagation——栏级（tabbar/编辑区）落点靠冒泡区分层级。
+   * kind：note=普通笔记标签；preview=预览标签（落点走 movePreviewTab 跨栏/重排）。
    */
-  const tabDragProps = (path: string, side: "main" | "split") => ({
+  const tabDragProps = (
+    path: string,
+    side: "main" | "split",
+    kind: "note" | "preview" = "note",
+  ) => ({
     draggable: true,
-    onDragStart: (event: { dataTransfer: { effectAllowed: string } }) => {
-      dragTabRef.current = { path, side };
+    onDragStart: (event: {
+      dataTransfer: { effectAllowed: string; setData: (type: string, value: string) => void };
+    }) => {
+      dragTabRef.current = { path, side, kind };
       event.dataTransfer.effectAllowed = "move";
+      // 0.36.1 拖拽失效兜底：dragstart 不带任何数据的拖拽，部分内核/版本会直接
+      // 吞掉后续 drop——塞一份 text/plain 保底（顺带有了拖拽图像）
+      event.dataTransfer.setData("text/plain", path);
     },
     onDragOver: (event: { preventDefault: () => void; stopPropagation: () => void }) => {
       const drag = dragTabRef.current;
@@ -4955,10 +5109,71 @@ export default function App() {
       dragTabRef.current = null;
       setDropHint(null);
       if (!drag || drag.path === path) return;
+      // 0.36.1：预览标签拖到某个标签上=插到该栏预览组对应位置/移到该栏
+      if (drag.kind === "preview") {
+        movePreviewTab(drag.path, side, path);
+        return;
+      }
       if (drag.side === side) {
         reorderTab(drag.path, path);
       } else {
         dropTabCrossPane(drag.path, path, side);
+      }
+    },
+    onDragEnd: () => {
+      dragTabRef.current = null;
+      setDropHint(null);
+    },
+  });
+
+  /**
+   * 预览标签头的拖放 props（0.36.1 用户反馈「无法拖动预览文件移动到左右栏」）：
+   * - 预览拖到预览标签上：同栏=插到它前面；跨栏=移到该栏预览组；
+   * - 笔记拖到预览标签上：按栏级语义落到该栏（同栏末尾/跨栏换归属）。
+   * drop 在这里消费（stopPropagation），不再冒泡到栏级处理器。
+   */
+  const previewTabDragProps = (path: string, side: "main" | "split") => ({
+    draggable: true,
+    onDragStart: (event: {
+      dataTransfer: { effectAllowed: string; setData: (type: string, value: string) => void };
+    }) => {
+      dragTabRef.current = { path, side, kind: "preview" };
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", path);
+    },
+    onDragOver: (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+      const drag = dragTabRef.current;
+      if (!drag || drag.path === path) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (drag.kind === "preview") {
+        setDropHint((cur) =>
+          cur?.kind === "before" && cur.path === path && cur.side === side
+            ? cur
+            : { kind: "before", path, side },
+        );
+      } else {
+        // 笔记拖到预览标签上：给栏级提示，落点=该栏（预览标签也算该栏地盘）
+        setDropHint((cur) =>
+          cur?.kind === "pane" && cur.side === side ? cur : { kind: "pane", side },
+        );
+      }
+    },
+    onDrop: (event: { preventDefault: () => void; stopPropagation: () => void }) => {
+      const drag = dragTabRef.current;
+      if (!drag || drag.path === path) return;
+      event.preventDefault();
+      event.stopPropagation();
+      dragTabRef.current = null;
+      setDropHint(null);
+      if (drag.kind === "preview") {
+        movePreviewTab(drag.path, side, drag.side === side ? path : null);
+        return;
+      }
+      if (drag.side === side) {
+        reorderTabToEnd(drag.path);
+      } else {
+        dropTabCrossPane(drag.path, null, side);
       }
     },
     onDragEnd: () => {
@@ -4980,6 +5195,12 @@ export default function App() {
     }) => {
       // 标签拖动与文件树条目拖动都接（文件落点见 paneFileDropRef）
       if (!dragTabRef.current && !event.dataTransfer.types.includes(TREE_DRAG_MIME)) return;
+      // 0.36.1 用户反馈「直接拖动标签无法进行分屏」：分屏没开时左栏盖满整个
+      // editor-main 并 stopPropagation，半区落点（editor-main 按左右半区开出
+      // 分屏）永远收不到事件，所有拖拽都被当成「本栏整栏接纳」——此时本栏不
+      // 接纳，放行冒泡给 editor-main 的半区判定。分屏开着（含纯预览右栏）时
+      // 本栏照常整栏接纳
+      if (side === "main" && rightTabPaths.length === 0 && previewTabsSplit.length === 0) return;
       event.preventDefault();
       event.stopPropagation();
       setDropHint((cur) =>
@@ -4994,12 +5215,19 @@ export default function App() {
       const treePath = event.dataTransfer.getData(TREE_DRAG_MIME);
       const drag = dragTabRef.current;
       if (!drag && !treePath) return;
+      // 与 onDragOver 同口径：分屏没开时放行给 editor-main 的半区落点
+      if (side === "main" && rightTabPaths.length === 0 && previewTabsSplit.length === 0) return;
       event.preventDefault();
       event.stopPropagation();
       dragTabRef.current = null;
       setDropHint(null);
       if (treePath) {
         paneFileDropRef.current?.(treePath, side);
+        return;
+      }
+      // 0.36.1：预览标签落到栏级=移到该栏预览组末尾
+      if (drag!.kind === "preview") {
+        movePreviewTab(drag!.path, side);
         return;
       }
       if (drag!.side === side) {
@@ -5064,6 +5292,11 @@ export default function App() {
       dragTabRef.current = null;
       setDropHint(null);
       if (!drag) return;
+      // 0.36.1：预览标签拖到编辑区半区=移到该侧预览组末尾
+      if (drag.kind === "preview") {
+        movePreviewTab(drag.path, side);
+        return;
+      }
       if (drag.side === side) {
         reorderTabToEnd(drag.path);
       } else {
@@ -5090,6 +5323,13 @@ export default function App() {
     // 搜索面板可能挂在右栏视图上：视图即将销毁，先正常关面板（清高亮、清
     // panelView），不留悬空引用
     closeSearchPanelIfOpen();
+    // 0.36.1：右栏的预览标签同样全部移回左栏（不丢标签，与笔记标签同语义）
+    const splitPreviews = previewTabsSplitRef.current;
+    if (splitPreviews.length > 0) {
+      setPreviewTabs((prev) => [...prev, ...splitPreviews.filter((p) => !prev.includes(p))]);
+      setPreviewTabsSplit([]);
+      setActivePreviewSplit(null);
+    }
     rightTabsRef.current = [];
     setRightTabPaths([]);
     splitActiveRef.current = null;
@@ -6645,6 +6885,8 @@ export default function App() {
       pinnedFavorites={pinnedFavorites}
       recents={recents}
       hiddenDirs={hiddenDirs}
+      focusDir={treeFocusDir}
+      onFocusClear={() => setTreeFocusDir(null)}
       selectedPath={selectedPath}
       reveal={treeReveal}
       onSelectPath={setSelectedPath}
@@ -7650,6 +7892,18 @@ export default function App() {
             >
               复制仓库相对路径
             </button>
+            {menu.isDir && (
+              <button
+                type="button"
+                onClick={() => {
+                  // 0.36.1 用户反馈「只显示选定目录」：再点一次（或芯片 ✕）恢复全部
+                  setTreeFocusDir(treeFocusDir === menu.path ? null : menu.path);
+                  setMenu(null);
+                }}
+              >
+                {treeFocusDir === menu.path ? "显示全部目录" : "只看此目录"}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
@@ -8374,10 +8628,12 @@ export default function App() {
                     className={`tab tab-special${isActive ? " is-active" : ""}`}
                     title={path}
                     onClick={() => {
+                      focusedPaneRef.current = "main";
                       setActivePreview(path);
                       setCaptureManagerOpen(false);
                       setLibraryPageOpen(false);
                     }}
+                    {...previewTabDragProps(path, "main")}
                   >
                     <span className="tab-title">{title}</span>
                     <button
@@ -8398,7 +8654,7 @@ export default function App() {
             </div>
           )}
             <div
-              className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}`}
+              className={`editor-host${mode === "live" && (!current || isMarkdownPath(current.path)) ? " is-live" : " is-source"}${activePreview ? " is-special-hidden" : ""}`}
               ref={hostRef}
               onMouseDown={() => {
                 // 焦点窗格与目录跟随（0.32.2 分栏）：点左栏把它记为聚焦窗格
@@ -8420,7 +8676,7 @@ export default function App() {
               />
             )}
             </div>
-            {rightTabs.length > 0 && (
+            {(rightTabs.length > 0 || previewTabsSplit.length > 0) && (
               <div
                 className="pane-divider"
                 ref={paneDividerRef}
@@ -8430,7 +8686,7 @@ export default function App() {
                 aria-orientation="vertical"
               />
             )}
-            {rightTabs.length > 0 && (
+            {(rightTabs.length > 0 || previewTabsSplit.length > 0) && (
               <div className={`editor-pane-col is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane" : ""}`} style={{ flexBasis: `${splitPct}%` }} {...paneDropProps("split")}>
                 <div
                   className={`tabbar is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane-end" : ""}`}
@@ -8494,9 +8750,43 @@ export default function App() {
                       </div>
                     );
                   })}
+                  {/* 分屏栏的预览标签（0.36.1）：与左栏预览标签同款 ◇ 徽标 */}
+                  {previewTabsSplit.map((path) => {
+                    const title = baseName(path);
+                    const isActive = activePreviewSplit === path;
+                    return (
+                      <div
+                        key={`special-split-${path}`}
+                        role="tab"
+                        aria-selected={isActive}
+                        tabIndex={0}
+                        className={`tab tab-special${isActive ? " is-active" : ""}`}
+                        title={path}
+                        onClick={() => {
+                          focusedPaneRef.current = "split";
+                          setActivePreviewSplit(path);
+                        }}
+                        {...previewTabDragProps(path, "split")}
+                      >
+                        <span className="tab-title">{title}</span>
+                        <button
+                          type="button"
+                          className="tab-close"
+                          aria-label={`关闭 ${title}`}
+                          title="关闭标签页"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeSpecialTab(path);
+                          }}
+                        >
+                          <IconX size={11} />
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
                 <SplitPane
-                  hostClass={`editor-host${mode === "live" && (!splitActiveTab || isMarkdownPath(splitActiveTab)) ? " is-live" : " is-source"}`}
+                  hostClass={`editor-host${mode === "live" && (!splitActiveTab || isMarkdownPath(splitActiveTab)) ? " is-live" : " is-source"}${activePreviewSplit ? " is-special-hidden" : ""}`}
                   onPaneFocus={() => {
                     focusedPaneRef.current = "split";
                     if (outlineFollow !== "split") setOutlineFollow("split");
@@ -8511,6 +8801,15 @@ export default function App() {
                   }}
                 />
                 {splitError && <div className="split-pane-error">{splitError}</div>}
+                {/* 分屏栏预览（0.36.1）：与左栏同款嵌入式预览，激活时盖住右栏编辑器 */}
+                {activePreviewSplit && vault && (
+                  <FilePreview
+                    embedded
+                    vault={vault}
+                    path={activePreviewSplit}
+                    onClose={() => closeSpecialTab(activePreviewSplit)}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -8611,8 +8910,13 @@ export default function App() {
             </div>
           )}
           {/* 空状态只在**确实没有任何标签**时渲染：曾经 activeTab 与 openTabs
-              短暂错位时（替换式打开的中间帧），这层会叠在上一篇内容上透出 */}
-          {!current && openTabs.length === 0 && (
+              短暂错位时（替换式打开的中间帧），这层会叠在上一篇内容上透出。
+              0.36.1 用户反馈「预览文件重叠着主页面的导航介绍」：预览标签开着
+              （左栏或分屏）也算有内容，欢迎层 absolute z5 会盖住预览——一并排除 */}
+          {!current &&
+            openTabs.length === 0 &&
+            previewTabs.length === 0 &&
+            previewTabsSplit.length === 0 && (
             isMobile() && !vault ? (
               /* 0.33.1 主页重构：无仓库时主页就是软件主页面（全屏，设置从
                   这里的齿轮进）；桌面空状态不变 */
