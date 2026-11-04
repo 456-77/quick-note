@@ -223,20 +223,27 @@ try {
   check(moreItems.some((t) => t.includes("在文件夹中显示单词本")), "「···」菜单含在文件夹中显示单词本", JSON.stringify(moreItems));
   await evaluate(ws, `(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
   await sleep(200);
-  // 排序下拉：默认字母 A-Z；含最近添加
-  const sortLabel = await evaluate(ws, `document.querySelector('.vocab-toolbar-btn')?.textContent ?? ''`);
-  check(String(sortLabel).includes("字母 A-Z"), "排序默认字母 A-Z", String(sortLabel));
-  await evaluate(ws, `(() => { document.querySelector('.vocab-toolbar-btn')?.click(); return true; })()`);
-  await sleep(300);
-  const sortItems = await evaluate(ws, `[...document.querySelectorAll('.vocab-menu .vocab-menu-item')].map((b) => b.textContent)`);
+  // 0.37.1 用户反馈：排序下拉整个移除（排序固定读持久化值，默认字母 A-Z），
+  // 「···」挪到标题行「开始复习」右侧——工具栏不再有下拉，头部有 ⋯
+  const vocabLayout = await evaluate(ws, `(() => {
+    const toolbar = document.querySelector('.vocab-toolbar');
+    const head = document.querySelector('.vocab-head');
+    return {
+      toolbarMenu: !!toolbar?.querySelector('.vocab-menu-wrap'),
+      headMenu: !!head?.querySelector('.vocab-menu-wrap'),
+      moreInHead: head?.querySelector('.vocab-more-btn')?.textContent ?? null,
+      reviewBtn: !!head?.querySelector('.vocab-review-btn'),
+    };
+  })()`);
   check(
-    sortItems.length === 3 && sortItems[0].includes("最近添加") && sortItems[1].includes("字母 A-Z") && sortItems[2].includes("字母 Z-A"),
-    "排序选项：最近添加/字母 A-Z/字母 Z-A",
-    JSON.stringify(sortItems),
+    vocabLayout
+      && vocabLayout.toolbarMenu === false
+      && vocabLayout.headMenu === true
+      && String(vocabLayout.moreInHead).includes("···")
+      && vocabLayout.reviewBtn === true,
+    "排序下拉已移除、「···」在标题行开始复习右侧",
+    JSON.stringify(vocabLayout),
   );
-  // 收起菜单（外面点一下），让后续用例从确定状态开始
-  await evaluate(ws, `(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); return true; })()`);
-  await sleep(200);
   // 字母分组头（默认 A-Z 分组）
   const groupHeads = await evaluate(ws, `[...document.querySelectorAll('.vocab-group-letter')].map((g) => g.textContent.trim())`);
   check(
@@ -246,22 +253,21 @@ try {
   );
 
   // ---------------------------------------------- 2. 排序行为
+  // 0.37.1 起排序下拉已移除：直接落盘排序值 + 重载验证排序逻辑仍生效。
   // 最近添加：按 meta 日期倒序、无分组头
-  await evaluate(ws, `(() => { document.querySelector('.vocab-toolbar-btn')?.click(); return true; })()`);
-  await sleep(250);
-  await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-menu-item')].find((b) => b.textContent.includes('最近添加'))?.click(); return true; })()`);
-  await sleep(400);
+  await evaluate(ws, `(() => { localStorage.setItem('quicknote.vocabSort', 'recent'); location.reload(); return true; })()`);
+  await sleep(1600);
+  await openVocabTab();
   const recentWords = await evaluate(ws, `[...document.querySelectorAll('.vocab-item .vocab-item-word')].map((el) => el.textContent)`);
   check(
     JSON.stringify(recentWords) === JSON.stringify(["cherry", "apple", "banana", "orchard"]),
-    "最近添加按 meta 日期倒序且无分组",
+    "最近添加按 meta 日期倒序且无分组（落盘排序值仍生效）",
     JSON.stringify(recentWords),
   );
-  // 换回字母 A-Z（顺带验证排序选择持久化由组件写入 localStorage）
-  await evaluate(ws, `(() => { document.querySelector('.vocab-toolbar-btn')?.click(); return true; })()`);
-  await sleep(250);
-  await evaluate(ws, `(() => { [...document.querySelectorAll('.vocab-menu-item')].find((b) => b.textContent.includes('字母 A-Z'))?.click(); return true; })()`);
-  await sleep(400);
+  // 换回字母 A-Z（落盘→重载→默认口径）
+  await evaluate(ws, `(() => { localStorage.setItem('quicknote.vocabSort', 'az'); location.reload(); return true; })()`);
+  await sleep(1600);
+  await openVocabTab();
   const azWords = await evaluate(ws, `[...document.querySelectorAll('.vocab-item .vocab-item-word')].map((el) => el.textContent)`);
   check(
     JSON.stringify(azWords.slice(0, 3)) === JSON.stringify(["apple", "banana", "cherry"]),

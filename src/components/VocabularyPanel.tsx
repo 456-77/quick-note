@@ -179,8 +179,9 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
   const [entries, setEntries] = useState<VocabEntry[]>([]);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
-  const [sort, setSort] = useState<Sort>(loadSort);
-  const [sortOpen, setSortOpen] = useState(false);
+  // 排序下拉 0.37.1 应用户反馈移除，排序固定读持久化值（默认字母 A-Z）——
+  // 保留 Sort/loadSort 让老用户的既有选择平滑过渡，只是不再提供切换入口
+  const [sort] = useState<Sort>(loadSort);
   const [moreOpen, setMoreOpen] = useState(false);
   /** 收录流程的暂存词：0.34.6 起没有独立添加区——「没有找到？收录」直接用
       搜索框里的词在线查询，预览卡就地渲染在空态里，保存时取这个词。 */
@@ -461,19 +462,20 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
     return () => window.removeEventListener("keydown", onKey, true);
   }, [detailWord, review]);
 
-  // 「···」/排序下拉：点外面就收起（面板内轻量菜单，不值得引 popper）
+  // 「···」菜单：点外面就收起（面板内轻量菜单，不值得引 popper）。
+  // 0.37.1 用户反馈：排序下拉整个移除（排序保留默认「字母 A-Z」，状态照旧持久化），
+  // 「···」挪到标题行「开始复习」右侧
   useEffect(() => {
-    if (!sortOpen && !moreOpen) return;
+    if (!moreOpen) return;
     const onDown = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
       if (!target.closest(".vocab-menu-wrap")) {
-        setSortOpen(false);
         setMoreOpen(false);
       }
     };
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
-  }, [sortOpen, moreOpen]);
+  }, [moreOpen]);
 
   const scrollToGroup = useCallback((key: string) => {
     const target = listRef.current?.querySelector<HTMLElement>(`[data-group="${CSS.escape(key)}"]`);
@@ -621,7 +623,8 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
 
   return (
     <div className="vocab-panel" ref={panelRef}>
-      {/* 标题与总数（规范 §三.1），右侧是快速复习入口（§三.6：待学习有词才可点） */}
+      {/* 标题与总数（规范 §三.1），右侧是快速复习入口（§三.6：待学习有词才可点）。
+          0.37.1 用户反馈：「···」从筛选行挪到「开始复习」右侧（排序下拉同时移除） */}
       <div className="vocab-head">
         <span className="vocab-head-title">单词本</span>
         <span className="vocab-head-count">{entries.length} 个单词</span>
@@ -634,6 +637,59 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
         >
           开始复习{todoCount > 0 ? `（${todoCount}）` : ""}
         </button>
+        <div className="vocab-menu-wrap">
+          <button
+            type="button"
+            className="vocab-toolbar-btn vocab-more-btn"
+            aria-haspopup="menu"
+            aria-expanded={moreOpen}
+            aria-label="更多操作"
+            onClick={() => setMoreOpen((prev) => !prev)}
+          >
+            ···
+          </button>
+          {moreOpen && (
+            <div className="vocab-menu vocab-menu-right" role="menu" ref={menuClampRef}>
+              {!isMobile() && (
+                <button
+                  type="button"
+                  className="vocab-menu-item"
+                  role="menuitem"
+                  onClick={async () => {
+                    setMoreOpen(false);
+                    try {
+                      // 单词本已不在仓库里（账户级文件），给「在文件夹中显示」而不是打开笔记
+                      const path = await appTextPath(VOCAB_GLOBAL_FILE);
+                      await revealItemInDir(path);
+                    } catch (e) {
+                      notice(`打开单词本位置失败：${e instanceof Error ? e.message : String(e)}`, "error");
+                    }
+                  }}
+                  title="单词本存在本机应用数据目录，所有仓库共用"
+                >
+                  在文件夹中显示单词本
+                </button>
+              )}
+              <button
+                type="button"
+                className="vocab-menu-item"
+                role="menuitem"
+                disabled={recent.length === 0}
+                onClick={() => {
+                  setMoreOpen(false);
+                  setRecent([]);
+                  try {
+                    localStorage.removeItem(RECENT_KEY);
+                  } catch {
+                    // 尽力而为
+                  }
+                }}
+              >
+                清除最近搜索
+              </button>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 搜索优先：顶部主搜索框（英文单词/中文释义/音标都能搜，实时过滤）。
@@ -724,7 +780,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
         </div>
       )}
 
-      {/* 快捷筛选（状态）+ 排序 + 「···」：最近添加不是状态，是排序方式 */}
+      {/* 快捷筛选（状态）：排序下拉 0.37.1 移除（默认字母 A-Z），「···」上移标题行 */}
       <div className="vocab-toolbar">
         <div className="vocab-filters" role="tablist" aria-label="单词筛选">
           {FILTERS.map((item) => {
@@ -750,101 +806,6 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
               </button>
             );
           })}
-        </div>
-        <span className="vocab-toolbar-spacer" />
-        <div className="vocab-menu-wrap">
-          <button
-            type="button"
-            className="vocab-toolbar-btn"
-            aria-haspopup="listbox"
-            aria-expanded={sortOpen}
-            onClick={() => {
-              setSortOpen((prev) => !prev);
-              setMoreOpen(false);
-            }}
-          >
-            {SORTS.find((item) => item.key === sort)?.label} ▾
-          </button>
-          {sortOpen && (
-            <div className="vocab-menu" role="listbox" aria-label="排序方式" ref={menuClampRef}>
-              {SORTS.map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  role="option"
-                  aria-selected={sort === item.key}
-                  className={`vocab-menu-item${sort === item.key ? " is-on" : ""}`}
-                  onClick={() => {
-                    setSort(item.key);
-                    setSortOpen(false);
-                    try {
-                      localStorage.setItem(SORT_KEY, item.key);
-                    } catch {
-                      // 存不上就下次回到默认
-                    }
-                  }}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-        <div className="vocab-menu-wrap">
-          <button
-            type="button"
-            className="vocab-toolbar-btn vocab-more-btn"
-            aria-haspopup="menu"
-            aria-expanded={moreOpen}
-            aria-label="更多操作"
-            onClick={() => {
-              setMoreOpen((prev) => !prev);
-              setSortOpen(false);
-            }}
-          >
-            ···
-          </button>
-          {moreOpen && (
-            <div className="vocab-menu vocab-menu-right" role="menu" ref={menuClampRef}>
-              {!isMobile() && (
-                <button
-                  type="button"
-                  className="vocab-menu-item"
-                  role="menuitem"
-                  onClick={async () => {
-                    setMoreOpen(false);
-                    try {
-                      // 单词本已不在仓库里（账户级文件），给「在文件夹中显示」而不是打开笔记
-                      const path = await appTextPath(VOCAB_GLOBAL_FILE);
-                      await revealItemInDir(path);
-                    } catch (e) {
-                      notice(`打开单词本位置失败：${e instanceof Error ? e.message : String(e)}`, "error");
-                    }
-                  }}
-                  title="单词本存在本机应用数据目录，所有仓库共用"
-                >
-                  在文件夹中显示单词本
-                </button>
-              )}
-              <button
-                type="button"
-                className="vocab-menu-item"
-                role="menuitem"
-                disabled={recent.length === 0}
-                onClick={() => {
-                  setMoreOpen(false);
-                  setRecent([]);
-                  try {
-                    localStorage.removeItem(RECENT_KEY);
-                  } catch {
-                    // 尽力而为
-                  }
-                }}
-              >
-                清除最近搜索
-              </button>
-            </div>
-          )}
         </div>
       </div>
 

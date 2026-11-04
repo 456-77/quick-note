@@ -53,6 +53,10 @@ export function buildDdlTipDom(
   const onSave = options?.onSave;
   const dom = document.createElement("div");
   dom.className = "qn-ddl-tip";
+  // 0.37.1 用户反馈「快速笔记弹窗开着时唤起 DDL 卡，快速笔记不消失」：弹窗
+  // 互斥走窗口事件——ddlHover 两条路径（CM hover/单元格悬浮）都经这里装配，
+  // App 监听后收起快速笔记弹窗
+  window.dispatchEvent(new CustomEvent("qn-ddl-tip-open"));
 
   // ---- 标题行 ---------------------------------------------------------------
   const head = document.createElement("div");
@@ -188,6 +192,17 @@ export function buildDdlTipDom(
       dom.style.top = `${Math.round(rect.top)}px`;
       dom.style.width = `${Math.round(rect.width)}px`;
       document.body.appendChild(dom);
+      // 0.37.1 用户反馈「点击弹窗编辑后弹窗被截断（超出屏幕底）」：编辑器路径
+      // 里 CM 把可用高度写在外层 dom 上、弹窗 height:100% 跟随；脱管后该约束
+      // 失效，弹窗长回内容高度（标题行+62vh 体部），原 top 若贴近屏幕底就会
+      // 出屏。按脱管后的真实尺寸夹回视口。
+      const grown = dom.getBoundingClientRect();
+      if (grown.bottom > window.innerHeight - 8) {
+        dom.style.top = `${Math.max(8, Math.round(window.innerHeight - grown.height - 8))}px`;
+      }
+      if (grown.right > window.innerWidth - 8) {
+        dom.style.left = `${Math.max(8, Math.round(window.innerWidth - grown.width - 8))}px`;
+      }
       input.focus();
       return;
     }

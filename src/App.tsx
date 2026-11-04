@@ -1877,6 +1877,15 @@ export default function App() {
   // 「# 文件名」建头，与新建笔记的标题规则一致。
 
   const [quickCaptureOpen, setQuickCaptureOpen] = useState(false);
+  // 0.37.1 用户反馈「快速笔记弹窗开着时唤起别的弹窗（DDL 悬浮卡），快速笔记
+  // 不自动消失」：DDL 卡两条路径（CM hover/单元格悬浮）开出时都会派发
+  // qn-ddl-tip-open（见 buildDdlTipDom）——大卡盖住半屏，底下还挂着一份
+  // 输入中的速记极易被遗忘，这里监听即收起
+  useEffect(() => {
+    const close = () => setQuickCaptureOpen(false);
+    window.addEventListener("qn-ddl-tip-open", close);
+    return () => window.removeEventListener("qn-ddl-tip-open", close);
+  }, []);
   /** 最近文件弹窗（0.27：类 IDEA 的 Ctrl+Shift+E）。 */
   const [recentFilesOpen, setRecentFilesOpen] = useState(false);
   /** 快速添加待办弹窗（0.27：Ctrl+Alt+D）。 */
@@ -3183,11 +3192,17 @@ export default function App() {
               ? normalized.slice(prefix.length)
               : normalized;
             window.setTimeout(() => {
-              if (!normalized.toLowerCase().endsWith(".md")) {
-                openPreviewTab(relative);
+              // 0.37.1 用户反馈（json 查询结果报「该文件类型暂不支持预览」）：
+              // 此前非 .md 一律进预览标签，但 txt/json 等文本数据文件自 0.35.3
+              // 起是编辑器文件（TEXT_EXTS），FilePreview 没有文本形态必报错。
+              // 按 fileKindOf 路由：编辑类走 openEntry（与树里点开同语义），
+              // 真预览类（pdf/docx/图片…）才开预览标签。
+              const kind = fileKindOf(relative);
+              if (kind === "markdown" || kind === "text") {
+                void openEntryRef.current(relative);
                 return;
               }
-              void openEntryRef.current(relative);
+              openPreviewTab(relative);
             }, 600);
           });
       });

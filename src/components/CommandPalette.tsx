@@ -19,7 +19,7 @@
  * 面板是纯展示组件：开关由 App 控制，这样顶栏的搜索框、快捷键、Esc 都能收拢在一处。
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listEntries, readNoteOptional, searchVault, type EntryMeta, type SearchFileHit } from "../lib/api";
 import { fieldVariants } from "../lib/searchVariants";
 
@@ -51,6 +51,9 @@ interface Item {
   run: () => void;
   /** 内容命中的原始数据（悬停预览用）；其他组为空。 */
   hit?: PaletteHit;
+  /** 全局下标（方向键/回车/悬停选中都用它）：items 备忘录里一次算好，
+   *  行组件 memo 化后就不用再靠渲染顺序的计数器传下标（0.37.1 卡顿轮）。 */
+  index: number;
 }
 
 /** 内容命中（按文件聚合，带来源仓库）：悬停预览与跨仓库打开都需要它。 */
@@ -147,6 +150,52 @@ function Highlight({ text, terms }: { text: string; terms: string[] }) {
     </>
   );
 }
+
+/**
+ * 结果行（0.37.1 卡顿轮）：memo 化——此前任何一次 setActive（鼠标扫过/滚轮把
+ * 行滚到光标下都会触发）都把整个列表几百行连 Highlight 一起重对齐一遍，打开
+ * 与滚动都发卡。行 props 全是稳定引用（回调 useCallback、item 是 items 备忘录
+ * 的元素、active 是布尔）后，选中态变化只重渲染进出选中的那两行。
+ */
+const PaletteRow = memo(function PaletteRow({
+  item,
+  active,
+  terms,
+  onMove,
+  onHover,
+  onPick,
+}: {
+  item: Item;
+  active: boolean;
+  terms: string[];
+  onMove: (index: number) => void;
+  onHover: (hit: PaletteHit | null) => void;
+  onPick: (index: number) => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={`palette-item${active ? " is-active" : ""}`}
+      onMouseMove={() => onMove(item.index)}
+      onMouseEnter={() => onHover(item.hit ?? null)}
+      onClick={() => onPick(item.index)}
+    >
+      <span className="palette-item-icon">{item.icon}</span>
+      <span className="palette-item-body">
+        <span className="palette-item-title">
+          <Highlight text={item.title} terms={terms} />
+        </span>
+        {item.detail && (
+          <span className="palette-item-detail">
+            <Highlight text={item.detail} terms={terms} />
+          </span>
+        )}
+      </span>
+      {item.meta && <span className="palette-item-meta">{item.meta}</span>}
+      {item.hint && <kbd className="palette-kbd">{item.hint}</kbd>}
+    </button>
+  );
+});
 
 export default function CommandPalette({
   open,
@@ -319,7 +368,7 @@ export default function CommandPalette({
 
   const items = useMemo<Item[]>(() => {
     if (!open) return [];
-    const out: Item[] = [];
+    const out: Omit<Item, "index">[] = [];
 
     const actionPool = terms.length
       ? actions.filter((action) => {
@@ -360,7 +409,7 @@ export default function CommandPalette({
 
       // 其他仓库的笔记名命中（0.29 多仓库检索）：排在当前仓库之后，
       // meta 直接标注仓库名，回车先切仓库再打开
-      const otherNotes: Item[] = [];
+      const otherNotes: Omit<Item, "index">[] = [];
       for (const item of otherVaults) {
         const vaultBase = item.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || item;
         for (const note of otherEntries[item] ?? []) {
@@ -415,7 +464,8 @@ export default function CommandPalette({
       });
     }
 
-    return out;
+    // 全局下标随 items 一次算好（PaletteRow 的 memo 依赖稳定引用，见组件注）
+    return out.map((item, index) => ({ ...item, index }));
   }, [
     open,
     actions,
@@ -446,61 +496,65 @@ export default function CommandPalette({
     el?.scrollIntoView({ block: "nearest" });
   }, [active]);
 
-  /** 悬停「内容」结果 300ms 后加载上下文预览；移开/悬到别组立即撤销。 */
-  const hoverContentHit = (hit: PaletteHit | null) => {
-    if (previewTimer.current !== null) {
-      window.clearTimeout(previewTimer.current);
-      previewTimer.current = null;
-    }
-    cancelLeaveGrace();
-    previewSeq.current += 1;
-    if (!hit || !hoverPreview || !vault) {
-      setPreview(null);
-      return;
-    }
-    const seq = previewSeq.current;
-    previewTimer.current = window.setTimeout(() => {
-      previewTimer.current = null;
-      // 0.29 多仓库检索：按命中自己的仓库读（其他仓库的命中也能预览）
-      readNoteOptional(hit.vault ?? vault ?? "", hit.path)
-        .then((note) => {
-          if (seq !== previewSeq.current) return;
-          if (!note) {
-            setPreview(null);
-            return;
-          }
-          const all = note.content.split(/\r?\n/);
-          // 预览以第一条命中样本为中心（0.34.2 起命中按文件聚合）
-          const center = Math.min(Math.max(hit.samples[0]?.line ?? 0, 0), all.length - 1);
-          const from = Math.max(0, center - 4);
-          const to = Math.min(all.length - 1, center + 4);
-          const lines: { no: number; text: string }[] = [];
-          for (let index = from; index <= to; index += 1) {
-            lines.push({ no: index + 1, text: all[index] ?? "" });
-          }
-          setPreview({ path: hit.path, line: center, lines });
-        })
-        .catch(() => {
-          if (seq === previewSeq.current) setPreview(null);
-        });
-    }, 300);
-  };
-
-  /** 结果列表与预览卡之间有缝隙：离开列表先给一段宽限期，移进预览卡就取消
-   *  撤销（0.23 用户反馈：鼠标一往预览卡上移预览就消失）。超时仍未进入才撤。 */
-  const cancelLeaveGrace = () => {
+  /** 悬停「内容」结果 300ms 后加载上下文预览；移开/悬到别组立即撤销。
+   *  useCallback 是给 memo 化的结果行稳定引用（0.37.1 卡顿轮）。 */
+  const cancelLeaveGrace = useCallback(() => {
     if (leaveTimer.current !== null) {
       window.clearTimeout(leaveTimer.current);
       leaveTimer.current = null;
     }
-  };
-  const scheduleLeaveGrace = () => {
+  }, []);
+  const hoverContentHit = useCallback(
+    (hit: PaletteHit | null) => {
+      if (previewTimer.current !== null) {
+        window.clearTimeout(previewTimer.current);
+        previewTimer.current = null;
+      }
+      cancelLeaveGrace();
+      previewSeq.current += 1;
+      if (!hit || !hoverPreview || !vault) {
+        setPreview(null);
+        return;
+      }
+      const seq = previewSeq.current;
+      previewTimer.current = window.setTimeout(() => {
+        previewTimer.current = null;
+        // 0.29 多仓库检索：按命中自己的仓库读（其他仓库的命中也能预览）
+        readNoteOptional(hit.vault ?? vault ?? "", hit.path)
+          .then((note) => {
+            if (seq !== previewSeq.current) return;
+            if (!note) {
+              setPreview(null);
+              return;
+            }
+            const all = note.content.split(/\r?\n/);
+            // 预览以第一条命中样本为中心（0.34.2 起命中按文件聚合）
+            const center = Math.min(Math.max(hit.samples[0]?.line ?? 0, 0), all.length - 1);
+            const from = Math.max(0, center - 4);
+            const to = Math.min(all.length - 1, center + 4);
+            const lines: { no: number; text: string }[] = [];
+            for (let index = from; index <= to; index += 1) {
+              lines.push({ no: index + 1, text: all[index] ?? "" });
+            }
+            setPreview({ path: hit.path, line: center, lines });
+          })
+          .catch(() => {
+            if (seq === previewSeq.current) setPreview(null);
+          });
+      }, 300);
+    },
+    [cancelLeaveGrace, hoverPreview, vault],
+  );
+
+  /** 结果列表与预览卡之间有缝隙：离开列表先给一段宽限期，移进预览卡就取消
+   *  撤销（0.23 用户反馈：鼠标一往预览卡上移预览就消失）。超时仍未进入才撤。 */
+  const scheduleLeaveGrace = useCallback(() => {
     cancelLeaveGrace();
     leaveTimer.current = window.setTimeout(() => {
       leaveTimer.current = null;
       hoverContentHit(null);
     }, 350);
-  };
+  }, [cancelLeaveGrace, hoverContentHit]);
 
   useEffect(
     () => () => {
@@ -510,14 +564,17 @@ export default function CommandPalette({
     [],
   );
 
-  if (!open) return null;
+  const pick = useCallback(
+    (index: number) => {
+      const item = items[index];
+      if (!item) return;
+      onClose();
+      item.run();
+    },
+    [items, onClose],
+  );
 
-  const pick = (index: number) => {
-    const item = items[index];
-    if (!item) return;
-    onClose();
-    item.run();
-  };
+  if (!open) return null;
 
   const groups: { name: string; items: Item[] }[] = [];
   for (const item of items) {
@@ -525,9 +582,6 @@ export default function CommandPalette({
     if (last && last.name === item.group) last.items.push(item);
     else groups.push({ name: item.group, items: [item] });
   }
-
-  // 组结构 -> 扁平下标（方向键/回车用的就是全局下标）
-  let renderIndex = -1;
 
   return (
     <div className="palette-overlay" onMouseDown={onClose}>
@@ -578,34 +632,17 @@ export default function CommandPalette({
                   <span className="palette-group-count">{group.items[0].groupBadge}</span>
                 )}
               </div>
-              {group.items.map((item) => {
-                renderIndex += 1;
-                const index = renderIndex;
-                return (
-                  <button
-                    type="button"
-                    key={item.key}
-                    className={`palette-item${index === active ? " is-active" : ""}`}
-                    onMouseMove={() => setActive(index)}
-                    onMouseEnter={() => hoverContentHit(item.hit ?? null)}
-                    onClick={() => pick(index)}
-                  >
-                    <span className="palette-item-icon">{item.icon}</span>
-                    <span className="palette-item-body">
-                      <span className="palette-item-title">
-                        <Highlight text={item.title} terms={highlightTerms} />
-                      </span>
-                      {item.detail && (
-                        <span className="palette-item-detail">
-                          <Highlight text={item.detail} terms={highlightTerms} />
-                        </span>
-                      )}
-                    </span>
-                    {item.meta && <span className="palette-item-meta">{item.meta}</span>}
-                    {item.hint && <kbd className="palette-kbd">{item.hint}</kbd>}
-                  </button>
-                );
-              })}
+              {group.items.map((item) => (
+                <PaletteRow
+                  key={item.key}
+                  item={item}
+                  active={item.index === active}
+                  terms={highlightTerms}
+                  onMove={setActive}
+                  onHover={hoverContentHit}
+                  onPick={pick}
+                />
+              ))}
             </div>
           ))}
         </div>

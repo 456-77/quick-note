@@ -466,9 +466,39 @@ console.log("\n待办条目级合并（一边加、一边勾，不能互相冲�
   const deleted = mergeTodos(
     { "2026-09-15": [{ id: "a", text: "x", done: false, updatedAt: t }] },
     { "2026-09-15": [{ id: "a", text: "x", done: false, updatedAt: t + 5, deleted: true }] },
+    t + TOMBSTONE_TTL_MS,
   );
-  check((deleted.todos["2026-09-15"] ?? []).length === 0, "云端墓碑更新 → 本地条目消失（删除生效）");
   check(deleted.changed === true, "删除算改动 → 回推让其他设备也清掉");
+  check(
+    deleted.todos["2026-09-15"]?.[0]?.deleted === true,
+    "云端墓碑更新 → 墓碑留在本地状态（0.37.1：丢掉它＝销毁这次删除，对端会把旧副本当新增收回来）",
+  );
+  check(
+    liveItems(deleted.todos["2026-09-15"]).length === 0,
+    "界面上条目仍然消失（渲染路径过滤墓碑）",
+  );
+
+  // 本机刚打的墓碑不能被下一次合并冲掉（0.37.1「同步待办老是重复添加」根因）
+  const ownTomb = mergeTodos(
+    { "2026-09-15": [{ id: "a", text: "x", done: false, updatedAt: t + 5, deleted: true }] },
+    {},
+    t + TOMBSTONE_TTL_MS,
+  );
+  check(
+    ownTomb.todos["2026-09-15"]?.[0]?.deleted === true && ownTomb.changed === false,
+    "本机墓碑在合并后保留、且不算改动（推送由快照哈希扫描负责）",
+  );
+
+  // 过期墓碑顺手从状态里清掉（配置文件不无限堆积）
+  const stale = mergeTodos(
+    { "2026-09-15": [{ id: "a", text: "x", done: false, updatedAt: t, deleted: true }] },
+    {},
+    t + TOMBSTONE_TTL_MS + 1,
+  );
+  check(
+    (stale.todos["2026-09-15"] ?? []).length === 0,
+    "过期墓碑从合并结果里清掉",
+  );
 
   // 墓碑不赢：本地改得更晚
   const kept = mergeTodos(

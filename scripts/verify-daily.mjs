@@ -438,6 +438,29 @@ console.log("\n待办模型\n");
     "没有待办时安全返回",
   );
 
+  // 0.37.1：目标日期已有同一条（剥掉遗留前缀后相同）就不再复制，只把源打墓碑——
+  // 治「同步复活循环攒出的同文多份」：存量五份顺延一次收敛成一份。
+  const dupSource = [
+    { id: "d1", text: "[09-07 遗留] 未完成甲", done: false, updatedAt: 5 },
+    { id: "d2", text: "未完成丙", done: false, updatedAt: 6 },
+  ];
+  const dupTarget = [{ id: "t0", text: "[09-07 遗留] 未完成甲", done: false, updatedAt: 9 }];
+  const dupResult = carryOver(dupSource, dupTarget, "2026-09-08", "YYYY-MM-DD", now + 2);
+  check(dupResult.moved === 2, "同文去重也算搬走（源条目已处理）");
+  check(
+    dupResult.to.filter((item) => stripCarryPrefix(item.text).trim() === "未完成甲").length === 1,
+    "目标日期已有同文条目 → 不再追加副本",
+    JSON.stringify(dupResult.to.map((i) => i.text)),
+  );
+  check(
+    dupResult.to.some((item) => stripCarryPrefix(item.text).trim() === "未完成丙"),
+    "不同文本照常追加",
+  );
+  check(
+    dupResult.from.find((item) => item.id === "d1")?.deleted === true,
+    "被去重跳过的源条目同样打墓碑（下次同步后消失）",
+  );
+
   // 0.27：连着顺延几天，遗留前缀保持**首次**的日期（待办最初所属的那天）
   const day1 = carryOver(
     [{ id: "x", text: "写周报", done: false, updatedAt: 1 }],

@@ -180,23 +180,32 @@ export function carryOver(
 
   if (pending.length === 0) return { from: source, to: target, moved: 0 };
 
-  const prefix = carryPrefix(fromDate, format);
-  for (const item of pending) {
-    // 遗留前缀显示**首次顺延的日期**（待办最初所属的那天，0.27 用户反馈）：
-    // 已带前缀的条目只保留原前缀原地搬走，不换成今天的源日期——否则连着顺延
-    // 几天，前缀跟着变成"昨天"，看不出这件事到底挂了多久。旧数据里叠加的
-    // 多个前缀收成第一个（最老的那个）。
-    const existing = /^(\[[^\]]*遗留\])/.exec(item.text);
-    const text = existing
-      ? `${existing[1]} ${stripCarryPrefix(item.text)}`
-      : `${prefix} ${stripCarryPrefix(item.text)}`;
-    target.push({
-      id: newTodoId(),
-      text,
-      done: false,
-      updatedAt: now,
-    });
-  }
+    const prefix = carryPrefix(fromDate, format);
+    for (const item of pending) {
+      // 遗留前缀显示**首次顺延的日期**（待办最初所属的那天，0.27 用户反馈）：
+      // 已带前缀的条目只保留原前缀原地搬走，不换成今天的源日期——否则连着顺延
+      // 几天，前缀跟着变成"昨天"，看不出这件事到底挂了多久。旧数据里叠加的
+      // 多个前缀收成第一个（最老的那个）。
+      const existing = /^(\[[^\]]*遗留\])/.exec(item.text);
+      const text = existing
+        ? `${existing[1]} ${stripCarryPrefix(item.text)}`
+        : `${prefix} ${stripCarryPrefix(item.text)}`;
+      // 目标日期已有同一条（剥掉遗留前缀后逐字相同）就不再复制（0.37.1）：
+      // 只把源条目打墓碑。这一步同时治两件事——存量伤害（同步复活循环攒出的
+      // 同文多份，顺延一次就收敛成一份）与双设备各自顺延的竞态（两边都建新 id，
+      // 合并后目标日期出现两份）。
+      const bare = stripCarryPrefix(item.text).trim();
+      const alreadyThere = target.some(
+        (t) => !t.deleted && stripCarryPrefix(t.text).trim() === bare,
+      );
+      if (alreadyThere) continue;
+      target.push({
+        id: newTodoId(),
+        text,
+        done: false,
+        updatedAt: now,
+      });
+    }
 
   const movedIds = new Set(pending.map((item) => item.id));
   const from = source.map((item) =>
@@ -336,13 +345,25 @@ export interface MergeResult {
  * 规则（按 `id` 对齐）：
  * - 两侧都有 → 取 `updatedAt` 更大的一侧（**含它的日期归属与删除标记**）；
  * - 只有一侧有 → 直接保留（新增）；
- * - 结果里过滤掉墓碑，只含墓碑的日期整个丢掉。
+ * - 墓碑**留在结果里**（TTL 内，见 {@link TOMBSTONE_TTL_MS}），过期的顺手清掉。
  *
  * "同一条被两边同时改"时后改的赢——文本不做逐字合并，但不会变成两条重复项。
  * 这正是待办条目一定要有 `id` 与 `updatedAt` 的原因：没有 id 就只能整表覆盖，
  * 一边加一条、另一边勾一条就会互相冲掉。
+ *
+ * **墓碑为什么必须留在结果里**（0.37.1 修复「同步待办老是重复添加」的根因）：
+ * 调用方（useDaily.mergeTodoSnapshot）会把合并结果**整份替换本地状态**。若墓碑
+ * 在这里被丢掉，本机刚打、还没来得及推到云端的墓碑就被自己销毁了——对端设备
+ * 从没见过这次删除，下次合并会把它的存活副本当"云端新增"收进来，删除就此
+ * 复活；每天顺延一次就多一代，攒出同一条待办五份的现场。墓碑留在本地状态里
+ * 对界面无害（liveItems 处处过滤），对协议恰好是必需品：快照带着它推上去，
+ * 其它设备才能把删除传播开来，30 天 TTL 由 buildSnapshot 与这里的过期清理兜底。
  */
-export function mergeTodos(local: TodoMap, remote: TodoMap): MergeResult {
+export function mergeTodos(
+  local: TodoMap,
+  remote: TodoMap,
+  now: number = Date.now(),
+): MergeResult {
   const localIndex = indexById(local);
   const remoteIndex = indexById(remote);
   const ids = new Set<string>([...localIndex.keys(), ...remoteIndex.keys()]);
@@ -364,7 +385,11 @@ export function mergeTodos(local: TodoMap, remote: TodoMap): MergeResult {
     if (!l || l.item !== picked.item || l.date !== picked.date) changed = true;
 
     if (picked.item.deleted) {
-      // 墓碑不进结果（保留在各自本地，供下次比较）
+      // TTL 内的墓碑保留在结果里（等价于"本地记着这次删除"）；过期的说明
+      // 各设备早已同步过，顺手从状态里清掉，不让墓碑在配置文件里无限堆积。
+      if (now - picked.item.updatedAt <= TOMBSTONE_TTL_MS) {
+        (merged[picked.date] ??= []).push(picked.item);
+      }
       continue;
     }
     (merged[picked.date] ??= []).push(picked.item);

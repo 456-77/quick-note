@@ -4922,7 +4922,9 @@ html.qn-alt-held .cm-line {
   justify-content: center;
   padding: 12vh 16px 0;
   background: rgba(8, 8, 14, 0.45);
-  backdrop-filter: blur(3px);
+  /* 0.37.1 用户反馈「打开全局搜索刚开始有点卡」：整窗 backdrop-filter 的首次
+     合成在大窗口+背景图上开销可观，而 3px 的模糊在 45% 压暗下几乎不可感知——
+     直接去掉，开面板不再顿一下 */
   animation: fade-in 0.12s ease;
 }
 
@@ -5075,6 +5077,10 @@ html.qn-alt-held .cm-line {
   gap: 10px;
   width: 100%;
   padding: 7px 10px;
+  /* 0.37.1 用户反馈「滚动内容也有点卡」：视口外的行整行跳过渲染/绘制，
+     长列表滚动只合成可见部分。44px ≈ 单行标题+摘要的典型高度 */
+  content-visibility: auto;
+  contain-intrinsic-size: auto 44px;
   border: 0;
   border-radius: 10px;
   background: transparent;
@@ -11684,9 +11690,16 @@ button.cm-tag:hover {
    两层必须同字体/同行高/同 padding/同 pre 排版，滚动由 textarea 驱动同步。
    0.36.1 用户反馈「ddl语句内容过多时会被截断」：体部高度改由着色层在流内
    撑起（内容多高弹窗多高，62vh 封顶，超出仍是 textarea 内部滚动），不再固定
-   46vh 把长语句硬截一半 */
+   46vh 把长语句硬截一半。
+   0.37.1 用户反馈「太长的 ddl 滚到底最后一行仍被截断」：编辑器路径里 CM 把
+   可用高度写在外层 dom、弹窗 height:100% 跟随——体部比着色层的 62vh 上限矮，
+   着色层多出的尾巴永远滚不进来。体部改 flex 容器、着色层做可收缩的 flex 子项：
+   单元格路径（体部高度=内容撑起）行为不变，编辑器路径着色层跟随体部高度，
+   两层的滚动范围严格相等，镜像滚动才能滚到真正的底。 */
 .qn-ddl-tip-body {
   position: relative;
+  display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 200px;
   max-height: 62vh;
@@ -11710,7 +11723,10 @@ button.cm-tag:hover {
 }
 
 .qn-ddl-tip-hl {
-  position: static;
+  /* flex 子项：编辑器路径随体部收缩（见 .qn-ddl-tip-body 的 0.37.1 注），
+     单元格路径仍由 max-height 62vh 以内容撑起体部 */
+  flex: 1 1 auto;
+  min-height: 0;
   max-height: 62vh;
   overflow: hidden;
   color: var(--text);
