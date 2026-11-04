@@ -124,9 +124,12 @@ export function endOfStatement(text: string): number {
 /**
  * 从一段 DDL 文本（可以是整篇笔记）里抽出全部建表语句，按项目分段归组。
  *
- * `create table t (` 没有收口分号的（粘贴残段）按「到 4000 字符」兜底收录——
- * 悬浮预览宁可多给半条，也好过给了表名却悬浮不出来。同名表：不同项目各留一条；
- * 同一项目内以最后一次出现为准（手工编辑不必先删旧的）。
+ * `create table t (` 没有收口分号的（粘贴残段）按「到 120_000 字符」兜底收录——
+ * 悬浮预览宁可多给半条，也好过给了表名却悬浮不出来。0.37.2 用户反馈「ddl 语句
+ * 内容过长保存时被截断」：兜底此前是 4000，而无分号的完整长语句（几百行的表
+ * 轻松过万）正好落进它被拦腰截断、再原样存回库里——兜底的职责是"别让残段吞掉
+ * 整篇笔记"，不是限制合法语句的长度，提到远超真实语句的量级。同名表：不同项目
+ * 各留一条；同一项目内以最后一次出现为准（手工编辑不必先删旧的）。
  */
 export function parseDdlTables(text: string): DdlLibrary {
   const out: DdlLibrary = new Map();
@@ -216,12 +219,13 @@ function stripFenceLines(text: string): string {
 }
 
 /**
- * 一条 CREATE 语句的取值范围（相对语句起点）：分号收口、硬边界、4000 字
- * 兜底三者取最早；`end` 带回游标推进量（parse 与 merge 共用同一套切法）。
+ * 一条 CREATE 语句的取值范围（相对语句起点）：分号收口、硬边界、残段兜底
+ * （120_000 字符，0.37.2 前是 4000——会把无分号的长语句拦腰截断，勿回调小）
+ * 三者取最早；`end` 带回游标推进量（parse 与 merge 共用同一套切法）。
  */
 function statementSpan(text: string, headEnd: number): { cut: number; advance: number } {
   const semi = endOfStatement(text);
-  let cut = semi >= 0 ? semi + 1 : Math.min(text.length, 4000);
+  let cut = semi >= 0 ? semi + 1 : Math.min(text.length, 120_000);
   const bound = nextStatementBoundary(text, headEnd);
   if (bound >= 0 && bound < cut) cut = bound;
   return { cut, advance: Math.max(cut, headEnd) };

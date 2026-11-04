@@ -23,6 +23,13 @@ PORT=9222
 FIXTURE="日记/2026-W37 周记.md"
 
 echo "=== 1/29 构建 GUI 测试专用二进制 ==="
+# 0.37.2 加固：套件期间保持显示器/系统唤醒 + 清理父进程已死的 WebView2 孤儿。
+#  - 凌晨跑套件时显示器休眠/会话锁定会让全屏切换（截图冻结浮层）死锁主线程
+#    （Responding=False、全部 invoke 悬挂），批测随机挂在任何一步
+#  - taskkill /F 只杀主 exe 时 WebView2 子进程孤儿化，占住固定 CDP 调试端口，
+#    新实例绑不上、批测连到僵尸页面（0.34.3「WebView2 残留抢占调试端口」同族）
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/keep-awake.ps1 -Minutes 40 > /dev/null 2>&1 &
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/kill-orphan-webview.ps1 || true
 # 用独立 identifier 构建，让 WebView2 使用独立的数据目录。两个好处：
 #   · 测试不再读写你日常使用的应用配置（localStorage 里存着上次打开的仓库）
 #   · 即使本机有残留/卡死实例锁住了正式数据目录，测试照样能跑

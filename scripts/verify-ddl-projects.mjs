@@ -220,4 +220,33 @@ const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); proces
   assert(dropEmptyFence("# T\n\n```sql\nCREATE TABLE a (x int);\n```", 12).includes("CREATE TABLE"), "围栏里有语句 → 不动");
 }
 
+// ---------------- 超长语句不被兜底截断（0.37.2 用户反馈「保存时被截断」） ----------------
+{
+  // 真实场景：几百行的大表没有收口分号（从工具里复制出来的 DDL 常不带 ;），
+  // 兜底曾是 4000/8000，正好把完整语句拦腰截断、再原样存回库里
+  const manyCols = Array.from({ length: 300 }, (_, i) => `  \`col_${i}\` varchar(255) DEFAULT NULL COMMENT '字段${i}'`).join(",\n");
+  const longDdl = `CREATE TABLE \`big_table\` (\n${manyCols}\n) ENGINE=InnoDB COMMENT='超长无分号建表语句'`;
+  assert(longDdl.length > 9000, `用例自身够长（${longDdl.length} 字符，超过旧 4000 兜底）`);
+  const lib = parseDdlTables(`\`\`\`sql\n${longDdl}\n\`\`\`\n`);
+  const got = lib.get("big_table")?.[0]?.ddl ?? "";
+  assert(got.length === longDdl.length, `无分号长语句完整收录（${got.length} 字符，不再被 4000 截断）`);
+  assert(got.endsWith("'超长无分号建表语句'"), "语句尾部完好（引擎选项没被切掉）");
+  // 带分号的照旧精确收口
+  const lib2 = parseDdlTables(`${longDdl};\n`);
+  assert((lib2.get("big_table")?.[0]?.ddl ?? "").endsWith(";"), "有分号 → 分号收口不变");
+
+  // Java 实体同款：超长类（花括号能配对）不再被 8000 打断
+  const manyFields = Array.from({ length: 400 }, (_, i) => `  private String field${i};`).join("\n");
+  const longClass = `public class HugeEntity {\n${manyFields}\n}`;
+  assert(longClass.length > 9000, `用例自身够长（${longClass.length} 字符，超过旧 8000 兜底）`);
+  const jlib = parseClassLibrary(`\`\`\`java\n${longClass}\n\`\`\`\n`);
+  const jgot = jlib.get("HugeEntity")?.[0]?.ddl ?? "";
+  assert(jgot.length === longClass.length, `超长实体类完整收录（${jgot.length} 字符，不再被 8000 截断）`);
+  assert(jgot.endsWith("}"), "类尾花括号完好");
+  // 真失控残段仍被兜底截住（吞不掉整篇笔记）
+  const runaway = `CREATE TABLE loose (x int\n${"x".repeat(200_000)}`;
+  const rlib = parseDdlTables(runaway);
+  assert((rlib.get("loose")?.[0]?.ddl ?? "").length <= 120_000, "无边界残段仍被兜底上限截住");
+}
+
 console.log("DDL/实体多项目断言全部通过");

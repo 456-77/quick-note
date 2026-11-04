@@ -478,10 +478,12 @@ try {
     const rectReady = await waitFor(ws, `(() => { const r = document.querySelector('.file-preview-pdf')?.getBoundingClientRect(); return !!r && r.width > 100 && r.height > 100; })()`, 8000);
     check(rectReady, "PDF 预览容器有有效尺寸（可接收滚轮）");
     const rect = await evaluate(ws, `(() => { const el = document.querySelector('.file-preview-pdf'); const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(Math.max(r.top, 0) + 60) }; })()`);
+    // 慢机下合成滚轮事件可能整体丢（2026-11-05 门禁抖动 100%→100%）：多试几轮、
+    // 每轮间隔拉长，给缩放状态与渲染留出时间
     let afterWheel = await readZoom();
-    for (let i = 0; i < 3 && afterWheel.pct <= afterClick.pct; i += 1) {
+    for (let i = 0; i < 6 && afterWheel.pct <= afterClick.pct; i += 1) {
       await cdp(ws, "Input.dispatchMouseEvent", { type: "mouseWheel", x: rect.x, y: rect.y, deltaX: 0, deltaY: -120, modifiers: CTRL });
-      await sleep(600);
+      await sleep(900);
       afterWheel = await readZoom();
     }
     check(afterWheel.pct > afterClick.pct, "Ctrl+滚轮向上放大 PDF", `${afterClick.pct}% → ${afterWheel.pct}%`);

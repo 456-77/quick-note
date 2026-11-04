@@ -8,7 +8,8 @@
  * 整篇笔记全文扫描（```java 围栏块、散落的类都算）：`class Foo` /
  * `interface Foo` / `enum Foo` / `record Foo(...)`（可带 public/final/abstract
  * 等修饰）按**类名**收录，值是「从修饰符行首到配对右花括号」的完整源码。
- * 残段（没有配对 `}`）按硬边界兜底：下一个类声明行 / 围栏行 / 8000 字符。
+ * 残段（没有配对 `}`）按硬边界兜底：下一个类声明行 / 围栏行 / 120_000 字符
+ * （0.37.2 起，此前 8000 会把超长实体类拦腰截断）。
  *
  * ## 多项目
  *
@@ -25,7 +26,15 @@ import { ddlSections, dropEmptyFence, sectionProjectAt, type DdlEntry, type DdlL
 const CLASS_RE =
   /(?:^|\n)[ \t]*(?:(?:public|protected|private|static|final|abstract|sealed)\s+)*(?:class|interface|enum|record)[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)/g;
 
-const MAX_CLASS_LENGTH = 8000;
+/**
+ * 残段兜底长度（没有配对 `}` 时的截断上限）。
+ *
+ * 0.37.2 用户反馈「DDL/实体内容过长保存时被截断」：兜底此前是 8000，超长实体类
+ * （字段多的表实体轻松过万）即使花括号能配对也会在匹配中途被它打断、按 8000 硬切
+ * 进库。兜底的职责只是"别让残段吞掉整篇笔记"，不是限制合法语句的长度——提到
+ * 120_000，远超任何真实单类/单语句，又仍能兜住失控残段。
+ */
+const MAX_CLASS_LENGTH = 120_000;
 
 /** 类名（保持原文大小写；匹配时调用方自行小写化）→ 收录键。 */
 export type ClassLibrary = DdlLibrary;
@@ -35,7 +44,8 @@ export type ClassLibrary = DdlLibrary;
  *
  * 取值范围：声明行首（含修饰符）到**配对右花括号**——花括号计数会跳过字符串
  * 字面量、字符、行/块注释，与 Java 语法对齐；没有配对 `}` 的残段退到硬边界
- * （下一个类声明 / 围栏行）或 8000 字符兜底。同一项目内同名以最后一次出现为准。
+ * （下一个类声明 / 围栏行）或 120_000 字符兜底（0.37.2 起，勿回调小：超长
+ * 实体类会被拦腰截断）。同一项目内同名以最后一次出现为准。
  */
 export function parseClassLibrary(text: string): ClassLibrary {
   const out: ClassLibrary = new Map();

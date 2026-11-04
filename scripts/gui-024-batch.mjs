@@ -726,8 +726,24 @@ try {
       const restored = await waitFor(
         ws,
         `(() => { return window.outerHeight < window.screen.height - 10; })()`,
-        8000,
+        // 慢机下 Tauri 全屏还原 IPC+窗口管理器处理可能超过 8s（2026-11-05 门禁
+        // 连续两次在此误报、隔一轮又过——放宽到 15s 消抖动）
+        15000,
       );
+      if (!restored) {
+        // 用 Tauri 的权威全屏状态区分「真没退出」与「DOM outerHeight 误报」
+        const diag = await evaluate(ws, `(async () => {
+          const w = window.__TAURI_INTERNALS__.invoke('plugin:window|is_fullscreen', { label: undefined }).catch(() => 'invoke-fail');
+          return {
+            tauriFullscreen: await w,
+            outer: [window.outerWidth, window.outerHeight],
+            inner: [window.innerWidth, window.innerHeight],
+            screen: [window.screen.width, window.screen.height],
+            dpr: window.devicePixelRatio,
+          };
+        })()`).catch((e) => String(e));
+        console.log("  [diag] 全屏未恢复现场：", JSON.stringify(diag));
+      }
       check(restored, "关闭后窗口退出全屏（任务栏恢复）");
     }
   }
@@ -784,6 +800,20 @@ try {
       return label.includes(noteLabel);
     };
     const checkFirstRow = async () => {
+      // 慢机下速记行异步加载可能晚于点击（2026-11-05 门禁抖动）：等行出现再勾，
+      // 等不到给出明确失败而不是页面内 TypeError 中断整批；顺带吐出 Inbox 现场
+      const rowUp = await waitFor(ws, `!!document.querySelectorAll('.cm-check')[0]`, 12000);
+      if (!rowUp) {
+        const diag = await evaluate(ws, `({
+          rows: document.querySelectorAll('.cm-list .cm-row').length,
+          checks: document.querySelectorAll('.cm-check').length,
+          rootText: document.querySelector('.cm-root')?.textContent?.replace(/\\s+/g, ' ').slice(0, 200) ?? null,
+          rootClass: document.querySelector('.cm-root')?.className ?? null,
+          empty: document.querySelector('.cm-empty')?.textContent ?? null,
+        })`).catch((e) => String(e));
+        console.log("  [diag] Inbox 无勾选框现场：", JSON.stringify(diag));
+        return false;
+      }
       await evaluate(ws, `document.querySelectorAll('.cm-check')[0].click()`);
       await sleep(400);
       return evaluate(ws, `!!document.querySelector('.cm-toolbar.is-batch')`);

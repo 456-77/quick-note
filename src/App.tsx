@@ -661,6 +661,11 @@ export default function App() {
       try {
         const win = getCurrentWindow();
         if (await win.isMaximized()) return;
+        // 0.37.2：全屏（截图冻结浮层 0.24 起）同最大化让路——全屏下 WebView2
+        // 视口短暂失同步正是本守卫要治的现象，此时发 setSize 会与全屏切换重入，
+        // Windows 上 wedge 窗口消息循环（主线程死锁、全部 invoke 悬挂）。
+        // gui-024 门禁的「全屏不恢复+收件箱扫描卡死」同现即此（Responding=False 实证）
+        if (await win.isFullscreen()) return;
         const [size, factor] = await Promise.all([win.innerSize(), win.scaleFactor()]);
         if (Math.abs(window.devicePixelRatio - factor) > 0.02) return;
         const nativeH = Math.round(size.height / factor);
@@ -930,6 +935,11 @@ export default function App() {
   const updateRef = useRef<Update | null>(null);
   /** 更新下载进行中的重入闸：弹窗/设置页双击、移动端重试都不会叠出第二路下载。 */
   const updatingRef = useRef(false);
+  /** 移动端下载看门狗（0.37.2 用户反馈「点击更新按钮弹窗一直显示没反应」）：
+      GitHub 直连悬挂时 Kotlin 侧三次重试（15s 连接+60s 读超时）最长约 3.8 分钟
+      无任何回调，重入闸又让重试点击全被静默吞掉——进度/done 间隔超过 30s 就
+      判定卡死，报错并放行「重试更新」。 */
+  const updateWatchdogRef = useRef<number | null>(null);
   /** 弹窗是否处于关闭状态（下载中关窗 = 后台下载，进度改走系统通知）。 */
   const updateDismissedRef = useRef(false);
   useEffect(() => {
@@ -974,6 +984,10 @@ export default function App() {
   }, [rightCollapsed]);
 
   const checkUpdate = useCallback(async () => {
+    // 0.37.2 用户反馈「点击更新按钮弹窗一直显示没反应」：下载进行中手动检查
+    // 会把下载视图翻回三按钮态，而重入闸还关着——之后的点击全部被静默吞掉，
+    // 用户看到的就是「点了没反应」。下载中不再重置弹窗状态。
+    if (updatingRef.current) return;
     setUpdateCheck({ state: "checking", message: "正在检查更新…" });
     // 移动端（0.27 反馈：手机版要在应用内直接更新）不走 updater 插件路径：
     // 插件路径拿不到 APK 直链，按钮会退化成「打开发布页」。GitHub API 路径
@@ -1019,7 +1033,16 @@ export default function App() {
 
   /** 应用内更新：下载（带进度）→ 静默安装 → 重启。失败后按钮变「重试更新」，原地再下。 */
   const installUpdate = useCallback(async () => {
-    if (updatingRef.current) return;
+    if (updatingRef.current) {
+      // 0.37.2 用户反馈「点击更新按钮没反应」：下载已在进行时再点不静默吞掉，
+      // 把弹窗带回下载视图（进度条可见）；卡死由移动端看门狗兜底
+      setUpdateCheck((prev) =>
+        prev.state === "downloading"
+          ? prev
+          : { ...prev, state: "downloading", message: "下载已在进行中，请留意下方进度", progress: prev.progress ?? 0 },
+      );
+      return;
+    }
     updatingRef.current = true;
     try {
       let update = updateRef.current;
@@ -1083,6 +1106,21 @@ export default function App() {
    * 移动端应用内更新：qnAndroid 桥下载 APK → 拉起系统安装器。
    * 未授权「安装未知应用」时先跳授权页，回来再点一次。
    */
+  /** 布防/重置移动端下载看门狗：30s 内没有任何进度或完成回调就判卡死——
+      报错落回三按钮态（按钮显示「重试更新」）并放行重入闸。 */
+  const armUpdateWatchdog = useCallback(() => {
+    if (updateWatchdogRef.current !== null) window.clearTimeout(updateWatchdogRef.current);
+    updateWatchdogRef.current = window.setTimeout(() => {
+      updateWatchdogRef.current = null;
+      updatingRef.current = false;
+      setUpdateCheck((prev) =>
+        prev.state === "downloading"
+          ? { ...prev, state: "error", message: "下载长时间无进展（网络可能不通或太慢）：可重试，或到发布页直接下载 APK", available: true, progress: undefined }
+          : prev,
+      );
+    }, 30_000);
+  }, []);
+
   const installUpdateMobile = useCallback(() => {
     const bridge = (window as unknown as Record<string, unknown>).qnAndroid as
       | { canRequestInstall: () => boolean; requestInstallPermission: () => void; installUpdate: (url: string) => void }
@@ -1106,10 +1144,24 @@ export default function App() {
       }));
       return;
     }
-    if (updatingRef.current) return;
+    if (updatingRef.current) {
+      // 0.37.2 用户反馈「点击更新按钮弹窗一直显示没反应」：下载已在进行时再点
+      // 不静默吞掉——把弹窗带回下载视图（进度条实时可见）；GitHub 直连悬挂的
+      // 卡死场景由下方看门狗报错放行
+      setUpdateCheck((prev) =>
+        prev.state === "downloading"
+          ? prev
+          : { ...prev, state: "downloading", message: "下载已在进行中，请留意下方进度（长时间无进展会提示重试）", progress: prev.progress ?? 0 },
+      );
+      return;
+    }
     updatingRef.current = true;
     (window as unknown as Record<string, unknown>).__qnUpdateDone = (ok: boolean, msg: string) => {
       updatingRef.current = false;
+      if (updateWatchdogRef.current !== null) {
+        window.clearTimeout(updateWatchdogRef.current);
+        updateWatchdogRef.current = null;
+      }
       setUpdateCheck((prev) =>
         ok
           ? // 0.34.10 用户反馈「下载好之后直接装，回来按钮还在」：安装器已拉起，
@@ -1118,8 +1170,21 @@ export default function App() {
           : { ...prev, state: "error", message: `更新失败：${msg}（网络不稳可重试，或到发布页下载 APK）`, available: true, progress: undefined },
       );
     };
-    // 0.34.2：Kotlin 侧下载进度回调（百分比）
+    // 0.34.2：Kotlin 侧下载进度回调（百分比）；每笔回调都给看门狗续期——
+    // 只要有字节在流动就不算卡死
     (window as unknown as Record<string, unknown>).__qnUpdateProgress = (pct: number) => {
+      if (updateWatchdogRef.current !== null) {
+        window.clearTimeout(updateWatchdogRef.current);
+      }
+      updateWatchdogRef.current = window.setTimeout(() => {
+        updateWatchdogRef.current = null;
+        updatingRef.current = false;
+        setUpdateCheck((prev) =>
+          prev.state === "downloading"
+            ? { ...prev, state: "error", message: "下载长时间无进展（网络可能不通或太慢）：可重试，或到发布页直接下载 APK", available: true, progress: undefined }
+            : prev,
+        );
+      }, 30_000);
       setUpdateCheck((prev) =>
         prev.state === "downloading"
           ? { ...prev, progress: pct, message: `正在下载更新包… ${pct}%` }
@@ -1127,8 +1192,9 @@ export default function App() {
       );
     };
     setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新包… 0%", progress: 0 }));
+    armUpdateWatchdog();
     bridge.installUpdate(url);
-  }, [updateCheck.apkUrl, updateCheck.url]);
+  }, [updateCheck.apkUrl, updateCheck.url, armUpdateWatchdog]);
 
   // 启动后延迟几秒自动检查一次更新（静默；发现新版本时弹提示条）
   useEffect(() => {
