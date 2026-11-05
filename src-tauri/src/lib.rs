@@ -9,6 +9,9 @@ pub mod vault_home;
 pub mod vocab;
 mod watch;
 
+#[cfg(desktop)]
+pub mod beta_update;
+
 /// WebView2 启动参数。
 ///
 /// `--disable-gpu*` 关闭 GPU 进程：文本编辑器用不到它，实测把整棵进程树的私有内存
@@ -470,6 +473,10 @@ pub fn run() {
             screenshot::set_screenshot_hotkey,
             #[cfg(desktop)]
             screenshot::check_hotkey_conflicts,
+            #[cfg(desktop)]
+            beta_update::beta_update_check,
+            #[cfg(desktop)]
+            beta_update::beta_update_install,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

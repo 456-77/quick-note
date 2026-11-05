@@ -61,11 +61,17 @@ export function setDdlSaver(fn: DdlSaver | null): void {
  * （Esc 取消焦点/点到弹窗内其他元素导致 blur）编辑锁已摘，旧逻辑的关闭通道
  * 只认单元格卡，脱管浮层永远留到切笔记（closeDdlTip）才清。两处调用：
  * 点在弹窗外（onDocMouseDown）与新卡开出前（ddlHover 的 create，一次只留一张）。
+ * 0.38.1 起浮层可由「弹窗内点击」触发脱管（interacted 标记）——exclude 传入
+ * 本次事件目标时跳过它所在的浮层（点弹窗内部不是「点外」），create 前的残留
+ * 清理不传（悬停新目标=已转移注意力，旧卡该让位）。
  */
-function closeIdleDetachedTips(): void {
+function closeIdleDetachedTips(exclude?: EventTarget | null): void {
   document
     .querySelectorAll(".qn-ddl-tip.qn-ddl-detached:not(.qn-ddl-editing)")
-    .forEach((el) => el.remove());
+    .forEach((el) => {
+      if (exclude instanceof Node && el.contains(exclude)) return;
+      el.remove();
+    });
 }
 
 /** 带当前 saver 的弹窗装配参数（saver 不在时不渲染编辑钮）。 */
@@ -220,6 +226,10 @@ export function installDdlCellHover(): () => void {
     defaultProject?: string,
   ) => {
     hide();
+    // 0.38.1：开出新单元格卡前清掉失焦/交互残留的脱管浮层（与 CM 路径 create
+    // 前的清理同语义；editing 锁住的卡不收，interacted 的也收——悬停新目标
+    // 即转移注意力，搜索卡让位）
+    closeIdleDetachedTips();
     const tip = buildDdlTipDom(word, entries, tipOptions(lang, defaultProject));
     tip.id = CELL_TIP_ID;
     tip.classList.add("qn-ddl-cell-tip");
@@ -351,8 +361,10 @@ export function installDdlCellHover(): () => void {
     if (tip && event.target instanceof Node && tip.contains(event.target)) return;
     hide();
     // 0.36.1：失焦后（编辑锁已摘）的脱管浮层一并收掉——旧逻辑只收单元格卡，
-    // 脱管浮层点外面永远关不掉，只有重新打开文件（closeDdlTip）才消失
-    closeIdleDetachedTips();
+    // 脱管浮层点外面永远关不掉，只有重新打开文件（closeDdlTip）才消失。
+    // 0.38.1：点在某个脱管浮层**内部**时放过它（interacted 点击通道，见
+    // ddlTip.detachToBody）——这里 target 就是排除依据
+    closeIdleDetachedTips(event.target);
   };
 
   const onScroll = (event: Event) => {

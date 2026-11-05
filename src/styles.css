@@ -11761,6 +11761,17 @@ button.cm-tag:hover {
   caret-color: var(--text);
   resize: none;
   outline: none;
+  /* 0.38 用户反馈「编辑点和实际内容还是存在错行」：长语句下 textarea 的内部
+     纵/横滚动条占位（约 10~24px），clientHeight 比 overflow:hidden 的着色层
+     小——两层滚动范围不等，镜像滚动滚到底必然错开约一行。隐藏滚动条后两层
+     clientHeight 严格相等（滚轮/拖选滚动行为不受影响，0.37.1 的 flex 等范围
+     结构继续生效） */
+  scrollbar-width: none;
+}
+
+.qn-ddl-tip-input::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 .qn-ddl-tip-input::selection {
@@ -11877,9 +11888,31 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   font-variant-numeric: tabular-nums;
 }
 
-/* 内容搜索命中的高亮底（着色层里的叠加层） */
+/* 内容搜索 ↑/↓ 跳转按钮（0.38 用户反馈「向文件内搜索框对齐」） */
+.qn-ddl-tip-nav {
+  flex: none;
+  width: 22px;
+  padding: 2px 0;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.qn-ddl-tip-nav:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* 内容搜索命中的高亮底（着色层里的叠加层）：0.38 用户反馈「高亮颜色也修改成
+   黄色，不然太不明显」——跟随文件内搜索/跳转的 --qn-hit（设置 → 搜索高亮颜色，
+   改一处两处同步），accent 紫在看色 SQL 上糊成一团 */
 .qn-sql-hit {
-  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  background: color-mix(in srgb, var(--qn-hit, #ffb300) 42%, transparent);
   border-radius: 2px;
 }
 
@@ -12176,6 +12209,31 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   border-bottom: 1px solid var(--border);
 }
 
+/* 行首勾选框（0.38 对齐 Inbox 批量栏）：勾选行高亮 + Shift 范围多选 */
+.ddl-mgr-row .cm-check {
+  flex: none;
+  margin: 0;
+}
+
+.ddl-mgr-entry.is-sel .ddl-mgr-row {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* 批量态工具行（复用 Inbox cm-toolbar 批量栏观感：已选择 N 条 | 操作按钮组）。
+   .ddl-mgr-filters 原位切换成批量栏（is-batch），布局沿用 Inbox 的 flex 行 */
+.ddl-mgr-filters.is-batch {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ddl-mgr-bulk-move {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
 .ddl-mgr-row:last-child {
   border-bottom: 0;
 }
@@ -12283,6 +12341,25 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   color: #fff;
   background: var(--danger);
   border-color: transparent;
+}
+
+/* 展开行的「新项目名」输入（0.38 实测：单项目库没有任何可去 chips，全未分组时
+   移动功能等于不存在——直接输入新项目名落新段落） */
+.ddl-mgr-extra-input {
+  flex: 0 1 140px;
+  min-width: 90px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.ddl-mgr-extra-input:focus {
+  border-color: var(--accent);
 }
 
 .ddl-mgr-extra-label {
@@ -13521,14 +13598,53 @@ html.qn-bg-on .editor-pane-col.is-split {
 @media (hover: none) and (pointer: coarse) and (max-width: 900px) {
   /* 用户反馈「手机上预览图片或者文件时，显示面板只是下面一部分，不应该是整个
      屏幕吗」：根因是 0.36.0 预览标签页化时漏挂 is-special-hidden，编辑器宿主
-     没藏、预览（flex:1）被挤到下半屏——App 层已补挂。这里补系统栏与浮动
-     药丸/底条的避让：预览栏落在药丸下方，内容滚动止于底条上方 */
+     没藏、预览（flex:1）被挤到下半屏——App 层已补挂。这里补系统栏避让。
+     0.38 用户反馈「预览文件为什么不是整个页面」：标题条改**悬浮**（absolute
+     叠在内容上方，半透明），内容区顶到系统栏、底到手势条——整个屏幕都是预览
+     （勿回退成 padding 避让：那是 0.36.1 的形态，用户要的是全幅）；点击内容
+     切 chrome（标题条隐藏/唤回 + App 收走药丸/底条） */
   .file-preview.is-embedded {
-    padding-top: calc(var(--qn-inset-top, 0px) + 52px);
+    padding-top: var(--qn-inset-top, 0px);
+  }
+
+  .file-preview.is-embedded .file-preview-bar {
+    position: absolute;
+    top: calc(var(--qn-inset-top, 0px) + 4px);
+    left: 8px;
+    right: 8px;
+    z-index: 7;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+    backdrop-filter: blur(6px);
+    padding: 6px 10px;
   }
 
   .file-preview.is-embedded .file-preview-body {
-    padding-bottom: calc(var(--qn-inset-bottom, 0px) + 110px);
+    padding-top: 44px;
+    padding-bottom: calc(var(--qn-inset-bottom, 0px) + 8px);
+  }
+
+  /* App 的 .qn-preview-chrome-off：预览态点击内容后，药丸/底条整体收走，
+     再点内容唤回（标题条由组件内 barVisible 管） */
+  .app.qn-preview-chrome-off .m-top-pills,
+  .app.qn-preview-chrome-off .m-bottom-bar {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* HTML 预览的透明触摸层：iframe 是独立文档吞掉一切触摸——盖层接管横滑
+     （派发 qn-preview-swipe 开抽屉）与点击（切 chrome）。sandbox="" 下页面
+     纯静态无交互，覆盖零副作用 */
+  .file-preview-html-touch {
+    position: absolute;
+    inset: 44px 0 0;
+    z-index: 6;
+  }
+
+  .file-preview.is-embedded .file-preview-html {
+    position: absolute;
+    inset: 44px 0 0;
   }
 
   /* 用户反馈「优化语句库的显示UI效果」：头部避让药丸、底部按钮避让底条；
@@ -13550,17 +13666,23 @@ html.qn-bg-on .editor-pane-col.is-split {
     font-size: 13px;
   }
 
-  /* 0.38 行尾按钮收敛成两个（定位 + ⋯）：栅格列数同步收紧 */
+  /* 0.38 行尾按钮收敛成两个（定位 + ⋯）：栅格列数同步收紧；
+     0.38b 行首加勾选框（批量栏）→ 列再 +1（checkbox 固定宽列） */
   .ddl-mgr-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
     gap: 3px 10px;
     align-items: center;
     padding: 8px 10px;
   }
 
-  .ddl-mgr-row .ddl-mgr-name {
+  .ddl-mgr-row .cm-check {
     grid-column: 1;
+    grid-row: 1;
+  }
+
+  .ddl-mgr-row .ddl-mgr-name {
+    grid-column: 2;
     grid-row: 1;
     max-width: none;
     white-space: normal;

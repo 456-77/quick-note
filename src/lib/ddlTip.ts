@@ -84,8 +84,10 @@ export function buildDdlTipDom(
   head.appendChild(comment);
 
   // 0.38 用户反馈「内容很多时观察获得需要的字段效率很慢，加个搜索框检索 DDL 内容」：
-  // 输入即在着色层高亮全部命中 + 滚到第一条；Enter/Shift+Enter 在命中间循环跳。
-  // 只读形态（收录前的兜底展示）没有双层结构，搜索框不渲染
+  // 输入即在着色层高亮全部命中 + 滚到第一条；Enter/Shift+Enter 与 ↑/↓ 按钮在
+  // 命中间循环跳；命中色跟随文件内搜索的 --qn-hit（用户反馈「高亮颜色也修改成
+  // 黄色」= 全局搜索色，见 .qn-sql-hit CSS）。只读形态（收录前的兜底展示）无
+  // 双层结构，整块搜索 UI 不渲染
   const search = onSave ? document.createElement("input") : null;
   if (search) {
     search.className = "qn-ddl-tip-search";
@@ -98,6 +100,22 @@ export function buildDdlTipDom(
   hitsInfo.className = "qn-ddl-tip-hits";
   hitsInfo.style.display = "none";
   head.append(search ?? "", hitsInfo);
+  if (search) {
+    // 向文件内搜索框对齐（0.38 用户反馈）：↑/↓ 按钮循环跳上一条/下一条命中
+    for (const dir of [-1, 1] as const) {
+      const nav = document.createElement("button");
+      nav.type = "button";
+      nav.className = "qn-ddl-tip-nav";
+      nav.textContent = dir === -1 ? "↑" : "↓";
+      nav.title = dir === -1 ? "上一处命中（Shift+Enter）" : "下一处命中（Enter）";
+      nav.addEventListener("mousedown", (event) => event.stopPropagation());
+      nav.addEventListener("click", (event) => {
+        event.stopPropagation();
+        jumpToHit(hitIndex + dir);
+      });
+      head.appendChild(nav);
+    }
+  }
 
   const message = document.createElement("span");
   message.className = "qn-ddl-tip-message";
@@ -280,37 +298,68 @@ export function buildDdlTipDom(
       document.activeElement === input || input.dataset.composing === "1",
     );
   };
+
+  /**
+   * 脱管成 body 固定浮层（0.34.5 textarea 聚焦首创；0.38 用户反馈「没点内容
+   * 直接点搜索框输入，弹窗会消失；先点过内容就没事」——搜索框聚焦此前不脱管；
+   * 0.38.1 用户反馈「点击 ↑↓ 按钮弹窗直接消失」「点击内容前后弹窗还是会变化」：
+   * 根因同源——CM 把 tooltip 挂在 view.dom 里，收起走 mousemove/mouseleave 的
+   * 位置判定，点击弹窗内**非 textarea** 的元素（按钮/chips/搜索框打字）时弹窗
+   * 仍处于 CM 生命周期，任何位置判定变化都会把整张卡收走。textarea 能活下来
+   * 是因为 focus→脱管抢在收起前。统一修法：弹窗内任何 mousedown（捕获阶段）
+   * 先脱管钉死当前 rect——点击瞬间的形态就是最终形态，CM 收的只是空壳。
+   */
+  const detachToBody = () => {
+    if (dom.dataset.detached || !dom.parentElement || dom.parentElement === document.body) return;
+    const focused = document.activeElement;
+    const rect = dom.getBoundingClientRect();
+    dom.dataset.detached = "1";
+    // 交互过的浮层：用户点过弹窗内部（哪怕没进 textarea）——「点外收」之外的
+    // 清理通道（新卡开出前的残留清理）对它退避，见 ddlHover.closeIdleDetachedTips
+    dom.dataset.interacted = "1";
+    dom.classList.add("qn-ddl-detached");
+    dom.style.left = `${Math.round(rect.left)}px`;
+    dom.style.top = `${Math.round(rect.top)}px`;
+    dom.style.width = `${Math.round(rect.width)}px`;
+    // 0.38 用户反馈「点击后弹窗为什么要变化，直接用悬浮时的弹窗不行吗」：
+    // 高度一并钉死，点击前后弹窗尺寸位置完全一致
+    dom.style.height = `${Math.round(rect.height)}px`;
+    document.body.appendChild(dom);
+    // 0.37.1 用户反馈「点击弹窗编辑后弹窗被截断（超出屏幕底）」：原 top 贴近
+    // 屏幕底时出屏，按脱管后的真实尺寸夹回视口（尺寸钉死后通常已不动，兜底）
+    const grown = dom.getBoundingClientRect();
+    if (grown.bottom > window.innerHeight - 8) {
+      dom.style.top = `${Math.max(8, Math.round(window.innerHeight - grown.height - 8))}px`;
+    }
+    if (grown.right > window.innerWidth - 8) {
+      dom.style.left = `${Math.max(8, Math.round(window.innerWidth - grown.width - 8))}px`;
+    }
+    // 焦点补偿：脱管前焦点在弹窗内（textarea/search）就重打回去
+    if (focused === input || focused === search) {
+      (focused as HTMLElement).focus();
+    }
+  };
+
+  // 弹窗内任何点击先脱管（0.38.1：点按钮/chips/搜索框打字时弹窗被 CM 收走的
+  // 统一根因）。捕获阶段在所有子元素监听前跑；textarea/search 的 focus→脱管
+  // 保留（键盘导航进弹窗时没有 mousedown）。走到这里必然是可编辑形态
+  // （只读形态在上面 !onSave 分支已提前 return），无需再判
+  dom.addEventListener("mousedown", () => detachToBody(), true);
+
   input.addEventListener("focus", () => {
     // CM tooltip 生命周期（鼠标移出编辑器即收）会连输入一起销毁弹窗——
     // 一进编辑就脱管成 body 固定浮层，CM 后续的收起只作用于空壳。
     // 注意：Chromium 把「已聚焦节点 reparent」当失焦处理（blur 掉再不回来），
     // 所以脱管后必须把焦点重打回去；重入本监听时 detached 已置位
-    if (!dom.dataset.detached && dom.parentElement && dom.parentElement !== document.body) {
-      const rect = dom.getBoundingClientRect();
-      dom.dataset.detached = "1";
-      dom.classList.add("qn-ddl-detached");
-      dom.style.left = `${Math.round(rect.left)}px`;
-      dom.style.top = `${Math.round(rect.top)}px`;
-      dom.style.width = `${Math.round(rect.width)}px`;
-      // 0.38 用户反馈「点击后弹窗为什么要变化，直接用悬浮时的弹窗不行吗」：
-      // 编辑器路径里 CM 把可用高度写在外层 dom、弹窗 height:100% 跟随——脱管后
-      // 该约束失效，弹窗长回内容高度（体部 62vh 封顶），视觉上「点一下就变大挪位」。
-      // 脱管时把当前高度一并钉死：点击前后弹窗尺寸位置完全一致
-      dom.style.height = `${Math.round(rect.height)}px`;
-      document.body.appendChild(dom);
-      // 0.37.1 用户反馈「点击弹窗编辑后弹窗被截断（超出屏幕底）」：原 top 贴近
-      // 屏幕底时出屏，按脱管后的真实尺寸夹回视口（尺寸钉死后通常已不动，兜底）
-      const grown = dom.getBoundingClientRect();
-      if (grown.bottom > window.innerHeight - 8) {
-        dom.style.top = `${Math.max(8, Math.round(window.innerHeight - grown.height - 8))}px`;
-      }
-      if (grown.right > window.innerWidth - 8) {
-        dom.style.left = `${Math.max(8, Math.round(window.innerWidth - grown.width - 8))}px`;
-      }
-      input.focus();
-      return;
+    if (!dom.dataset.detached) {
+      detachToBody();
+      if (dom.dataset.detached) return;
     }
     syncEditing();
+  });
+  // 搜索框聚焦同样脱管（0.38 用户反馈）：打字的 keydown 会触发 CM 收卡
+  search?.addEventListener("focus", () => {
+    detachToBody();
   });
   input.addEventListener("blur", syncEditing);
   input.addEventListener("compositionstart", () => {

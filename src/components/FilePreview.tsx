@@ -178,6 +178,10 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   const pptxRef = useRef<import("pptx-preview").PPTXPreviewer | null>(null);
   const pptxHostRef = useRef<HTMLDivElement | null>(null);
   const scaleRef = useRef(1);
+  /** PDF 捏合手势的目标倍率（touchmove 累计、touchend 落地，见 0.38 捏合 effect）。 */
+  const pinchZoomRef = useRef<number | null>(null);
+  /** HTML 覆盖层的触摸起点（横滑开抽屉判定用）。 */
+  const swipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
   const pdfRelayoutRef = useRef<() => void>(() => {});
   /** PDF 缩放的实际执行器（渲染 effect 内部赋值）：按 fit 或指定倍率重建页位。 */
   const pdfZoomApplyRef = useRef<(explicit?: number) => void>(() => {});
@@ -199,6 +203,31 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // ---------------------------------------------------------------- 移动端全屏预览（0.38 用户反馈）
+  // 「预览文件为什么不是整个页面」「点击内容区域，药丸按钮不会自动隐藏」：
+  // 移动端预览态点击内容区 = 切换 chrome（标题条 + App 的药丸/底条）。
+  // bar 的显隐由本组件管（barVisible），药丸/底条经窗口事件让 App 挂类收走；
+  // 卸载时必须复位（App 的类不能残留到非预览态）。
+  const [barVisible, setBarVisible] = useState(true);
+  const mobile = isMobile();
+  // 本组件关闭（unmount）时复位 App 侧的 chrome 隐藏（类不能残留到非预览态）
+  useEffect(() => {
+    if (!mobile) return;
+    return () => {
+      window.dispatchEvent(new CustomEvent("qn-preview-chrome", { detail: false }));
+    };
+  }, [mobile]);
+
+  /** 移动端点击内容区：切换标题条与药丸/底条（App 监听同一事件挂 .app 类）。 */
+  const toggleChrome = useCallback(() => {
+    if (!mobile) return;
+    setBarVisible((prev) => {
+      const next = !prev;
+      window.dispatchEvent(new CustomEvent("qn-preview-chrome", { detail: !next }));
+      return next;
+    });
+  }, [mobile]);
 
   // ---------------------------------------------------------------- 图片预览：拖动 + 滚轮缩放
   // 按住左键拖动移动、滚轮缩放（以指针为锚）、双击重置。与 mermaid 灯箱同一套手感。
@@ -272,12 +301,76 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     img.addEventListener("dblclick", onDbl);
+
+    // 0.38 用户反馈「预览图片无手动滑动进行放大或者缩小」：移动端触摸——单指
+    // 平移（与桌面拖动同一 x/y），双指捏合缩放（以两指中点为锚，与滚轮同一套
+    // 锚点公式）。0.34.10 灯箱踩过的坑：缩放元素在 flex 容器必须 flex:none，
+    // 这里 img 的宿主 .file-preview-image 自身 flex:none 不受影响。
+    let touchDist = 0;
+    let touchX = 0;
+    let touchY = 0;
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length === 1) {
+        touchX = event.touches[0].clientX;
+        touchY = event.touches[0].clientY;
+      } else if (event.touches.length === 2) {
+        const [a, b] = [event.touches[0], event.touches[1]];
+        touchDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        touchX = (a.clientX + b.clientX) / 2;
+        touchY = (a.clientY + b.clientY) / 2;
+      }
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      event.preventDefault();
+      if (event.touches.length === 1 && touchDist === 0) {
+        const nx = event.touches[0].clientX;
+        const ny = event.touches[0].clientY;
+        x += nx - touchX;
+        y += ny - touchY;
+        touchX = nx;
+        touchY = ny;
+        apply();
+        return;
+      }
+      if (event.touches.length === 2) {
+        const [a, b] = [event.touches[0], event.touches[1]];
+        const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+        const cx = (a.clientX + b.clientX) / 2;
+        const cy = (a.clientY + b.clientY) / 2;
+        if (touchDist > 0) {
+          const hostRect = host.getBoundingClientRect();
+          const next = Math.min(8, Math.max(0.1, (scale * dist) / touchDist));
+          const anchorX = cx - hostRect.left - hostRect.width / 2;
+          const anchorY = cy - hostRect.top - hostRect.height / 2;
+          const ratio = next / scale;
+          x += (anchorX - x) * (1 - ratio);
+          y += (anchorY - y) * (1 - ratio);
+          scale = next;
+          apply();
+        }
+        touchDist = dist;
+        touchX = cx;
+        touchY = cy;
+      }
+    };
+    const onTouchEnd = () => {
+      touchDist = 0;
+    };
+    img.addEventListener("touchstart", onTouchStart, { passive: true });
+    img.addEventListener("touchmove", onTouchMove, { passive: false });
+    img.addEventListener("touchend", onTouchEnd);
+    img.addEventListener("touchcancel", onTouchEnd);
+
     return () => {
       img.removeEventListener("wheel", onWheel);
       img.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
       img.removeEventListener("dblclick", onDbl);
+      img.removeEventListener("touchstart", onTouchStart);
+      img.removeEventListener("touchmove", onTouchMove);
+      img.removeEventListener("touchend", onTouchEnd);
+      img.removeEventListener("touchcancel", onTouchEnd);
     };
   }, [kind, imageUrl]);
 
@@ -315,6 +408,47 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
     };
     host.addEventListener("wheel", onWheel, { passive: false });
     return () => host.removeEventListener("wheel", onWheel);
+  }, [kind, changePdfZoom]);
+
+  // PDF 双指捏合缩放（0.38 用户反馈「预览 pdf 无手动滑动进行放大或者缩小」）：
+  // 以两指张合比例累计目标倍率，手势结束时一次性 changePdfZoom——捏合过程中
+  // 每档都重建 canvas 会卡成幻灯片；松手重渲一次，代价可接受。
+  useEffect(() => {
+    if (kind !== "pdf") return;
+    const host = rootRef.current;
+    if (!host) return;
+    let baseDist = 0;
+    let baseZoom = 1;
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 2) return;
+      const [a, b] = [event.touches[0], event.touches[1]];
+      baseDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      baseZoom = pdfZoomRef.current === "fit" ? scaleRef.current : pdfZoomRef.current;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 2 || baseDist <= 0) return;
+      event.preventDefault();
+      const [a, b] = [event.touches[0], event.touches[1]];
+      const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      pinchZoomRef.current = (baseZoom * dist) / baseDist;
+    };
+    const onTouchEnd = () => {
+      if (baseDist > 0 && pinchZoomRef.current !== null) {
+        changePdfZoom(pinchZoomRef.current);
+        pinchZoomRef.current = null;
+      }
+      baseDist = 0;
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd);
+    host.addEventListener("touchcancel", onTouchEnd);
+    return () => {
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
+    };
   }, [kind, changePdfZoom]);
 
   // 视窗尺寸变化：PDF 换缩放重渲可见页、pptx 按新宽度重建（统一防抖 250ms）
@@ -706,12 +840,14 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
 
   // 0.36.1 用户反馈「预览标题条与标签栏重复，白白浪费空间」：桌面嵌入态下
   // 标签栏已显示同名 ◇ 标签（含关闭钮），标题条纯冗余——隐藏；PDF 例外
-  // （缩放控件在条上），移动端例外（标签栏 display:none，这是唯一关闭入口）
+  // （缩放控件在条上），移动端例外（标签栏 display:none，这是唯一关闭入口）。
+  // 0.38 用户反馈「点击内容区域，药丸按钮不会自动隐藏」：移动端点击内容切
+  // chrome——barVisible=false 时标题条一并隐藏（点击内容再唤回）
   const showBar = !embedded || kind === "pdf" || isMobile();
 
   return (
     <div ref={rootRef} className={`file-preview${embedded ? " is-embedded" : ""}`} role="dialog" aria-label={`预览 ${name}`}>
-      {showBar && (
+      {showBar && (!mobile || barVisible) && (
       <div className="file-preview-bar">
         <span className="file-preview-name" title={path}>
           {name}
@@ -759,7 +895,16 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
       </div>
       )}
 
-      <div className="file-preview-body" ref={bodyRef}>
+      <div
+        className={`file-preview-body${mobile ? " is-mobile-body" : ""}`}
+        ref={bodyRef}
+        onClick={(event) => {
+          // 移动端点击内容区切 chrome（标题条+药丸/底条）；iframe 的点击走覆盖层，
+          // 不冒泡到这里。别拦 PDF 缩放按钮之类——按钮都在 bar 上不在 body 里
+          toggleChrome();
+          void event;
+        }}
+      >
         {loading && <div className="file-preview-loading">正在加载…</div>}
         {error && <div className="file-preview-error">{error}</div>}
         {kind === "pdf" && !error && <div className="file-preview-pdf" ref={pdfHostRef} />}
@@ -771,6 +916,37 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
             title={name}
             sandbox=""
             srcDoc={html}
+          />
+        )}
+        {kind === "html" && html !== null && mobile && (
+          // 0.38 用户反馈「预览 html 文件时不支持左右滑动屏幕打开左右抽屉」：
+          // iframe 是独立文档，触摸事件全部被吞。sandbox="" 下页面纯静态展示
+          // （无脚本/无导航，链接点击本就无效），盖一层透明触摸层零副作用——
+          // 横滑派发抽屉手势给 App（qn-preview-swipe），点击切 chrome
+          <div
+            className="file-preview-html-touch"
+            onClick={(event) => {
+              // stopPropagation：body 的 onClick 也是切 chrome，冒泡会切两次抵消
+              event.stopPropagation();
+              toggleChrome();
+            }}
+            onTouchStart={(event) => {
+              const touch = event.touches[0];
+              swipeRef.current = { x: touch.clientX, y: touch.clientY, at: Date.now() };
+            }}
+            onTouchEnd={(event) => {
+              const start = swipeRef.current;
+              swipeRef.current = null;
+              if (!start) return;
+              const touch = event.changedTouches[0];
+              const dx = touch.clientX - start.x;
+              const dy = touch.clientY - start.y;
+              // 与内容区抽屉手势同口径：横向位移显著大于纵向、时长 400ms 内
+              if (Date.now() - start.at > 400 || Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+              window.dispatchEvent(
+                new CustomEvent("qn-preview-swipe", { detail: dx > 0 ? "left" : "right" }),
+              );
+            }}
           />
         )}
         {kind === "image" && imageUrl && (

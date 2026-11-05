@@ -581,3 +581,36 @@ const listCloudVaults = useCallback(async (): Promise<Array<{ name: string; vers
     touchVirtual,
   };
 }
+
+// ---------------------------------------------------------------- 门户免登录（M9）
+
+/**
+ * 用本机保存的账号密码向服务器换一张一次性门户票据（2 分钟有效）。
+ * 拿到票据后拼进门户页地址的 #fragment 交给系统浏览器即可免登录——
+ * fragment 不会进服务器访问日志，门户页 JS 会拿票据换正式令牌对。
+ * 独立于同步引擎：设置页「打开云端网页端」直接调它，失败即提示。
+ */
+export async function issuePortalTicket(
+  serverUrl: string,
+  username: string,
+  password: string,
+): Promise<string> {
+  const base = serverUrl.replace(/\/+$/, "");
+  const res = await httpRequest({
+    method: "POST",
+    url: `${base}/api/v1/auth/portal-ticket`,
+    headers: [{ name: "Content-Type", value: "application/json" }],
+    bodyText: JSON.stringify({ username: username.trim(), password }),
+  });
+  if (res.status !== 200) {
+    throw new Error(res.status === 401 ? "账号或密码错误" : `签发登录票据失败（HTTP ${res.status}）`);
+  }
+  // base64 → UTF-8（atob 只给 Latin-1 串，中文名会乱码；与 hook 内
+  // decodeBase64Utf8 同一套换法——那份在 hook 作用域里，这里独立一份）
+  const binary = atob(res.bodyBase64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < bytes.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  const ticket = JSON.parse(new TextDecoder().decode(bytes)).data as string;
+  if (!ticket) throw new Error("服务器未返回登录票据");
+  return ticket;
+}

@@ -585,3 +585,26 @@ export async function autostartDisable(): Promise<void> {
   const { disable } = await import("@tauri-apps/plugin-autostart");
   await disable();
 }
+
+// ---------------------------------------------------------------- 测试版更新（M9 门户配套）
+
+/** 测试版检查结果（Rust beta_update_check 的返回）。 */
+export interface BetaCheckInfo {
+  available: boolean;
+  version: string;
+  notes: string;
+}
+
+/**
+ * 检查测试版更新（桌面）。清单地址指向 daily-sync 服务器，端点切换必须在
+ * Rust 侧完成（updater 插件的 JS API 不支持换端点），所以这里只是 invoke。
+ */
+export const betaUpdateCheck = (manifestUrl: string) =>
+  invoke<BetaCheckInfo>("beta_update_check", { manifestUrl });
+
+/**
+ * 下载并安装测试版（桌面）。下载进度走 `qn-beta-update-progress` 事件
+ * （0-100 整数），安装完成进程直接重启（NSIS 安装器接手收尾并拉起新版本）。
+ */
+export const betaUpdateInstall = (manifestUrl: string) =>
+  invoke<void>("beta_update_install", { manifestUrl });

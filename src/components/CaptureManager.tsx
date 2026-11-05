@@ -1853,6 +1853,14 @@ export default function CaptureManager({
                             ＋图片
                           </button>
                         </div>
+                        {/* 0.38 用户反馈「点击速记行上的编辑按钮，发现不会显示图片」：
+                            抽屉编辑有缩略图条（0.21），行内编辑漏挂——补上同一套
+                            （带 × 摘除链接，粘贴/选图新增的也会即时出现） */}
+                        <CaptureImageStrip
+                          text={editDraft}
+                          resolve={resolveImage}
+                          onRemove={(link) => setEditDraft((draft) => draft.replace(link, ""))}
+                        />
                       </>
                     ) : (
                       <>

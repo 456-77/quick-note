@@ -64,7 +64,7 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetAnyDir, allowAssetDir, appDataPaths, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, ensureDirectory, listDirImages, listVaults, localSyncedVaults, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetAnyDir, allowAssetDir, appDataPaths, betaUpdateInstall, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, ensureDirectory, listDirImages, listVaults, localSyncedVaults, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
 import { isMobile } from "./lib/platform";
 import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent, VaultInfo } from "./lib/api";
@@ -88,8 +88,9 @@ import { VOCAB_FILENAME, addVocabEntry, updateVocabEntry } from "./lib/vocabular
 import { vocabLookup } from "./lib/api";
 import { loadVocabularyContent, saveVocabularyContent } from "./lib/vocabStore";
 import { onVocabRemoteChange, setVocabSyncEnabled, syncVocabNow } from "./lib/vocabSync";
-import { checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
+import { betaManifestUrl, checkForBetaUpdate, checkForUpdate, checkViaPlugin, installAndRelaunch, type Update } from "./lib/updater";
 import { applyCustomCss, getCustomCss, saveCustomCss } from "./lib/customCss";
+import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
@@ -1003,9 +1004,43 @@ export default function App() {
   const checkUpdate = useCallback(async () => {
     // 0.37.2 用户反馈「点击更新按钮弹窗一直显示没反应」：下载进行中手动检查
     // 会把下载视图翻回三按钮态，而重入闸还关着——之后的点击全部被静默吞掉，
-    // 用户看到的就是「点了没反应」。下载中不再重置弹窗状态。
+    // 下载中不再重置弹窗状态。
     if (updatingRef.current) return;
     setUpdateCheck({ state: "checking", message: "正在检查更新…" });
+    // M9 测试通道：检查与安装都指向 daily-sync 服务器的 beta 目录（serverUrl
+    // 复用云同步配置，不另设地址）；稳定通道的检查完全不受影响
+    if (getSettings().updateChannel === "beta") {
+      const serverUrl = syncRef.current?.config.serverUrl.trim() ?? "";
+      if (!serverUrl) {
+        setUpdateCheck({ state: "error", message: "测试通道需要先在「设置 → 云同步」里配置服务端地址" });
+        return;
+      }
+      try {
+        const info = await checkForBetaUpdate(appVersion || "0.0.0", serverUrl);
+        setUpdateCheck(
+          info.newer
+            ? {
+                state: "done",
+                message: `发现测试版 v${info.latest}（当前 v${appVersion}），可在应用内更新`,
+                available: true,
+                url: info.url,
+                notes: info.body,
+                apkUrl: info.apkUrl,
+              }
+            : {
+                state: "done",
+                // 通道里没有包时 checkForBetaUpdate 把 latest 填成当前版本
+                message:
+                  info.latest && info.latest !== appVersion
+                    ? `已是最新（测试通道最新 v${info.latest}）`
+                    : "测试通道暂无更新",
+              },
+        );
+      } catch (e) {
+        setUpdateCheck({ state: "error", message: `检查测试版失败：${e}` });
+      }
+      return;
+    }
     // 移动端（0.27 反馈：手机版要在应用内直接更新）不走 updater 插件路径：
     // 插件路径拿不到 APK 直链，按钮会退化成「打开发布页」。GitHub API 路径
     // 顺带解析 release 里的 .apk 资产（apkUrl），交给 qnAndroid 桥下载安装。
@@ -1062,6 +1097,38 @@ export default function App() {
     }
     updatingRef.current = true;
     try {
+      // M9 测试通道（桌面）：清单在 daily-sync 服务器上，updater 插件的 JS API
+      // 换不了端点，检查/下载/安装整个走 Rust 命令；安装完成进程直接退出重启
+      // （NSIS 收尾并自动拉起新版本），await 正常不会返回。
+      if (getSettings().updateChannel === "beta") {
+        const serverUrl = syncRef.current?.config.serverUrl.trim() ?? "";
+        if (!serverUrl) throw new Error("测试通道需要先在「设置 → 云同步」里配置服务端地址");
+        let notifiedAt = 0;
+        setUpdateCheck((prev) => ({ ...prev, state: "downloading", message: "正在下载更新… 0%", progress: 0 }));
+        const unlisten = await listen<number>("qn-beta-update-progress", (event) => {
+          const pct = Math.max(0, Math.min(100, Math.round(event.payload)));
+          const background = updateDismissedRef.current;
+          setUpdateCheck((prev) => ({
+            ...prev,
+            state: "downloading",
+            message: `正在下载更新… ${pct}%`,
+            available: true,
+            progress: pct,
+          }));
+          if (background && pct > notifiedAt && (pct >= 100 || pct - notifiedAt >= 25)) {
+            notifiedAt = pct;
+            void notifyUpdateBackground(pct >= 100 ? "更新下载完成，应用即将重启安装" : `更新下载中 ${pct}%`);
+          }
+        });
+        try {
+          await betaUpdateInstall(betaManifestUrl(serverUrl));
+          // 能走到这里说明进程没按预期重启：按完成收尾，不让重入闸悬挂
+          setUpdateCheck((prev) => ({ ...prev, state: "done", message: "测试版安装完成，请重启应用", progress: undefined }));
+        } finally {
+          unlisten();
+        }
+        return;
+      }
       let update = updateRef.current;
       // 0.35.3 用户反馈「点过一次更新按钮后，面板显示就应该改变啊，就算没从
       // 服务器获取到数据，不然网卡的时候用户点击后没反应会一直点击」：检查
@@ -1144,7 +1211,18 @@ export default function App() {
       | undefined;
     const url = updateCheck.apkUrl;
     if (!bridge || !url) {
-      // 桥不在（非 Android 或旧包）或缺 APK 资产：退回发布页
+      // 桥不在（非 Android 或旧包）或缺 APK 资产：退回发布页。
+      // 0.38.1 用户反馈「点击了一次更新按钮后，这个弹窗状态不会改变，容易误导」：
+      // 手机上跳浏览器可能失败/被切走没注意，弹窗停在原地像点了没反应——
+      // 点击必响应，状态写进弹窗（重试按钮 + 引导文案），不再只靠跳浏览器
+      setUpdateCheck((prev) => ({
+        ...prev,
+        state: "error",
+        available: true,
+        message: !bridge
+          ? "应用内更新组件不可用（应用桥未注入）——已打开发布页，请手动下载 APK 安装"
+          : "没有解析到 APK 下载直链——已打开发布页，请手动下载 APK 安装",
+      }));
       void openReleasePage(updateCheck.url);
       return;
     }
@@ -2100,6 +2178,36 @@ export default function App() {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   /** 速记管理视图（占据编辑区；命令面板 / Ctrl+Alt+M 打开，Esc 退出）。 */
   const [captureManagerOpen, setCaptureManagerOpen] = useState(false);
+  // 0.38 用户实测「打开语句库管理面板，然后打开 inbox，上面有问题」：两个整页
+  // 同时渲染叠在一起（各自都有 display:none 通道，谁都没退场）。入口分散
+  // （快捷键/命令面板/⋯菜单），统一用 effect 互斥：语句库管理页开着时再开
+  // Inbox → 关语句库页（反向的互斥已在 libraryManager 快捷键里）
+  useEffect(() => {
+    if (captureManagerOpen) setLibraryPageOpen(false);
+  }, [captureManagerOpen]);
+
+  // 移动端预览全屏化（0.38 用户反馈「点击内容区域，药丸按钮不会自动隐藏」）：
+  // FilePreview 移动端点击内容派发 qn-preview-chrome——App 挂 .qn-preview-chrome-off
+  // 类收走药丸/底条（bar 的显隐在组件内部）；预览关闭时组件复位事件把类摘掉
+  const [previewChromeOff, setPreviewChromeOff] = useState(false);
+  useEffect(() => {
+    const onChrome = (event: Event) => {
+      setPreviewChromeOff((event as CustomEvent<boolean>).detail === true);
+    };
+    const onSwipe = (event: Event) => {
+      // HTML 预览的 iframe 吞触摸——FilePreview 覆盖层派发的抽屉手势（右滑开左
+      // 抽屉 / 左滑开右抽屉，与内容区手势同方向语义）
+      const dir = (event as CustomEvent<"left" | "right">).detail;
+      if (dir === "left") setLeftCollapsed(false);
+      else setRightCollapsed(false);
+    };
+    window.addEventListener("qn-preview-chrome", onChrome);
+    window.addEventListener("qn-preview-swipe", onSwipe);
+    return () => {
+      window.removeEventListener("qn-preview-chrome", onChrome);
+      window.removeEventListener("qn-preview-swipe", onSwipe);
+    };
+  }, []);
   /** Inbox 的扫描统计（CaptureManager 上报；右侧「今日整理」面板渲染用）。 */
   const [inboxStats, setInboxStats] = useState<{
     pending: number;
@@ -2580,6 +2688,34 @@ export default function App() {
   );
 
   /**
+   * 库笔记改写后把编辑器缓冲与后台标签状态对齐到磁盘新文本（0.38 从删除通道
+   * 提取共用：收录/移动项目通道都要防自动保存把旧缓冲写回冲掉刚落的段落）。
+   * 缓冲与磁盘一致才整篇替换；有未保存分歧则不动缓冲，状态栏提示以磁盘为准。
+   * 声明在 saveDdlStatements 之前（它的依赖数组引用本函数，TDZ）。
+   */
+  const syncLibraryNoteBuffers = useCallback((path: string, before: string, after: string) => {
+    const view = viewRef.current;
+    if (view && viewOwnerRef.current === path) {
+      if (view.state.doc.toString() === before) {
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: after } });
+      } else {
+        setStatus(`注意：${path} 在编辑器里有未保存修改，改动已写盘、编辑器未同步`);
+      }
+    }
+    const stored = stateStore.current.get(path);
+    if (stored) {
+      if (stored.doc.toString() === before) {
+        stateStore.current.set(
+          path,
+          stored.update({ changes: { from: 0, to: stored.doc.length, insert: after } }).state,
+        );
+      } else {
+        dirtyTabs.current.add(path);
+      }
+    }
+  }, []);
+
+  /**
    * DDL 语句落盘：读 DDL 笔记 → 目标项目段落内同名表整段替换（段落内没有的
    * 追加到段落末尾，新项目新建 `## 项目` 段落）→ 写回 → 重载悬浮库。
    * 收录弹窗（Ctrl+Alt+J）与悬浮卡「编辑」（0.34.2 用户反馈「支持在这个视图
@@ -2594,12 +2730,16 @@ export default function App() {
       const base = existing?.content ?? ddlNoteIntro();
       const merged = mergeDdlIntoNote(base, ddlText, project);
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
+      // 0.38 用户实锤「明明设置了所属项目，为什么还是显示未分组」：库笔记开着
+      // 标签时，落盘后的新文本不回写缓冲，随后的自动保存把旧缓冲整篇写回——
+      // 刚落的 ## 项目段落被冲掉。收录通道与删除/移动通道同一条防冲纪律
+      if (existing) syncLibraryNoteBuffers(path, existing.content, merged);
       await loadDdlLibrary(dir);
       void refresh(dir);
       const names = extractTableNames(ddlText);
       return `已保存 ${names.length} 张表${project ? `（项目 ${project}）` : ""} → ${path}`;
     },
-    [loadDdlLibrary, refresh],
+    [loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
 
   /** Java 实体落盘（0.34.13）：与 DDL 同一条通道，库笔记路径独立配置。 */
@@ -2613,12 +2753,14 @@ export default function App() {
       const base = existing?.content ?? javaNoteIntro();
       const merged = mergeClassesIntoNote(base, ddlText, project);
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
+      // 同 saveDdlStatements：防自动保存把旧缓冲写回冲掉刚落的段落
+      if (existing) syncLibraryNoteBuffers(path, existing.content, merged);
       await loadDdlLibrary(dir);
       void refresh(dir);
       const names = extractClassNames(ddlText);
       return `已保存 ${names.length} 个类${project ? `（项目 ${project}）` : ""} → ${path}`;
     },
-    [loadDdlLibrary, refresh],
+    [loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
 
   /**
@@ -2658,33 +2800,6 @@ export default function App() {
     const path = cfg.javaEntityFilePath.trim();
     if (!path) throw new Error("实体库路径为空（设置 → 编辑 可配置）");
     return path;
-  }, []);
-
-  /**
-   * 库笔记改写后把编辑器缓冲与后台标签状态对齐到磁盘新文本（0.38 从删除通道
-   * 提取共用：移动项目通道同样要防自动保存把改动冲回去）。缓冲与磁盘一致才
-   * 整篇替换；有未保存分歧则不动缓冲，状态栏提示以磁盘为准。
-   */
-  const syncLibraryNoteBuffers = useCallback((path: string, before: string, after: string) => {
-    const view = viewRef.current;
-    if (view && viewOwnerRef.current === path) {
-      if (view.state.doc.toString() === before) {
-        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: after } });
-      } else {
-        setStatus(`注意：${path} 在编辑器里有未保存修改，改动已写盘、编辑器未同步`);
-      }
-    }
-    const stored = stateStore.current.get(path);
-    if (stored) {
-      if (stored.doc.toString() === before) {
-        stateStore.current.set(
-          path,
-          stored.update({ changes: { from: 0, to: stored.doc.length, insert: after } }).state,
-        );
-      } else {
-        dirtyTabs.current.add(path);
-      }
-    }
   }, []);
 
   /**
@@ -2747,6 +2862,91 @@ export default function App() {
       await loadDdlLibrary(dir);
       void refresh(dir);
       return `已把「${name}」移动到${toProject ? `项目「${toProject}」` : "未分组"}`;
+    },
+    [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
+  );
+
+  /** 批量条目（0.38 语句库管理对齐 Inbox）：定位/删除按（名, 原项目）对。 */
+  type LibraryItemRef = { name: string; project: string };
+
+  /**
+   * 批量移动到项目（0.38 用户反馈「语句库管理面板功能向速记管理面板对齐」——
+   * Inbox 有勾选批量栏，逐条移动 51 条不可接受）：一次读盘，逐条定位+摘除
+   * （串行在更新后的文本上找，位置互不影响），统一合并进目标段落，一次写盘 +
+   * 一次缓冲同步 + 一次悬浮库重载。移动会跳过「已经在目标项目」的条目。
+   */
+  const batchMoveLibraryEntries = useCallback(
+    async (kind: LibraryKind, items: LibraryItemRef[], toProject: string) => {
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能移动语句");
+      if (items.length === 0) throw new Error("先勾选要移动的语句");
+      const path = libraryPathOf(kind);
+      const note = await readNoteOptional(dir, path);
+      if (!note) throw new Error(`库笔记「${path}」不存在`);
+      let text = note.content;
+      let moved = 0;
+      for (const item of items) {
+        if (item.project === toProject) continue;
+        const located =
+          kind === "ddl"
+            ? locateDdlEntry(text, item.name, item.project)
+            : locateClassEntry(text, item.name, item.project);
+        if (!located) continue;
+        const statement = text.slice(located.from, located.to);
+        const removed =
+          kind === "ddl"
+            ? removeDdlEntry(text, item.name, item.project)
+            : removeClassEntry(text, item.name, item.project);
+        if (!removed) continue;
+        text =
+          kind === "ddl"
+            ? mergeDdlIntoNote(removed.text, statement, toProject)
+            : mergeClassesIntoNote(removed.text, statement, toProject);
+        moved += 1;
+      }
+      if (moved === 0) {
+        throw new Error(
+          items.length === 1 ? "这条语句已经在这个项目里了" : "选中的语句都已在目标项目里",
+        );
+      }
+      await writeNote(dir, path, text, note.hasBom);
+      syncLibraryNoteBuffers(path, note.content, text);
+      await loadDdlLibrary(dir);
+      void refresh(dir);
+      return `已把 ${moved} 条语句移动到${toProject ? `项目「${toProject}」` : "未分组"}`;
+    },
+    [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
+  );
+
+  /**
+   * 批量删除（同上对齐 Inbox）：一次读盘逐条摘除（含空围栏清理），一次写盘。
+   * 定位不到的条目跳过（可能已被手动改动），全部找不到才报错。
+   */
+  const batchDeleteLibraryEntries = useCallback(
+    async (kind: LibraryKind, items: LibraryItemRef[]) => {
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能删除语句");
+      if (items.length === 0) throw new Error("先勾选要删除的语句");
+      const path = libraryPathOf(kind);
+      const note = await readNoteOptional(dir, path);
+      if (!note) throw new Error(`库笔记「${path}」不存在`);
+      let text = note.content;
+      let deleted = 0;
+      for (const item of items) {
+        const removed =
+          kind === "ddl"
+            ? removeDdlEntry(text, item.name, item.project)
+            : removeClassEntry(text, item.name, item.project);
+        if (!removed) continue;
+        text = removed.text;
+        deleted += 1;
+      }
+      if (deleted === 0) throw new Error("没在库笔记里找到这些语句（可能已被手动改动）");
+      await writeNote(dir, path, text, note.hasBom);
+      syncLibraryNoteBuffers(path, note.content, text);
+      await loadDdlLibrary(dir);
+      void refresh(dir);
+      return `已从 ${path} 删除 ${deleted} 条语句`;
     },
     [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
@@ -7125,7 +7325,7 @@ export default function App() {
         /* 0.34.0 Obsidian 语义：任一抽屉开着时浮动药丸/底条整体让位（否则叠在
            抽屉页签与仓库底行上面）；CSS 由 .m-drawer-open 收走 */
         isMobile() && (!leftCollapsed || !rightCollapsed) ? " m-drawer-open" : ""
-      }`}
+      }${previewChromeOff ? " qn-preview-chrome-off" : ""}`}
     >
       {/* 0.34.0 Obsidian 化：移动端不再有常驻顶栏（顶部浮动药丸替代，见下方
           m-top-pills）。顶栏整个只在桌面渲染——桌面 DOM 与样式零变化 */}
@@ -9160,6 +9360,8 @@ export default function App() {
               onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
               onDelete={deleteLibraryEntry}
               onMove={moveLibraryEntry}
+              onBatchMove={batchMoveLibraryEntries}
+              onBatchDelete={batchDeleteLibraryEntries}
               onOpenNote={(kind) => {
                 setLibraryPageOpen(false);
                 void openNoteAt(

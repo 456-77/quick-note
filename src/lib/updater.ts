@@ -101,6 +101,64 @@ function responseBodyText(response: { bodyBase64: string }): string {
   return new TextDecoder().decode(bytes);
 }
 
+// ---------------------------------------------------------------- 测试版通道（M9 门户配套）
+//
+// 测试包托管在 daily-sync 服务器（本地构建 → scp 上传 → 后端扫描列出），
+// 检查更新打 /api/v1/downloads/latest?channel=beta，安卓安装直接用返回的
+// APK 文件名拼下载直链（Kotlin installUpdate 链路不变）；桌面安装走
+// src-tauri 的 beta_update_* 命令（updater 插件的端点要指向服务器清单，
+// 插件 JS API 不支持换端点，所以那一步在 Rust 侧完成）。
+
+/** daily-sync /api/v1/downloads/latest 的 data 形状。 */
+interface BetaLatest {
+  version: string | null;
+  notes: string | null;
+  apkName: string | null;
+  setupName: string | null;
+}
+
+/**
+ * 查询服务器测试通道的最新版本。version 为 null（该通道还没有包）不算错误，
+ * 返回 newer=false 让调用方走「已是最新」分支。
+ *
+ * @param serverUrl 同步设置里的服务端地址（测试通道与同步同源，不另设地址）
+ */
+export async function checkForBetaUpdate(currentVersion: string, serverUrl: string): Promise<UpdateInfo> {
+  const base = serverUrl.replace(/\/+$/, "");
+  const response = await httpRequest({
+    method: "GET",
+    url: `${base}/api/v1/downloads/latest?channel=beta`,
+  });
+  if (response.status !== 200) {
+    throw new Error(`服务器返回 HTTP ${response.status}`);
+  }
+  let data: BetaLatest;
+  try {
+    data = JSON.parse(responseBodyText(response)).data as BetaLatest;
+  } catch {
+    throw new Error("响应不是合法的 JSON");
+  }
+  if (!data?.version) {
+    return { latest: currentVersion, url: `${base}/`, newer: false, body: "" };
+  }
+  const apkUrl = data.apkName
+    ? `${base}/api/v1/downloads/file?channel=beta&name=${encodeURIComponent(data.apkName)}`
+    : undefined;
+  return {
+    latest: data.version,
+    // url 留门户页地址：桌面测试版理论上走应用内安装，打不开时的兜底落点
+    url: `${base}/`,
+    newer: isNewer(currentVersion, data.version),
+    body: data.notes ?? "",
+    apkUrl,
+  };
+}
+
+/** 桌面测试版更新清单地址（Rust 命令 beta_update_* 的入参）。 */
+export function betaManifestUrl(serverUrl: string): string {
+  return `${serverUrl.replace(/\/+$/, "")}/api/v1/downloads/tauri-manifest?channel=beta`;
+}
+
 // ---------------------------------------------------------------- 应用内更新
 //
 // Tauri updater 插件路径：端点（tauri.conf.json）指向 GitHub Release 上的

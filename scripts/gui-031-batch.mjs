@@ -469,6 +469,17 @@ try {
       await sleep(150);
       // 0.34.5 编辑态锁：聚焦即脱管为 body 浮层 + 打编辑态标记
       const sizeBefore = await evaluate(ws, `(() => { const t = document.querySelector('.qn-ddl-tip'); const r = t.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })()`);
+      // 0.38.1 用户反馈「点击 ↑↓ 按钮弹窗直接消失」：弹窗内任何 mousedown 先脱管
+      // （捕获阶段），CM 收起的只是空壳。先验 mousedown 路径（真实点击按钮的通道）
+      const mdDetach = await evaluate(ws, `(() => {
+        const tip = document.querySelector('.qn-ddl-tip');
+        tip.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+        return { detached: tip.classList.contains('qn-ddl-detached'), inBody: tip.parentElement === document.body };
+      })()`);
+      check(mdDetach.detached && mdDetach.inBody, "弹窗内 mousedown 即脱管（0.38.1 点击按钮不再消失）", JSON.stringify(mdDetach));
+      const sizeAfterMd = await evaluate(ws, `(() => { const t = document.querySelector('.qn-ddl-tip'); const r = t.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })()`);
+      check(Math.abs(sizeBefore.w - sizeAfterMd.w) <= 2 && Math.abs(sizeBefore.h - sizeAfterMd.h) <= 2, `mousedown 脱管前后尺寸一致（0.38.1：${sizeBefore.w}x${sizeBefore.h} → ${sizeAfterMd.w}x${sizeAfterMd.h}）`);
+      // 浮层已脱管：focus 路径重入（detached 已置位）→ 只补编辑态标记（0.34.5 原断言链）
       const focusInfo = await evaluate(ws, `(() => {
         const tip = document.querySelector('.qn-ddl-tip');
         const input = tip?.querySelector('.qn-ddl-tip-input');
@@ -689,6 +700,46 @@ try {
       const groupStats = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-group')].map((g) => (g.querySelector('.ddl-mgr-project')?.textContent ?? '') + ':' + g.querySelectorAll('.ddl-mgr-row').length)`);
       check(movedMsg, "移动项目成功提示（0.38）", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
       check(groupStats.some((g) => String(g).startsWith('未分组')), "移动后行落到目标项目分组（0.38）", groupStats.join("|"));
+    } else {
+      // 0.38 实测「这个功能用不了」：单项目库（全未分组）没有任何可去 chips——
+      // 走展开行的新项目输入框移动，同一段落协议落盘
+      const movedInput = await evaluate(ws, `(() => {
+        const input = document.querySelector('.ddl-mgr-extra-input');
+        if (!input) return false;
+        const set = ${nativeSet}; set(input, "批测新项目");
+        return true;
+      })()`);
+      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-extra > button')].find((b) => b.textContent === '移动')?.click(); return true; })()`);
+      const movedMsg2 = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已把')`, 5000).catch(() => false);
+      await sleep(400);
+      const groupStats2 = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-group')].map((g) => (g.querySelector('.ddl-mgr-project')?.textContent ?? '') + ':' + g.querySelectorAll('.ddl-mgr-row').length)`);
+      check(movedInput && movedMsg2, "单项目库：展开行输入新项目名移动成功（0.38）", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
+      check(groupStats2.some((g) => String(g).includes('批测新项目')), "语句落进新建的 ## 批测新项目 段落", groupStats2.join("|"));
+      const ddlOnDisk2 = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
+      check(ddlOnDisk2.includes("## 批测新项目"), "库笔记出现 ## 批测新项目 段落头（0.38 移动落盘）");
+      // 0.38b 对齐 Inbox：勾选批量栏（移动到项目 / 两步确认删除）
+      await evaluate(ws, `(() => {
+        const boxes = [...document.querySelectorAll('.ddl-mgr-row .cm-check')].filter((b) => !b.checked);
+        boxes[0]?.click();
+        return true;
+      })()`);
+      await sleep(200);
+      await evaluate(ws, `(() => {
+        const boxes = [...document.querySelectorAll('.ddl-mgr-row .cm-check')].filter((b) => !b.checked);
+        boxes[0]?.click();
+        return true;
+      })()`);
+      await sleep(200);
+      const batchUp = await waitFor(ws, `(document.querySelector('.ddl-mgr-filters.is-batch')?.textContent ?? '').includes('已选择 2 条')`, 3000).catch(() => false);
+      check(batchUp, "勾选两条进批量栏（0.38b 对齐 Inbox）");
+      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-filters.is-batch .cm-btn')].find((b) => b.textContent === '移动到项目…')?.click(); return true; })()`);
+      await sleep(200);
+      await evaluate(ws, `(() => { const input = document.querySelector('.ddl-mgr-filters.is-batch input'); if (!input) return false; const set = ${nativeSet}; set(input, "批测批量项目"); return true; })()`);
+      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-filters.is-batch .cm-btn')].find((b) => b.textContent === '移动')?.click(); return true; })()`);
+      const batchMoved = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已把 2 条')`, 6000).catch(() => false);
+      check(batchMoved, "批量移动两条到新项目（一次落盘，0.38b）");
+      const ddlOnDisk3 = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
+      check(ddlOnDisk3.includes("## 批测批量项目"), "批量移动后库笔记出现 ## 批测批量项目 段落");
     }
     await key(ws, { mod: 0, key: 'Escape' }, 'Escape', 27);
     const editorBack = await waitFor(ws, `!document.querySelector('.editor-pane-notes.is-hidden') && !document.querySelector('.ddl-manager-page')`, 2500);

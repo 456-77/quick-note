@@ -177,6 +177,12 @@ export interface Settings {
    * 0.85~1.3，写入 html 的 --qn-edit-scale，正文/标题/行高等 em 系全部跟随。
    */
   mobileFontScale: number;
+  /**
+   * 更新通道（M9 门户配套）：`stable` 走 GitHub Releases（现状），
+   * `beta` 走 daily-sync 服务器上的测试包目录（检查更新与安装都指向
+   * 同步设置里的 serverUrl）。测试包随传随测，稳定通道完全不受影响。
+   */
+  updateChannel: "stable" | "beta";
 }
 
 /** 背景图的全部可调参数（扁平 bg* 字段与 per-vault 条目共用同一形状）。 */
@@ -246,6 +252,7 @@ const DEFAULTS: Settings = {
   ddlFilePath: "数据库表DDL.md",
   javaEntityFilePath: "Java实体.md",
   mobileFontScale: 1,
+  updateChannel: "stable",
 };
 
 function load(): Settings {

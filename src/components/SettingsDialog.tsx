@@ -25,7 +25,8 @@ import { DAILY_CONFIG_FILE } from "../lib/daily";
 import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, autostartIsEnabled, autostartEnable, autostartDisable, type AppDataPaths, type DirStat } from "../lib/api";
 import { bgSettingsFor, getSettings, type BgSettings, type Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
-import type { SyncController } from "../lib/useSync";
+import { issuePortalTicket, type SyncController } from "../lib/useSync";
+import { openExternal } from "../lib/markdownExtras";
 import { isMobile } from "../lib/platform";
 import { setCapturing } from "../lib/hotkeys";
 import HotkeysPane from "./HotkeysPane";
@@ -522,10 +523,39 @@ export default function SettingsDialog({
   /** 开机自启（0.38 用户反馈，桌面专用）：状态在插件里（注册表 Run 键），这里
       只镜像一份驱动开关；挂载时读一次真值。 */
   const [autostartOn, setAutostartOn] = useState(false);
+  /** M9 门户：签发票据进行中的占位（按钮防连点）与结果反馈（写进行 desc）。 */
+  const [portalBusy, setPortalBusy] = useState(false);
+  const [portalMsg, setPortalMsg] = useState<string | null>(null);
   useEffect(() => {
     if (isMobile()) return;
     void autostartIsEnabled().then(setAutostartOn).catch(() => {});
   }, []);
+
+  /** M9 门户：向服务器签发一次性票据后用系统浏览器打开网页端（免登录）。
+      票据拼在 URL 的 #fragment 里交给浏览器（不进服务器日志，2 分钟过期、
+      一次性）；失败时兜底直接开门户页，浏览器里手动登录。 */
+  const openCloudPortal = useCallback(async () => {
+    if (portalBusy) return;
+    const serverUrl = sync.config.serverUrl.trim();
+    const username = sync.config.username.trim();
+    const password = sync.config.password;
+    if (!serverUrl || !username || !password) {
+      setPortalMsg("请先填好服务端地址与账号密码");
+      return;
+    }
+    setPortalBusy(true);
+    setPortalMsg("正在签发登录票据…");
+    try {
+      const ticket = await issuePortalTicket(serverUrl, username, password);
+      await openExternal(`${serverUrl}/#ticket=${ticket}`);
+      setPortalMsg("已在浏览器打开，正在自动登录…");
+    } catch (e) {
+      setPortalMsg(`免登录打开失败：${e instanceof Error ? e.message : String(e)}，已改为直接打开网页端`);
+      await openExternal(`${serverUrl}/`).catch(() => {});
+    } finally {
+      setPortalBusy(false);
+    }
+  }, [portalBusy, sync.config.serverUrl, sync.config.username, sync.config.password]);
   /**
    * 截图快捷键的按键录入态（0.21 用户反馈：不该手填文本）。录入期间挂起全局
    * 快捷键（同 HotkeysPane 的捕获），Enter 确认 / Esc 取消；null = 还没捕获到
@@ -1961,6 +1991,21 @@ export default function SettingsDialog({
           <SyncActions sync={sync} />
           </>
           )}
+          {/* M9 门户：票据免登录打开网页端。不放进 globalOnly 分支——票据只依赖
+              账号配置，与当前仓库无关 */}
+          <Row
+            label="云端网页端"
+            desc={portalMsg ?? "在系统浏览器打开，用当前账号自动登录。"}
+          >
+            <button
+              type="button"
+              className="btn"
+              disabled={portalBusy}
+              onClick={() => void openCloudPortal()}
+            >
+              {portalBusy ? "签发票据中…" : "打开网页端"}
+            </button>
+          </Row>
         </section>
 
         <section className="settings-sec" data-sec="storage" style={{ display: searching || active === "storage" ? undefined : "none" }}>
@@ -2074,6 +2119,20 @@ export default function SettingsDialog({
             <span>当前版本</span>
             <span className="settings-value">v{appVersion || "…"}</span>
           </div>
+          {/* M9：测试通道的检查与安装都指向云同步服务器上的测试包目录（本地构建
+              后 scp 上传）；稳定通道照旧走 GitHub Releases。serverUrl 未配置时
+              检查更新会给提示 */}
+          <Row label="更新通道" desc="测试版来自云同步服务器（尝鲜测试用）；日常使用选稳定版。">
+            <SettingsSelect
+              ariaLabel="更新通道"
+              value={settings.updateChannel}
+              options={[
+                { value: "stable", label: "稳定版" },
+                { value: "beta", label: "测试版" },
+              ]}
+              onChange={(value) => saveWithFlash({ updateChannel: value })}
+            />
+          </Row>
           <div className="settings-actions">
             <button
               type="button"
