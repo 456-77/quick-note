@@ -627,7 +627,11 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
           0.37.1 用户反馈：「···」从筛选行挪到「开始复习」右侧（排序下拉同时移除） */}
       <div className="vocab-head">
         <span className="vocab-head-title">单词本</span>
-        <span className="vocab-head-count">{entries.length} 个单词</span>
+        {/* 0.38 用户反馈「两个元素过于拥挤，减少内容展示」：计数精简成纯数字
+            徽标，「N 个单词」的完整说明挪 title */}
+        <span className="vocab-head-count" title={`共 ${entries.length} 个单词`}>
+          {entries.length}
+        </span>
         <button
           type="button"
           className="vocab-review-btn"

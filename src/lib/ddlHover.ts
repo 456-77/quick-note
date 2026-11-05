@@ -152,6 +152,8 @@ let cellTimer: number | null = null;
 let cellHideTimer: number | null = null;
 /** 当前卡对应的单元格：show() 记入、hide()/closeDdlTip() 清空（0.36.1 换卡判断用）。 */
 let cellCurrent: HTMLElement | null = null;
+/** 触发计时器那次 mouseover 的最深元素（0.38：单元格里多个表名时按悬停目标取词）。 */
+let cellHoverTarget: Element | null = null;
 
 /**
  * 关掉一切 DDL 弹窗（0.34.6 用户反馈「切换页面或者切换笔记后要自动隐藏」）：
@@ -272,6 +274,11 @@ export function installDdlCellHover(): () => void {
     // 表格里出现，因为这是单元格悬浮通道）。改为按「当前卡对应的单元格」
     // 追踪：同一个单元格才跳过，换目标（含跨表）重置计时换卡
     if (cellCurrent && cellCurrent === cell) return;
+    // 0.38 用户反馈「单元格只显示第一个 ddl，即使光标聚焦到第二个」：计时器
+    // 回调只有 cell，此前按整格文本取第一个命中词——一格里有多个表名时永远
+    // 弹第一个。把这次 mouseover 的最深元素记下来，回调优先在它的小范围文本
+    // 里取词（Live Preview 的表名各自包在行内代码 chip 里，target 正好一词）
+    cellHoverTarget = target;
     if (cellTimer !== null) window.clearTimeout(cellTimer);
     cellTimer = window.setTimeout(() => {
       cellTimer = null;
@@ -283,7 +290,20 @@ export function installDdlCellHover(): () => void {
       const classes = ctx.javaClasses;
       if ((!tables || tables.size === 0) && (!classes || classes.size === 0)) return;
       const text = cell.textContent ?? "";
+      // 优先悬停目标的小范围文本（比整格短，命中的就是光标下那个词）；目标
+      // 就是单元格本身（裸文本）或范围异常大时退回整格扫描
+      let zone = text;
+      const zoneText = cellHoverTarget?.textContent ?? "";
+      if (cellHoverTarget && cellHoverTarget !== cell && zoneText.length <= 200) {
+        zone = zoneText;
+      }
       // 先查 DDL 库（小写词），再查 Java 实体库（原名→大小写不敏感兜底）
+      const zoneSqlWord = zone !== text && tables ? tableWordInText(zone, tables) : null;
+      if (zoneSqlWord) {
+        const entries = tables!.get(zoneSqlWord)!;
+        show(cell, zoneSqlWord, entries, "sql", defaultProjectFor(view, entries));
+        return;
+      }
       const sqlWord = tables ? tableWordInText(text, tables) : null;
       if (sqlWord) {
         const entries = tables!.get(sqlWord)!;
@@ -291,6 +311,14 @@ export function installDdlCellHover(): () => void {
         return;
       }
       if (classes) {
+        const zoneTokens = zone !== text ? zone.split(/[^A-Za-z0-9_$]+/) : [];
+        for (const token of zoneTokens) {
+          const entries = token ? javaEntriesFor(classes, token) : undefined;
+          if (entries) {
+            show(cell, token, entries, "java", defaultProjectFor(view, entries));
+            return;
+          }
+        }
         for (const token of text.split(/[^A-Za-z0-9_$]+/)) {
           const entries = token ? javaEntriesFor(classes, token) : undefined;
           if (entries) {

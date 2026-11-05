@@ -17,6 +17,29 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { extractTableNames } from "../lib/ddl";
 import { extractClassNames } from "../lib/javaEntity";
+import ComboInput from "./ComboInput";
+
+/** 上一次收录用的项目（0.38 用户反馈「设置项目默认是上一次使用的」）。 */
+export const DDL_LAST_PROJECT_KEY = "quicknote.ddl.lastProject";
+
+/** 读取上次使用的项目名（没有/读不到返回空串=未分组）。 */
+export function lastDdlProject(): string {
+  try {
+    return localStorage.getItem(DDL_LAST_PROJECT_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/** 记住这次用的项目（收录成功后由 App 侧调用）。 */
+export function rememberDdlProject(project: string): void {
+  try {
+    if (project) localStorage.setItem(DDL_LAST_PROJECT_KEY, project);
+    else localStorage.removeItem(DDL_LAST_PROJECT_KEY);
+  } catch {
+    // 尽力而为
+  }
+}
 
 export default function DdlDialog({
   onSubmit,
@@ -32,11 +55,13 @@ export default function DdlDialog({
   /** 库里出现过的项目名（去重含「默认」）；下拉候选。 */
   projects?: string[];
 }) {
+  // 0.38 用户反馈「设置项目默认是上一次使用的」：初始值读上次收录用的项目
   const [draft, setDraft] = useState("");
-  const [project, setProject] = useState("");
+  const [project, setProject] = useState(() => lastDdlProject());
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
+  const projectRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     areaRef.current?.focus();
@@ -100,23 +125,18 @@ export default function DdlDialog({
           }}
         />
         <div className="ddl-project-row">
-          <label htmlFor="ddl-project-input">项目</label>
-          <input
-            id="ddl-project-input"
-            type="text"
-            list="ddl-project-options"
+          <label>项目</label>
+          {/* 0.38 用户反馈「下拉框风格要对齐软件」：原生 datalist 是浏览器控件
+              （深色主题里泛白突兀），换 ComboInput 自定义候选列表 */}
+          <ComboInput
+            inputRef={projectRef}
+            ariaLabel="所属项目"
             value={project}
+            onChange={setProject}
+            suggestions={projects.filter((name) => name !== "")}
             placeholder="留空 = 默认（未分组）"
             title="语句归入该项目段落（## 项目名）；同名表/类只在同项目内替换，多项目可各存一份"
-            onChange={(event) => setProject(event.target.value)}
           />
-          <datalist id="ddl-project-options">
-            {projects
-              .filter((name) => name !== "")
-              .map((name) => (
-                <option key={name} value={name} />
-              ))}
-          </datalist>
         </div>
         <div className="quick-capture-help">
           <span>

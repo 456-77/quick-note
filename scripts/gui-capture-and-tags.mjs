@@ -245,21 +245,22 @@ try {
     ws,
     `(() => { const el = document.querySelector('.quick-capture textarea'); (${nativeSet})(el, '快速笔记验证条目'); return true; })()`,
   );
-  // Tag 输入组件：输入 + Enter 生成 chip
+  // Tag 输入组件（0.38 起为 ComboInput 自绘候选，宿主 input 类名变了——按容器选）：
+  // 输入 + Enter 生成 chip
   await evaluate(
     ws,
-    `(() => { const el = document.querySelector('.quick-capture-tags-input'); (${nativeSet})(el, '整理'); return true; })()`,
+    `(() => { const el = document.querySelector('.quick-capture-tags input'); (${nativeSet})(el, '整理'); return true; })()`,
   );
   await evaluate(
     ws,
-    `document.querySelector('.quick-capture-tags-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`,
+    `document.querySelector('.quick-capture-tags input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))`,
   );
   await sleep(300);
   check(await evaluate(ws, `!!document.querySelector('.quick-capture-tag')`), "Tag 输入 Enter 生成 chip");
   // Ctrl+Enter 任意焦点提交（此焦点在标签输入框里）
   await evaluate(
     ws,
-    `document.querySelector('.quick-capture-tags-input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`,
+    `document.querySelector('.quick-capture-tags input').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`,
   );
   await sleep(1500);
   const inboxFile = join(inbox, "Inbox.md");

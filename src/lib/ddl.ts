@@ -429,6 +429,22 @@ function newlineCount(text: string, pos: number): number {
 // 放在这个纯模块里（而不是 ddlHover.ts）：Node 侧 verify 直接断言，不必拉起
 // @codemirror/view。
 
+/**
+ * 建表语句的表级 COMMENT（0.38 用户反馈「通常会有 comment 说明表的作用，考虑
+ * 在弹窗标题处添加表的 comment」）：取**最后一个右括号**之后（列定义结束后的
+ * 表选项区）第一个 COMMENT='…' 的值，'' 转义还原成单引号。列内 COMMENT 不算
+ * （都落在末括号之前）；没有表级 COMMENT 返回 null。
+ */
+export function tableCommentOf(ddl: string): string | null {
+  const closeAt = ddl.lastIndexOf(")");
+  if (closeAt < 0) return null;
+  const tail = ddl.slice(closeAt);
+  const hit = /COMMENT\s*=\s*'((?:[^']|'')*)'/i.exec(tail);
+  if (!hit) return null;
+  const text = hit[1].replace(/''/g, "'").trim();
+  return text || null;
+}
+
 /** 文本里第一个已收录的表名：单元格内容可能是「ids_task、ids_task_itf」这类
  * 复合文本，逐词试库；找不到返回 null。 */
 export function tableWordInText(text: string, tables: DdlLibrary): string | null {

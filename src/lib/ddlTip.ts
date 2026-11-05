@@ -21,10 +21,13 @@
  * （见 ddlHover），点击切换显示与保存目标。
  */
 
-import { parseDdlTables, tokenizeSql, type DdlEntry } from "./ddl.ts";
+import { parseDdlTables, tableCommentOf, tokenizeSql, type DdlEntry } from "./ddl.ts";
 import { parseClassLibrary, tokenizeJava } from "./javaEntity.ts";
 
 export type TipLang = "sql" | "java";
+
+/** 命中区间（0.38 弹窗内容搜索）：着色层把这些范围垫上高亮底。 */
+type Hit = { from: number; to: number };
 
 export interface DdlTipOptions {
   /** 保存整段编辑后的语句（含声明）。返回成功文案；抛错显示在弹窗里。project = 当前选中的项目。 */
@@ -65,6 +68,36 @@ export function buildDdlTipDom(
   title.className = "qn-ddl-tip-title";
   title.textContent = `${lang === "java" ? "Class" : "Table"}: ${table}`;
   head.appendChild(title);
+
+  // 0.38 用户反馈「表通常会有 comment 说明表的作用，考虑在标题处添加」：
+  // 表级 COMMENT 解析出来跟在表名后面（超长省略，悬停看全文）；Java 实体没有
+  // 这一协议，不渲染。项目切换后 comment 跟随当前条目重算（syncComment 在
+  // current 声明后才调）
+  const comment = document.createElement("span");
+  comment.className = "qn-ddl-tip-comment";
+  const syncComment = () => {
+    const text = lang === "sql" ? tableCommentOf(entries[current].ddl) : null;
+    comment.textContent = text ?? "";
+    comment.title = text ?? "";
+    comment.style.display = text ? "" : "none";
+  };
+  head.appendChild(comment);
+
+  // 0.38 用户反馈「内容很多时观察获得需要的字段效率很慢，加个搜索框检索 DDL 内容」：
+  // 输入即在着色层高亮全部命中 + 滚到第一条；Enter/Shift+Enter 在命中间循环跳。
+  // 只读形态（收录前的兜底展示）没有双层结构，搜索框不渲染
+  const search = onSave ? document.createElement("input") : null;
+  if (search) {
+    search.className = "qn-ddl-tip-search";
+    search.type = "text";
+    search.spellcheck = false;
+    search.placeholder = "搜索内容…";
+    search.addEventListener("mousedown", (event) => event.stopPropagation());
+  }
+  const hitsInfo = document.createElement("span");
+  hitsInfo.className = "qn-ddl-tip-hits";
+  hitsInfo.style.display = "none";
+  head.append(search ?? "", hitsInfo);
 
   const message = document.createElement("span");
   message.className = "qn-ddl-tip-message";
@@ -130,6 +163,7 @@ export function buildDdlTipDom(
     pre.className = "qn-ddl-tip-pre";
     render = () => {
       renderCodeHighlighted(pre, entries[current].ddl, lang);
+      syncComment();
     };
     render();
     body.replaceChildren(pre);
@@ -149,7 +183,7 @@ export function buildDdlTipDom(
   // 长行不折行（DataGrip 式横向滚动）——着色层与 textarea 都按 pre 排版才能对齐
   input.wrap = "off";
   const refreshHl = () => {
-    renderCodeHighlighted(hl, input.value, lang);
+    renderCodeHighlighted(hl, input.value, lang, hits);
     syncScroll();
   };
   const syncScroll = () => {
@@ -159,6 +193,70 @@ export function buildDdlTipDom(
   input.addEventListener("input", refreshHl);
   input.addEventListener("scroll", syncScroll);
 
+  // ---- 弹窗内容搜索（0.38）--------------------------------------------------
+  // hits 是当前值里全部命中区间；hitIndex 是 Enter 循环跳转的游标。
+  let hits: Hit[] = [];
+  let hitIndex = 0;
+  /** 把 search.value 在当前语句里重新扫一遍命中（项目切换后也按新内容重算）。 */
+  const computeHits = () => {
+    hits = [];
+    hitIndex = 0;
+    if (!search) return;
+    const query = search.value.trim().toLowerCase();
+    if (!query) return;
+    const hay = input.value.toLowerCase();
+    let at = hay.indexOf(query);
+    while (at >= 0) {
+      hits.push({ from: at, to: at + query.length });
+      at = hay.indexOf(query, at + query.length);
+    }
+  };
+  const syncHitInfo = () => {
+    if (!search || !search.value.trim() || hits.length === 0) {
+      hitsInfo.style.display = "none";
+      return;
+    }
+    hitsInfo.style.display = "";
+    hitsInfo.textContent = `${hitIndex + 1}/${hits.length}`;
+  };
+  /** 滚动体部让第 index 个命中落在视口中间（行高从实际排版反推，同 revealDdlLine）。 */
+  const jumpToHit = (index: number) => {
+    if (hits.length === 0) return;
+    hitIndex = ((index % hits.length) + hits.length) % hits.length;
+    const line = newlineCountBefore(input.value, hits[hitIndex].from);
+    const style = window.getComputedStyle(input);
+    const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+    const lineH = (input.scrollHeight - padY) / Math.max(1, input.value.split("\n").length);
+    const target = line * lineH - (input.clientHeight - lineH) / 2;
+    input.scrollTop = Math.max(0, Math.min(target, input.scrollHeight - input.clientHeight));
+    syncScroll();
+    syncHitInfo();
+  };
+  if (search) {
+    search.addEventListener("input", () => {
+      computeHits();
+      refreshHl();
+      if (hits.length > 0) jumpToHit(0);
+      else syncHitInfo();
+    });
+    // Esc：先清搜索（不清弹窗焦点），再按一次才轮到 input 的 Esc 通道
+    search.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        event.stopPropagation();
+        jumpToHit(hitIndex + (event.shiftKey ? -1 : 1));
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        search.value = "";
+        computeHits();
+        refreshHl();
+        syncHitInfo();
+        input.focus();
+      }
+    });
+  }
+
   /** 项目切换/初始化时把 body 的值换成当前条目。 */
   render = () => {
     input.value = entries[current].ddl;
@@ -166,7 +264,10 @@ export function buildDdlTipDom(
     // 选区默认落在文本末尾，聚焦（含脱管后重打焦点）就会滚到光标处=底部。
     // 显式把选区放回开头，聚焦不再引发滚动
     input.setSelectionRange(0, 0);
+    computeHits();
     refreshHl();
+    syncComment();
+    syncHitInfo();
   };
   render();
 
@@ -191,11 +292,14 @@ export function buildDdlTipDom(
       dom.style.left = `${Math.round(rect.left)}px`;
       dom.style.top = `${Math.round(rect.top)}px`;
       dom.style.width = `${Math.round(rect.width)}px`;
+      // 0.38 用户反馈「点击后弹窗为什么要变化，直接用悬浮时的弹窗不行吗」：
+      // 编辑器路径里 CM 把可用高度写在外层 dom、弹窗 height:100% 跟随——脱管后
+      // 该约束失效，弹窗长回内容高度（体部 62vh 封顶），视觉上「点一下就变大挪位」。
+      // 脱管时把当前高度一并钉死：点击前后弹窗尺寸位置完全一致
+      dom.style.height = `${Math.round(rect.height)}px`;
       document.body.appendChild(dom);
-      // 0.37.1 用户反馈「点击弹窗编辑后弹窗被截断（超出屏幕底）」：编辑器路径
-      // 里 CM 把可用高度写在外层 dom 上、弹窗 height:100% 跟随；脱管后该约束
-      // 失效，弹窗长回内容高度（标题行+62vh 体部），原 top 若贴近屏幕底就会
-      // 出屏。按脱管后的真实尺寸夹回视口。
+      // 0.37.1 用户反馈「点击弹窗编辑后弹窗被截断（超出屏幕底）」：原 top 贴近
+      // 屏幕底时出屏，按脱管后的真实尺寸夹回视口（尺寸钉死后通常已不动，兜底）
       const grown = dom.getBoundingClientRect();
       if (grown.bottom > window.innerHeight - 8) {
         dom.style.top = `${Math.max(8, Math.round(window.innerHeight - grown.height - 8))}px`;
@@ -317,23 +421,57 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** pos 之前的换行数（= 0 基行号；CRLF 也按一个换行算）。 */
+function newlineCountBefore(text: string, pos: number): number {
+  let count = 0;
+  for (let i = text.indexOf("\n"); i >= 0 && i < pos; i = text.indexOf("\n", i + 1)) count += 1;
+  return count;
+}
+
 /** 按位置穿插普通文本节点铺满整段代码（不拼 HTML 字符串，全 textContent）。
-    先清空目标——着色层随每次输入全量重铺（单条语句数 KB，开销可忽略）。 */
-function renderCodeHighlighted(target: HTMLElement, code: string, lang: TipLang): void {
+    先清空目标——着色层随每次输入全量重铺（单条语句数 KB，开销可忽略）。
+    hits（0.38 弹窗内容搜索）：把这些范围垫上 .qn-sql-hit 高亮底——渲染按
+    「token 边界 ∪ 命中边界」切格，同一格内 token 色 + 命中底可叠加（命中范围
+    外层 span 套住内层 token span）。 */
+function renderCodeHighlighted(
+  target: HTMLElement,
+  code: string,
+  lang: TipLang,
+  hits: Hit[] = [],
+): void {
   const tokens = lang === "java" ? tokenizeJava(code) : tokenizeSql(code);
   target.textContent = "";
-  let cursor = 0;
+  // 切格：所有 token 边界与命中边界都是候选断点
+  const cuts = new Set<number>([0, code.length]);
   for (const token of tokens) {
-    if (token.from > cursor) {
-      target.appendChild(document.createTextNode(code.slice(cursor, token.from)));
-    }
-    const span = document.createElement("span");
-    span.className = CLS[token.cls];
-    span.textContent = token.text;
-    target.appendChild(span);
-    cursor = token.from + token.text.length;
+    cuts.add(token.from);
+    cuts.add(token.from + token.text.length);
   }
-  if (cursor < code.length) {
-    target.appendChild(document.createTextNode(code.slice(cursor)));
+  for (const hit of hits) {
+    cuts.add(hit.from);
+    cuts.add(hit.to);
+  }
+  const points = [...cuts].filter((at) => at >= 0 && at <= code.length).sort((a, b) => a - b);
+  const tokenAt = (from: number, to: number) =>
+    tokens.find((token) => token.from <= from && token.from + token.text.length >= to);
+  const hitAt = (from: number) => hits.some((hit) => from >= hit.from && from < hit.to);
+  let key: string | null = null;
+  let span: HTMLElement | null = null;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    const from = points[i];
+    const to = points[i + 1];
+    if (to <= from) continue;
+    const token = tokenAt(from, to);
+    const cls = token ? CLS[token.cls] : "";
+    const inHit = hitAt(from);
+    const nextKey = `${cls}|${inHit}`;
+    if (nextKey !== key || !span) {
+      key = nextKey;
+      span = document.createElement("span");
+      if (cls) span.className = cls;
+      if (inHit) span.className = `${span.className} qn-sql-hit`.trim();
+      target.appendChild(span);
+    }
+    span.appendChild(document.createTextNode(code.slice(from, to)));
   }
 }

@@ -304,10 +304,18 @@ try {
   // ============================================== 4. 单词面板 0.27 规范
   {
     await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.sidebar-tab')].find((el) => el.textContent.includes('单词')); b?.click(); return !!b; })()`);
-    // 条目读取是异步的：等计数真的变成 3（waitFor .vocab-head 会抢在载入前命中）
-    await waitFor(ws, `(() => { const c = document.querySelector('.vocab-head-count'); return c ? c.textContent === '3 个单词' : false; })()`, 10000);
+    // 条目读取是异步的：等计数真的变成 3（waitFor .vocab-head 会抢在载入前命中）。
+    // 0.38 用户反馈「两个元素过于拥挤，减少内容展示」：头部计数精简成纯数字徽标
+    await waitFor(ws, `(() => { const c = document.querySelector('.vocab-head-count'); return c ? c.textContent === '3' : false; })()`, 10000);
     const headOk = await evaluate(ws, `(() => { const h = document.querySelector('.vocab-head'); if (!h) return ''; return h.querySelector('.vocab-head-title')?.textContent + '|' + h.querySelector('.vocab-head-count')?.textContent; })()`);
-    check(headOk === "单词本|3 个单词", "标题行：单词本 + 总数", `got=${JSON.stringify(headOk)}`);
+    check(headOk === "单词本|3", "标题行：单词本 + 数字徽标（0.38 精简）", `got=${JSON.stringify(headOk)}`);
+    const headNoWrap = await evaluate(ws, `(() => {
+      const t = document.querySelector('.vocab-head-title');
+      const c = document.querySelector('.vocab-head-count');
+      if (!t || !c) return false;
+      return getComputedStyle(t).whiteSpace === 'nowrap' && parseFloat(getComputedStyle(t).height) < 25 && parseFloat(getComputedStyle(c).height) < 25;
+    })()`);
+    check(headNoWrap, "标题与计数不再逐字换行（nowrap + 单行高度）");
     await waitFor(ws, `(() => { const b = document.querySelector('.vocab-review-btn'); return b ? b.textContent.includes('（3）') : false; })()`, 8000);
     const reviewLabel = await evaluate(ws, `document.querySelector('.vocab-review-btn')?.textContent ?? ''`);
     check(reviewLabel.includes("开始复习（3）"), "复习入口带待学习计数", `got=${reviewLabel}`);

@@ -559,3 +559,29 @@ export const writeBinary = (vault: string, path: string, dataBase64: string) =>
 export function onVaultChanged(handler: (paths: string[]) => void): Promise<UnlistenFn> {
   return listen<string[]>("vault-changed", (event) => handler(event.payload));
 }
+
+// ---- 开机自启（0.38 用户反馈「添加开机自启功能设置」，桌面专用）-----------------
+// 走 tauri-plugin-autostart：Windows 落注册表 Run 键。插件只在桌面注册，移动端
+// 调用会失败——统一 try/catch 回退（isEnabled=false / enable/disable 抛错给调用方）。
+
+/** 当前是否已开启开机自启；插件不可用（移动端/未注册）返回 false。 */
+export async function autostartIsEnabled(): Promise<boolean> {
+  try {
+    const { isEnabled } = await import("@tauri-apps/plugin-autostart");
+    return await isEnabled();
+  } catch {
+    return false;
+  }
+}
+
+/** 开启开机自启；失败抛出（调用方提示）。 */
+export async function autostartEnable(): Promise<void> {
+  const { enable } = await import("@tauri-apps/plugin-autostart");
+  await enable();
+}
+
+/** 关闭开机自启；失败抛出（调用方提示）。 */
+export async function autostartDisable(): Promise<void> {
+  const { disable } = await import("@tauri-apps/plugin-autostart");
+  await disable();
+}

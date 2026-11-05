@@ -300,6 +300,11 @@ pub fn run() {
     {
         // 应用内更新（检查/下载/安装）与更新后的重启；密钥与端点见 tauri.conf.json
         builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+        // 开机自启（0.38 用户反馈）：Windows 落注册表 Run 键；开关由前端设置页调
+        builder = builder.plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
         // 全局快捷键（OS 级，应用不在前台也响应）：目前只有「截图识别」一条。
         // 快捷键本身由前端调 set_screenshot_hotkey 动态注册（可在设置里改，被占用时
         // 前端会收到错误提示），这里只挂统一 handler：按下即发事件给前端。

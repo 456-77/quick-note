@@ -10631,10 +10631,15 @@ button.cm-tag:hover {
 }
 
 /* —— 标题与总数（0.27 规范 §三.1）：一行排开，复习入口靠右 —— */
+/* 0.38 用户反馈「两个元素过于拥挤，考虑减少内容展示」：侧栏窄时标题/计数被
+   flex 压到逐字换行（截图实锤「单词/本」两行）——文本一律不缩不换行，计数
+   精简成纯数字徽标（「N 个单词」的说明挪 title），实在放不下整行折行而不是
+   逐字断开 */
 .vocab-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 4px 8px;
   padding: 0 2px 8px;
 }
 
@@ -10643,11 +10648,19 @@ button.cm-tag:hover {
   font-weight: 700;
   color: var(--text);
   letter-spacing: 0.02em;
+  white-space: nowrap;
+  flex: none;
 }
 
 .vocab-head-count {
   font-size: 11px;
   color: var(--text-faint);
+  background: var(--surface-2);
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: none;
 }
 
 .vocab-review-btn {
@@ -11717,7 +11730,11 @@ button.cm-tag:hover {
   padding: 8px 10px;
   font-family: var(--mono);
   font-size: 12px;
-  line-height: 1.55;
+  /* 0.38 用户反馈「编辑点和实际内容行错位，越到下面偏离值越大」：两层不能用
+     无单位的 1.55（12px×1.55=18.6px 小数行高）——DOM 块排布按小数累加、
+     textarea 每行取整，30 行就漂出一行。两层统一钉死整数 px 行高才能逐行对齐
+     （0.37.1 只对齐了滚动范围，没对齐行高） */
+  line-height: 19px;
   tab-size: 4;
   white-space: pre;
 }
@@ -11793,6 +11810,19 @@ button.cm-tag:hover {
   text-underline-offset: 3px;
 }
 
+/* 0.38 用户反馈「表名被代码高亮后就覆盖住了ddl的高亮」：bluetopaz 的行内代码
+   橙色（html.qn-style-bluetopaz .editor-host .cm-lp-code，特异性 (0,3,1)）压过
+   .qn-ddl-known 的 (0,1,0)。标记装饰与代码装饰按 CM 的排序嵌套（谁内谁外不定），
+   两种嵌套方向都对齐特异性把 DDL 变色赢回来；默认主题行内代码不带色，不受影响 */
+html.qn-style-bluetopaz .editor-host .cm-lp-code .qn-ddl-known,
+html.qn-style-bluetopaz .editor-host .cm-lp-code.qn-ddl-known,
+html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
+  color: var(--accent);
+  text-decoration: underline dotted;
+  text-decoration-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  text-underline-offset: 3px;
+}
+
 .qn-ddl-tip-pre {
   margin: 0;
   padding: 8px 12px;
@@ -11802,10 +11832,57 @@ button.cm-tag:hover {
   overflow: auto;
   font-family: var(--mono);
   font-size: 12px;
-  line-height: 1.55;
+  /* 同弹窗双层：整数 px 行高（0.38，见 .qn-ddl-tip-hl 注） */
+  line-height: 19px;
   color: var(--text);
   white-space: pre;
 }
+
+/* 表级 COMMENT（0.38 用户反馈「通常会有 comment 说明表的作用」）：跟在表名后，
+   超长省略、悬停看全文；无 comment 时 JS 里 display:none */
+.qn-ddl-tip-comment {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 弹窗内容搜索（0.38 用户反馈「内容很多时找字段效率慢」）：标题行右侧小输入框，
+   输入即在着色层高亮全部命中 + Enter 循环跳转 */
+.qn-ddl-tip-search {
+  flex: none;
+  width: 150px;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  outline: none;
+}
+
+.qn-ddl-tip-search:focus {
+  border-color: var(--accent);
+}
+
+.qn-ddl-tip-hits {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 内容搜索命中的高亮底（着色层里的叠加层） */
+.qn-sql-hit {
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 2px;
+}
+
 
 /* DDL 弹窗里的 SQL 着色（0.32）：配色与编辑器代码块同一套语法变量 */
 .qn-sql-kw {
@@ -11894,6 +11971,82 @@ button.cm-tag:hover {
 
 .ddl-project-row input:focus {
   border-color: var(--accent);
+}
+
+/* —— ComboInput（0.38 用户反馈「下拉框风格要对齐软件」）：替换原生 datalist 的
+   自定义候选列表。原生下拉是浏览器控件，深色主题里泛白突兀（收录弹窗项目框
+   截图实锤）。宿主 input 沿用所在行原有的 input 样式（.ddl-project-row input、
+   .quick-capture-tags-input 等照常命中），这里只管候选浮层 —— */
+.combo {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.combo .combo-input {
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+}
+
+/* 标签 chip 行里的宿主：保留原输入框的挤压下限（chips 换行后输入框至少这么宽） */
+.quick-capture-tags .combo {
+  min-width: 120px;
+}
+
+/* 标签行宿主沿用原 .quick-capture-tags-input 的裸输入观感（0.38 换 ComboInput
+   后原类名不再命中，这里按上下文补齐） */
+.quick-capture-tags .combo-input {
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 2px 0;
+}
+
+.combo-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 60;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-2);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.combo-option {
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 5px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.combo-option:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.combo-option.is-on {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 /* 语句库管理面板（0.35.1）：复用 .quick-capture 壳（桌面 600px 弹窗/移动
@@ -12071,6 +12224,119 @@ button.cm-tag:hover {
   color: #fff;
   background: var(--danger);
   border-color: transparent;
+}
+
+/* —— 0.38 用户反馈批 —— */
+/* 行尾「⋯」展开钮（默认行内只露 定位+⋯，复制/移动/删除收进展开行） */
+.ddl-mgr-row > button.ddl-mgr-more {
+  min-width: 26px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.ddl-mgr-row > button.ddl-mgr-more.is-open {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 一行 = 主行 + 可选展开行；展开行随内容撑高 */
+.ddl-mgr-entry {
+  border-bottom: 1px solid var(--border);
+}
+
+.ddl-mgr-entry:last-child {
+  border-bottom: 0;
+}
+
+/* 行内边框移交 .ddl-mgr-entry（主行不再自带，避免展开行处出现双线） */
+.ddl-mgr-entry .ddl-mgr-row {
+  border-bottom: 0;
+}
+
+/* 展开行：复制 / 删除 + 目标项目 chips（点击即移动到对应段落） */
+.ddl-mgr-extra {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 10px 8px 18px;
+  background: var(--hover);
+}
+
+.ddl-mgr-extra > button {
+  flex: none;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.ddl-mgr-extra > button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ddl-mgr-extra > button.is-confirm {
+  color: #fff;
+  background: var(--danger);
+  border-color: transparent;
+}
+
+.ddl-mgr-extra-label {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.ddl-mgr-extra-projs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* 项目筛选 chips 行（0.38 用户反馈「类似于 inbox，添加一些筛选功能」）：
+   全部 + 各项目，点击只看该项目的条目 */
+.ddl-mgr-projrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+  margin: 0 0 8px;
+}
+
+.ddl-mgr-proj-chip {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 11.5px;
+  padding: 2px 11px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
+}
+
+.ddl-mgr-proj-chip:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.ddl-mgr-proj-chip.is-on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  font-weight: 650;
+}
+
+.ddl-mgr-proj-chip:disabled {
+  opacity: 0.55;
+  cursor: default;
 }
 
 /* —— 语句库管理的标签页形态（0.35.3 用户反馈「不应该使用弹窗，新建一个标签页」；
@@ -13284,9 +13550,10 @@ html.qn-bg-on .editor-pane-col.is-split {
     font-size: 13px;
   }
 
+  /* 0.38 行尾按钮收敛成两个（定位 + ⋯）：栅格列数同步收紧 */
   .ddl-mgr-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     gap: 3px 10px;
     align-items: center;
     padding: 8px 10px;
@@ -13326,8 +13593,16 @@ html.qn-bg-on .editor-pane-col.is-split {
     grid-column: 3;
   }
 
-  .ddl-mgr-row > button:nth-of-type(3) {
-    grid-column: 4;
+  /* 展开行（复制/删除/移动项目）与项目筛选 chips：触控目标放宽 */
+  .ddl-mgr-extra {
+    padding: 6px 10px 10px 16px;
+    gap: 8px;
+  }
+
+  .ddl-mgr-extra > button,
+  .ddl-mgr-proj-chip {
+    padding: 6px 12px;
+    font-size: 12.5px;
   }
 
   /* Esc 键在手机上不存在：关闭钮改显 ✕ */

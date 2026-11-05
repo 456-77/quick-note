@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { toBase64 } from "../lib/paste";
 import { normalizeTagName } from "../lib/tags";
 import { IconX } from "./icons";
+import ComboInput from "./ComboInput";
 
 /** 随速记附带的图片：文件名/类型用于落盘命名，base64 用于写附件。 */
 export interface CaptureImage {
@@ -250,15 +251,17 @@ export default function QuickCaptureDialog({
               </button>
             </span>
           ))}
-          <input
-            ref={tagRef}
-            type="text"
-            className="quick-capture-tags-input"
-            list="quick-capture-tag-options"
+          {/* 0.38 用户反馈「快速笔记的下拉框风格也要对齐软件」：原生 datalist
+              换 ComboInput。候选开着且高亮时 Enter 由 ComboInput 消费（选中候选
+              = 直接落成 chip），否则走原有 Enter 语义（落 chip / 提交速记） */}
+          <ComboInput
+            inputRef={tagRef}
+            ariaLabel="标签"
             value={tagDraft}
+            onChange={setTagDraft}
+            suggestions={tagSuggestions}
             placeholder={tags.length > 0 ? "加标签…" : "标签（Enter 生成，可留空）"}
             title="标签写进速记行，速记管理里聚合筛选"
-            onChange={(event) => setTagDraft(event.target.value)}
             onPaste={(event) => {
               // 焦点在标签框时粘贴的截图也归入正文图片，别让粘贴默默无操作
               const files = Array.from(event.clipboardData.files).filter((file) =>
@@ -268,6 +271,12 @@ export default function QuickCaptureDialog({
                 event.preventDefault();
                 void addImages(files);
               }
+            }}
+            onPick={(picked) => {
+              const name = normalizeTagName(picked);
+              if (!name) return;
+              setTags((prev) => (prev.includes(name) ? prev : [...prev, name]));
+              setTagDraft("");
             }}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey) {
@@ -284,11 +293,6 @@ export default function QuickCaptureDialog({
               }
             }}
           />
-          <datalist id="quick-capture-tag-options">
-            {tagSuggestions.map((tag) => (
-              <option key={tag} value={tag} />
-            ))}
-          </datalist>
         </div>
 
         <div className="quick-capture-foot">

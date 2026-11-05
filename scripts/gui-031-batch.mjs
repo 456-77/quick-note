@@ -451,7 +451,24 @@ try {
       // 0.34.5 关键字高亮：着色层垫底（qn-sql-kw 关键字 token）
       const hlOk = await evaluate(ws, `!!document.querySelector('.qn-ddl-tip .qn-ddl-tip-hl .qn-sql-kw')`);
       check(hlOk, "悬浮卡着色层有关键字高亮（0.34.5）");
+      // ---- 0.38 用户反馈批：表 comment / 内容搜索 / 点击不放大 ----
+      const cmt = await evaluate(ws, `document.querySelector('.qn-ddl-tip-comment')?.textContent ?? ''`);
+      check(cmt.includes("批测表"), "标题行展示表级 COMMENT（0.38）", cmt);
+      const searchUp = await evaluate(ws, `(() => {
+        const s = document.querySelector('.qn-ddl-tip-search');
+        if (!s) return false;
+        const set = ${nativeSet}; set(s, "主键");
+        return true;
+      })()`);
+      await sleep(250);
+      const hitN = await evaluate(ws, `document.querySelectorAll('.qn-ddl-tip .qn-ddl-tip-hl .qn-sql-hit').length`);
+      check(searchUp && hitN >= 1, `弹窗内容搜索 → 着色层垫出 ${hitN} 处命中高亮（0.38）`, String(hitN));
+      const hitsInfo = await evaluate(ws, `document.querySelector('.qn-ddl-tip-hits')?.textContent ?? ''`);
+      check(/^\d+\/\d+$/.test(hitsInfo), "命中计数显示（当前/共几处，0.38）", hitsInfo);
+      await evaluate(ws, `(() => { const s = document.querySelector('.qn-ddl-tip-search'); if (s) { const set = ${nativeSet}; set(s, ""); } return true; })()`);
+      await sleep(150);
       // 0.34.5 编辑态锁：聚焦即脱管为 body 浮层 + 打编辑态标记
+      const sizeBefore = await evaluate(ws, `(() => { const t = document.querySelector('.qn-ddl-tip'); const r = t.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })()`);
       const focusInfo = await evaluate(ws, `(() => {
         const tip = document.querySelector('.qn-ddl-tip');
         const input = tip?.querySelector('.qn-ddl-tip-input');
@@ -459,6 +476,11 @@ try {
         return { detached: tip?.classList.contains('qn-ddl-detached') ?? false, editing: tip?.classList.contains('qn-ddl-editing') ?? false, inBody: tip?.parentElement === document.body };
       })()`);
       check(focusInfo.detached && focusInfo.editing && focusInfo.inBody, "聚焦即脱管为编辑浮层并打编辑态标记（0.34.5）", JSON.stringify(focusInfo));
+      // 0.38 用户反馈「点击后弹窗为什么要变化，直接用悬浮时的弹窗不行吗」：
+      // 脱管时钉死当前尺寸——点击前后宽高一致
+      const sizeAfter = await evaluate(ws, `(() => { const t = document.querySelector('.qn-ddl-tip'); const r = t.getBoundingClientRect(); return { w: Math.round(r.width), h: Math.round(r.height) }; })()`);
+      const sizeSame = Math.abs(sizeBefore.w - sizeAfter.w) <= 2 && Math.abs(sizeBefore.h - sizeAfter.h) <= 2;
+      check(sizeSame, `点击编辑不改变弹窗尺寸（0.38：${sizeBefore.w}x${sizeBefore.h} → ${sizeAfter.w}x${sizeAfter.h}）`, JSON.stringify({ sizeBefore, sizeAfter }));
       // 编辑态下滚动编辑器不收起
       await evaluate(ws, `(() => { document.querySelector('.editor-host .cm-scroller')?.dispatchEvent(new Event('scroll')); return true; })()`);
       await sleep(400);
@@ -639,6 +661,35 @@ try {
     check(javaChip && javaRows, '切换「Java 实体」筛选 chip');
     const javaRowN = await evaluate(ws, `document.querySelectorAll('.ddl-mgr-row').length`);
     check(javaRowN >= 1, '实体库单独列出（两库分开看，不合并）', String(javaRowN));
+    // ---- 0.38 用户反馈批：项目筛选 chips / 行尾按钮折叠 / 移动到项目 ----
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-filter')].find((c) => c.textContent.includes('数据表'))?.click(); return true; })()`);
+    await sleep(400);
+    const rowBtnN = await evaluate(ws, `(() => { const r = document.querySelector('.ddl-mgr-row'); return r ? r.querySelectorAll('button').length : -1; })()`);
+    check(rowBtnN === 2, `行尾默认只露 定位+⋯ 两个按钮（0.38，实际 ${rowBtnN}）`, String(rowBtnN));
+    const projChips = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-projrow .ddl-mgr-proj-chip')].map((c) => c.textContent)`);
+    check(projChips.length >= 2, "项目筛选 chips 行出现（0.38：全部+各项目）", projChips.join("|"));
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-projrow .ddl-mgr-proj-chip')].find((c) => c.textContent === '测试项目B')?.click(); return true; })()`);
+    await sleep(300);
+    const onlyB = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-project')].map((g) => g.textContent)`);
+    check(onlyB.length === 1 && String(onlyB[0]).includes('测试项目B'), "项目筛选生效：只列 测试项目B 分组", onlyB.join("|"));
+    await evaluate(ws, `(() => { document.querySelector('.ddl-mgr-row .ddl-mgr-more')?.click(); return true; })()`);
+    await sleep(200);
+    const extra = await evaluate(ws, `(() => {
+      const x = document.querySelector('.ddl-mgr-extra');
+      if (!x) return { open: false };
+      return { open: true, hasCopy: x.textContent.includes('复制'), hasDel: x.textContent.includes('删除'), chips: [...x.querySelectorAll('.ddl-mgr-proj-chip')].map((c) => c.textContent) };
+    })()`);
+    check(extra.open && extra.hasCopy && extra.hasDel, "⋯ 展开行含 复制/删除（0.38 按钮折叠）", JSON.stringify(extra));
+    const toUngrouped = (extra.chips ?? []).includes('未分组');
+    if (toUngrouped) {
+      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-extra .ddl-mgr-proj-chip')].find((c) => c.textContent === '未分组')?.click(); return true; })()`);
+      const movedMsg = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已把')`, 5000).catch(() => false);
+      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-projrow .ddl-mgr-proj-chip')].find((c) => c.textContent === '全部')?.click(); return true; })()`);
+      await sleep(400);
+      const groupStats = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-group')].map((g) => (g.querySelector('.ddl-mgr-project')?.textContent ?? '') + ':' + g.querySelectorAll('.ddl-mgr-row').length)`);
+      check(movedMsg, "移动项目成功提示（0.38）", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
+      check(groupStats.some((g) => String(g).startsWith('未分组')), "移动后行落到目标项目分组（0.38）", groupStats.join("|"));
+    }
     await key(ws, { mod: 0, key: 'Escape' }, 'Escape', 27);
     const editorBack = await waitFor(ws, `!document.querySelector('.editor-pane-notes.is-hidden') && !document.querySelector('.ddl-manager-page')`, 2500);
     check(editorBack, 'Esc 回编辑器（笔记区恢复、整页退场）');

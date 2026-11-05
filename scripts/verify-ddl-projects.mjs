@@ -7,6 +7,9 @@ import {
   ddlProjectNames,
   parseDdlTables,
   mergeDdlIntoNote,
+  tableCommentOf,
+  removeDdlEntry,
+  locateDdlEntry,
 } from "../src/lib/ddl.ts";
 import { parseClassLibrary, mergeClassesIntoNote, extractClassNames } from "../src/lib/javaEntity.ts";
 
@@ -250,3 +253,33 @@ const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); proces
 }
 
 console.log("DDL/实体多项目断言全部通过");
+
+// ---------------- 表级 COMMENT 与「移动到项目」（0.38 用户反馈批） ----------------
+{
+  // 表级 COMMENT：弹窗标题旁要展示表的作用说明（取末括号后的表选项区）
+  const withComment = "CREATE TABLE `t` (\n  `id` bigint NOT NULL COMMENT '主键',\n  `name` varchar(30) COMMENT '名称''含引号''的'\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='费用项目定义表';";
+  assert(tableCommentOf(withComment) === "费用项目定义表", "表级 COMMENT 取末括号后的值", tableCommentOf(withComment));
+  // 列 COMMENT 不算（都在末括号之前）
+  const colOnly = "CREATE TABLE `t` (\n  `id` bigint NOT NULL COMMENT '主键'\n) ENGINE=InnoDB;";
+  assert(tableCommentOf(colOnly) === null, "无表级 COMMENT → null", String(tableCommentOf(colOnly)));
+  // '' 转义还原
+  const escaped = "CREATE TABLE `t` (\n `a` int\n) COMMENT='it''s a test';";
+  assert(tableCommentOf(escaped) === "it's a test", "COMMENT 的 '' 还原成单引号", String(tableCommentOf(escaped)));
+
+  // 移动到项目 = 原段落定位 + 删除 + 目标段落合并（App.moveLibraryEntry 的纯函数链）
+  const lib0 = "```sql\nCREATE TABLE `a` (x int);\nCREATE TABLE `b` (y int);\n```\n\n## 海亮\n\n```sql\nCREATE TABLE `c` (z int);\n```\n";
+  const located = locateDdlEntry(lib0, "a", "");
+  assert(located !== null, "未分组段落定位到 a");
+  const stmt = lib0.slice(located.from, located.to);
+  const removed = removeDdlEntry(lib0, "a", "");
+  assert(removed !== null && !removed.text.includes("CREATE TABLE `a`"), "删除后 a 不在原文");
+  assert(removed.text.includes("CREATE TABLE `b`"), "b 完好");
+  const moved = mergeDdlIntoNote(removed.text, stmt, "海亮");
+  const movedLib = parseDdlTables(moved);
+  assert(!movedLib.get("a")?.some((e) => e.project === ""), "移动后未分组不再有 a");
+  const movedC = movedLib.get("c")?.at(-1);
+  assert(movedC?.project === "海亮", "c 仍在海亮段落");
+  const movedA = movedLib.get("a")?.at(-1);
+  assert(movedA?.project === "海亮", "a 落进海亮段落", JSON.stringify([...movedLib.keys()]));
+  assert(moved.includes("## 海亮") && moved.indexOf("CREATE TABLE `a`") > moved.indexOf("## 海亮"), "a 语句位于海亮段落内");
+}

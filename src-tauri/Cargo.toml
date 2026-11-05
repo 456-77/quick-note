@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.37.2"
+version = "0.38.0"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
@@ -43,6 +43,9 @@ base64 = "0.22"
 tauri-plugin-updater = "2"
 # 全局快捷键（OS 级，应用不在前台也响应）：截图识别入口（0.20）。仅桌面。
 tauri-plugin-global-shortcut = "2"
+# 开机自启（0.38 用户反馈「添加开机自启功能设置」）：Windows 写注册表 Run 键。
+# 仅桌面——移动端没有这个概念，依赖随桌面分层
+tauri-plugin-autostart = "2"
 # TLS 走系统实现（Windows 上是 SChannel），因此不引入 ring 之类的 C 依赖，也不用装 OpenSSL。
 # native-tls 没有 Android 后端，这里必须与移动端的 rustls 依赖互斥分层。
 # 0.25 起桌面也编译 rustls（仅词典查询用）：youado 的交叉签名根链 Windows schannel

@@ -22,7 +22,7 @@ import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { bgFilterCss } from "../lib/background";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
-import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, type AppDataPaths, type DirStat } from "../lib/api";
+import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, autostartIsEnabled, autostartEnable, autostartDisable, type AppDataPaths, type DirStat } from "../lib/api";
 import { bgSettingsFor, getSettings, type BgSettings, type Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import type { SyncController } from "../lib/useSync";
@@ -519,6 +519,13 @@ export default function SettingsDialog({
   const [query, setQuery] = useState("");
   /** 改动落盘后的轻反馈：「已保存」闪现 1.6s */
   const [savedFlash, setSavedFlash] = useState(false);
+  /** 开机自启（0.38 用户反馈，桌面专用）：状态在插件里（注册表 Run 键），这里
+      只镜像一份驱动开关；挂载时读一次真值。 */
+  const [autostartOn, setAutostartOn] = useState(false);
+  useEffect(() => {
+    if (isMobile()) return;
+    void autostartIsEnabled().then(setAutostartOn).catch(() => {});
+  }, []);
   /**
    * 截图快捷键的按键录入态（0.21 用户反馈：不该手填文本）。录入期间挂起全局
    * 快捷键（同 HotkeysPane 的捕获），Enter 确认 / Esc 取消；null = 还没捕获到
@@ -1072,6 +1079,34 @@ export default function SettingsDialog({
               }
             />
           </Row>
+
+          {/* 0.38 用户反馈「添加开机自启功能设置」：桌面专用（移动端没有这个概念）。
+              状态在 autostart 插件里（Windows 注册表 Run 键），结果/错误走 bgNotice 通道 */}
+          {!isMobile() && (
+            <Row
+              label="开机自启"
+              desc="登录系统后自动启动 Quick Note。"
+              tip="Windows 上写入当前用户的注册表 Run 键，关闭开关即清除；以当前 exe 的路径为准，换安装目录后重新开关一次即可。"
+            >
+              <input
+                type="checkbox"
+                checked={autostartOn}
+                onChange={async (event) => {
+                  const want = event.target.checked;
+                  try {
+                    if (want) await autostartEnable();
+                    else await autostartDisable();
+                    setAutostartOn(want);
+                    setSavedFlash(true);
+                    if (savedTimerRef.current !== null) window.clearTimeout(savedTimerRef.current);
+                    savedTimerRef.current = window.setTimeout(() => setSavedFlash(false), 1600);
+                  } catch (e) {
+                    setBgNotice(`开机自启设置失败：${e instanceof Error ? e.message : String(e)}`);
+                  }
+                }}
+              />
+            </Row>
+          )}
 
           <Group>搜索</Group>
           <Row

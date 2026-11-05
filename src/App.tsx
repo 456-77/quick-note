@@ -14,7 +14,7 @@ import QuickCaptureDialog from "./components/QuickCaptureDialog";
 import RecentFilesDialog from "./components/RecentFilesDialog";
 import QuickTodoDialog from "./components/QuickTodoDialog";
 import AddWordDialog from "./components/AddWordDialog";
-import DdlDialog from "./components/DdlDialog";
+import DdlDialog, { rememberDdlProject } from "./components/DdlDialog";
 import LibraryManagerDialog, { type LibraryKind } from "./components/LibraryManagerDialog";
 import JsonFormatDialog from "./components/JsonFormatDialog";
 import SplitPane from "./components/SplitPane";
@@ -358,6 +358,23 @@ export default function App() {
   }, [activeTab]);
   const [settings, setSettings] = useState<Settings>(getSettings);
   const [showSettings, setShowSettings] = useState(false);
+  // 0.38 用户反馈「光标聚焦在设置页左侧，操作滚轮发现，笔记显示内容会上下移动」：
+  // 设置面板悬浮在编辑区上方（absolute 面板，无全屏遮罩），光标落在面板外/面板
+  // 自身不可滚的左栏时，滚轮的默认行为会滚到底下的笔记——设置开着时在捕获阶段
+  // 拦掉面板以外的一切滚轮（面板与它的下拉候选菜单内部照常滚动）
+  useEffect(() => {
+    if (!showSettings) return;
+    const onWheel = (event: WheelEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest?.(".settings-panel, .settings-select-menu")) return;
+      event.preventDefault();
+    };
+    window.addEventListener("wheel", onWheel, { capture: true, passive: false });
+    return () =>
+      window.removeEventListener("wheel", onWheel, {
+        capture: true,
+      } as EventListenerOptions);
+  }, [showSettings]);
   /** 正在新建的类型；null 表示输入行未展开。diary = 按日期命名的新日记。 */
   const [creating, setCreating] = useState<"note" | "folder" | "diary" | null>(null);
   /** 右键「新建笔记」指定的目标目录；空串 = 按当前笔记所在目录（或仓库根）。 */
@@ -2620,6 +2637,9 @@ export default function App() {
       if (messages.length === 0) {
         throw new Error("没有识别到 CREATE TABLE 语句或 Java 类定义");
       }
+      // 0.38 用户反馈「设置项目默认是上一次使用的」：收录成功即记住，下次打开
+      // 收录弹窗项目框预填（收录弹窗与悬浮卡保存共用这条通道）
+      rememberDdlProject(project);
       return messages.join("；");
     },
     [saveDdlStatements, saveJavaStatements],
@@ -2641,6 +2661,33 @@ export default function App() {
   }, []);
 
   /**
+   * 库笔记改写后把编辑器缓冲与后台标签状态对齐到磁盘新文本（0.38 从删除通道
+   * 提取共用：移动项目通道同样要防自动保存把改动冲回去）。缓冲与磁盘一致才
+   * 整篇替换；有未保存分歧则不动缓冲，状态栏提示以磁盘为准。
+   */
+  const syncLibraryNoteBuffers = useCallback((path: string, before: string, after: string) => {
+    const view = viewRef.current;
+    if (view && viewOwnerRef.current === path) {
+      if (view.state.doc.toString() === before) {
+        view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: after } });
+      } else {
+        setStatus(`注意：${path} 在编辑器里有未保存修改，改动已写盘、编辑器未同步`);
+      }
+    }
+    const stored = stateStore.current.get(path);
+    if (stored) {
+      if (stored.doc.toString() === before) {
+        stateStore.current.set(
+          path,
+          stored.update({ changes: { from: 0, to: stored.doc.length, insert: after } }).state,
+        );
+      } else {
+        dirtyTabs.current.add(path);
+      }
+    }
+  }, []);
+
+  /**
    * 面板「删除」：从库笔记里整段移除一条语句（0.35.1）。与收录同一条落盘纪律
    * （读盘-改-写盘-重载悬浮库）；库笔记正在编辑器里打开时，若缓冲与磁盘一致就
    * 同步替换缓冲，防止随后的自动保存把删除冲回去（有未保存分歧则不动缓冲，
@@ -2659,30 +2706,49 @@ export default function App() {
           : removeClassEntry(note.content, name, project);
       if (!removed) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
       await writeNote(dir, path, removed.text, note.hasBom);
-      const view = viewRef.current;
-      if (view && viewOwnerRef.current === path) {
-        if (view.state.doc.toString() === note.content) {
-          view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: removed.text } });
-        } else {
-          setStatus(`注意：${path} 在编辑器里有未保存修改，删除已写盘、编辑器未同步`);
-        }
-      }
-      const stored = stateStore.current.get(path);
-      if (stored) {
-        if (stored.doc.toString() === note.content) {
-          stateStore.current.set(
-            path,
-            stored.update({ changes: { from: 0, to: stored.doc.length, insert: removed.text } }).state,
-          );
-        } else {
-          dirtyTabs.current.add(path);
-        }
-      }
+      syncLibraryNoteBuffers(path, note.content, removed.text);
       await loadDdlLibrary(dir);
       void refresh(dir);
       return `${kind === "ddl" ? "表" : "类"}「${name}」已从 ${path} 删除`;
     },
-    [libraryPathOf, loadDdlLibrary, refresh],
+    [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
+  );
+
+  /**
+   * 面板「移动到项目」（0.38 用户反馈「添加设置所属项目」）：先按收录同口径
+   * 在原段落里定位语句原文，删除通道原样移除，再走收录合并插进目标项目段落
+   * （merge 的「同项目内同名替换」正好覆盖目标段落已有同名的情况），一次落盘。
+   */
+  const moveLibraryEntry = useCallback(
+    async (kind: LibraryKind, name: string, fromProject: string, toProject: string) => {
+      if (fromProject === toProject) throw new Error("这条语句已经在这个项目里了");
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能移动语句");
+      const path = libraryPathOf(kind);
+      const note = await readNoteOptional(dir, path);
+      if (!note) throw new Error(`库笔记「${path}」不存在`);
+      const located =
+        kind === "ddl"
+          ? locateDdlEntry(note.content, name, fromProject)
+          : locateClassEntry(note.content, name, fromProject);
+      if (!located) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
+      const statement = note.content.slice(located.from, located.to);
+      const removed =
+        kind === "ddl"
+          ? removeDdlEntry(note.content, name, fromProject)
+          : removeClassEntry(note.content, name, fromProject);
+      if (!removed) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
+      const merged =
+        kind === "ddl"
+          ? mergeDdlIntoNote(removed.text, statement, toProject)
+          : mergeClassesIntoNote(removed.text, statement, toProject);
+      await writeNote(dir, path, merged, note.hasBom);
+      syncLibraryNoteBuffers(path, note.content, merged);
+      await loadDdlLibrary(dir);
+      void refresh(dir);
+      return `已把「${name}」移动到${toProject ? `项目「${toProject}」` : "未分组"}`;
+    },
+    [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
 
   /**
@@ -2865,9 +2931,23 @@ export default function App() {
       tabActivatedAt.current.set(path, Date.now());
       // 会话内存量优先（刚才还在读的位置），没有再回持久化的阅读位置（0.31）
       const dirNow = vaultRef.current;
-      view.scrollDOM.scrollTop =
+      const resumeTop =
         scrollStore.current.get(path) ??
         (dirNow ? loadProgress(window.localStorage, dirNow, path) ?? 0 : 0);
+      view.scrollDOM.scrollTop = resumeTop;
+      // 0.38 用户反馈「离开标签页切回来，内容还是会往上移动些」：setState 后
+      // 高度图还是上一篇的实测值，scrollTop 可能被当时的最大滚动范围钳掉、或
+      // 装饰重建后高度变化把位置带走——与 openNote 的读盘分支同口径，等两帧
+      // 真实测量落地后再校一次（切页瞬间用户还滚不了，二次校准是安全的）
+      if (resumeTop > 0) {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            if (viewRef.current === view && viewOwnerRef.current === path) {
+              viewRef.current.scrollDOM.scrollTop = resumeTop;
+            }
+          }),
+        );
+      }
       resourcesRef.current.notePath = path;
       // 存量状态的 Compartment 是它创建那一刻的模式/主题，切回来要对齐当前选择
       applyMode(view, effectiveViewMode(modeRef.current));
@@ -9079,6 +9159,7 @@ export default function App() {
               onClose={() => setLibraryPageOpen(false)}
               onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
               onDelete={deleteLibraryEntry}
+              onMove={moveLibraryEntry}
               onOpenNote={(kind) => {
                 setLibraryPageOpen(false);
                 void openNoteAt(

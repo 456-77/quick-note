@@ -44,6 +44,7 @@ export default function LibraryManagerDialog({
   javaPath,
   onJump,
   onDelete,
+  onMove,
   onOpenNote,
   variant = "dialog",
 }: {
@@ -59,6 +60,8 @@ export default function LibraryManagerDialog({
   onJump: (kind: LibraryKind, name: string, project: string) => void;
   /** 落盘由父组件做；抛错显示在面板里。 */
   onDelete: (kind: LibraryKind, name: string, project: string) => Promise<string>;
+  /** 移动到别的项目段落（0.38 用户反馈「添加设置所属项目」）；抛错显示在面板里。 */
+  onMove: (kind: LibraryKind, name: string, fromProject: string, toProject: string) => Promise<string>;
   onOpenNote: (kind: LibraryKind) => void;
   /** dialog=浮层（默认）；page=内容区标签页形态（0.35.3 用户反馈「不应该使用弹窗，
    * 新建一个标签页」——标签栏常驻，面板铺满编辑区）。 */
@@ -68,10 +71,15 @@ export default function LibraryManagerDialog({
   // 那种筛选 chips 行：「数据表 / Java 实体」两枚大 chip 切换显示哪个库（默认数据表）。
   const [query, setQuery] = useState("");
   const [libFilter, setLibFilter] = useState<LibraryKind>("ddl");
+  // 0.38 用户反馈「类似于 inbox，添加一些筛选功能」：按项目筛选（"" = 全部）
+  const [projectFilter, setProjectFilter] = useState("");
   const [busy, setBusy] = useState(false);
   // 两步确认：记录待删行的 key（键+项目），再点一次才真删；点别处/删完重置
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
   const [message, setMessage] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
+  // 0.38 用户反馈「默认显示几个按钮，其他的隐藏起来可以手动展开」：行尾只留
+  // 「定位 + ⋯」，⋯ 展开第二行放 复制 / 移动项目 / 删除（一次只展开一行）
+  const [expandedKey, setExpandedKey] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -99,10 +107,14 @@ export default function LibraryManagerDialog({
     return out;
   }, [tables, classes, includeJava]);
 
-  // 分组按库笔记里段落的出场顺序（projects），面板里新出现的项目排最后
+  // 分组按库笔记里段落的出场顺序（projects），面板里新出现的项目排最后；
+  // 0.38 项目筛选 chips 生效时只看选中的那个项目
   const groups = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const scoped = rows.filter((row) => row.kind === activeLib);
+    const scoped = rows.filter(
+      (row) =>
+        row.kind === activeLib && (projectFilter === "" || row.project === projectFilter),
+    );
     const filtered = q
       ? scoped.filter((row) => row.name.toLowerCase().includes(q) || row.project.toLowerCase().includes(q))
       : scoped;
@@ -111,7 +123,15 @@ export default function LibraryManagerDialog({
     return order
       .map((project) => ({ project, rows: filtered.filter((row) => row.project === project) }))
       .filter((group) => group.rows.length > 0);
-  }, [rows, projects, query, activeLib]);
+  }, [rows, projects, query, activeLib, projectFilter]);
+
+  // 项目筛选 chips 的词表：当前库实际出现过的项目（按 projects 顺序 + 兜底追加）
+  const filterProjects = useMemo(() => {
+    const scoped = rows.filter((row) => row.kind === activeLib);
+    const order = [...projects.filter((name) => name !== "" || scoped.some((row) => row.project === ""))];
+    for (const row of scoped) if (!order.includes(row.project)) order.push(row.project);
+    return order;
+  }, [rows, projects, activeLib]);
 
   // 空态按**当前筛选的库**判（数据表有内容不代表实体库不空）
   const total = rows.filter((row) => row.kind === activeLib).length;
@@ -133,6 +153,22 @@ export default function LibraryManagerDialog({
     } finally {
       setBusy(false);
       setConfirmKey(null);
+    }
+  };
+
+  /** 移动到别的项目段落（0.38 用户反馈「添加设置所属项目」）。 */
+  const runMove = async (row: LibraryRow, toProject: string) => {
+    if (toProject === row.project) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      const text = await onMove(row.kind, row.name, row.project, toProject);
+      setMessage({ text, kind: "ok" });
+      setExpandedKey(null);
+    } catch (e) {
+      setMessage({ text: e instanceof Error ? e.message : String(e), kind: "error" });
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -191,13 +227,44 @@ export default function LibraryManagerDialog({
           }}
         />
       </div>
+      {/* 0.38 用户反馈「类似于 inbox，添加一些筛选功能」：项目筛选 chips（全部 +
+          各项目），与搜索叠加过滤；仅当前库里真的出现过的项目才出现 */}
+      {filterProjects.length > 1 && (
+        <div className="ddl-mgr-projrow">
+          <button
+            type="button"
+            className={`ddl-mgr-proj-chip${projectFilter === "" ? " is-on" : ""}`}
+            onClick={() => {
+              setProjectFilter("");
+              setConfirmKey(null);
+            }}
+          >
+            全部
+          </button>
+          {filterProjects.map((name) => (
+            <button
+              key={name || "\u0000"}
+              type="button"
+              className={`ddl-mgr-proj-chip${projectFilter === name ? " is-on" : ""}`}
+              onClick={() => {
+                setProjectFilter(name);
+                setConfirmKey(null);
+              }}
+            >
+              {name || "未分组"}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="ddl-mgr-list">
         {total === 0 ? (
           <div className="ddl-mgr-empty">
             {activeLib === "ddl" ? "库里还没有建表语句" : "库里还没有实体类"}——用「收录语句」弹窗（默认 Ctrl+Alt+J）粘贴即可收录。
           </div>
         ) : shown === 0 ? (
-          <div className="ddl-mgr-empty">没有匹配「{query}」的条目</div>
+          <div className="ddl-mgr-empty">
+            {query.trim() ? `没有匹配「${query}」的条目` : "这个项目下还没有条目"}
+          </div>
         ) : (
           groups.map((group) => (
             <div key={group.project || "\u0000"} className="ddl-mgr-group">
@@ -207,29 +274,67 @@ export default function LibraryManagerDialog({
               </div>
               {group.rows.map((row) => {
                 const rowKey = `${row.key}\u0000${row.project}`;
+                const expanded = expandedKey === rowKey;
                 return (
-                  <div className="ddl-mgr-row" key={`${row.kind}:${rowKey}`}>
-                    <span className="ddl-mgr-name" title={row.name}>
-                      {row.name}
-                    </span>
-                    <span className="ddl-mgr-preview" title={firstLine(row.ddl)}>
-                      {firstLine(row.ddl)}
-                    </span>
-                    <button type="button" title="打开库笔记并跳到这一条" disabled={busy} onClick={() => onJump(row.kind, row.name, row.project)}>
-                      定位
-                    </button>
-                    <button type="button" title="复制语句/源码" disabled={busy} onClick={() => void copyRow(row)}>
-                      复制
-                    </button>
-                    <button
-                      type="button"
-                      className={confirmKey === rowKey ? "is-confirm" : ""}
-                      title={confirmKey === rowKey ? "再点一次确认删除" : "从库笔记里删除这一条"}
-                      disabled={busy}
-                      onClick={() => void runDelete(row)}
-                    >
-                      {confirmKey === rowKey ? "确认？" : "删除"}
-                    </button>
+                  <div className="ddl-mgr-entry" key={`${row.kind}:${rowKey}`}>
+                    <div className="ddl-mgr-row">
+                      <span className="ddl-mgr-name" title={row.name}>
+                        {row.name}
+                      </span>
+                      <span className="ddl-mgr-preview" title={firstLine(row.ddl)}>
+                        {firstLine(row.ddl)}
+                      </span>
+                      {/* 0.38 用户反馈「默认显示几个按钮，其他的隐藏起来，可以手动
+                          展开」：行尾只留 定位 + ⋯，复制/移动项目/删除收进展开行 */}
+                      <button type="button" title="打开库笔记并跳到这一条" disabled={busy} onClick={() => onJump(row.kind, row.name, row.project)}>
+                        定位
+                      </button>
+                      <button
+                        type="button"
+                        className={`ddl-mgr-more${expanded ? " is-open" : ""}`}
+                        title={expanded ? "收起" : "更多操作（复制 / 移动项目 / 删除）"}
+                        aria-expanded={expanded}
+                        onClick={() => {
+                          setExpandedKey(expanded ? null : rowKey);
+                          setConfirmKey(null);
+                        }}
+                      >
+                        ⋯
+                      </button>
+                    </div>
+                    {expanded && (
+                      <div className="ddl-mgr-extra">
+                        <button type="button" disabled={busy} onClick={() => void copyRow(row)}>
+                          复制
+                        </button>
+                        <button
+                          type="button"
+                          className={confirmKey === rowKey ? "is-confirm" : ""}
+                          title={confirmKey === rowKey ? "再点一次确认删除" : "从库笔记里删除这一条"}
+                          disabled={busy}
+                          onClick={() => void runDelete(row)}
+                        >
+                          {confirmKey === rowKey ? "确认？" : "删除"}
+                        </button>
+                        <span className="ddl-mgr-extra-label">移动到项目：</span>
+                        <div className="ddl-mgr-extra-projs">
+                          {filterProjects
+                            .filter((name) => name !== row.project)
+                            .map((name) => (
+                              <button
+                                key={name || "\u0000"}
+                                type="button"
+                                className="ddl-mgr-proj-chip"
+                                disabled={busy}
+                                title={name ? `移动到「${name}」的段落` : "移动到未分组段落"}
+                                onClick={() => void runMove(row, name)}
+                              >
+                                {name || "未分组"}
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
