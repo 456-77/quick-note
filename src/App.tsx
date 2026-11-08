@@ -161,6 +161,18 @@ const TAGS_PIN_KEY = "quicknote.tags.pin.v1";
 const PINNED_TABS_KEY = "quicknote.ui.pinnedTabs";
 /** 目录筛选的存储键：仓库 → 被隐藏的一级目录列表（0.20 用户反馈：目录太多干扰阅读）。 */
 const HIDDEN_DIRS_KEY = "quicknote.tree.hiddenDirs";
+/** 0.38.7 ☰ 菜单自定义：默认展示的菜单项（id 集）。 */
+const MOBILE_MENU_DEFAULT = [
+  "palette",
+  "daily",
+  "capture",
+  "addword",
+  "inbox",
+  "library",
+  "sync",
+  "rightpane",
+  "settings",
+];
 
 const MODE_KEY = "quicknote.mode";
 const SIDEBAR_KEY = "quicknote.sidebar";
@@ -478,6 +490,30 @@ export default function App() {
       return [];
     }
   });
+  /** 0.38.3 用户反馈「能不能添加删除仓库的选项」：从下拉列表移除仓库——仅
+      隐藏（文件保留在磁盘），与移动端主页的移除同用 quicknote.vaults.hidden。 */
+  const [vaultHiddenList, setVaultHiddenList] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("quicknote.vaults.hidden") ?? "[]");
+      return Array.isArray(raw) ? raw.filter((p) => typeof p === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  const vaultHiddenSet = useMemo(() => new Set(vaultHiddenList), [vaultHiddenList]);
+  const hideRecentVault = useCallback((path: string) => {
+    setVaultHiddenList((prev) => {
+      if (prev.includes(path)) return prev;
+      const next = [...prev, path];
+      try {
+        localStorage.setItem("quicknote.vaults.hidden", JSON.stringify(next));
+      } catch {
+        // 存不进去就只隐藏本轮
+      }
+      setStatus(`已从列表移除（文件保留在磁盘）：${vaultDisplayName(path)}`);
+      return next;
+    });
+  }, []);
   /** 顶栏仓库下拉菜单（打开状态 + 锚点位置）。 */
   const [vaultMenu, setVaultMenu] = useState<{ x: number; y: number } | null>(null);
   /** 应用数据目录信息（设置 → 存储）。 */
@@ -492,6 +528,19 @@ export default function App() {
   const [previewTabsSplit, setPreviewTabsSplit] = useState<string[]>([]);
   /** 分屏栏激活的预览标签（null = 右栏显示编辑器）。 */
   const [activePreviewSplit, setActivePreviewSplit] = useState<string | null>(null);
+  // 0.38.8：预览标签激活同样进历史（‹› 在笔记与预览间自由跳转）；顶部同路径
+  // 去重（sheet 切回/树里重复点不开出新历史条目）
+  useEffect(() => {
+    if (!activePreview) return;
+    setNavHistory((prev) => {
+      if (prev.stack[prev.index] === activePreview) return prev;
+      const stack = prev.stack.slice(0, prev.index + 1);
+      stack.push(activePreview);
+      if (stack.length > 100) stack.shift();
+      return { stack, index: stack.length - 1 };
+    });
+  }, [activePreview]);
+
   const previewTabsRef = useRef<string[]>([]);
   useEffect(() => {
     previewTabsRef.current = previewTabs;
@@ -1464,8 +1513,24 @@ export default function App() {
       setRightCollapsed(true);
       return true;
     }
+    // 0.38.4 用户反馈「预览浮窗多余，关闭钮失效」：移动端非 PDF 预览已无标题
+    // 条，系统返回=关闭预览（全屏内容的退出语义；排在抽屉之后——抽屉盖在
+    // 预览上时先收抽屉，再按才关预览）
+    if (activePreview) {
+      closeSpecialTab(activePreview);
+      return true;
+    }
     // 都没开着：有未保存改动时先落盘（消费这次 back；再按一次才真正退出——
     // 落盘是异步的，evaluateJavascript 的同步判定等不了它）
+    // 0.38.7 用户反馈：全屏工作页（语句库管理/速记管理）返回键先退出页面
+    if (libraryPageOpen) {
+      setLibraryPageOpen(false);
+      return true;
+    }
+    if (captureManagerOpen) {
+      setCaptureManagerOpen(false);
+      return true;
+    }
     if (dirtyRef.current) {
       saveRef.current?.();
       return true;
@@ -1579,7 +1644,7 @@ export default function App() {
       // target 必须 instanceof Element：合成事件派发在 document 上时 target 是
       // Document，没有 closest 方法（批测的 TouchEvent 直接派发到 document）
       const target = e.target;
-      if (target instanceof Element && target.closest(".m-sheet, .settings-panel, .palette-overlay, .vault-home-page, .quick-capture, .update-dialog, .context-menu, .menu-backdrop, .qn-lightbox, .qn-mermaid-overlay")) {
+      if (target instanceof Element && target.closest(".m-sheet, .settings-panel, .palette-overlay, .vault-home-page, .quick-capture, .update-dialog, .context-menu, .menu-backdrop, .qn-lightbox, .qn-mermaid-overlay, .file-preview")) {
         sx = t.clientX;
         sy = t.clientY;
         return;
@@ -1594,6 +1659,9 @@ export default function App() {
         // ④ 0.34.8 用户反馈「mermaid 灯箱里左右滑动触发抽屉」：起手点在横向
         //    可滚区域内（宽表 .cm-tb-scroll、放大后的 mermaid 块等）时，这次
         //    横滑属于内容平移，不开抽屉。
+        // ⑤ 0.38.3 用户反馈「预览图片/pdf 时滑动会错误触发抽屉」：起手点在
+        //    .file-preview 内（含 pdf/xlsx/html 盖层）一律不开抽屉——预览里的
+        //    滑动属于内容操作。
         // 另外 onEnd 有时间门（<400ms）——长按选词本身就占 ~500ms，慢拖不算滑。
         const editing =
           document.body.classList.contains("m-editing") ||
@@ -2186,28 +2254,63 @@ export default function App() {
     if (captureManagerOpen) setLibraryPageOpen(false);
   }, [captureManagerOpen]);
 
-  // 移动端预览全屏化（0.38 用户反馈「点击内容区域，药丸按钮不会自动隐藏」）：
-  // FilePreview 移动端点击内容派发 qn-preview-chrome——App 挂 .qn-preview-chrome-off
-  // 类收走药丸/底条（bar 的显隐在组件内部）；预览关闭时组件复位事件把类摘掉
+  // 0.38.5：预览期药丸/底条常驻（底条 [N] 标签页是快速切换文件的入口，预览
+  // 标签也已入册）。0.38.7 用户反馈「点击预览内容药丸可以隐藏，再次点击取
+  // 消」：FilePreview 点击内容派发 toggle——挂 .qn-preview-chrome-off 收走，
+  // 再点内容恢复；预览卸载派发 false 复位（类不残留）。
   const [previewChromeOff, setPreviewChromeOff] = useState(false);
+  // 0.38.7 用户反馈「添加一个选项设置只显示哪些目录，类似桌面端」：手机抽屉
+  // 动作行第四键打开同一份目录筛选弹层（DirFilterPopover，按仓库记忆）
+  const [drawerDirFilterOpen, setDrawerDirFilterOpen] = useState(false);
+  // 0.38.7 用户反馈「☰ 菜单加编辑功能，自定义展示哪些功能；候选不止当前几个」：
+  // 菜单项=勾选集（顺序按候选表固定），localStorage 持久化
+  const [mobileMenuEditOpen, setMobileMenuEditOpen] = useState(false);
+  const [mobileMenuIds, setMobileMenuIds] = useState<string[]>(() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem("quicknote.mobile.menu.v1") ?? "");
+      if (Array.isArray(raw) && raw.length > 0 && raw.every((x) => typeof x === "string")) return raw;
+    } catch {
+      // 坏数据走默认
+    }
+    return MOBILE_MENU_DEFAULT;
+  });
+  const persistMobileMenuIds = useCallback((ids: string[]) => {
+    setMobileMenuIds(ids);
+    try {
+      localStorage.setItem("quicknote.mobile.menu.v1", JSON.stringify(ids));
+    } catch {
+      // 存不进去就只改本轮
+    }
+  }, []);
   useEffect(() => {
     const onChrome = (event: Event) => {
-      setPreviewChromeOff((event as CustomEvent<boolean>).detail === true);
-    };
-    const onSwipe = (event: Event) => {
-      // HTML 预览的 iframe 吞触摸——FilePreview 覆盖层派发的抽屉手势（右滑开左
-      // 抽屉 / 左滑开右抽屉，与内容区手势同方向语义）
-      const dir = (event as CustomEvent<"left" | "right">).detail;
-      if (dir === "left") setLeftCollapsed(false);
-      else setRightCollapsed(false);
+      const detail = (event as CustomEvent<string | boolean>).detail;
+      if (detail === "toggle") setPreviewChromeOff((v) => !v);
+      else setPreviewChromeOff(detail === true);
     };
     window.addEventListener("qn-preview-chrome", onChrome);
-    window.addEventListener("qn-preview-swipe", onSwipe);
     return () => {
       window.removeEventListener("qn-preview-chrome", onChrome);
-      window.removeEventListener("qn-preview-swipe", onSwipe);
     };
   }, []);
+
+  // 0.38.7 用户反馈「选中文字弹出系统选项（AI 帮写/复制…），打开抽屉后它还在」
+  // （笔记与预览里选中都存在）：系统选择菜单挂在文字选区上，抽屉展开瞬间清空
+  // 全局选区，菜单与选择手柄随之消失。放 effect 而非各开抽屉调用点——手势/药
+  // 丸/菜单/新建一个入口不漏。CM6 编辑态选区被清后由 CM 自行同步（选着文本开
+  // 抽屉本就该放弃选择）。
+  const anyDrawerOpen = isMobile() && (!leftCollapsed || !rightCollapsed);
+  const drawerOpenPrevRef = useRef(false);
+  useEffect(() => {
+    if (anyDrawerOpen && !drawerOpenPrevRef.current) {
+      try {
+        window.getSelection()?.removeAllRanges();
+      } catch {
+        // 某些文档态清选区会抛：忽略
+      }
+    }
+    drawerOpenPrevRef.current = anyDrawerOpen;
+  }, [anyDrawerOpen]);
   /** Inbox 的扫描统计（CaptureManager 上报；右侧「今日整理」面板渲染用）。 */
   const [inboxStats, setInboxStats] = useState<{
     pending: number;
@@ -5293,16 +5396,19 @@ export default function App() {
     if (hist.index <= 0) return;
     const target = hist.stack[hist.index - 1];
     setNavHistory({ stack: hist.stack, index: hist.index - 1 });
-    void openNote(target).catch(() => setStatus("历史里的笔记已打不开"));
-  }, [openNote]);
+    // 0.38.8 用户反馈「‹› 只支持 md，预览文件之间不能跳」：按类型路由
+    if (isMarkdownPath(target)) void openNote(target).catch(() => setStatus("历史里的笔记已打不开"));
+    else openPreviewTab(target);
+  }, [openNote, openPreviewTab]);
 
   const historyForward = useCallback(() => {
     const hist = navHistoryRef.current;
     if (hist.index >= hist.stack.length - 1) return;
     const target = hist.stack[hist.index + 1];
     setNavHistory({ stack: hist.stack, index: hist.index + 1 });
-    void openNote(target).catch(() => setStatus("历史里的笔记已打不开"));
-  }, [openNote]);
+    if (isMarkdownPath(target)) void openNote(target).catch(() => setStatus("历史里的笔记已打不开"));
+    else openPreviewTab(target);
+  }, [openNote, openPreviewTab]);
 
   // ---------------------------------------------------------------- 分栏（0.32.2 Obsidian 式）
   //
@@ -5804,11 +5910,15 @@ export default function App() {
     [vault, openNoteAt, switchVault],
   );
 
-  /** 全局搜索的仓库范围（0.29）：当前仓库 + 最近仓库，当前仓库恒排第一。 */
+  /** 全局搜索的仓库范围（0.29）：当前仓库 + 最近仓库，当前仓库恒排第一。
+      0.38.3：已从列表移除（hidden）的仓库不再参与。 */
   const paletteVaults = useMemo(
     () =>
-      (vault ? [vault, ...vaultRecents.filter((item) => item !== vault)] : vaultRecents).slice(0, 9),
-    [vault, vaultRecents],
+      (vault
+        ? [vault, ...vaultRecents.filter((item) => item !== vault && !vaultHiddenSet.has(item))]
+        : vaultRecents.filter((item) => !vaultHiddenSet.has(item))
+      ).slice(0, 9),
+    [vault, vaultRecents, vaultHiddenSet],
   );
 
   /** 导出 PDF：渲染整篇笔记为打印视图，弹出系统打印对话框（选「另存为 PDF」）。 */
@@ -7319,9 +7429,74 @@ export default function App() {
     { key: "calendar" as const, label: "日历", icon: <IconCalendar size={17} /> },
   ];
 
+  // 0.38.7 ☰ 菜单候选目录表：id→行为全部复用既有入口的原逻辑；勾选集
+  // （mobileMenuIds）决定展示哪些，候选远多于默认九项。无 useMemo——菜单
+  // 每次渲染现建，量级 13 条无成本。
+  const mobileMenuCatalog: { id: string; label: string; icon: React.ReactNode; run: () => void }[] = [
+    { id: "palette", label: "快速切换与全文搜索", icon: <IconSearch size={17} />, run: () => openPalette() },
+    {
+      id: "daily",
+      label: "打开/创建今天的日记",
+      icon: <IconCalendarPlus size={17} />,
+      run: () => {
+        setDrawerView("files");
+        beginCreate("diary");
+      },
+    },
+    { id: "capture", label: "速记（收件箱）", icon: <IconSparkles size={17} />, run: () => setQuickCaptureOpen(true) },
+    { id: "addword", label: "添加单词", icon: <IconLibrary size={17} />, run: () => shortcuts.addWordDialog() },
+    { id: "inbox", label: "速记管理", icon: <IconClock size={17} />, run: () => setCaptureManagerOpen(true) },
+    { id: "library", label: "语句库管理", icon: <IconDatabase size={17} />, run: () => shortcuts.libraryManager() },
+    {
+      id: "sync",
+      label: "立即同步",
+      icon: <IconRefresh size={17} />,
+      run: () => {
+        sync.syncNow();
+        syncVocabNow();
+      },
+    },
+    {
+      id: "rightpane",
+      label: "右侧面板（大纲 / 统计）",
+      icon: <IconPanelRight size={17} />,
+      run: () => {
+        setLeftCollapsed(true);
+        setRightCollapsed(false);
+      },
+    },
+    {
+      id: "settings",
+      label: "设置",
+      icon: <IconSettings size={17} />,
+      run: () => {
+        setLeftCollapsed(true);
+        setRightCollapsed(true);
+        shortcuts.openSettings();
+      },
+    },
+    { id: "newnote", label: "新建笔记", icon: <IconPlus size={17} />, run: () => beginCreate("note") },
+    { id: "tabs", label: "标签页列表", icon: <IconListTree size={17} />, run: () => setTabSheetOpen(true) },
+    { id: "drawer", label: "打开文件抽屉", icon: <IconPanelLeft size={17} />, run: () => setLeftCollapsed(false) },
+    {
+      id: "vaulthome",
+      label: "管理仓库",
+      icon: <IconHome size={17} />,
+      run: () => {
+        setLeftCollapsed(true);
+        setRightCollapsed(true);
+        setVaultGateOpen(true);
+      },
+    },
+  ];
+
   return (
     <div
       className={`app${zen ? " zen" : ""}${captureManagerOpen ? " inbox-open" : ""}${
+        /* 0.38.7 用户反馈「语句库管理面板这些药丸选项是不是应该不出现」：
+           全屏工作页同收件箱口径，药丸/底条让位（关闭走面板 ✕ 或系统返回） */
+        libraryPageOpen ? " libpage-open" : ""
+      }${
         /* 0.34.0 Obsidian 语义：任一抽屉开着时浮动药丸/底条整体让位（否则叠在
            抽屉页签与仓库底行上面）；CSS 由 .m-drawer-open 收走 */
         isMobile() && (!leftCollapsed || !rightCollapsed) ? " m-drawer-open" : ""
@@ -7590,8 +7765,8 @@ export default function App() {
                   mobileOverlayGone();
                   setNoteMenuOpen(true);
                 }}
-                disabled={!current}
-                title="当前笔记操作"
+                disabled={!current && !activePreview}
+                title={activePreview ? "当前预览操作" : "当前笔记操作"}
               >
                 <IconDots size={17} />
               </button>
@@ -7646,9 +7821,9 @@ export default function App() {
                 mobileOverlayGone();
                 setTabSheetOpen(true);
               }}
-              title={`标签页（${openTabs.length}）`}
+              title={`标签页（${openTabs.length + previewTabs.length}）`}
             >
-              {openTabs.length}
+              {openTabs.length + previewTabs.length}
             </button>
             <button
               type="button"
@@ -8133,22 +8308,28 @@ export default function App() {
             setVaultMenu(null);
           }} />
           <div className="context-menu vault-menu" ref={menuRefClampedToViewport(vaultMenu.x, vaultMenu.y)} style={{ left: vaultMenu.x, top: vaultMenu.y }}>
-            {vaultRecents.filter((p) => !(vault && sameVaultPath(p, vault))).length === 0 && (
+            {vaultRecents.filter((p) => !vaultHiddenSet.has(p) && !(vault && sameVaultPath(p, vault))).length === 0 && (
               <div className="vault-menu-empty">还没有最近打开的仓库</div>
             )}
             {vaultRecents
-              .filter((p) => !(vault && sameVaultPath(p, vault)))
+              .filter((p) => !vaultHiddenSet.has(p) && !(vault && sameVaultPath(p, vault)))
               .slice(0, 8)
               .map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  title={p}
-                  onClick={() => openRecentVault(p)}
-                >
-                  <IconLibrary size={13} />
-                  <span className="vault-menu-name">{vaultDisplayName(p)}</span>
-                </button>
+                // 0.38.3：行改容器（主按钮 + 行尾移除钮）——button 不能嵌 button
+                <div className="vault-menu-item" key={p}>
+                  <button type="button" title={p} onClick={() => openRecentVault(p)}>
+                    <IconLibrary size={13} />
+                    <span className="vault-menu-name">{vaultDisplayName(p)}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="vault-menu-remove"
+                    title="从列表移除（文件保留在磁盘）"
+                    onClick={() => hideRecentVault(p)}
+                  >
+                    <IconX size={12} />
+                  </button>
+                </div>
               ))}
             {/* 服务器仓库（0.32.2）：云端可同步仓库一键落地/打开 */}
             <div className="vault-menu-sep" />
@@ -8626,6 +8807,14 @@ export default function App() {
                 {/* 0.34.1 用户反馈：动作行只属于文件列表分区（新建笔记/文件夹），
                     其他分区用不到也不显示；✕ 关闭按钮删除——关抽屉走系统返回/
                     点文件/仓库切换（Obsidian 移动端同款，全屏抽屉无关闭钮） */}
+                {drawerView === "files" && isMobile() && drawerDirFilterOpen && (
+                  <DirFilterPopover
+                    dirs={topLevelDirs(entries)}
+                    hiddenDirs={hiddenDirs}
+                    onToggle={toggleHiddenDir}
+                    onClose={() => setDrawerDirFilterOpen(false)}
+                  />
+                )}
                 {drawerView === "files" && (
                   <div className="m-drawer-actions">
                     <button
@@ -8651,6 +8840,17 @@ export default function App() {
                       title="新建文件夹"
                     >
                       <IconFolderPlus size={16} />
+                    </button>
+                    {/* 0.38.7 用户反馈「设置只显示哪些目录，类似桌面端逻辑」：
+                        复用桌面的目录筛选弹层（勾选一级目录，按仓库记忆） */}
+                    <button
+                      type="button"
+                      disabled={!vault}
+                      className={hiddenDirs.size > 0 ? "has-filter" : ""}
+                      onClick={() => setDrawerDirFilterOpen((v) => !v)}
+                      title="目录筛选：只显示勾选的一级目录"
+                    >
+                      <IconFolder size={16} />
                     </button>
                   </div>
                 )}
@@ -8837,7 +9037,7 @@ export default function App() {
               >
                 <IconFolder size={13} />
               </button>
-              {dirFilterOpen && (
+              {!isMobile() && dirFilterOpen && (
                 <DirFilterPopover
                   dirs={topLevelDirs(entries)}
                   hiddenDirs={hiddenDirs}
@@ -9030,6 +9230,7 @@ export default function App() {
 
             {activePreview && vault && (
               <FilePreview
+                key={activePreview}
                 embedded
                 vault={vault}
                 path={activePreview}
@@ -9531,115 +9732,82 @@ export default function App() {
           <div className="m-sheet-backdrop" onClick={() => setMobileMenuOpen(false)} />
           <div className="m-sheet" role="menu" aria-label="更多操作">
             <div className="m-sheet-grabber" />
+            {/* 0.38.7 用户反馈「自定义展示哪些功能」：按勾选集渲染候选目录表，
+                候选 13 项（默认 9 项）；末行进编辑 sheet 勾选 */}
+            {mobileMenuIds.map((id) => {
+              const item = mobileMenuCatalog.find((c) => c.id === id);
+              if (!item) return null;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className="m-sheet-row"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    item.run();
+                  }}
+                >
+                  {item.icon}
+                  {item.label}
+                </button>
+              );
+            })}
             <button
               type="button"
               className="m-sheet-row"
               onClick={() => {
-                setMobileMenuOpen(false);
-                openPalette();
+                mobileOverlayGone();
+                setMobileMenuEditOpen(true);
               }}
             >
-              <IconSearch size={17} />
-              快速切换与全文搜索
+              <IconPenLine size={17} />
+              编辑菜单…
             </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                // 0.34.1 用户拍板：不用免输入的纯日期名——走自己的日记命名流程
-                //（日期 + 空格 + 名字，输入行必填；同名直接打开不覆盖）
-                setDrawerView("files");
-                beginCreate("diary");
-              }}
-            >
-              <IconCalendarPlus size={17} />
-              打开/创建今天的日记
-            </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                setQuickCaptureOpen(true);
-              }}
-            >
-              <IconSparkles size={17} />
-              速记（收件箱）
-            </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                shortcuts.addWordDialog();
-              }}
-            >
-              <IconLibrary size={17} />
-              添加单词
-            </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                setCaptureManagerOpen(true);
-              }}
-            >
-              <IconClock size={17} />
-              速记管理
-            </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                // 0.35.2 用户反馈「手机上无法打开 DDL 管理面板」：管理面板只有
-                // 快捷键和命令面板两个入口，手机上补一个 ☰ 菜单直达
-                shortcuts.libraryManager();
-              }}
-            >
-              <IconDatabase size={17} />
-              语句库管理
-            </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                sync.syncNow();
-                syncVocabNow();
-              }}
-            >
-              <IconRefresh size={17} />
-              立即同步
-            </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                // 右抽屉打开前收左抽屉：双全屏抽屉叠着没有意义（0.34.1）
-                setLeftCollapsed(true);
-                setRightCollapsed(false);
-              }}
-            >
-              <IconPanelRight size={17} />
-              右侧面板（大纲 / 统计）
-            </button>
-            <button
-              type="button"
-              className="m-sheet-row"
-              onClick={() => {
-                setMobileMenuOpen(false);
-                setLeftCollapsed(true);
-                setRightCollapsed(true);
-                shortcuts.openSettings();
-              }}
-            >
-              <IconSettings size={17} />
-              设置
-            </button>
+          </div>
+        </>
+      )}
+
+      {/* 0.38.7 ☰ 菜单编辑 sheet：勾选候选目录表里要展示的功能，即点即存；
+          恢复默认=九项标准集 */}
+      {isMobile() && mobileMenuEditOpen && (
+        <>
+          <div className="m-sheet-backdrop" onClick={() => setMobileMenuEditOpen(false)} />
+          <div className="m-sheet" role="dialog" aria-label="编辑菜单">
+            <div className="m-sheet-grabber" />
+            <div className="m-sheet-title">编辑菜单（勾选要展示的功能）</div>
+            {mobileMenuCatalog.map((item) => (
+              <label key={item.id} className="m-sheet-row m-menu-edit-row">
+                <input
+                  type="checkbox"
+                  checked={mobileMenuIds.includes(item.id)}
+                  onChange={(event) => {
+                    const next = event.target.checked
+                      ? [...mobileMenuIds, item.id]
+                      : mobileMenuIds.filter((id) => id !== item.id);
+                    // 一项都不留 = 菜单空转：至少保留一个
+                    if (next.length > 0) persistMobileMenuIds(next);
+                  }}
+                />
+                {item.icon}
+                <span>{item.label}</span>
+              </label>
+            ))}
+            <div className="m-menu-edit-foot">
+              <button
+                type="button"
+                className="m-menu-edit-btn"
+                onClick={() => persistMobileMenuIds(MOBILE_MENU_DEFAULT)}
+              >
+                恢复默认
+              </button>
+              <button
+                type="button"
+                className="m-menu-edit-btn is-done"
+                onClick={() => setMobileMenuEditOpen(false)}
+              >
+                完成
+              </button>
+            </div>
           </div>
         </>
       )}
@@ -9648,11 +9816,40 @@ export default function App() {
           与右下横杆不该同功能——这一份全是笔记属性/状态类操作，应用级动作在
           底条 ☰）。行集对齐 Obsidian 中可映射项：阅读/编辑、实时/源码、固定
           标签页、重命名、收藏、标签、关闭、保存。 */}
-      {isMobile() && noteMenuOpen && current && (
+      {/* 0.38.7 用户反馈「⋮ 菜单应该根据当前标签页的文件自动变化」：激活页是
+          预览文件时只出预览相关操作（笔记态操作全不适用）；普通笔记保持原行集 */}
+      {isMobile() && noteMenuOpen && (current || activePreview) && (
         <>
           <div className="m-sheet-backdrop" onClick={() => setNoteMenuOpen(false)} />
-          <div className="m-sheet" role="menu" aria-label="当前笔记操作">
+          <div className="m-sheet" role="menu" aria-label="当前标签页操作">
             <div className="m-sheet-grabber" />
+            {activePreview ? (
+              <>
+                <button
+                  type="button"
+                  className="m-sheet-row"
+                  onClick={() => {
+                    setNoteMenuOpen(false);
+                    setActivePreview(null);
+                  }}
+                >
+                  <IconEye size={17} />
+                  回到笔记（保留预览标签页）
+                </button>
+                <button
+                  type="button"
+                  className="m-sheet-row"
+                  onClick={() => {
+                    setNoteMenuOpen(false);
+                    closeSpecialTab(activePreview);
+                  }}
+                >
+                  <IconX size={17} />
+                  关闭预览标签页
+                </button>
+              </>
+            ) : current ? (
+              <>
             <button
               type="button"
               className="m-sheet-row"
@@ -9748,6 +9945,8 @@ export default function App() {
               <IconSave size={17} />
               {dirty ? "保存当前笔记（有未保存改动）" : "保存当前笔记"}
             </button>
+              </>
+            ) : null}
           </div>
         </>
       )}
@@ -9760,8 +9959,13 @@ export default function App() {
           <div className="m-sheet-backdrop" onClick={() => setTabSheetOpen(false)} />
           <div className="m-sheet" role="menu" aria-label="标签页">
             <div className="m-sheet-grabber" />
-            <div className="m-sheet-title">标签页（{openTabs.length}）</div>
-            {openTabs.length === 0 && <div className="m-sheet-empty">还没有打开的笔记</div>}
+            {/* 0.38.5 用户反馈「不管什么类型文件都应以标签页形式打开，通过药丸
+                中的标签页功能快速切换」：预览标签（pdf/图片/word/表格/html…）
+                与笔记标签同列在册，点行切回、行尾可关 */}
+            <div className="m-sheet-title">标签页（{openTabs.length + previewTabs.length}）</div>
+            {openTabs.length === 0 && previewTabs.length === 0 && (
+              <div className="m-sheet-empty">还没有打开的文件</div>
+            )}
             {openTabs.map((tab) => {
               const isDirtyTab = dirtyTabs.current.has(tab.path) || (tab.path === activeTab && dirty);
               const name = tab.path.split("/").pop() ?? tab.path;
@@ -9784,6 +9988,32 @@ export default function App() {
                     className="m-tab-close"
                     title="关闭标签"
                     onClick={() => void closeTab(tab.path)}
+                  >
+                    <IconX size={14} />
+                  </button>
+                </div>
+              );
+            })}
+            {previewTabs.map((path) => {
+              const name = path.split("/").pop() ?? path;
+              return (
+                <div key={path} className={`m-tab-row${path === activePreview ? " is-active" : ""}`}>
+                  <button
+                    type="button"
+                    className="m-tab-main"
+                    onClick={() => {
+                      setTabSheetOpen(false);
+                      openPreviewTab(path);
+                    }}
+                  >
+                    <span className="m-tab-name">{name}</span>
+                    <span className="m-tab-pane">预览</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="m-tab-close"
+                    title="关闭预览标签"
+                    onClick={() => closeSpecialTab(path)}
                   >
                     <IconX size={14} />
                   </button>

@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
     <link rel="icon" type="image/png" href="/qn-icon.png" />
     <title>Quick Note</title>
     <script>
@@ -14,6 +14,13 @@
         var mode = JSON.parse(localStorage.getItem("quicknote.settings") || "{}").theme || "system";
         var dark = mode === "dark" || (mode !== "light" && matchMedia("(prefers-color-scheme: dark)").matches);
         document.documentElement.dataset.theme = dark ? "dark" : "light";
+        // 0.38.2：移动端 CSS 的统一开关。UA 判定（与 lib/platform.ts isMobile
+        // 同口径，那边改了这里要同步）——vivo 的 WebView 把 (hover:none)(pointer:coarse)
+        // 上报成桌面形态，媒体查询门整段失效（真机实锤：抽屉变桌面侧栏、药丸/
+        // 底条散架），类门是唯一在所有 ROM 上可靠的信号。桌面 UA 无此类。
+        if (/android|iphone|ipad|ipod/i.test(navigator.userAgent)) {
+          document.documentElement.classList.add("qn-mobile");
+        }
       } catch (e) { /* 读不到设置就按系统主题，splash 仍成立 */ }
       window.__qnSplashAt = Date.now();
     </script>
@@ -22,46 +29,46 @@
          样式全内联：bundle 尚未加载时它就必须成立。React 挂载首帧后由
          App.tsx 的挂载 effect 加 .is-done 淡出并移除。 */
       #qn-splash { display: none; }
-      @media (hover: none) and (pointer: coarse) {
-        #qn-splash {
-          display: flex;
-          position: fixed;
-          inset: 0;
-          z-index: 9999;
-          flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          gap: 16px;
-          background: var(--bg);
-          transition: opacity 0.32s ease;
-        }
-        #qn-splash.is-done {
-          opacity: 0;
-          pointer-events: none;
-        }
-        #qn-splash .qn-splash-mark {
-          width: 64px;
-          height: 64px;
-          color: var(--accent);
-          animation: qn-splash-in 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
-        }
-        #qn-splash .qn-splash-name {
-          font-family: var(--font-ui);
-          font-size: 17px;
-          font-weight: 600;
-          letter-spacing: 0.02em;
-          color: var(--text);
-          animation: qn-splash-in 0.5s 0.08s cubic-bezier(0.2, 0.8, 0.3, 1) both;
-        }
-        @keyframes qn-splash-in {
-          from { opacity: 0; transform: translateY(10px) scale(0.92); }
-          to { opacity: 1; transform: none; }
-        }
-        @media (prefers-reduced-motion: reduce) {
-          #qn-splash .qn-splash-mark,
-          #qn-splash .qn-splash-name {
-            animation: none;
-          }
+      /* 0.38.2：显示门改 html.qn-mobile 类（媒体查询在 vivo 上不可靠，见上）。
+         桌面 UA 无此类，display:none 零变化 */
+      html.qn-mobile #qn-splash {
+        display: flex;
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        background: var(--bg);
+        transition: opacity 0.32s ease;
+      }
+      html.qn-mobile #qn-splash.is-done {
+        opacity: 0;
+        pointer-events: none;
+      }
+      html.qn-mobile #qn-splash .qn-splash-mark {
+        width: 64px;
+        height: 64px;
+        color: var(--accent);
+        animation: qn-splash-in 0.5s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+      }
+      html.qn-mobile #qn-splash .qn-splash-name {
+        font-family: var(--font-ui);
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--text);
+        animation: qn-splash-in 0.5s 0.08s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+      }
+      @keyframes qn-splash-in {
+        from { opacity: 0; transform: translateY(10px) scale(0.92); }
+        to { opacity: 1; transform: none; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        html.qn-mobile #qn-splash .qn-splash-mark,
+        html.qn-mobile #qn-splash .qn-splash-name {
+          animation: none;
         }
       }
     </style>

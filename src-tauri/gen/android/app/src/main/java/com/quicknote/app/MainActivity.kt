@@ -375,81 +375,104 @@ class MainActivity : TauriActivity() {
         notifyUpdateDone(webView, false, "已有下载在进行中，请稍候")
         return
       }
-      try {
-        val dir = File(filesDir, "update").apply { mkdirs() }
-        // 清旧包：只保留本次下载
-        dir.listFiles()?.forEach { it.delete() }
-        val dest = File(dir, "quick-note-update.apk")
-        var lastError: IOException? = null
-        var attempts = 0
-        while (attempts < 3) {
-          attempts += 1
-          try {
-            downloadApk(webView, url, dest)
-            lastError = null
-            break
-          } catch (e: IOException) {
-            lastError = e
-            if (attempts < 3) {
-              try {
-                Thread.sleep(1200)
-              } catch (_: InterruptedException) {
+      // 0.38.4 用户反馈「点击下载后状态不变、无进度条、整个页面卡住，下载完才
+      // 见结果」：JavascriptInterface 方法与 JS 主线程是**同步**调用——在这里
+      // 内联下载会把 JS 线程堵到下载结束（点击前排队的 setState 渲染不出来、
+      // __qnUpdateProgress 全排在被堵的线程上、任何按钮无响应）。下载挪后台
+      // 线程，本方法立即返回；进度/结果照旧经 mainHandler 回前端。
+      Thread {
+        try {
+          val dir = File(filesDir, "update").apply { mkdirs() }
+          // 清旧包：只保留本次下载
+          dir.listFiles()?.forEach { it.delete() }
+          val dest = File(dir, "quick-note-update.apk")
+          var lastError: IOException? = null
+          var attempts = 0
+          while (attempts < 3) {
+            attempts += 1
+            try {
+              downloadApk(webView, url, dest)
+              lastError = null
+              break
+            } catch (e: IOException) {
+              lastError = e
+              if (attempts < 3) {
+                try {
+                  Thread.sleep(1200)
+                } catch (_: InterruptedException) {
+                }
               }
             }
           }
-        }
-        val err = lastError
-        if (err != null) {
-          notifyUpdateDone(
-            webView,
-            false,
-            "下载失败（已重试 $attempts 次）：${err.message}。网络不稳可再试，或到发布页直接下载 APK"
-          )
-          return
-        }
-        if (!dest.exists() || dest.length() == 0L) {
-          notifyUpdateDone(webView, false, "下载失败：文件为空")
-          return
-        }
-        mainHandler.post {
-          try {
-            val uri: Uri = FileProvider.getUriForFile(
-              this@MainActivity,
-              "$packageName.fileprovider",
-              dest
+          val err = lastError
+          if (err != null) {
+            notifyUpdateDone(
+              webView,
+              false,
+              "下载失败（已重试 $attempts 次）：${err.message}。网络不稳可再试（已支持断点续传），或到发布页直接下载 APK"
             )
-            val install = Intent(Intent.ACTION_VIEW).apply {
-              setDataAndType(uri, "application/vnd.android.package-archive")
-              addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            startActivity(install)
-            notifyUpdateDone(webView, true, "已开始安装")
-          } catch (e: Exception) {
-            notifyUpdateDone(webView, false, "拉起安装器失败：${e.message}")
+            return@Thread
           }
+          if (!dest.exists() || dest.length() == 0L) {
+            notifyUpdateDone(webView, false, "下载失败：文件为空")
+            return@Thread
+          }
+          mainHandler.post {
+            try {
+              val uri: Uri = FileProvider.getUriForFile(
+                this@MainActivity,
+                "$packageName.fileprovider",
+                dest
+              )
+              val install = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/vnd.android.package-archive")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+              }
+              startActivity(install)
+              notifyUpdateDone(webView, true, "已开始安装")
+            } catch (e: Exception) {
+              notifyUpdateDone(webView, false, "拉起安装器失败：${e.message}")
+            }
+          }
+        } finally {
+          downloading.set(false)
         }
-      } finally {
-        downloading.set(false)
-      }
+      }.start()
     }
 
     /** 下载互斥闸：同一时刻只允许一路下载（0.34.2 用户反馈「可能会下载多次」）。 */
     private val downloading = java.util.concurrent.atomic.AtomicBoolean(false)
 
-    /** 下载 APK 本体；进度经 __qnUpdateProgress(pct) 回前端（300ms 节流）。 */
+    /**
+     * 下载 APK 本体；进度经 __qnUpdateProgress(pct) 回前端（300ms 节流）。
+     * 0.38.4 用户反馈「自部署服务器怎么还会下载失败」：弱网/运营商 NAT 常把
+     * 长连接中途掐断（0.34.2 实锤 Software caused connection abort），此前每次
+     * 重试都从头拉整个 APK。服务端下载端点已带 `Accept-Ranges: bytes`——
+     * 半包续传：带 Range 重试，206 追加、200 重下。
+     */
     private fun downloadApk(webView: WebView, url: String, dest: File) {
+      val resumeFrom = if (dest.exists()) dest.length() else 0L
       val connection = URL(url).openConnection() as HttpURLConnection
       connection.connectTimeout = 15_000
       connection.readTimeout = 60_000
       connection.instanceFollowRedirects = true
+      if (resumeFrom > 0) {
+        connection.setRequestProperty("Range", "bytes=$resumeFrom-")
+      }
       connection.connect()
       val code = connection.responseCode
       if (code !in 200..299) {
         throw IOException("HTTP $code")
       }
-      val total = connection.contentLengthLong
+      val resuming = code == 206 && resumeFrom > 0
+      if (!resuming) {
+        // 服务器不支持续传（200 重下）或上一轮无半包：清掉旧内容从零写
+        if (dest.exists()) dest.delete()
+      }
+      val base = if (resuming) resumeFrom else 0L
+      val total = if (resuming) base + connection.contentLengthLong else connection.contentLengthLong
       connection.inputStream.use { input ->
-        dest.outputStream().use { output ->
+        java.io.FileOutputStream(dest, resuming).use { output ->
           val buffer = ByteArray(64 * 1024)
           var done = 0L
           var lastPct = -2
@@ -462,7 +485,7 @@ class MainActivity : TauriActivity() {
             val now = System.currentTimeMillis()
             if (total > 0 && now - lastSent >= 300) {
               lastSent = now
-              val pct = ((done * 100) / total).toInt().coerceIn(0, 99)
+              val pct = (((base + done) * 100) / total).toInt().coerceIn(0, 99)
               if (pct != lastPct) {
                 lastPct = pct
                 mainHandler.post {

@@ -13,6 +13,10 @@ export function isMobile(): boolean {
 
 /** 悬停交互是否存在（移动端触摸屏没有 hover，⋯菜单/工具栏要走长按或常驻按钮）。 */
 export function hasHover(): boolean {
+  // 0.38.2 vivo 实锤：其 WebView 把 (hover: hover) 也上报成 true（同根因：
+  // (hover:none)(pointer:coarse) 媒体查询整段失效，移动端 CSS 全没生效）。
+  // 移动 UA 一票否决，勿依赖媒体特性回答「有没有悬停」。
+  if (isMobile()) return false;
   if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
   return window.matchMedia("(hover: hover)").matches;
 }

@@ -165,7 +165,9 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   const scale = clamp(bg.bgScale, 10, 400) / 100;
   layer.style.backgroundImage = `url("${convertFileSrc(absolute)}")`;
   layer.style.backgroundPosition = `${bg.bgPosX}% ${bg.bgPosY}%`;
-  layer.style.backgroundSize = bg.bgFit === "contain" ? "contain" : "cover";
+  // 0.38.7 自定义裁剪（custom）：完整显示基底，缩放/位置滑杆自由裁——
+  // bgScale 走 transform（锚点=位置焦点，下方既有逻辑），尺寸用 contain 铺底
+  layer.style.backgroundSize = bg.bgFit === "cover" ? "cover" : "contain";
   layer.style.backgroundRepeat = "no-repeat";
   layer.style.opacity = String(clamp(bg.bgOpacity, 0, 1));
   // filter 只放合法的 filter 函数。0.26 及之前把 scale() 塞进了 filter——它不是

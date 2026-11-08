@@ -172,6 +172,19 @@ try {
   );
   check(mediaOk, "移动端媒体查询命中（pointer:coarse 仿真有效）");
 
+  // 0.38.2 移动端 CSS 的门改挂 html.qn-mobile 类（UA 判定）——vivo WebView 把
+  // hover/pointer 媒体特性上报成桌面形态，媒体查询整段失效（真机实锤）。
+  // 这里验证类门与样式真正接管（fixed 定位是类门生效的直接证据）。
+  const mobileGate = await evaluate(ws, `(() => {
+    const bar = document.querySelector('.m-bottom-bar');
+    return {
+      cls: document.documentElement.classList.contains('qn-mobile'),
+      pos: bar ? getComputedStyle(bar).position : '',
+    };
+  })()`);
+  check(mobileGate.cls, "0.38.2：html.qn-mobile 类门就位（UA 判定）");
+  check(mobileGate.pos === "fixed", `0.38.2：底条样式由类门接管（position=${mobileGate.pos}）`);
+
   // 0.34.0 骨架：顶栏/底部导航退场；顶药丸（抽屉键 + 编辑/⋮组）；底条六键
   const skeleton = await evaluate(ws, `(() => {
     const topbar = document.querySelector('header.topbar');
@@ -236,7 +249,7 @@ try {
   check(drawerOn.sections === 1, `0.34.1：分区卡默认收起成胶囊（实际 ${drawerOn.sections} 行）`);
   // 0.34.1：动作行只属于文件列表分区；0.34.6 起三键（定位当前文件/新建笔记/
   // 新建文件夹，✕ 已删，全屏抽屉走返回键关闭）
-  check(drawerOn.actions === 3, `0.34.1：动作行键数（0.34.6 加定位钮后为 3，实际 ${drawerOn.actions}）`);
+  check(drawerOn.actions === 4, `0.38.7：动作行键数（加目录筛选钮后为 4，实际 ${drawerOn.actions}）`);
   const fullWidth = await evaluate(ws, `Math.round(document.querySelector('aside.sidebar-left').getBoundingClientRect().width)`);
   check(Math.abs(fullWidth - 390) <= 2, `0.34.1：抽屉全屏（宽 ${fullWidth}px ≈ 视口 390）`);
   // 非文件分区不显示动作行
@@ -775,7 +788,7 @@ try {
   })()`);
   check(menuRows.open, "0.34.0：☰ 动作菜单 sheet 打开（含 grabber，图2）");
   // 0.34.1：标签/保存两行迁去右上 ⋮ 笔记菜单，应用级菜单剩 8 行；0.35.2 加「语句库管理」= 9 行
-  check(menuRows.rows.length === 9, `0.35.2：应用级动作菜单 9 行（实际 ${menuRows.rows.length}）`);
+  check(menuRows.rows.length === 10, `0.38.7：应用级动作菜单 10 行（9 项 + 编辑菜单，实际 ${menuRows.rows.length}）`);
   check(menuRows.bdBg !== "rgba(0, 0, 0, 0)", "0.34.0：sheet 遮罩有底色");
   check(
     menuRows.rows.some((r) => r.includes("今天的日记")) &&

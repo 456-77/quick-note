@@ -124,8 +124,9 @@ export interface Settings {
   bgPosY: number;
   /** 缩放（%，100 = 原始大小，配合 cover/contain 使用）。 */
   bgScale: number;
-  /** 适配方式：cover = 铺满裁剪，contain = 完整显示。 */
-  bgFit: "cover" | "contain";
+  /** 适配方式：cover = 铺满裁剪，contain = 完整显示，custom = 自定义裁剪
+   * （完整显示基底 + 缩放/位置滑杆自由裁，0.38.7 用户反馈）。 */
+  bgFit: "cover" | "contain" | "custom";
   /**
    * 界面浓度（0–100，0.29 用户反馈"背景图片就是很淡"）。
    *
@@ -209,7 +210,7 @@ export type BgSettings = Pick<
 
 const STORAGE_KEY = "quicknote.settings";
 
-const DEFAULTS: Settings = {
+export const DEFAULTS: Settings = {
   // 默认 wiki：Obsidian 开启 wikilink 时（默认）粘贴图片写的就是 ![[图.png]]
   linkFormat: "wiki",
   savePastedAttachments: true,

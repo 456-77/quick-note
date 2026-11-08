@@ -23,7 +23,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { bgFilterCss } from "../lib/background";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
 import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, autostartIsEnabled, autostartEnable, autostartDisable, type AppDataPaths, type DirStat } from "../lib/api";
-import { bgSettingsFor, getSettings, type BgSettings, type Settings } from "../lib/settings";
+import { bgSettingsFor, getSettings, DEFAULTS, type BgSettings, type Settings } from "../lib/settings";
 import type { DailyController } from "../lib/useDaily";
 import { issuePortalTicket, type SyncController } from "../lib/useSync";
 import { openExternal } from "../lib/markdownExtras";
@@ -196,8 +196,37 @@ function DeferredSlider({
     [],
   );
 
-  return (
+  // 0.38.8 用户反馈（二轮）「滑杆还是误触：手势起点落在轨道上原生就跳值」：
+  // touch-action:pan-y 只放行纵向滚动，拦不住原生 pointerdown 的「点轨道即跳」。
+  // 手机端把原生触摸整个接管——盖一层手势板：横向意图才进拖动（按横轴比例算
+  // 值），纵向意图不拦（页面照常滚），轻点不改值。桌面原生交互不动。
+  const [mobile] = useState(() => /android|iphone|ipad|ipod/i.test(navigator.userAgent));
+  const trackRef = useRef<HTMLInputElement | null>(null);
+  const gesture = useRef<{ x0: number; y0: number; engaged: boolean; v0: number } | null>(null);
+
+  const setFromClientX = (clientX: number) => {
+    const input = trackRef.current;
+    if (!input) return;
+    const rect = input.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / Math.max(1, rect.width)));
+    const lo = min ?? 0;
+    const hi = max ?? 100;
+    const st = step ?? 1;
+    const raw = lo + ratio * (hi - lo);
+    const next = Math.min(hi, Math.max(lo, Math.round(raw / st) * st));
+    latest.current = next;
+    setDrag(next);
+    if (timer.current === null) {
+      timer.current = window.setTimeout(() => {
+        timer.current = null;
+        onCommitRef.current(latest.current);
+      }, 120);
+    }
+  };
+
+  const input = (
     <input
+      ref={trackRef}
       type="range"
       min={min}
       max={max}
@@ -227,6 +256,46 @@ function DeferredSlider({
         }
       }}
     />
+  );
+
+  if (!mobile || disabled) return input;
+  return (
+    <span
+      className="settings-slider-touch"
+      onTouchStart={(event) => {
+        const t = event.touches[0];
+        gesture.current = { x0: t.clientX, y0: t.clientY, engaged: false, v0: 0 };
+      }}
+      onTouchMove={(event) => {
+        const g = gesture.current;
+        if (!g) return;
+        const t = event.touches[0];
+        const dx = t.clientX - g.x0;
+        const dy = t.clientY - g.y0;
+        if (!g.engaged) {
+          // 意图判定：横向才接管（preventDefault 掐掉页面滚动），纵向放行滚屏
+          if (Math.abs(dx) > Math.abs(dy) + 4 && Math.abs(dx) > 10) {
+            g.engaged = true;
+            g.v0 = 0;
+          } else if (Math.abs(dy) > 12) {
+            gesture.current = null; // 纵向滚动：交还页面
+            return;
+          } else {
+            return;
+          }
+        }
+        event.preventDefault();
+        setFromClientX(t.clientX);
+      }}
+      onTouchEnd={() => {
+        if (gesture.current?.engaged) flush();
+        gesture.current = null;
+      }}
+    >
+      {/* pointer-events:none——原生触摸不再参与，调值全走上面的手势板 */}
+      <span className="settings-slider-touch-disable" aria-hidden="true" />
+      {input}
+    </span>
   );
 }
 
@@ -662,6 +731,36 @@ export default function SettingsDialog({
     },
     [vault, saveWithFlash],
   );
+
+  // 0.38.8 用户反馈「自定义裁剪不应该是点击之后编辑图片吗」：适配方式=custom
+  // 时，预览图直接可编辑——单指拖动=平移焦点（posX/posY），双指捏合=缩放
+  // （bgScale）；手势过程直接改样式即时反馈，松手一次性 saveBg 落盘。
+  // 全屏取景编辑器草稿（custom 模式）：取景框=整个屏幕，图在框下拖/缩，
+  // 确定才 saveBg，取消即弃
+  const [cropDraft, setCropDraft] = useState<{ posX: number; posY: number; scale: number } | null>(null);
+  const cropStaged = useRef<{ posX: number; posY: number; scale: number } | null>(null);
+  const cropGesture = useRef<{ dist: number; scale: number; lastX: number; lastY: number; boxW: number; boxH: number } | null>(null);
+  // 原生非被动 touchmove 兜底：部分内核把 React 的 touchmove 注册成被动，
+  // preventDefault 无效 → 浏览器双指缩放抢走取景手势（0.38.10 真机实锤
+  // 「自定义裁剪无法缩放图片」）。这里在捕获阶段无条件掐掉页面手势。
+  const cropStageRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!cropDraft) return;
+    const stage = cropStageRef.current;
+    if (!stage) return;
+    const swallow = (event: TouchEvent) => event.preventDefault();
+    stage.addEventListener("touchmove", swallow, { passive: false });
+    return () => stage.removeEventListener("touchmove", swallow);
+  }, [cropDraft]);
+  const bgCropImgRef = useRef<HTMLDivElement | null>(null);
+  const bgCropApply = () => {
+    const img = bgCropImgRef.current;
+    const st = cropStaged.current;
+    if (!img || !st) return;
+    img.style.backgroundPosition = `${st.posX}% ${st.posY}%`;
+    img.style.transform = st.scale !== 100 ? `scale(${st.scale / 100})` : "";
+    img.style.transformOrigin = `${st.posX}% ${st.posY}%`;
+  };
 
   // 0.34.6 相册选壁纸的原生回调：挂 __qnBgPickDone（桥在 MainActivity 注入）。
   // 必须在 saveBg 之后注册——成功回调里要写 bgImagePath + 启用背景
@@ -1624,30 +1723,156 @@ export default function SettingsDialog({
           {vault && (bg.bgRotateEnabled ? bg.bgImageAbsPath : bg.bgImagePath) && (
             <div className="settings-block bg-preview-block" data-keywords="背景 预览">
               <div className="bg-preview">
+                {/* 0.38.8 用户反馈「预览显示的范围和实际背景展示的范围不一致」：
+                    预览盒固定 9/16，真实背景层是全屏——宽高比不同 cover 的裁剪
+                    区域就不同。改为按**真实视口宽高比**等比缩小的「迷你屏幕」，
+                    背景参数原样映射，所见即所得；两侧棋盘格是舞台底 */}
                 <div
-                  className="bg-preview-img"
+                  className={`bg-preview-screen${bg.bgFit === "custom" ? " is-editing" : ""}`}
+                  style={{ aspectRatio: `${window.innerWidth} / ${window.innerHeight}` }}
+                  onClick={() => {
+                    // 0.38.8 用户反馈「自定义裁剪应该点击后编辑图片，参考系统
+                    // 壁纸的取景框」：点击预览 → 全屏取景编辑器（取景框=屏幕，
+                    // 图在框下拖动/捏合，框里所见即最终壁纸）
+                    if (bg.bgFit !== "custom") return;
+                    const draft = { posX: bg.bgPosX, posY: bg.bgPosY, scale: bg.bgScale };
+                    cropStaged.current = { ...draft };
+                    setCropDraft(draft);
+                  }}
+                >
+                  <div
+                    className="bg-preview-img"
+                    style={{
+                      // 轮换开着预览轮换当前图（绝对路径），否则仓库内选图——与
+                      // background.ts 的取图优先级同口径
+                      backgroundImage: `url("${convertFileSrc(
+                        bg.bgRotateEnabled && bg.bgImageAbsPath
+                          ? bg.bgImageAbsPath.trim()
+                          : `${vault.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`,
+                      )}")`,
+                      // custom（自定义裁剪）与 contain 同为完整显示基底（缩放/
+                      // 位置滑杆自由裁）——与 background.ts 渲染口径一致
+                      backgroundSize: bg.bgFit === "cover" ? "cover" : "contain",
+                      backgroundPosition: `${bg.bgPosX}% ${bg.bgPosY}%`,
+                      opacity: bg.bgOpacity,
+                      // 与 background.ts 同口径（含 0.28 的锐化）
+                      filter: bgFilterCss(bg),
+                      transform: bg.bgScale !== 100 ? `scale(${bg.bgScale / 100})` : undefined,
+                      transformOrigin: `${bg.bgPosX}% ${bg.bgPosY}%`,
+                    }}
+                  />
+                  {/* 0.38.9 用户反馈「预览与实际背景可见度不一致」：真实背景上盖着
+                      界面表面层（编辑区面纱，移动端基准 94%），实际可见度被压低——
+                      预览此前显示原始图。叠同款面纱（随界面浓度滑杆联动）才是
+                      用户真正看到的样子。 */}
+                  <div
+                    className="bg-preview-veil"
+                    style={{
+                      background: "var(--surface)",
+                      opacity: Math.min(100, (isMobile() ? 94 : 80) * Math.min(1.25, Math.max(0, (bg.bgSurface ?? 80) / 80))) / 100,
+                    }}
+                  />
+                </div>
+                <span className="bg-preview-hint">背景预览（实际观感以界面为准）</span>
+              </div>
+            </div>
+          )}
+          {/* 0.38.8 用户反馈「先有取景框，图在框下放大缩小/上下左右移动，
+              取到框里的就行」：全屏取景编辑器——取景框=屏幕本身 */}
+          {cropDraft && vault && (
+            <div className="bg-crop-editor">
+              <div
+                ref={cropStageRef}
+                className="bg-crop-stage"
+                onTouchStart={(event) => {
+                  const box = event.currentTarget.getBoundingClientRect();
+                  const st = cropStaged.current ?? { posX: cropDraft.posX, posY: cropDraft.posY, scale: cropDraft.scale };
+                  cropStaged.current = st;
+                  if (event.touches.length === 1) {
+                    const t = event.touches[0];
+                    cropGesture.current = { dist: 0, scale: st.scale, lastX: t.clientX, lastY: t.clientY, boxW: Math.max(1, box.width), boxH: Math.max(1, box.height) };
+                  } else if (event.touches.length === 2) {
+                    const [a, b] = [event.touches[0], event.touches[1]];
+                    cropGesture.current = { dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY), scale: st.scale, lastX: 0, lastY: 0, boxW: Math.max(1, box.width), boxH: Math.max(1, box.height) };
+                  }
+                }}
+                onTouchMove={(event) => {
+                  const g = cropGesture.current;
+                  const st = cropStaged.current;
+                  if (!g || !st) return;
+                  event.preventDefault();
+                  if (event.touches.length === 1 && g.dist === 0) {
+                    const t = event.touches[0];
+                    // 拖图方向与焦点相反：往右拖=看更左边的内容
+                    st.posX = Math.min(100, Math.max(0, st.posX - ((t.clientX - g.lastX) / g.boxW) * 100));
+                    st.posY = Math.min(100, Math.max(0, st.posY - ((t.clientY - g.lastY) / g.boxH) * 100));
+                    g.lastX = t.clientX;
+                    g.lastY = t.clientY;
+                    bgCropApply();
+                    return;
+                  }
+                  if (event.touches.length === 2) {
+                    const [a, b] = [event.touches[0], event.touches[1]];
+                    const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+                    if (g.dist > 0 && dist > 0) {
+                      // 缩放下限 100：再小真实背景层就缩出屏幕（四周露底色）
+                      st.scale = Math.min(200, Math.max(100, Math.round((g.scale * dist) / g.dist)));
+                      bgCropApply();
+                    }
+                    g.dist = dist;
+                  }
+                }}
+                onTouchEnd={(event) => {
+                  if (event.touches.length === 0) {
+                    cropGesture.current = null;
+                    // 松手才同步 state（确定按钮读它）；手势期间零重渲不抖
+                    const st = cropStaged.current;
+                    if (st) setCropDraft({ ...st });
+                  }
+                }}
+              >
+                <div
+                  ref={bgCropImgRef}
+                  className="bg-crop-img"
                   style={{
-                    // 轮换开着预览轮换当前图（绝对路径），否则仓库内选图——与
-                    // background.ts 的取图优先级同口径
                     backgroundImage: `url("${convertFileSrc(
                       bg.bgRotateEnabled && bg.bgImageAbsPath
                         ? bg.bgImageAbsPath.trim()
                         : `${vault.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`,
                     )}")`,
-                    backgroundSize: bg.bgFit === "contain" ? "contain" : "cover",
-                    backgroundPosition: `${bg.bgPosX}% ${bg.bgPosY}%`,
-                    opacity: bg.bgOpacity,
-                    // 与 background.ts 同口径（含 0.28 的锐化）
+                    // 与真实层同基底：cover 走 cover（否则编辑器看到的是
+                    // contain 裁剪、确定后却是 cover——所见非所得）
+                    backgroundSize: bg.bgFit === "cover" ? "cover" : "contain",
+                    backgroundPosition: `${cropDraft.posX}% ${cropDraft.posY}%`,
                     filter: bgFilterCss(bg),
-                    transform: bg.bgScale !== 100 ? `scale(${bg.bgScale / 100})` : undefined,
-                    transformOrigin: `${bg.bgPosX}% ${bg.bgPosY}%`,
+                    transform: cropDraft.scale !== 100 ? `scale(${cropDraft.scale / 100})` : undefined,
+                    transformOrigin: `${cropDraft.posX}% ${cropDraft.posY}%`,
                   }}
                 />
-                <span className="bg-preview-hint">背景预览（实际观感以界面为准）</span>
+              </div>
+              <div className="bg-crop-hint">取景框=屏幕 · 拖动平移 · 双指缩放</div>
+              <div className="bg-crop-actions">
+                <button
+                  type="button"
+                  className="bg-crop-btn"
+                  onClick={() => setCropDraft(null)}
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  className="bg-crop-btn is-done"
+                  onClick={() => {
+                    saveBg({ bgPosX: Math.round(cropDraft.posX), bgPosY: Math.round(cropDraft.posY), bgScale: cropDraft.scale });
+                    setCropDraft(null);
+                  }}
+                >
+                  确定
+                </button>
               </div>
             </div>
           )}
-          <Row label="适配方式" desc="铺满裁剪（cover）/ 完整显示（contain）。" keywords="背景">
+          <Row label="适配方式" desc="铺满裁剪（cover）/ 完整显示（contain）/ 自定义裁剪（点预览图进全屏取景框，拖动/捏合取景）。" keywords="背景 适配 裁剪">
             <SettingsSelect
               ariaLabel="适配方式"
               value={bg.bgFit}
@@ -1655,9 +1880,46 @@ export default function SettingsDialog({
               options={[
                 { value: "cover", label: "铺满裁剪（cover）" },
                 { value: "contain", label: "完整显示（contain）" },
+                { value: "custom", label: "自定义裁剪（custom）" },
               ]}
-              onChange={(value) => saveBg({ bgFit: value })}
+              onChange={(value) => saveBg({ bgFit: value as BgSettings["bgFit"] })}
             />
+          </Row>
+          {/* 0.38.7 用户反馈「背景调节添加重置和保存选项」：重置=调参类背景字段
+              全部回默认（图片/开关/轮换不动）；保存=当前值立即落盘（滑杆本就
+              自动保存，这里是给确认动作+保存闪光反馈） */}
+          <Row label="重置 / 保存" desc="重置：下方调节参数全部恢复默认；保存：立即落盘当前设置。" keywords="背景 重置 保存 默认">
+            <span className="settings-inline bg-reset-row">
+              <button
+                type="button"
+                className="settings-btn"
+                disabled={!vault}
+                onClick={() =>
+                  saveBg({
+                    bgFit: DEFAULTS.bgFit,
+                    bgOpacity: DEFAULTS.bgOpacity,
+                    bgBlur: DEFAULTS.bgBlur,
+                    bgSharpen: DEFAULTS.bgSharpen,
+                    bgBrightness: DEFAULTS.bgBrightness,
+                    bgContrast: DEFAULTS.bgContrast,
+                    bgPosX: DEFAULTS.bgPosX,
+                    bgPosY: DEFAULTS.bgPosY,
+                    bgScale: DEFAULTS.bgScale,
+                    bgSurface: DEFAULTS.bgSurface,
+                  })
+                }
+              >
+                重置
+              </button>
+              <button
+                type="button"
+                className="settings-btn is-primary"
+                disabled={!vault}
+                onClick={() => saveBg({})}
+              >
+                保存
+              </button>
+            </span>
           </Row>
           <Row label="不透明度" desc="背景图整体的可见程度。" keywords="背景 淡 透明">
             <span className="settings-slider">

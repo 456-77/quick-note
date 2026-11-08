@@ -26,7 +26,12 @@ android {
     compileSdk = 36
     namespace = "com.quicknote.app"
     defaultConfig {
-        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        // 0.38.4 用户反馈「自部署服务器怎么还会下载失败」：release 此前 false——
+        // 应用内更新的 Kotlin 下载（HttpURLConnection）打自部署 http:// 端点会被
+        // 明文策略当场拦死（同步走 Rust 原生栈不受此策略管，所以同步一直正常）。
+        // 应用经 GitHub 分发不受商店政策约束，WebView 也不加载远程 http 内容，
+        // 放开明文（debug 块原本就是 true）。
+        manifestPlaceholders["usesCleartextTraffic"] = "true"
         applicationId = "com.quicknote.app"
         minSdk = 24
         targetSdk = 36

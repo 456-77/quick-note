@@ -705,7 +705,7 @@ kbd {
    弹出/收起，会把整栏内容横向挤 9px（0.34.8 用户反馈「右边的滑动条还是占用了
    空间」——上轮只按手机截图盖了移动端，桌面同一容器 .calendar overflow:auto
    同样弹条）。滚动本身不受影响（滚轮/触摸/拖动照旧），只是不画指示条。
-   移动端另有全区隐藏规则（媒体查询块内），此处全平台覆盖右栏。 */
+   移动端另有全区隐藏规则（qn-mobile 类门内），此处全平台覆盖右栏。 */
 .sidebar-right,
 .sidebar-right * {
   scrollbar-width: none;
@@ -9214,870 +9214,842 @@ button.cm-tag:hover {
    CSS 管呈现形态，React 管交互入口。 */
 
 /* 触屏没有 hover：⋯ 按钮常驻（文件树行、待办行、代码块复制等同理 */
-@media (hover: none) and (pointer: coarse) {
-  /* 0.34.8 用户反馈「右侧滚动条不要单独占用空间…像向左挤了一下」：自定义
-     webkit 滚动条在 Chromium 里永远占布局空间，内容增减（如切换天数待办变多）
-     时滚动条弹出/收起会把整个面板内容横向挤 9px。触屏上滚动没有指示条的必要，
-     全区隐藏（触摸滚动不受影响），桌面保持细滚动条不变 */
-  * {
-    scrollbar-width: none;
-  }
-  *::-webkit-scrollbar {
-    width: 0;
-    height: 0;
-  }
-  .tree-item .tree-more {
-    display: inline-flex;
-  }
-  /* 长按 = contextmenu（右键菜单），防止系统文本选择手柄抢交互 */
-  .tree-item, .tree-dir, .tabbar, .cm-row {
-    -webkit-user-select: none;
-    user-select: none;
-  }
-  /* 键盘提示（Ctrl K 等）在无物理键盘的设备上没有意义 */
-  .editor-empty-keys {
-    display: none;
-  }
+/* 0.34.8 用户反馈「右侧滚动条不要单独占用空间…像向左挤了一下」：自定义
+   webkit 滚动条在 Chromium 里永远占布局空间，内容增减（如切换天数待办变多）
+   时滚动条弹出/收起会把整个面板内容横向挤 9px。触屏上滚动没有指示条的必要，
+   全区隐藏（触摸滚动不受影响），桌面保持细滚动条不变 */
+html.qn-mobile * {
+  scrollbar-width: none;
+}
+html.qn-mobile *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+html.qn-mobile .tree-item .tree-more {
+  display: inline-flex;
+}
+/* 长按 = contextmenu（右键菜单），防止系统文本选择手柄抢交互 */
+html.qn-mobile .tree-item,
+html.qn-mobile .tree-dir,
+html.qn-mobile .tabbar,
+html.qn-mobile .cm-row {
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* 键盘提示（Ctrl K 等）在无物理键盘的设备上没有意义 */
+html.qn-mobile .editor-empty-keys {
+  display: none;
 }
 
 /* 移动端骨架：侧栏抽屉化 + 浮动药丸（0.34.0 Obsidian 化：顶栏/底部导航退场）。
-   900px 以下且触屏生效；桌面窄窗口（有鼠标）保持现有挤压布局不变。 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 0.34.0：底部导航退场，--m-nav-h 占位制废除（抽屉/工具条改贴屏幕边）。
-     0.33.1：全部不再叠 env(safe-area-inset-*)——系统栏 insets 由 MainActivity
-     原生 margin 让出，而 vivo 等机型的 WebView 里 env 仍虚报（真机实测
-     top/bottom 各 ~25-50px），CSS 再补一次就是双重留白 */
+   0.38.2 起移动端专区统一挂 html.qn-mobile 类门（勿改回媒体查询）：UA 判定
+   （platform.ts isMobile 同口径）是唯一在所有 ROM 上可靠的信号——vivo 的
+   WebView 把 (hover:none)(pointer:coarse) 上报成桌面形态（真机实锤：移动端
+   CSS 整段跳过，抽屉变桌面侧栏、药丸/底条散架），桌面窄窗口无此类零变化。 */
+/* 0.34.0：底部导航退场，--m-nav-h 占位制废除（抽屉/工具条改贴屏幕边）。
+   0.33.1：全部不再叠 env(safe-area-inset-*)——系统栏 insets 由 MainActivity
+   原生 margin 让出，而 vivo 等机型的 WebView 里 env 仍虚报（真机实测
+   top/bottom 各 ~25-50px），CSS 再补一次就是双重留白 */
 
-  /* 状态栏（文件路径/字节数等桌面信息）移动端不显示；空状态末位的
-     「打开其他仓库」幽灵键同理（仓库切换走抽屉底部的仓库切换器） */
-  .statusbar,
-  .editor-empty-actions .btn-ghost:last-child {
-    display: none;
-  }
+/* 状态栏（文件路径/字节数等桌面信息）移动端不显示；空状态末位的
+   「打开其他仓库」幽灵键同理（仓库切换走抽屉底部的仓库切换器） */
+html.qn-mobile .statusbar,
+html.qn-mobile .editor-empty-actions .btn-ghost:last-child {
+  display: none;
+}
 
-  /* 侧栏 → 抽屉：0.34.1 用户反馈改为**全屏**（Obsidian 移动端同款——抽屉
-     盖满整屏，关闭走系统返回/点文件/仓库切换）。上下贴屏幕边（系统栏仍由
-     原生 margin 让出） */
-  /* 收件箱（速记管理）是 in-flow 全屏页：页头自行避让系统栏 */
-  .cm-root {
-    padding-top: calc(10px + var(--qn-inset-top, 0px));
-    padding-bottom: calc(12px + var(--qn-inset-bottom, 0px));
-  }
-  .sidebar-left,
-  .sidebar-right {
-    position: fixed;
-    top: 0;
-    bottom: 0;
-    width: 100vw !important;
-    max-width: 100vw !important;
-    min-width: 0 !important;
-    z-index: 70;
-    box-shadow: none;
-    opacity: 1;
-  }
-  .sidebar-left {
-    left: 0;
-    border-right: 1px solid var(--border-soft);
-  }
-  .sidebar-right {
-    right: 0;
-    border-left: 1px solid var(--border-soft);
-  }
-  /* 收起时整体移出屏幕（保留现有 left-collapsed 类语义），过渡跟随展开 */
-  .body.left-collapsed > .sidebar-left {
-    transform: translateX(-105%);
-    width: 100vw !important;
-    opacity: 1;
-    pointer-events: none;
-  }
-  .body.right-collapsed > .sidebar-right {
-    transform: translateX(105%);
-    width: 100vw !important;
-    opacity: 1;
-    pointer-events: none;
-  }
-  .sidebar-left,
-  .sidebar-right,
-  .body.left-collapsed > .sidebar-left,
-  .body.right-collapsed > .sidebar-right {
-    transition: transform 0.2s ease;
-  }
+/* 侧栏 → 抽屉：0.34.1 用户反馈改为**全屏**（Obsidian 移动端同款——抽屉
+   盖满整屏，关闭走系统返回/点文件/仓库切换）。上下贴屏幕边（系统栏仍由
+   原生 margin 让出） */
+/* 收件箱（速记管理）是 in-flow 全屏页：页头自行避让系统栏 */
+html.qn-mobile .cm-root {
+  padding-top: calc(10px + var(--qn-inset-top, 0px));
+  padding-bottom: calc(12px + var(--qn-inset-bottom, 0px));
+}
+html.qn-mobile .sidebar-left,
+html.qn-mobile .sidebar-right {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  width: 100vw !important;
+  max-width: 100vw !important;
+  min-width: 0 !important;
+  z-index: 70;
+  box-shadow: none;
+  opacity: 1;
+}
+html.qn-mobile .sidebar-left {
+  left: 0;
+  border-right: 1px solid var(--border-soft);
+}
+html.qn-mobile .sidebar-right {
+  right: 0;
+  border-left: 1px solid var(--border-soft);
+}
+/* 收起时整体移出屏幕（保留现有 left-collapsed 类语义），过渡跟随展开 */
+html.qn-mobile .body.left-collapsed > .sidebar-left {
+  transform: translateX(-105%);
+  width: 100vw !important;
+  opacity: 1;
+  pointer-events: none;
+}
+html.qn-mobile .body.right-collapsed > .sidebar-right {
+  transform: translateX(105%);
+  width: 100vw !important;
+  opacity: 1;
+  pointer-events: none;
+}
+html.qn-mobile .sidebar-left,
+html.qn-mobile .sidebar-right,
+html.qn-mobile .body.left-collapsed > .sidebar-left,
+html.qn-mobile .body.right-collapsed > .sidebar-right {
+  transition: transform 0.2s ease;
+}
 
-  /* 抽屉背后的遮罩 */
-  .drawer-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 65;
-    background: rgba(0, 0, 0, 0.42);
-  }
+/* 抽屉背后的遮罩 */
+html.qn-mobile .drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 65;
+  background: rgba(0, 0, 0, 0.42);
+}
 
-  /* 边缘的 » 恢复钮在抽屉模型下多余（药丸/边缘手势负责开合） */
-  .sidebar-restore {
-    display: none;
-  }
+/* 边缘的 » 恢复钮在抽屉模型下多余（药丸/边缘手势负责开合） */
+html.qn-mobile .sidebar-restore {
+  display: none;
 }
 
 /* ==================== A2 后续：Markdown 工具栏 + 设置全屏化 ==================== */
 
 /* 移动端 Markdown 工具栏：编辑区底部浮动（底栏上方），点击不打焦点 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .mobile-md-toolbar {
-    position: fixed;
-    left: 0;
-    right: 0;
-    /* 0.34.0：底部导航退场，工具栏直接贴屏底 */
-    bottom: 0;
-    height: 42px;
-    display: flex;
-    align-items: stretch;
-    background: var(--panel);
-    box-shadow: 0 -1px 0 var(--border-soft);
-    z-index: 55;
-  }
-  .mobile-md-toolbar button {
-    flex: 1;
-    border: 0;
-    background: transparent;
-    color: var(--text-dim);
-    font-size: 14px;
-    font-weight: 600;
-    font-family: ui-monospace, monospace;
-    cursor: pointer;
-  }
-  .mobile-md-toolbar button:active {
-    background: var(--hover);
-    color: var(--text);
-  }
+html.qn-mobile .mobile-md-toolbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  /* 0.34.0：底部导航退场，工具栏直接贴屏底 */
+  bottom: 0;
+  height: 42px;
+  display: flex;
+  align-items: stretch;
+  background: var(--panel);
+  box-shadow: 0 -1px 0 var(--border-soft);
+  z-index: 55;
+}
+html.qn-mobile .mobile-md-toolbar button {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14px;
+  font-weight: 600;
+  font-family: ui-monospace, monospace;
+  cursor: pointer;
+}
+html.qn-mobile .mobile-md-toolbar button:active {
+  background: var(--hover);
+  color: var(--text);
 }
 
 /* 设置面板全屏化：桌面尺寸固定 860px，移动端占满视口。0.33.0 停点3 第四轮：
    面板不再自带 env() 顶部留白——那会把状态栏条留在面板内、位于二级吸顶头
    上方，滚动内容仍能从缝里露出（真机复测截图实测）；安全区改由二级头 /
    一级导航各自的 padding 承担，吸顶头从屏幕最顶一路盖下来 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .settings-panel {
-    position: fixed !important;
-    z-index: 85 !important;
-    inset: 0 !important;
-    width: 100% !important;
-    height: 100% !important;
-    border: 0 !important;
-    border-radius: 0 !important;
-    animation: none;
-  }
+html.qn-mobile .settings-panel {
+  position: fixed !important;
+  z-index: 85 !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  animation: none;
 }
 
 /* ==================== A2 第三批：Inbox 与设置面板的移动修复 ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* Inbox（速记管理）桌面上强制 min-width:700 保列表不压——手机上它把整个
-     app 撑到屏外：返回钮在屏幕外、空状态文字被裁、命令面板跟着错位。
-     移动端放开，让 cm-root 在视口内排布。 */
-  .app.inbox-open .editor-pane {
-    min-width: 0;
-  }
+/* Inbox（速记管理）桌面上强制 min-width:700 保列表不压——手机上它把整个
+   app 撑到屏外：返回钮在屏幕外、空状态文字被裁、命令面板跟着错位。
+   移动端放开，让 cm-root 在视口内排布。 */
+html.qn-mobile .app.inbox-open .editor-pane {
+  min-width: 0;
+}
 
-  /* 设置面板导航：竖列 220px 在手机上挤掉内容区，改为顶部横排（可滚动） */
-  .settings-panel {
-    flex-direction: column;
-  }
-  .settings-nav {
-    flex-direction: row;
-    width: auto;
-    align-items: center;
-    gap: 4px;
-    padding: 8px 10px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    flex: none;
-    border-bottom: 1px solid var(--border-soft);
-  }
-  .settings-nav-item {
-    flex: none;
-    padding: 6px 12px;
-    white-space: nowrap;
-  }
-  .settings-body {
-    flex: 1;
-    min-height: 0;
-  }
+/* 设置面板导航：竖列 220px 在手机上挤掉内容区，改为顶部横排（可滚动） */
+html.qn-mobile .settings-panel {
+  flex-direction: column;
+}
+html.qn-mobile .settings-nav {
+  flex-direction: row;
+  width: auto;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex: none;
+  border-bottom: 1px solid var(--border-soft);
+}
+html.qn-mobile .settings-nav-item {
+  flex: none;
+  padding: 6px 12px;
+  white-space: nowrap;
+}
+html.qn-mobile .settings-body {
+  flex: 1;
+  min-height: 0;
 }
 
 /* ==================== A2 第四批：状态栏避让、设置导航收尾、快速笔记可关 ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 快速笔记的拦截层加上可见遮罩（:has 选兄弟——backdrop 与弹窗是兄弟节点），
-     否则设置面板开着时弹窗背后毫无「浮层」感，也没有明确的「点外面关闭」区域 */
-  .menu-backdrop:has(+ .quick-capture) {
-    background: rgba(0, 0, 0, 0.45);
-    z-index: 940;
-  }
+/* 快速笔记的拦截层加上可见遮罩（:has 选兄弟——backdrop 与弹窗是兄弟节点），
+   否则设置面板开着时弹窗背后毫无「浮层」感，也没有明确的「点外面关闭」区域 */
+html.qn-mobile .menu-backdrop:has(+ .quick-capture) {
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 940;
+}
 
-  /* 「Esc 关闭」在手机上没有意义，强化成明确的关闭按钮（点击本来就生效） */
-  .quick-capture-esc {
-    padding: 6px 12px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-2);
-  }
-  .quick-capture-esc kbd {
-    display: none;
-  }
+/* 「Esc 关闭」在手机上没有意义，强化成明确的关闭按钮（点击本来就生效） */
+html.qn-mobile .quick-capture-esc {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+html.qn-mobile .quick-capture-esc kbd {
+  display: none;
+}
 
-  /* 设置导航：搜索框（桌面 Ctrl+F 场景）在横排里占掉近半宽度且被切，藏起；
-     tab 行右缘做渐隐提示「还能往右滑」 */
-  .settings-nav .settings-search,
-  .settings-nav input[type="text"] {
-    display: none;
-  }
-  .settings-nav {
-    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
-    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
-  }
+/* 设置导航：搜索框（桌面 Ctrl+F 场景）在横排里占掉近半宽度且被切，藏起；
+   tab 行右缘做渐隐提示「还能往右滑」 */
+html.qn-mobile .settings-nav .settings-search,
+html.qn-mobile .settings-nav input[type="text"] {
+  display: none;
+}
+html.qn-mobile .settings-nav {
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent 100%);
 }
 
 /* ==================== A2 第五批：设置页真机复测修复 ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 分类导航改换行平铺：横滚在真机上表现为「最后一个 tab 被切一半」，
-     两行平铺让全部分类可见、彻底消除切割感。head（标题+关闭钮）恢复显示——
-     移动端唯一的关闭入口在里面，不能跟着横排化一起藏掉。 */
-  .settings-nav {
-    flex-wrap: wrap;
-    overflow-x: hidden;
-    -webkit-mask-image: none;
-    mask-image: none;
-    row-gap: 2px;
-  }
-  .settings-nav-head {
-    width: 100%;
-  }
-  .settings-nav-item {
-    padding: 7px 12px;
-  }
+/* 分类导航改换行平铺：横滚在真机上表现为「最后一个 tab 被切一半」，
+   两行平铺让全部分类可见、彻底消除切割感。head（标题+关闭钮）恢复显示——
+   移动端唯一的关闭入口在里面，不能跟着横排化一起藏掉。 */
+html.qn-mobile .settings-nav {
+  flex-wrap: wrap;
+  overflow-x: hidden;
+  -webkit-mask-image: none;
+  mask-image: none;
+  row-gap: 2px;
+}
+html.qn-mobile .settings-nav-head {
+  width: 100%;
+}
+html.qn-mobile .settings-nav-item {
+  padding: 7px 12px;
+}
 
-  /* 行布局（0.33.0 批B 按需求 §九重做，用户拍板混合规则）：
-     桌面是 grid（左列标签+说明、右列控件），手机上宽控件（下拉 min-width:170px、
-     滑杆）会把 minmax(0,1fr) 的标签列压到近 0——标签竖排成「一列字」，即
-     0.32.2 真机「背景图片文字被挤成一列」的根因。A2 第五批加的 flex-wrap
-     对 grid 无效，当时并未真正修掉。移动端整体覆盖为 flex 三段式：
-       行1 = 标签(弹性) + 短控件（开关/下拉/分段钮，右侧）
-       行2 = 说明文字（全宽，弱化）
-       行3 = 长控件（滑杆/文本输入，全宽）
-     排列靠 order：控件默认排在标签后（DOM 里 desc 在控件前面，不拨序会插中间）。 */
-  .settings-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    column-gap: 12px;
-    row-gap: 7px;
-  }
-  .settings-row > span:first-child {
-    flex: 1 1 auto;
-    min-width: 0;
-  }
-  .settings-row > input[type="checkbox"],
-  .settings-row > select,
-  .settings-row > .settings-select,
-  .settings-row > .settings-inline,
-  .settings-row > .settings-segmented,
-  .settings-row > kbd {
-    order: 1;
-  }
-  .settings-row > .settings-row-desc {
-    order: 2;
-    flex-basis: 100%;
-  }
-  .settings-row > .settings-slider,
-  .settings-row > input:not([type="checkbox"]) {
-    order: 3;
-    width: 100%;
-    flex: 1 1 100%;
-  }
-  /* 下拉同行但要能收缩（桌面 min-width:170px 在 390dp 下太占） */
-  .settings-row > .settings-select {
-    min-width: 120px;
-    flex: 1 1 140px;
-  }
-  .settings-row > select {
-    width: auto;
-    flex: 1 1 120px;
-  }
-  /* 滑杆全宽后，轨道从桌面固定 160px 改为撑满剩余宽度 */
-  .settings-row > .settings-slider {
-    min-width: 0;
-  }
-  .settings-row .settings-slider input[type="range"] {
-    width: 100%;
-    flex: 1 1 auto;
-  }
+/* 行布局（0.33.0 批B 按需求 §九重做，用户拍板混合规则）：
+   桌面是 grid（左列标签+说明、右列控件），手机上宽控件（下拉 min-width:170px、
+   滑杆）会把 minmax(0,1fr) 的标签列压到近 0——标签竖排成「一列字」，即
+   0.32.2 真机「背景图片文字被挤成一列」的根因。A2 第五批加的 flex-wrap
+   对 grid 无效，当时并未真正修掉。移动端整体覆盖为 flex 三段式：
+     行1 = 标签(弹性) + 短控件（开关/下拉/分段钮，右侧）
+     行2 = 说明文字（全宽，弱化）
+     行3 = 长控件（滑杆/文本输入，全宽）
+   排列靠 order：控件默认排在标签后（DOM 里 desc 在控件前面，不拨序会插中间）。 */
+html.qn-mobile .settings-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 7px;
+}
+html.qn-mobile .settings-row > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+html.qn-mobile .settings-row > input[type="checkbox"],
+html.qn-mobile .settings-row > select,
+html.qn-mobile .settings-row > .settings-select,
+html.qn-mobile .settings-row > .settings-inline,
+html.qn-mobile .settings-row > .settings-segmented,
+html.qn-mobile .settings-row > kbd {
+  order: 1;
+}
+html.qn-mobile .settings-row > .settings-row-desc {
+  order: 2;
+  flex-basis: 100%;
+}
+html.qn-mobile .settings-row > .settings-slider,
+html.qn-mobile .settings-row > input:not([type="checkbox"]) {
+  order: 3;
+  width: 100%;
+  flex: 1 1 100%;
+}
+/* 下拉同行但要能收缩（桌面 min-width:170px 在 390dp 下太占） */
+html.qn-mobile .settings-row > .settings-select {
+  min-width: 120px;
+  flex: 1 1 140px;
+}
+html.qn-mobile .settings-row > select {
+  width: auto;
+  flex: 1 1 120px;
+}
+/* 滑杆全宽后，轨道从桌面固定 160px 改为撑满剩余宽度 */
+html.qn-mobile .settings-row > .settings-slider {
+  min-width: 0;
+}
+html.qn-mobile .settings-row .settings-slider input[type="range"] {
+  width: 100%;
+  flex: 1 1 auto;
 }
 
 /* hint 的 flex 是为桌面「折叠钮 + 文本」准备的；手机上 children 的每个内联
    片段（文本/加粗/文本）会被拆成并列 item，视觉上是「两列文字交错」——
    移动端回归正常文本流 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .settings-hint {
-    display: block;
-  }
-  .settings-hint .hint-toggle {
-    display: none;
-  }
+html.qn-mobile .settings-hint {
+  display: block;
+}
+html.qn-mobile .settings-hint .hint-toggle {
+  display: none;
 }
 
 /* ==================== A2 第六批：顶栏精简、树行右对齐、编辑区留白 ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 文件行 ⋯ 右对齐：桌面上靠 .tree-size 的 margin-left:auto 推到行尾，而它
-     hover 才显示——触屏常驻的 ⋯ 自己带上这个推力 */
-  .tree-item .tree-more {
-    margin-left: auto;
-  }
+/* 文件行 ⋯ 右对齐：桌面上靠 .tree-size 的 margin-left:auto 推到行尾，而它
+   hover 才显示——触屏常驻的 ⋯ 自己带上这个推力 */
+html.qn-mobile .tree-item .tree-more {
+  margin-left: auto;
+}
 
-  /* 保存胶囊在移动端退场（自动保存 + 空间紧张；保存钮在 dirty 时仍出现） */
-  .save-chip {
-    display: none;
-  }
+/* 保存胶囊在移动端退场（自动保存 + 空间紧张；保存钮在 dirty 时仍出现） */
+html.qn-mobile .save-chip {
+  display: none;
+}
 
-  /* 编辑区留白：桌面 8px/24px/34vh 是「大屏呼吸感」，手机上顶部太空、
-     底部 34vh 足足一屏的三分之一。压缩为固定值（120px ≈ 工具栏+底栏+余量，
-     用固定 px 而不是 vh——键盘弹出时 vh 会缩，留白跟着跳）。 */
-  .editor-host .cm-scroller {
-    /* 0.34.11：起点让开药丸带 + 系统栏；滚动后内容穿过系统栏（.app 已不避让） */
-    padding: calc(var(--qn-inset-top, 0px) + 52px) 14px 120px;
-  }
+/* 编辑区留白：桌面 8px/24px/34vh 是「大屏呼吸感」，手机上顶部太空、
+   底部 34vh 足足一屏的三分之一。压缩为固定值（120px ≈ 工具栏+底栏+余量，
+   用固定 px 而不是 vh——键盘弹出时 vh 会缩，留白跟着跳）。 */
+html.qn-mobile .editor-host .cm-scroller {
+  /* 0.34.11：起点让开药丸带 + 系统栏；滚动后内容穿过系统栏（.app 已不避让） */
+  padding: calc(var(--qn-inset-top, 0px) + 52px) 14px 120px;
 }
 
 /* ==================== A3 第四批：引导两步流 + 列表同步开关 ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .mv-steps li.current {
-    color: var(--text);
-  }
-  .mv-steps li.done {
-    color: #7bc98a;
-  }
-  .mv-step-btn {
-    margin-left: 8px;
-    padding: 4px 12px;
-  }
-  .mv-home-input {
-    display: flex;
-    gap: 8px;
-    margin-top: 8px;
-    width: 100%;
-  }
-  .mv-home-input input {
-    flex: 1;
-    min-width: 0;
-    padding: 8px 10px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: inherit;
-    font-size: 13px;
-  }
-  .mv-home-input .btn {
-    flex: none;
-  }
-  .mv-sync-toggle {
-    /* 0.33.0 停点1：改常规流（mv-card-meta 行内右侧），不再绝对定位 */
-    flex: none;
-    font-size: 11.5px;
-    padding: 3px 10px;
-    border-radius: 999px;
-    border: 1px solid var(--border);
-    color: var(--text-dim);
-    cursor: pointer;
-  }
+html.qn-mobile .mv-steps li.current {
+  color: var(--text);
+}
+html.qn-mobile .mv-steps li.done {
+  color: #7bc98a;
+}
+html.qn-mobile .mv-step-btn {
+  margin-left: 8px;
+  padding: 4px 12px;
+}
+html.qn-mobile .mv-home-input {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  width: 100%;
+}
+html.qn-mobile .mv-home-input input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+}
+html.qn-mobile .mv-home-input .btn {
+  flex: none;
+}
+html.qn-mobile .mv-sync-toggle {
+  /* 0.33.0 停点1：改常规流（mv-card-meta 行内右侧），不再绝对定位 */
+  flex: none;
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
 }
 
 /* 引导第三步：同步表单（三输入纵排满宽） */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .mv-sync-fields {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    width: 100%;
-    max-width: 460px;
-    margin: 8px 0;
-  }
-  .mv-sync-fields input {
-    padding: 10px 12px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: transparent;
-    color: inherit;
-    font-size: 13.5px;
-  }
+html.qn-mobile .mv-sync-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 460px;
+  margin: 8px 0;
+}
+html.qn-mobile .mv-sync-fields input {
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font-size: 13.5px;
 }
 
 /* 批量同步：多选态与操作条 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .mv-multi-toggle {
-    /* 0.33.0 批B 移进 mv-gate-title 后不再需要 flex-end（原是列表上方
-       独立按钮在 column 容器里靠右）；行内由 h2 的 margin-right:auto 推右 */
-    padding: 4px 10px;
-    font-size: 12.5px;
-  }
-  .mv-card.is-picked {
-    border-color: var(--accent, #8ea6ff);
-    background: rgba(108, 140, 255, 0.08);
-  }
-  .mv-batch-bar {
-    display: flex;
-    gap: 8px;
-    width: 100%;
-    max-width: 560px;
-  }
+html.qn-mobile .mv-multi-toggle {
+  /* 0.33.0 批B 移进 mv-gate-title 后不再需要 flex-end（原是列表上方
+     独立按钮在 column 容器里靠右）；行内由 h2 的 margin-right:auto 推右 */
+  padding: 4px 10px;
+  font-size: 12.5px;
+}
+html.qn-mobile .mv-card.is-picked {
+  border-color: var(--accent, #8ea6ff);
+  background: rgba(108, 140, 255, 0.08);
+}
+html.qn-mobile .mv-batch-bar {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 560px;
 }
 
 /* 第七批：新建行取消钮（create-row 里 input 与 hint 之间）、重试入口 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .create-cancel {
-    flex: none;
-  }
-  .mv-retry {
-    align-self: flex-start;
-    padding: 6px 14px;
-    font-size: 13px;
-  }
+html.qn-mobile .create-cancel {
+  flex: none;
+}
+html.qn-mobile .mv-retry {
+  align-self: flex-start;
+  padding: 6px 14px;
+  font-size: 13px;
 }
 
 /* 云端拉取区 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .mv-pull {
-    width: 100%;
-    max-width: 560px;
-    margin-top: 10px;
-  }
-  .mv-pull-title {
-    /* 0.33.0 停点1 第三轮（§九）：小节标题左对齐、弱化为层级标记 */
-    font-size: 12px;
-    font-weight: 650;
-    letter-spacing: 0.05em;
-    color: var(--text-dim);
-    margin: 0 0 6px;
-    text-align: left;
-  }
+html.qn-mobile .mv-pull {
+  width: 100%;
+  max-width: 560px;
+  margin-top: 10px;
+}
+html.qn-mobile .mv-pull-title {
+  /* 0.33.0 停点1 第三轮（§九）：小节标题左对齐、弱化为层级标记 */
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  margin: 0 0 6px;
+  text-align: left;
 }
 
 /* 命令面板盖过抽屉（移动端） */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .palette-overlay {
-    z-index: 86;
-  }
+html.qn-mobile .palette-overlay {
+  z-index: 86;
 }
 
 /* ==================================================================== */
 /* ========= 移动端 UI 总收敛（九批：原生感 / 触控 / 层级 / 适配） ========= */
 /* 原则：不改功能与数据流，只调布局、层级、触控与视觉规范。               */
 /* ==================================================================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
 
-  /* ---------- 一、视觉规范统一 ---------- */
-  /* 三层背景：页面 --bg / 卡片 --panel / 输入 --surface；圆角两档 10/16
-     （0.33.0 §十一 卡片统一 14~18dp：lg 档 14→16）；强调色只用于选中、
-     主按钮、焦点。--m-card-pad：卡片内边距基准（0.33.0 批E 各页面消费）。 */
-  .app {
-    --m-radius: 10px;
-    --m-radius-lg: 16px;
-    --m-card-pad: 16px;
-    --m-accent: var(--accent);
-  }
-  .mobile-md-toolbar,
-  .quick-capture,
-  .mv-overlay-card {
-    border-radius: 0;
-  }
-  .mv-overlay-card,
-  .quick-capture,
-  .settings-panel {
-    border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
-  }
-  .mv-card,
-  .settings-row > input:not([type="checkbox"]):not([type="search"]),
-  .settings-row > select,
-  .mv-create input,
-  .mv-sync-fields input,
-  .mv-home-input input {
-    border-radius: var(--m-radius);
-  }
+/* ---------- 一、视觉规范统一 ---------- */
+/* 三层背景：页面 --bg / 卡片 --panel / 输入 --surface；圆角两档 10/16
+   （0.33.0 §十一 卡片统一 14~18dp：lg 档 14→16）；强调色只用于选中、
+   主按钮、焦点。--m-card-pad：卡片内边距基准（0.33.0 批E 各页面消费）。 */
+html.qn-mobile .app {
+  --m-radius: 10px;
+  --m-radius-lg: 16px;
+  --m-card-pad: 16px;
+  --m-accent: var(--accent);
+}
+html.qn-mobile .mobile-md-toolbar,
+html.qn-mobile .quick-capture,
+html.qn-mobile .mv-overlay-card {
+  border-radius: 0;
+}
+html.qn-mobile .mv-overlay-card,
+html.qn-mobile .quick-capture,
+html.qn-mobile .settings-panel {
+  border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
+}
+html.qn-mobile .mv-card,
+html.qn-mobile .settings-row > input:not([type="checkbox"]):not([type="search"]),
+html.qn-mobile .settings-row > select,
+html.qn-mobile .mv-create input,
+html.qn-mobile .mv-sync-fields input,
+html.qn-mobile .mv-home-input input {
+  border-radius: var(--m-radius);
+}
 
-  /* ---------- 二、顶部栏：0.34.0 起移动端无常驻顶栏（浮动药丸替代），
-      顶栏规则整段退场；桌面样式不受本媒体查询影响 ---------- */
+/* ---------- 二、顶部栏：0.34.0 起移动端无常驻顶栏（浮动药丸替代），
+    顶栏规则整段退场；桌面无 qn-mobile 类零变化 ---------- */
 
-  /* ---------- 四、文件列表：弱描边选中、文件名为主。
-      0.34.1 用户反馈「行与行空隙太大，移动端空间小」：原 15px 上下 padding
-      叠加触屏常驻 32px 的 ⋯ 钮，每行被撑到 ~63px——收到 9px（行高 ~46px，
-      仍满足 ≥44dp 触控规范） ---------- */
-  .sidebar-left .tree-item {
-    padding: 9px 10px;
-    gap: 8px;
-    font-size: 14px;
-  }
-  .sidebar-left .tree-item .tree-icon {
-    width: 16px;
-    height: 16px;
-    flex: none;
-  }
-  .tree-label {
-    font-weight: 500;
-  }
-  /* 选中 = 淡紫背景 + 左侧强调线（替代描边） */
-  .tree-file.is-active {
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-    color: var(--text);
-    box-shadow: inset 3px 0 0 var(--accent);
-  }
-  .tree-file.is-active .tree-icon {
-    color: var(--accent);
-  }
-  .tree-more {
-    width: 32px;
-    /* 0.34.1：32→28px——触屏常驻的 ⋯ 是行高的实际下限，压行距先压它 */
-    height: 28px;
-    border-radius: 8px;
-    font-size: 15px;
-  }
-  /* 分类 tab（知识库/收藏/最近/标签）触控加高。0.33.1 用户反馈四个 tab 在
-     手机上溢出截断（标签被裁一半）——水平 padding 10→4、允许收缩 */
-  .sidebar-left .left-view-tab {
-    padding: 9px 4px;
-    min-width: 0;
-  }
-  .sidebar-left .sidebar-filter {
-    padding: 8px 10px;
-  }
-  .sidebar-left .sidebar-filter input {
-    padding: 9px 10px;
-  }
+/* ---------- 四、文件列表：弱描边选中、文件名为主。
+    0.34.1 用户反馈「行与行空隙太大，移动端空间小」：原 15px 上下 padding
+    叠加触屏常驻 32px 的 ⋯ 钮，每行被撑到 ~63px——收到 9px（行高 ~46px，
+    仍满足 ≥44dp 触控规范） ---------- */
+html.qn-mobile .sidebar-left .tree-item {
+  padding: 9px 10px;
+  gap: 8px;
+  font-size: 14px;
+}
+html.qn-mobile .sidebar-left .tree-item .tree-icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
+}
+html.qn-mobile .tree-label {
+  font-weight: 500;
+}
+/* 选中 = 淡紫背景 + 左侧强调线（替代描边） */
+html.qn-mobile .tree-file.is-active {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+html.qn-mobile .tree-file.is-active .tree-icon {
+  color: var(--accent);
+}
+html.qn-mobile .tree-more {
+  width: 32px;
+  /* 0.34.1：32→28px——触屏常驻的 ⋯ 是行高的实际下限，压行距先压它 */
+  height: 28px;
+  border-radius: 8px;
+  font-size: 15px;
+}
+/* 分类 tab（知识库/收藏/最近/标签）触控加高。0.33.1 用户反馈四个 tab 在
+   手机上溢出截断（标签被裁一半）——水平 padding 10→4、允许收缩 */
+html.qn-mobile .sidebar-left .left-view-tab {
+  padding: 9px 4px;
+  min-width: 0;
+}
+html.qn-mobile .sidebar-left .sidebar-filter {
+  padding: 8px 10px;
+}
+html.qn-mobile .sidebar-left .sidebar-filter input {
+  padding: 9px 10px;
+}
 
-  /* ---------- 五、快速笔记：Bottom Sheet ---------- */
-  .quick-capture {
-    top: auto;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    transform: none;
-    width: 100%;
-    max-width: none;
-    max-height: 86vh;
-    display: flex;
-    flex-direction: column;
-    padding: 14px 16px 12px;
-    border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
-    border: 0;
-    border-top: 1px solid var(--border);
-    animation: qcSheet 0.22s ease;
-    overflow-y: auto;
-  }
-  .quick-capture textarea {
-    flex: 1;
-    min-height: 160px;
-    font-size: 15px;
-    resize: none;
-  }
-  .quick-capture textarea:focus,
-  .quick-capture-tags:focus-within {
-    border-color: var(--accent);
-  }
-  /* 快捷键提示隐藏（无物理键盘）；输入区为主角 */
-  .quick-capture-help {
-    display: none;
-  }
-  /* ---------- JSON 格式转换面板同走 Bottom Sheet（0.34.13：命令面板手机也能开） */
-  .jsonfmt {
-    top: auto;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    transform: none;
-    width: 100%;
-    max-width: none;
-    max-height: 88vh;
-    display: flex;
-    flex-direction: column;
-    padding: 14px 16px 12px;
-    padding-bottom: calc(12px + var(--qn-inset-bottom, 0px));
-    border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
-    border: 0;
-    border-top: 1px solid var(--border);
-    animation: qcSheet 0.22s ease;
-    overflow-y: auto;
-  }
-  .jsonfmt-io {
-    flex: none;
-    min-height: 130px;
-    font-size: 14px;
-  }
-  /* 关闭 = 右上角图标（弱化） */
-  .quick-capture-esc {
-    padding: 8px;
-    border: 0;
-    background: transparent;
-    color: var(--text-faint);
-  }
-  /* 未配置收件仓库：简明引导块，不与 CTA 竞争 */
-  .quick-capture-setup {
-    font-size: 12px;
-    color: #e0b45a;
-    background: rgba(224, 180, 90, 0.1);
-    border-radius: 8px;
-    padding: 6px 10px;
-    text-align: left;
-  }
-  /* 记下来 = 唯一主 CTA（强调色、加高） */
-  .quick-capture-save {
-    min-width: 96px;
-    height: 40px;
-  }
-  @keyframes qcSheet {
-    from { transform: translateY(24px); opacity: 0; }
-    to { transform: translateY(0); opacity: 1; }
-  }
+/* ---------- 五、快速笔记：Bottom Sheet ---------- */
+html.qn-mobile .quick-capture {
+  top: auto;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+  border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  animation: qcSheet 0.22s ease;
+  overflow-y: auto;
+}
+html.qn-mobile .quick-capture textarea {
+  flex: 1;
+  min-height: 160px;
+  font-size: 15px;
+  resize: none;
+}
+html.qn-mobile .quick-capture textarea:focus,
+html.qn-mobile .quick-capture-tags:focus-within {
+  border-color: var(--accent);
+}
+/* 快捷键提示隐藏（无物理键盘）；输入区为主角 */
+html.qn-mobile .quick-capture-help {
+  display: none;
+}
+/* ---------- JSON 格式转换面板同走 Bottom Sheet（0.34.13：命令面板手机也能开） */
+html.qn-mobile .jsonfmt {
+  top: auto;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  transform: none;
+  width: 100%;
+  max-width: none;
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+  padding-bottom: calc(12px + var(--qn-inset-bottom, 0px));
+  border-radius: var(--m-radius-lg) var(--m-radius-lg) 0 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+  animation: qcSheet 0.22s ease;
+  overflow-y: auto;
+}
+html.qn-mobile .jsonfmt-io {
+  flex: none;
+  min-height: 130px;
+  font-size: 14px;
+}
+/* 关闭 = 右上角图标（弱化） */
+html.qn-mobile .quick-capture-esc {
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+}
+/* 未配置收件仓库：简明引导块，不与 CTA 竞争 */
+html.qn-mobile .quick-capture-setup {
+  font-size: 12px;
+  color: #e0b45a;
+  background: rgba(224, 180, 90, 0.1);
+  border-radius: 8px;
+  padding: 6px 10px;
+  text-align: left;
+}
+/* 记下来 = 唯一主 CTA（强调色、加高） */
+html.qn-mobile .quick-capture-save {
+  min-width: 96px;
+  height: 40px;
+}
+@keyframes qcSheet {
+  from { transform: translateY(24px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
 
-  /* ---------- 六、设置：二级结构 + Switch + 行距 ---------- */
-  /* 列表模式：只显示分类列表（大行）；详情模式：只显示内容区 */
-  .settings-nav {
-    flex-direction: column;
-    width: 100%;
-    align-items: stretch;
-    gap: 2px;
-    /* 0.33.1：env(safe-area-inset-top) 移除——原生 margin 已让出状态栏，
-       vivo WebView 里 env 虚报再补一次 = 一级页顶部 ~50px 双重空白。
-       0.34.1：顶 padding 8→0，一级头与二级头一样从屏幕内容区最顶开始 */
-    padding: 0 10px 8px;
-    overflow: hidden;
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
-  /* 0.33.0 停点3（image-view 实测一级头 64px / 二级头 90px 差 40%）：两级头部
-     统一 56px 容器高、16px 标题、左对齐；二级头返回改纯 ‹ 图标（40dp 触控），
-     × 只留在一级头（关闭设置）；sticky 保留但补内容顶距，滚动内容不再贴着
-     头部下缘「穿底」。
-     第三轮追加（用户截图反馈）：桌面基础的 space-between 在关闭钮 order:-1
-     之后把两个元素分家成「‹ 贴最左、标题贴最右」，改 flex-start 才是真正的
-     「‹ 标题」并排靠左 */
-  .settings-nav-head {
-    width: 100%;
-    /* 0.34.1 用户反馈「一级/二级页面风格和布局对齐」：48→56px 并补底部分隔
-       线，与 .settings-mobile-head 同高同描边（gui-035 的两级头同高断言
-       量的是「头高 + nav paddingTop」，56+0 仍等于二级头 56） */
-    height: 56px;
-    justify-content: flex-start;
-    border-bottom: 1px solid var(--border-soft);
-  }
-  /* 0.33.0 停点3 第三轮：关闭钮（‹）挪到标题左侧——右侧放 ‹ 反直觉
-     （用户反馈），返回/关闭的箭头就该在最左；桌面顺序不变 */
-  .settings-nav-head .settings-close {
-    order: -1;
-    margin-right: 2px;
-    margin-left: -6px;
-  }
-  /* 0.34.1：关闭钮图标与二级头返回 ‹ 同尺寸（20px；.icon-btn 固定 28×28，
-     只放大 SVG 不动布局） */
-  .settings-nav-head .settings-close svg {
-    width: 20px;
-    height: 20px;
-  }
-  .settings-nav-title {
-    font-size: 16px;
-  }
-  .settings-search {
-    display: none;
-  }
-  .settings-nav-item {
-    flex: none;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 14px 12px;
-    font-size: 14.5px;
-    border-radius: var(--m-radius);
-    white-space: normal;
-  }
-  /* 详情页头。0.33.0 停点3 第四轮：标题**固定顶部**（sticky top:0，滚动内容
-     从头部下缘消失）；底边框做明确分隔。0.33.1：env(safe-area-inset-top)
-     padding 移除——状态栏条由 MainActivity 原生 margin 让出并经
-     qnAndroid.setChromeBackground 染成应用色，vivo WebView 里 env 虚报
-     （~50px），头部再补一次就是用户截图里的「顶部大空白」 */
-  .settings-mobile-head {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    height: 56px;
-    padding: 0 10px 0 2px;
-    border-bottom: 1px solid var(--border-soft);
-    background: var(--panel);
-    position: sticky;
-    top: 0;
-    z-index: 5;
-  }
-  .settings-back {
-    border: 0;
-    background: transparent;
-    color: var(--accent);
-    width: 40px;
-    height: 40px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-  }
-  .settings-mobile-title {
-    flex: 1;
-    font-weight: 650;
-    font-size: 16px;
-    text-align: left;
-  }
-  /* 内容顶距挪到分区上（0.33.0 停点3 第四轮，桌面模拟实测）：body 自己的
-     padding-top 会把 sticky 头包含块的顶边一起压下去，头部最多只能吸到
-     padding 之内——顶部永远留一条 padding 高的缝，滚动内容正好从那里露出。
-     body 顶距必须为 0，呼吸感由可见分区的 margin-top 提供 */
-  .settings-panel.is-detail .settings-body {
-    padding-top: 0;
-  }
-  .settings-panel.is-detail .settings-sec {
-    margin-top: 12px;
-  }
-  .settings-nav-item::after {
-    content: "›";
-    margin-left: auto;
-    color: var(--text-faint);
-    font-size: 16px;
-  }
-  .settings-panel.is-detail .settings-nav {
-    display: none;
-  }
-  .settings-panel:not(.is-detail) .settings-body {
-    display: none;
-  }
-  .settings-panel:not(.is-detail) .settings-mobile-head {
-    display: none;
-  }
-  /* Switch 化的开关 */
-  .settings-row input[type="checkbox"] {
-    appearance: none;
-    -webkit-appearance: none;
-    width: 44px;
-    height: 26px;
-    flex: none;
-    border-radius: 999px;
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    position: relative;
-    cursor: pointer;
-    transition: background 0.15s ease, border-color 0.15s ease;
-  }
-  .settings-row input[type="checkbox"]::before {
-    content: "";
-    position: absolute;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    background: var(--text-faint);
-    top: 2px;
-    left: 2px;
-    transition: transform 0.15s ease, background 0.15s ease;
-  }
-  .settings-row input[type="checkbox"]:checked {
-    background: color-mix(in srgb, var(--accent) 30%, transparent);
-    border-color: var(--accent);
-  }
-  .settings-row input[type="checkbox"]:checked::before {
-    transform: translateX(18px);
-    background: var(--accent);
-  }
-  /* 行距与说明弱化 */
-  .settings-body {
-    padding: 10px 16px 40px;
-  }
-  .settings-row {
-    row-gap: 8px;
-    margin-bottom: 16px;
-  }
-  .settings-hint {
-    font-size: 11px;
-    line-height: 1.6;
-    opacity: 0.75;
-  }
-  .settings-group {
-    margin-top: 18px;
-  }
-  /* 长路径横向滚动不撑破 */
-  .settings-value.storage-path {
-    overflow-x: auto;
-    white-space: nowrap;
-    max-width: 100%;
-  }
+/* ---------- 六、设置：二级结构 + Switch + 行距 ---------- */
+/* 列表模式：只显示分类列表（大行）；详情模式：只显示内容区 */
+html.qn-mobile .settings-nav {
+  flex-direction: column;
+  width: 100%;
+  align-items: stretch;
+  gap: 2px;
+  /* 0.33.1：env(safe-area-inset-top) 移除——原生 margin 已让出状态栏，
+     vivo WebView 里 env 虚报再补一次 = 一级页顶部 ~50px 双重空白。
+     0.34.1：顶 padding 8→0，一级头与二级头一样从屏幕内容区最顶开始 */
+  padding: 0 10px 8px;
+  overflow: hidden;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+/* 0.33.0 停点3（image-view 实测一级头 64px / 二级头 90px 差 40%）：两级头部
+   统一 56px 容器高、16px 标题、左对齐；二级头返回改纯 ‹ 图标（40dp 触控），
+   × 只留在一级头（关闭设置）；sticky 保留但补内容顶距，滚动内容不再贴着
+   头部下缘「穿底」。
+   第三轮追加（用户截图反馈）：桌面基础的 space-between 在关闭钮 order:-1
+   之后把两个元素分家成「‹ 贴最左、标题贴最右」，改 flex-start 才是真正的
+   「‹ 标题」并排靠左 */
+html.qn-mobile .settings-nav-head {
+  width: 100%;
+  /* 0.34.1 用户反馈「一级/二级页面风格和布局对齐」：48→56px 并补底部分隔
+     线，与 .settings-mobile-head 同高同描边（gui-035 的两级头同高断言
+     量的是「头高 + nav paddingTop」，56+0 仍等于二级头 56） */
+  height: 56px;
+  justify-content: flex-start;
+  border-bottom: 1px solid var(--border-soft);
+}
+/* 0.33.0 停点3 第三轮：关闭钮（‹）挪到标题左侧——右侧放 ‹ 反直觉
+   （用户反馈），返回/关闭的箭头就该在最左；桌面顺序不变 */
+html.qn-mobile .settings-nav-head .settings-close {
+  order: -1;
+  margin-right: 2px;
+  margin-left: -6px;
+}
+/* 0.34.1：关闭钮图标与二级头返回 ‹ 同尺寸（20px；.icon-btn 固定 28×28，
+   只放大 SVG 不动布局） */
+html.qn-mobile .settings-nav-head .settings-close svg {
+  width: 20px;
+  height: 20px;
+}
+html.qn-mobile .settings-nav-title {
+  font-size: 16px;
+}
+html.qn-mobile .settings-search {
+  display: none;
+}
+html.qn-mobile .settings-nav-item {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 12px;
+  font-size: 14.5px;
+  border-radius: var(--m-radius);
+  white-space: normal;
+}
+/* 详情页头。0.33.0 停点3 第四轮：标题**固定顶部**（sticky top:0，滚动内容
+   从头部下缘消失）；底边框做明确分隔。0.33.1：env(safe-area-inset-top)
+   padding 移除——状态栏条由 MainActivity 原生 margin 让出并经
+   qnAndroid.setChromeBackground 染成应用色，vivo WebView 里 env 虚报
+   （~50px），头部再补一次就是用户截图里的「顶部大空白」 */
+html.qn-mobile .settings-mobile-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 56px;
+  padding: 0 10px 0 2px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+html.qn-mobile .settings-back {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+html.qn-mobile .settings-mobile-title {
+  flex: 1;
+  font-weight: 650;
+  font-size: 16px;
+  text-align: left;
+}
+/* 内容顶距挪到分区上（0.33.0 停点3 第四轮，桌面模拟实测）：body 自己的
+   padding-top 会把 sticky 头包含块的顶边一起压下去，头部最多只能吸到
+   padding 之内——顶部永远留一条 padding 高的缝，滚动内容正好从那里露出。
+   body 顶距必须为 0，呼吸感由可见分区的 margin-top 提供 */
+html.qn-mobile .settings-panel.is-detail .settings-body {
+  padding-top: 0;
+}
+html.qn-mobile .settings-panel.is-detail .settings-sec {
+  margin-top: 12px;
+}
+html.qn-mobile .settings-nav-item::after {
+  content: "›";
+  margin-left: auto;
+  color: var(--text-faint);
+  font-size: 16px;
+}
+html.qn-mobile .settings-panel.is-detail .settings-nav {
+  display: none;
+}
+html.qn-mobile .settings-panel:not(.is-detail) .settings-body {
+  display: none;
+}
+html.qn-mobile .settings-panel:not(.is-detail) .settings-mobile-head {
+  display: none;
+}
+/* Switch 化的开关 */
+html.qn-mobile .settings-row input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 44px;
+  height: 26px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  position: relative;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+html.qn-mobile .settings-row input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  top: 2px;
+  left: 2px;
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+html.qn-mobile .settings-row input[type="checkbox"]:checked {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  border-color: var(--accent);
+}
+html.qn-mobile .settings-row input[type="checkbox"]:checked::before {
+  transform: translateX(18px);
+  background: var(--accent);
+}
+/* 行距与说明弱化 */
+html.qn-mobile .settings-body {
+  padding: 10px 16px 40px;
+}
+html.qn-mobile .settings-row {
+  row-gap: 8px;
+  margin-bottom: 16px;
+}
+html.qn-mobile .settings-hint {
+  font-size: 11px;
+  line-height: 1.6;
+  opacity: 0.75;
+}
+html.qn-mobile .settings-group {
+  margin-top: 18px;
+}
+/* 长路径横向滚动不撑破 */
+html.qn-mobile .settings-value.storage-path {
+  overflow-x: auto;
+  white-space: nowrap;
+  max-width: 100%;
+}
 
-  /* ---------- 七、仓库卡片（0.33.0 停点1 第三轮起基准样式即移动端实际——
-     mv 组件只在移动端渲染，这里不再叠字号/内边距覆盖，避免双源漂移） ---------- */
+/* ---------- 七、仓库卡片（0.33.0 停点1 第三轮起基准样式即移动端实际——
+   mv 组件只在移动端渲染，这里不再叠字号/内边距覆盖，避免双源漂移） ---------- */
 
-  /* ---------- 八、编辑器：工具栏横滚、正文留白微调 ---------- */
-  .mobile-md-toolbar {
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-  .mobile-md-toolbar::-webkit-scrollbar {
-    display: none;
-  }
-  .mobile-md-toolbar button {
-    flex: 0 0 auto;
-    min-width: 52px;
-    height: 42px;
-  }
+/* ---------- 八、编辑器：工具栏横滚、正文留白微调 ---------- */
+html.qn-mobile .mobile-md-toolbar {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+html.qn-mobile .mobile-md-toolbar::-webkit-scrollbar {
+  display: none;
+}
+html.qn-mobile .mobile-md-toolbar button {
+  flex: 0 0 auto;
+  min-width: 52px;
+  height: 42px;
+}
 
-  /* ---------- 十、键盘避让：键盘弹出时隐藏底部工具条（编辑工具栏贴键盘） ---------- */
-  body.kbd-open .m-bottom-bar {
-    display: none;
-  }
-  body.kbd-open .mobile-md-toolbar {
-    bottom: 0;
-  }
-  /* 触控目标下限：一切小图标钮 ≥40px */
-  .icon-btn {
-    min-width: 40px;
-    min-height: 40px;
-  }
+/* ---------- 十、键盘避让：键盘弹出时隐藏底部工具条（编辑工具栏贴键盘） ---------- */
+html.qn-mobile body.kbd-open .m-bottom-bar {
+  display: none;
+}
+html.qn-mobile body.kbd-open .mobile-md-toolbar {
+  bottom: 0;
+}
+/* 触控目标下限：一切小图标钮 ≥40px */
+html.qn-mobile .icon-btn {
+  min-width: 40px;
+  min-height: 40px;
 }
 
 /* ==================== 0.33.0 批A：移动端设计令牌与反馈基建 ====================
    2026-10-24「安卓软件界面优化」§二（四级文字）/§十一（卡片规格）/§十三（交互
-   反馈）。作用域铁律（用户拍板 Q1=A）：本节只在移动端媒体查询内，桌面零变化。
+   反馈）。作用域铁律（用户拍板 Q1=A）：本节只挂 qn-mobile 类门，桌面零变化。
    主题分支用 html[data-theme=...]——theme.ts 恒写入具体 light/dark，无兜底态。 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* §二 四级文字：一级/二级/三级沿用全局 --text/--text-dim/--text-faint，
-     新增第四级「占位符」——比 faint 更弱，用于输入框占位与非重点信息。
-     定义在 html 级保证 body 下直接挂载的弹层（速记等）也能继承。 */
-  html[data-theme="light"] {
-    --text-placeholder: #a8aeb9;
-  }
-  html[data-theme="dark"] {
-    --text-placeholder: #4a4e5c;
-  }
+/* §二 四级文字：一级/二级/三级沿用全局 --text/--text-dim/--text-faint，
+   新增第四级「占位符」——比 faint 更弱，用于输入框占位与非重点信息。
+   定义在 html 级保证 body 下直接挂载的弹层（速记等）也能继承。 */
+html.qn-mobile[data-theme="light"] {
+  --text-placeholder: #a8aeb9;
+}
+html.qn-mobile[data-theme="dark"] {
+  --text-placeholder: #4a4e5c;
+}
 
-  /* 占位符统一走四级色。各组件的 ::placeholder 是带类名的局部定义
-     （.sidebar-filter/.palette-input 等八处，特异性压得过元素选择器），
-     移动端用 !important 一把覆盖：不用逐点追改，新增组件也自动跟随 */
-  input::placeholder,
-  textarea::placeholder {
-    color: var(--text-placeholder) !important;
-  }
+/* 占位符统一走四级色。各组件的 ::placeholder 是带类名的局部定义
+   （.sidebar-filter/.palette-input 等八处，特异性压得过元素选择器），
+   移动端用 !important 一把覆盖：不用逐点追改，新增组件也自动跟随 */
+html.qn-mobile input::placeholder,
+html.qn-mobile textarea::placeholder {
+  color: var(--text-placeholder) !important;
+}
 
-  /* §一/§十三 顶栏的顶部晕染（--bg-glow 喂给 topbar 的 radial-gradient）
-     移动端撤掉——克制、无发光感的生产力气质 */
-  :root,
-  html[data-theme="dark"] {
-    --bg-glow: transparent;
-  }
+/* §一/§十三 顶栏的顶部晕染（--bg-glow 喂给 topbar 的 radial-gradient）
+   移动端撤掉——克制、无发光感的生产力气质 */
+html.qn-mobile:root,
+html.qn-mobile[data-theme="dark"] {
+  --bg-glow: transparent;
+}
 
-  /* §十三 按压反馈补齐（.btn/.mini-btn/.icon-btn/.cal-day 的 :active 均已有）：
-     浮动药丸=轻缩放；列表行=按压底色（整行缩放会晃眼）。
-     选中态（.is-active 等）特异性更高，按压时不会被盖掉。 */
-  .m-pill:active {
-    transform: scale(0.95);
-  }
-  .tree-item:active,
-  .vocab-item:active {
-    background: var(--hover);
-  }
+/* §十三 按压反馈补齐（.btn/.mini-btn/.icon-btn/.cal-day 的 :active 均已有）：
+   浮动药丸=轻缩放；列表行=按压底色（整行缩放会晃眼）。
+   选中态（.is-active 等）特异性更高，按压时不会被盖掉。 */
+html.qn-mobile .m-pill:active {
+  transform: scale(0.95);
+}
+html.qn-mobile .tree-item:active,
+html.qn-mobile .vocab-item:active {
+  background: var(--hover);
 }
 
 /* ==================== 0.33.0 批C：移动端阅读/编辑分离 ====================
@@ -10085,61 +10057,57 @@ button.cm-tag:hover {
    照常）；点正文进沉浸（body.m-zen：浮动药丸与底条滑出，带过渡）；「编辑」
    钮进编辑态（body.m-editing：Markdown 工具栏显示），工具栏「✓ 完成」回阅读。
    沉浸时顶部留一条热区唤回上下栏。 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  body.m-zen .m-top-pills {
-    transform: translateY(-140%);
-    opacity: 0;
-    pointer-events: none;
-  }
-  body.m-zen .m-bottom-bar {
-    transform: translateX(-50%) translateY(160%);
-    opacity: 0;
-    pointer-events: none;
-  }
-
-  /* Markdown 工具栏只在编辑态出现（原为常驻 + 键盘避让）；编辑态底条让位 */
-  body:not(.m-editing) .mobile-md-toolbar {
-    display: none;
-  }
-  body.m-editing .m-bottom-bar {
-    transform: translateX(-50%) translateY(160%);
-    opacity: 0;
-    pointer-events: none;
-  }
-  /* 停点2：没打开笔记时编辑钮禁用（空编辑器不弹光标/键盘）——0.34.0 起是
-     右上药丸里的编辑键 */
-  .m-pill:disabled {
-    opacity: 0.4;
-  }
-  .mobile-md-done {
-    color: var(--accent);
-    flex: 0 0 auto;
-    min-width: 52px;
-  }
-
-  /* 0.34.1：沉浸唤回热区（.m-zen-peek）已删除——点正文双向 toggle */
+html.qn-mobile body.m-zen .m-top-pills {
+  transform: translateY(-140%);
+  opacity: 0;
+  pointer-events: none;
+}
+html.qn-mobile body.m-zen .m-bottom-bar {
+  transform: translateX(-50%) translateY(160%);
+  opacity: 0;
+  pointer-events: none;
 }
 
-/* ==================== 0.33.0 批E：页面细节（需求 §五/§六） ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* §五 文件树：选中行轻紫背景（全局已有）+ 左侧 2.5px 紫指示条 */
-  .tree-file.is-active,
-  .tree-dir.is-selected {
-    box-shadow: inset 2.5px 0 0 var(--accent);
-  }
-  /* §六 日历：日记/待办卡与月历之间拉开明确的垂直间距（卡片区间隔） */
-  .cal-daynotes {
-    margin-top: 12px;
-  }
+/* Markdown 工具栏只在编辑态出现（原为常驻 + 键盘避让）；编辑态底条让位 */
+html.qn-mobile body:not(.m-editing) .mobile-md-toolbar {
+  display: none;
+}
+html.qn-mobile body.m-editing .m-bottom-bar {
+  transform: translateX(-50%) translateY(160%);
+  opacity: 0;
+  pointer-events: none;
+}
+/* 停点2：没打开笔记时编辑钮禁用（空编辑器不弹光标/键盘）——0.34.0 起是
+   右上药丸里的编辑键 */
+html.qn-mobile .m-pill:disabled {
+  opacity: 0.4;
+}
+html.qn-mobile .mobile-md-done {
+  color: var(--accent);
+  flex: 0 0 auto;
+  min-width: 52px;
+}
 
-  /* 浅色目检（批F）：压掉浏览器默认的黑色 focus outline（浅色页上是一圈
-     突兀深描边），统一为紫色细边 */
-  .settings-row input:focus,
-  .settings-row select:focus,
-  .mv-create input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
+/* 0.34.1：沉浸唤回热区（.m-zen-peek）已删除——点正文双向 toggle */
+
+/* ==================== 0.33.0 批E：页面细节（需求 §五/§六） ==================== */
+/* §五 文件树：选中行轻紫背景（全局已有）+ 左侧 2.5px 紫指示条 */
+html.qn-mobile .tree-file.is-active,
+html.qn-mobile .tree-dir.is-selected {
+  box-shadow: inset 2.5px 0 0 var(--accent);
+}
+/* §六 日历：日记/待办卡与月历之间拉开明确的垂直间距（卡片区间隔） */
+html.qn-mobile .cal-daynotes {
+  margin-top: 12px;
+}
+
+/* 浅色目检（批F）：压掉浏览器默认的黑色 focus outline（浅色页上是一圈
+   突兀深描边），统一为紫色细边 */
+html.qn-mobile .settings-row input:focus,
+html.qn-mobile .settings-row select:focus,
+html.qn-mobile .mv-create input:focus {
+  outline: none;
+  border-color: var(--accent);
 }
 
 /* ==========================================================================
@@ -10725,7 +10693,7 @@ button.cm-tag:hover {
   gap: 6px;
   min-height: 0;
   /* 0.33.0 批E：释义挪进行 2 后，桌面用 flex-basis:100% 让它换行独占——
-     视觉与原第三行完全一致（桌面零变化），移动端媒体查询里改同行省略 */
+     视觉与原第三行完全一致（桌面零变化），qn-mobile 类门里改同行省略 */
   flex-wrap: wrap;
 }
 
@@ -11211,81 +11179,79 @@ button.cm-tag:hover {
 }
 
 /* 移动端（触摸屏）：详情改为底部弹层，触控目标 ≥44dp（0.25 规范 二十六） */
-@media (hover: none) and (pointer: coarse) {
-  .vocab-detail-backdrop {
-    align-items: flex-end;
-  }
+html.qn-mobile .vocab-detail-backdrop {
+  align-items: flex-end;
+}
 
-  .vocab-detail {
-    width: 100%;
-    max-height: 72vh;
-    border-radius: 18px 18px 0 0;
-    padding: 14px 16px 14px;
-  }
+html.qn-mobile .vocab-detail {
+  width: 100%;
+  max-height: 72vh;
+  border-radius: 18px 18px 0 0;
+  padding: 14px 16px 14px;
+}
 
-  .vocab-item {
-    min-height: 48px;
-  }
+html.qn-mobile .vocab-item {
+  min-height: 48px;
+}
 
-  /* 顶部导航页签（日历/目录/统计/单词）与左栏视图切换：点击区域 ≥44dp（规范 六/二十六） */
-  .sidebar-tab,
-  .sidebar-left .left-view-tab {
-    min-height: 44px;
-  }
+/* 顶部导航页签（日历/目录/统计/单词）与左栏视图切换：点击区域 ≥44dp（规范 六/二十六） */
+html.qn-mobile .sidebar-tab,
+html.qn-mobile .sidebar-left .left-view-tab {
+  min-height: 44px;
+}
 
-  .vocab-detail-act,
-  .vocab-filter,
-  .vocab-toolbar-btn,
-  .vocab-btn,
-  .vocab-refresh,
-  .vocab-add-toggle {
-    min-height: 44px;
-  }
+html.qn-mobile .vocab-detail-act,
+html.qn-mobile .vocab-filter,
+html.qn-mobile .vocab-toolbar-btn,
+html.qn-mobile .vocab-btn,
+html.qn-mobile .vocab-refresh,
+html.qn-mobile .vocab-add-toggle {
+  min-height: 44px;
+}
 
-  .vocab-search,
-  .vocab-add-input,
-  .vocab-add-btn {
-    height: 44px;
-  }
+html.qn-mobile .vocab-search,
+html.qn-mobile .vocab-add-input,
+html.qn-mobile .vocab-add-btn {
+  height: 44px;
+}
 
-  .vocab-review-btn,
-  .vocab-status-btn,
-  .vocab-item-speak {
-    min-height: 44px;
-    min-width: 44px;
-  }
+html.qn-mobile .vocab-review-btn,
+html.qn-mobile .vocab-status-btn,
+html.qn-mobile .vocab-item-speak {
+  min-height: 44px;
+  min-width: 44px;
+}
 
-  .vocab-review-word {
-    font-size: 30px;
-    padding: 22px 0 12px;
-  }
+html.qn-mobile .vocab-review-word {
+  font-size: 30px;
+  padding: 22px 0 12px;
+}
 
-  .vocab-search-input,
-  .vocab-add-input {
-    font-size: 16px; /* 小于 16px 的输入框在 Android/iOS 上聚焦会放大页面 */
-  }
+html.qn-mobile .vocab-search-input,
+html.qn-mobile .vocab-add-input {
+  font-size: 16px; /* 小于 16px 的输入框在 Android/iOS 上聚焦会放大页面 */
+}
 
-  .vocab-item-word {
-    font-size: 16px;
-  }
+html.qn-mobile .vocab-item-word {
+  font-size: 16px;
+}
 
-  .vocab-item-phonetic {
-    font-size: 12px;
-  }
+html.qn-mobile .vocab-item-phonetic {
+  font-size: 12px;
+}
 
-  .vocab-item-meaning {
-    font-size: 13px;
-    /* 0.33.1 用户反馈：音标和发音按钮同一行、释义换行完整显示——两行式里
-       长音标被折行、释义截断可读性差，恢复与桌面同款的三行式 */
-    flex-basis: 100%;
-    white-space: normal;
-    overflow: visible;
-    text-overflow: unset;
-  }
+html.qn-mobile .vocab-item-meaning {
+  font-size: 13px;
+  /* 0.33.1 用户反馈：音标和发音按钮同一行、释义换行完整显示——两行式里
+     长音标被折行、释义截断可读性差，恢复与桌面同款的三行式 */
+  flex-basis: 100%;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: unset;
+}
 
-  .vocab-status {
-    font-size: 11.5px;
-  }
+html.qn-mobile .vocab-status {
+  font-size: 11.5px;
 }
 
 /* ==========================================================================
@@ -12612,174 +12578,172 @@ html.qn-bg-on .editor-pane-col.is-split {
 /* 0.32 分屏改编辑器后不再挂 cm-lp-embed-body（渲染容器样式已随只读方案移除） */
 
 /* ==================== 0.33.1 真机反馈修复 ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 用户反馈「大部分按钮点击后背景颜色会闪一下」：安卓 WebView 默认的
-     tap 高亮层与 ：active 底色叠加成闪色——关掉原生高亮，反馈交给 ：active */
-  * {
-    -webkit-tap-highlight-color: transparent;
-  }
+/* 用户反馈「大部分按钮点击后背景颜色会闪一下」：安卓 WebView 默认的
+   tap 高亮层与 ：active 底色叠加成闪色——关掉原生高亮，反馈交给 ：active */
+html.qn-mobile * {
+  -webkit-tap-highlight-color: transparent;
+}
 
-  /* 用户反馈「设置的一级页面背景颜色要和二级背景颜色一致」：一级导航底色
-     surface-2 与二级正文 panel 不一致——统一 panel */
-  .settings-nav {
-    background: var(--panel);
-  }
+/* 用户反馈「设置的一级页面背景颜色要和二级背景颜色一致」：一级导航底色
+   surface-2 与二级正文 panel 不一致——统一 panel */
+html.qn-mobile .settings-nav {
+  background: var(--panel);
+}
 
-  /* 移除仓库（0.33.1 用户反馈）：卡片右上 ⋯ → 菜单（仅从列表移除，文件
-      保留在磁盘） */
-  .mv-card {
-    position: relative;
-  }
-  .mv-card-more {
-    position: absolute;
-    top: 6px;
-    right: 6px;
-    padding: 8px 12px;
-    border-radius: 8px;
-    color: var(--text-faint);
-    font-size: 15px;
-    line-height: 1;
-    cursor: pointer;
-  }
-  .mv-card-menu {
-    position: fixed;
-    left: 50%;
-    /* 0.34.0：底部导航退场，⋯ 菜单直接悬在屏底上方 */
-    bottom: 16px;
-    transform: translateX(-50%);
-    z-index: 90;
-    width: min(320px, calc(100vw - 32px));
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    box-shadow: var(--shadow-2);
-    overflow: hidden;
-  }
-  .mv-card-menu-name {
-    padding: 10px 14px 6px;
-    font-size: 12px;
-    color: var(--text-faint);
-    word-break: break-all;
-  }
-  .mv-card-menu button {
-    display: block;
-    width: 100%;
-    padding: 12px 14px;
-    border: 0;
-    border-top: 1px solid var(--border-soft);
-    background: transparent;
-    color: var(--text);
-    font: inherit;
-    font-size: 13.5px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .mv-card-menu button:hover,
-  .mv-card-menu button:active {
-    background: var(--hover, rgba(127, 127, 127, 0.15));
-  }
+/* 移除仓库（0.33.1 用户反馈）：卡片右上 ⋯ → 菜单（仅从列表移除，文件
+    保留在磁盘） */
+html.qn-mobile .mv-card {
+  position: relative;
+}
+html.qn-mobile .mv-card-more {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  color: var(--text-faint);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+html.qn-mobile .mv-card-menu {
+  position: fixed;
+  left: 50%;
+  /* 0.34.0：底部导航退场，⋯ 菜单直接悬在屏底上方 */
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 90;
+  width: min(320px, calc(100vw - 32px));
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-2);
+  overflow: hidden;
+}
+html.qn-mobile .mv-card-menu-name {
+  padding: 10px 14px 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+html.qn-mobile .mv-card-menu button {
+  display: block;
+  width: 100%;
+  padding: 12px 14px;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+html.qn-mobile .mv-card-menu button:hover,
+html.qn-mobile .mv-card-menu button:active {
+  background: var(--hover, rgba(127, 127, 127, 0.15));
+}
 
-  /* 用户反馈「快捷键设置页面元素布局有问题」：.hotkey-head-row 不换行，
-     四个操作钮把标题文字挤成一字一列——移动端标题行独立、按钮行换行 */
-  .hotkey-head-row {
-    flex-wrap: wrap;
-  }
-  .hotkey-head-text {
-    flex: 1 1 100%;
-  }
-  .hotkey-head-actions {
-    flex: 1 1 100%;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
+/* 用户反馈「快捷键设置页面元素布局有问题」：.hotkey-head-row 不换行，
+   四个操作钮把标题文字挤成一字一列——移动端标题行独立、按钮行换行 */
+html.qn-mobile .hotkey-head-row {
+  flex-wrap: wrap;
+}
+html.qn-mobile .hotkey-head-text {
+  flex: 1 1 100%;
+}
+html.qn-mobile .hotkey-head-actions {
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 
-  /* 用户反馈「标签列表会出现透图问题」：.menu-backdrop 原本是纯点击层
-     （没有底色），标签弹窗背后的页面全亮度可见，手机上感知为「内容从弹窗
-     里透出来」。移动端给所有共用该 backdrop 的浮层（标签/右键菜单/速记/
-     DDL/仓库菜单…）补一层标准遮罩；桌面不动（鼠标场景不需要） */
-  .menu-backdrop {
-    background: rgba(8, 9, 14, 0.55);
-  }
+/* 用户反馈「标签列表会出现透图问题」：.menu-backdrop 原本是纯点击层
+   （没有底色），标签弹窗背后的页面全亮度可见，手机上感知为「内容从弹窗
+   里透出来」。移动端给所有共用该 backdrop 的浮层（标签/右键菜单/速记/
+   DDL/仓库菜单…）补一层标准遮罩；桌面不动（鼠标场景不需要） */
+html.qn-mobile .menu-backdrop {
+  background: rgba(8, 9, 14, 0.55);
+}
 
-  /* 用户反馈「输入内容时会保持底部功能栏」：键盘弹出时隐藏底栏（开关类由
-     MainActivity 的 insets 监听切换到 html.qn-ime-open），编辑区直达键盘
-     上缘；Markdown 工具栏保留并落到键盘上缘，抽屉底部同样收上去 */
-  html.qn-ime-open .mobile-md-toolbar {
-    bottom: 0;
-  }
-  html.qn-ime-open .sidebar-left,
-  html.qn-ime-open .sidebar-right {
-    bottom: 0;
-  }
-  /* 0.34.0：底部导航退场，键盘弹出时底部工具条一并藏（编辑工具栏贴键盘） */
-  html.qn-ime-open .m-bottom-bar {
-    display: none;
-  }
-  /* 0.35.3 用户反馈「文件搜索面板输入内容时会将底部的功能栏一同带起」：抽屉
-     底部的分区胶囊与仓库栏被 ime.bottom margin 顶到键盘上缘悬浮——输入场景
-     看不到也用不到它们，直接藏 */
-  html.qn-ime-open .m-drawer-sections,
-  html.qn-ime-open .m-drawer-foot {
-    display: none;
-  }
+/* 用户反馈「输入内容时会保持底部功能栏」：键盘弹出时隐藏底栏（开关类由
+   MainActivity 的 insets 监听切换到 html.qn-ime-open），编辑区直达键盘
+   上缘；Markdown 工具栏保留并落到键盘上缘，抽屉底部同样收上去 */
+html.qn-mobile.qn-ime-open .mobile-md-toolbar {
+  bottom: 0;
+}
+html.qn-mobile.qn-ime-open .sidebar-left,
+html.qn-mobile.qn-ime-open .sidebar-right {
+  bottom: 0;
+}
+/* 0.34.0：底部导航退场，键盘弹出时底部工具条一并藏（编辑工具栏贴键盘） */
+html.qn-mobile.qn-ime-open .m-bottom-bar {
+  display: none;
+}
+/* 0.35.3 用户反馈「文件搜索面板输入内容时会将底部的功能栏一同带起」：抽屉
+   底部的分区胶囊与仓库栏被 ime.bottom margin 顶到键盘上缘悬浮——输入场景
+   看不到也用不到它们，直接藏 */
+html.qn-mobile.qn-ime-open .m-drawer-sections,
+html.qn-mobile.qn-ime-open .m-drawer-foot {
+  display: none;
+}
 
-  /* 用户反馈「单词弹窗被截断了」：详情底弹层挂右栏抽屉的层叠上下文里
-     （z-260 出不了 z-70 的父级）。0.34.0 起无底栏，直接贴屏底 */
-  .vocab-detail {
-    margin-bottom: 0;
-    max-height: 72vh;
-  }
+/* 用户反馈「单词弹窗被截断了」：详情底弹层挂右栏抽屉的层叠上下文里
+   （z-260 出不了 z-70 的父级）。0.34.0 起无底栏，直接贴屏底 */
+html.qn-mobile .vocab-detail {
+  margin-bottom: 0;
+  max-height: 72vh;
+}
 
-  /* 用户反馈「内容展示区域两边空白太大」：桌面 24px 边距 + 900px 阅读宽度
-     居中在手机上没有意义，收到 10px；行号 gutter 让位 47→40px。
-     顶部 60px：0.34.10 用户反馈「阅读界面顶部标题被悬浮药丸盖住」——正文
-     起点让开药丸带（4px+inset 起、42px 高），滚动后内容照旧从药丸下穿过 */
-  .cm-scroller {
-    padding: 8px 10px 34vh;
-  }
-  .editor-host .cm-scroller > .cm-content {
-    margin-left: 10px;
-    margin-right: 10px;
-  }
-  html.qn-line-numbers .editor-host .cm-scroller > .cm-content {
-    margin-left: 40px;
-  }
+/* 用户反馈「内容展示区域两边空白太大」：桌面 24px 边距 + 900px 阅读宽度
+   居中在手机上没有意义，收到 10px；行号 gutter 让位 47→40px。
+   顶部 60px：0.34.10 用户反馈「阅读界面顶部标题被悬浮药丸盖住」——正文
+   起点让开药丸带（4px+inset 起、42px 高），滚动后内容照旧从药丸下穿过 */
+html.qn-mobile .cm-scroller {
+  padding: 8px 10px 34vh;
+}
+html.qn-mobile .editor-host .cm-scroller > .cm-content {
+  margin-left: 10px;
+  margin-right: 10px;
+}
+html.qn-mobile.qn-line-numbers .editor-host .cm-scroller > .cm-content {
+  margin-left: 40px;
+}
 
-  /* 主页重构（0.33.1 用户需求）：仓库主页 = 全屏页面，覆盖在保持挂载的仓库
-     界面之上（保留现场——再进同一仓库直达原位）；无仓库打开时它就是软件
-     主页面（设置从头部齿轮进）。桌面仍走 .mv-overlay 卡片 */
-  .vault-home-page {
-    position: fixed;
-    inset: 0;
-    /* 0.33.1：低于设置面板（85）——主页上开设置不销毁主页，关设置回到主页 */
-    z-index: 84;
-    background: var(--panel);
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    /* 入场动画（用户反馈页面切换要有动画）：淡入+上滑，不用缩放（拉伸感） */
-    animation: home-in 0.2s ease;
-  }
-  @keyframes home-in {
-    from { opacity: 0; transform: translateY(14px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .vault-home-page .mv-gate {
-    min-height: 100%;
-    padding-bottom: 8px;
-    /* 0.33.1 用户反馈：主页打开「像被上下拉伸」+ 滑动时顶栏向下移——卡片形态
-       的垂直居中（justify-content:center）在全屏页上是祸根：内容超高时居中
-       溢出让顶部不可达、sticky 头钉在裁剪位。主页是页面，顶对齐铺满 */
-    justify-content: flex-start;
-    align-items: stretch;
-  }
-  /* 头部吸顶：列表滚动时标题行/关闭钮常驻 */
-  .vault-home-page .mv-gate-head {
-    position: sticky;
-    top: 0;
-    z-index: 2;
-    background: var(--panel);
-    padding-top: 6px;
-  }
+/* 主页重构（0.33.1 用户需求）：仓库主页 = 全屏页面，覆盖在保持挂载的仓库
+   界面之上（保留现场——再进同一仓库直达原位）；无仓库打开时它就是软件
+   主页面（设置从头部齿轮进）。桌面仍走 .mv-overlay 卡片 */
+html.qn-mobile .vault-home-page {
+  position: fixed;
+  inset: 0;
+  /* 0.33.1：低于设置面板（85）——主页上开设置不销毁主页，关设置回到主页 */
+  z-index: 84;
+  background: var(--panel);
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  /* 入场动画（用户反馈页面切换要有动画）：淡入+上滑，不用缩放（拉伸感） */
+  animation: home-in 0.2s ease;
+}
+@keyframes home-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+html.qn-mobile .vault-home-page .mv-gate {
+  min-height: 100%;
+  padding-bottom: 8px;
+  /* 0.33.1 用户反馈：主页打开「像被上下拉伸」+ 滑动时顶栏向下移——卡片形态
+     的垂直居中（justify-content:center）在全屏页上是祸根：内容超高时居中
+     溢出让顶部不可达、sticky 头钉在裁剪位。主页是页面，顶对齐铺满 */
+  justify-content: flex-start;
+  align-items: stretch;
+}
+/* 头部吸顶：列表滚动时标题行/关闭钮常驻 */
+html.qn-mobile .vault-home-page .mv-gate-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--panel);
+  padding-top: 6px;
 }
 
 /* ==================== 0.34.0 移动端 Obsidian 化壳层 ====================
@@ -12788,755 +12752,745 @@ html.qn-bg-on .editor-pane-col.is-split {
    + 左抽屉分区化（文件列表/搜索/标签/单词本/日历 + 动作行 + 分区卡 + 仓库底行）
    + 右抽屉只留 大纲/统计 + 边缘滑动手势。z 序总表：
    drawer-backdrop 65 < 抽屉 70 < 药丸/底条 75 < vault-home 84 < settings 85
-   < sheet 86 < m-zen-peek 90。桌面零变化（本块整体在移动端媒体查询内）。 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 移动端标签栏隐藏：标签的唯一入口是底条 [N] 标签页 sheet（含分栏标签） */
-  .tabbar {
-    display: none !important;
-  }
+   < sheet 86 < m-zen-peek 90。桌面零变化（本节规则全挂 qn-mobile 类门）。 */
+/* 移动端标签栏隐藏：标签的唯一入口是底条 [N] 标签页 sheet（含分栏标签） */
+html.qn-mobile .tabbar {
+  display: none !important;
+}
 
-  /* ---------- 顶部浮动药丸：左=抽屉开关，右=编辑toggle+⋮（图1） ---------- */
-  .m-top-pills {
-    position: fixed;
-    top: 10px;
-    left: 12px;
-    right: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    z-index: 75;
-    pointer-events: none;
-    transition: transform 0.22s ease, opacity 0.22s ease;
-  }
-  .m-top-pills > * {
-    pointer-events: auto;
-  }
-  /* 药丸：不透明面板底 + 胶囊圆角（Obsidian 深灰药丸的令牌化版本）。
-     button UA 默认 align-items:flex-start，flex 容器必须显式居中 */
-  .m-pill {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 42px;
-    height: 42px;
-    padding: 0 12px;
-    border: 1px solid var(--border-soft);
-    border-radius: 999px;
-    background: var(--panel);
-    color: var(--text-dim);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
-    cursor: pointer;
-  }
-  .m-pill.is-on {
-    color: var(--accent);
-    background: var(--accent-soft);
-    border-color: var(--accent-soft);
-  }
-  /* 右上药丸组：编辑 toggle 与 ⋮ 同处一颗胶囊（图1 的「书+⋮」组） */
-  .m-pill-group {
-    display: inline-flex;
-    align-items: center;
-    gap: 2px;
-    padding: 0 4px;
-    border: 1px solid var(--border-soft);
-    border-radius: 999px;
-    background: var(--panel);
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
-  }
-  .m-pill-group .m-pill {
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-  .m-pill-group .m-pill.is-on {
-    background: var(--accent-soft);
-  }
+/* ---------- 顶部浮动药丸：左=抽屉开关，右=编辑toggle+⋮（图1） ---------- */
+html.qn-mobile .m-top-pills {
+  position: fixed;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 75;
+  pointer-events: none;
+  transition: transform 0.22s ease, opacity 0.22s ease;
+}
+html.qn-mobile .m-top-pills > * {
+  pointer-events: auto;
+}
+/* 药丸：不透明面板底 + 胶囊圆角（Obsidian 深灰药丸的令牌化版本）。
+   button UA 默认 align-items:flex-start，flex 容器必须显式居中 */
+html.qn-mobile .m-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 42px;
+  height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text-dim);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+}
+html.qn-mobile .m-pill.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+}
+/* 右上药丸组：编辑 toggle 与 ⋮ 同处一颗胶囊（图1 的「书+⋮」组） */
+html.qn-mobile .m-pill-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.28);
+}
+html.qn-mobile .m-pill-group .m-pill {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+html.qn-mobile .m-pill-group .m-pill.is-on {
+  background: var(--accent-soft);
+}
 
-  /* ---------- 底部浮动工具条：‹ › 搜索 ＋ [N] ☰（图1） ---------- */
-  .m-bottom-bar {
-    position: fixed;
-    left: 50%;
-    bottom: 12px;
-    transform: translateX(-50%);
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    padding: 5px 6px;
-    border: 1px solid var(--border-soft);
-    border-radius: 999px;
-    background: var(--panel);
-    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
-    z-index: 75;
-    transition: transform 0.22s ease, opacity 0.22s ease;
-    max-width: calc(100vw - 24px);
-  }
-  .m-bottom-bar .m-pill {
-    min-width: 42px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-  }
-  /* [N] 标签数：方形徽标感（图1 的圆角方块），脏时缀一个点 */
-  .m-bottom-bar .m-tabcount {
-    position: relative;
-    min-width: 38px;
-    border-radius: 12px;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-size: 15px;
-    font-weight: 650;
-    font-variant-numeric: tabular-nums;
-  }
-  .m-bottom-bar .m-tabcount.is-dirty::after {
-    content: "";
-    position: absolute;
-    top: 7px;
-    right: 7px;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
+/* ---------- 底部浮动工具条：‹ › 搜索 ＋ [N] ☰（图1） ---------- */
+html.qn-mobile .m-bottom-bar {
+  position: fixed;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--panel);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.32);
+  z-index: 75;
+  transition: transform 0.22s ease, opacity 0.22s ease;
+  max-width: calc(100vw - 24px);
+}
+html.qn-mobile .m-bottom-bar .m-pill {
+  min-width: 42px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+/* [N] 标签数：方形徽标感（图1 的圆角方块），脏时缀一个点 */
+html.qn-mobile .m-bottom-bar .m-tabcount {
+  position: relative;
+  min-width: 38px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+html.qn-mobile .m-bottom-bar .m-tabcount.is-dirty::after {
+  content: "";
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 
-  /* ---------- 底部 sheet：grabber + 行列表（图2 动作菜单 / [N] / 仓库 radio） ---------- */
-  .m-sheet-backdrop {
-    position: fixed;
-    inset: 0;
-    z-index: 86;
-    background: rgba(0, 0, 0, 0.45);
-  }
-  .m-sheet {
-    position: fixed;
-    left: 10px;
-    right: 10px;
-    bottom: 10px;
-    z-index: 86;
-    background: var(--panel);
-    border: 1px solid var(--border-soft);
-    border-radius: 24px;
-    padding: 6px 8px 10px;
-    max-height: 72vh;
-    overflow-y: auto;
-    box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
-    animation: m-sheet-in 0.18s ease;
-  }
-  @keyframes m-sheet-in {
-    from { opacity: 0; transform: translateY(24px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  .m-sheet-grabber {
-    width: 36px;
-    height: 4px;
-    border-radius: 999px;
-    background: var(--text-faint);
-    opacity: 0.55;
-    margin: 4px auto 6px;
-  }
-  .m-sheet-title {
-    padding: 4px 14px 8px;
-    font-size: 13px;
-    color: var(--text-faint);
-  }
-  .m-sheet-empty {
-    padding: 18px 14px 22px;
-    text-align: center;
-    color: var(--text-faint);
-    font-size: 13.5px;
-  }
-  .m-sheet-row {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    width: 100%;
-    min-height: 50px;
-    padding: 0 14px;
-    border: 0;
-    border-radius: 14px;
-    background: transparent;
-    color: var(--text);
-    font-size: 15px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .m-sheet-row + .m-sheet-row {
-    margin-top: 1px;
-  }
-  .m-sheet-row svg {
-    flex: 0 0 auto;
-    color: var(--text-dim);
-  }
-  .m-sheet-row:active {
-    background: var(--hover);
-  }
-  .m-sheet-row:disabled {
-    color: var(--text-faint);
-    opacity: 0.55;
-  }
-  .m-sheet-row.is-dirty {
-    color: var(--accent);
-  }
-  .m-sheet-row.is-dirty svg {
-    color: var(--accent);
-  }
+/* ---------- 底部 sheet：grabber + 行列表（图2 动作菜单 / [N] / 仓库 radio） ---------- */
+html.qn-mobile .m-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 86;
+  background: rgba(0, 0, 0, 0.45);
+}
+html.qn-mobile .m-sheet {
+  position: fixed;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 86;
+  background: var(--panel);
+  border: 1px solid var(--border-soft);
+  border-radius: 24px;
+  padding: 6px 8px 10px;
+  max-height: 72vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.45);
+  animation: m-sheet-in 0.18s ease;
+}
+@keyframes m-sheet-in {
+  from { opacity: 0; transform: translateY(24px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+html.qn-mobile .m-sheet-grabber {
+  width: 36px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--text-faint);
+  opacity: 0.55;
+  margin: 4px auto 6px;
+}
+html.qn-mobile .m-sheet-title {
+  padding: 4px 14px 8px;
+  font-size: 13px;
+  color: var(--text-faint);
+}
+html.qn-mobile .m-sheet-empty {
+  padding: 18px 14px 22px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13.5px;
+}
+html.qn-mobile .m-sheet-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  min-height: 50px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text);
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+html.qn-mobile .m-sheet-row + .m-sheet-row {
+  margin-top: 1px;
+}
+html.qn-mobile .m-sheet-row svg {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+}
+html.qn-mobile .m-sheet-row:active {
+  background: var(--hover);
+}
+html.qn-mobile .m-sheet-row:disabled {
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+html.qn-mobile .m-sheet-row.is-dirty {
+  color: var(--accent);
+}
+html.qn-mobile .m-sheet-row.is-dirty svg {
+  color: var(--accent);
+}
 
-  /* 仓库 radio sheet（图4）：大行 + 右侧单选圈，行间 hairline */
-  .m-vault-sheet .m-vault-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    min-height: 58px;
-    padding: 0 14px;
-    border: 0;
-    background: transparent;
-    color: var(--text);
-    font-size: 16px;
-    text-align: left;
-    cursor: pointer;
-    border-radius: 14px;
-  }
-  .m-vault-sheet .m-vault-row + .m-vault-row {
-    border-top: 1px solid var(--border-soft);
-    border-top-left-radius: 0;
-    border-top-right-radius: 0;
-  }
-  .m-vault-sheet .m-vault-row:active {
-    background: var(--hover);
-  }
-  .m-vault-name {
-    flex: 1;
-    min-width: 0;
-    /* 长仓库名完整换行（用户拍板：一切截断方案否决） */
-    overflow-wrap: anywhere;
-    text-align: left;
-  }
-  .m-radio {
-    flex: 0 0 auto;
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    border: 2px solid var(--text-faint);
-    position: relative;
-  }
-  .m-radio.is-on {
-    border-color: var(--accent);
-  }
-  .m-radio.is-on::after {
-    content: "";
-    position: absolute;
-    inset: 3px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
+/* 仓库 radio sheet（图4）：大行 + 右侧单选圈，行间 hairline */
+html.qn-mobile .m-vault-sheet .m-vault-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 58px;
+  padding: 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 16px;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 14px;
+}
+html.qn-mobile .m-vault-sheet .m-vault-row + .m-vault-row {
+  border-top: 1px solid var(--border-soft);
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+html.qn-mobile .m-vault-sheet .m-vault-row:active {
+  background: var(--hover);
+}
+html.qn-mobile .m-vault-name {
+  flex: 1;
+  min-width: 0;
+  /* 长仓库名完整换行（用户拍板：一切截断方案否决） */
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+html.qn-mobile .m-radio {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--text-faint);
+  position: relative;
+}
+html.qn-mobile .m-radio.is-on {
+  border-color: var(--accent);
+}
+html.qn-mobile .m-radio.is-on::after {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
 
-  /* 标签页 sheet 行：文件名 + 分屏徽标 + 脏点 + ✕ */
-  .m-tab-row {
-    display: flex;
-    align-items: center;
-    border-radius: 14px;
-  }
-  .m-tab-row.is-active {
-    background: var(--accent-soft);
-  }
-  .m-tab-main {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 48px;
-    padding: 0 4px 0 14px;
-    border: 0;
-    background: transparent;
-    color: var(--text);
-    font-size: 14.5px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .m-tab-name {
-    flex: 1;
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
-  .m-tab-pane {
-    flex: 0 0 auto;
-    font-size: 10.5px;
-    color: var(--text-faint);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    padding: 1px 5px;
-  }
-  .m-tab-dirty {
-    flex: 0 0 auto;
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--accent);
-  }
-  .m-tab-close {
-    flex: 0 0 auto;
-    width: 42px;
-    height: 48px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border: 0;
-    background: transparent;
-    color: var(--text-faint);
-    cursor: pointer;
-  }
-  .m-tab-close:active {
-    color: var(--text);
-  }
+/* 标签页 sheet 行：文件名 + 分屏徽标 + 脏点 + ✕ */
+html.qn-mobile .m-tab-row {
+  display: flex;
+  align-items: center;
+  border-radius: 14px;
+}
+html.qn-mobile .m-tab-row.is-active {
+  background: var(--accent-soft);
+}
+html.qn-mobile .m-tab-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 4px 0 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 14.5px;
+  text-align: left;
+  cursor: pointer;
+}
+html.qn-mobile .m-tab-name {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+html.qn-mobile .m-tab-pane {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 1px 5px;
+}
+html.qn-mobile .m-tab-dirty {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+html.qn-mobile .m-tab-close {
+  flex: 0 0 auto;
+  width: 42px;
+  height: 48px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+html.qn-mobile .m-tab-close:active {
+  color: var(--text);
+}
 
-  /* ---------- 左抽屉分区化（图3/图4）：内容区 + 动作行 + 分区卡 + 仓库底行 ---------- */
-  .sidebar-left {
-    display: flex;
-    flex-direction: column;
-    /* 0.34.1 用户反馈「组件之间的间隙也需要调整」：10/8 收到 8/6 */
-    padding: 8px 10px;
-    gap: 6px;
-  }
-  .m-drawer-content {
-    flex: 1;
-    min-height: 0;
-    display: flex;
-    flex-direction: column;
-    /* 分区内容（树/标签/单词/日历）自己滚 */
-    overflow: hidden;
-  }
-  .m-drawer-content > * {
-    flex-shrink: 0;
-  }
-  /* 内容区里的主内容（树/面板）撑满剩余高度并自滚；页签行/筛选行固定 */
-  .m-drawer-content .tree,
-  .m-drawer-content .tag-dash,
-  .m-drawer-content .vocab-panel,
-  .m-drawer-content .calendar {
-    flex: 1 1 0;
-    min-height: 0;
-    overflow-y: auto;
-  }
-  .m-drawer-content .left-view {
-    flex-shrink: 0;
-  }
-  .m-fulltext-btn {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 9px 12px;
-    margin: 6px 0;
-    border: 1px solid var(--border-soft);
-    border-radius: 10px;
-    background: transparent;
-    color: var(--text-dim);
-    font-size: 13px;
-    cursor: pointer;
-  }
-  .m-fulltext-btn:active {
-    background: var(--hover);
-  }
+/* ---------- 左抽屉分区化（图3/图4）：内容区 + 动作行 + 分区卡 + 仓库底行 ---------- */
+html.qn-mobile .sidebar-left {
+  display: flex;
+  flex-direction: column;
+  /* 0.34.1 用户反馈「组件之间的间隙也需要调整」：10/8 收到 8/6 */
+  padding: 8px 10px;
+  gap: 6px;
+}
+html.qn-mobile .m-drawer-content {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* 分区内容（树/标签/单词/日历）自己滚 */
+  overflow: hidden;
+}
+html.qn-mobile .m-drawer-content > * {
+  flex-shrink: 0;
+}
+/* 内容区里的主内容（树/面板）撑满剩余高度并自滚；页签行/筛选行固定 */
+html.qn-mobile .m-drawer-content .tree,
+html.qn-mobile .m-drawer-content .tag-dash,
+html.qn-mobile .m-drawer-content .vocab-panel,
+html.qn-mobile .m-drawer-content .calendar {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+html.qn-mobile .m-drawer-content .left-view {
+  flex-shrink: 0;
+}
+html.qn-mobile .m-fulltext-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  margin: 6px 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 13px;
+  cursor: pointer;
+}
+html.qn-mobile .m-fulltext-btn:active {
+  background: var(--hover);
+}
 
-  /* 动作行：新建笔记/新建文件夹居左，关闭居右（图4 图标行） */
-  .m-drawer-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .m-drawer-actions button {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px;
-    height: 40px;
-    border: 0;
-    border-radius: 12px;
-    background: transparent;
-    color: var(--text-dim);
-    cursor: pointer;
-  }
-  .m-drawer-actions button:active {
-    background: var(--hover);
-    color: var(--text);
-  }
-  .m-drawer-actions button:disabled {
-    opacity: 0.4;
-  }
+/* 动作行：新建笔记/新建文件夹居左，关闭居右（图4 图标行） */
+html.qn-mobile .m-drawer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+html.qn-mobile .m-drawer-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 40px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+html.qn-mobile .m-drawer-actions button:active {
+  background: var(--hover);
+  color: var(--text);
+}
+html.qn-mobile .m-drawer-actions button:disabled {
+  opacity: 0.4;
+}
 
-  /* 分区卡：五行，当前分区胶囊高亮（图3 底部卡） */
-  .m-drawer-sections {
-    border: 1px solid var(--border-soft);
-    border-radius: 18px;
-    padding: 5px;
-    background: var(--panel);
-  }
-  .m-drawer-section {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    width: 100%;
-    min-height: 44px;
-    padding: 0 12px;
-    border: 0;
-    border-radius: 13px;
-    background: transparent;
-    color: var(--text-dim);
-    font-size: 14.5px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .m-drawer-section + .m-drawer-section {
-    margin-top: 1px;
-  }
-  .m-drawer-section:active {
-    background: var(--hover);
-  }
-  .m-drawer-section.is-on {
-    background: var(--hover);
-    color: var(--text);
-  }
-  .m-drawer-section.is-on svg {
-    color: var(--accent);
-  }
+/* 分区卡：五行，当前分区胶囊高亮（图3 底部卡） */
+html.qn-mobile .m-drawer-sections {
+  border: 1px solid var(--border-soft);
+  border-radius: 18px;
+  padding: 5px;
+  background: var(--panel);
+}
+html.qn-mobile .m-drawer-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 13px;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 14.5px;
+  text-align: left;
+  cursor: pointer;
+}
+html.qn-mobile .m-drawer-section + .m-drawer-section {
+  margin-top: 1px;
+}
+html.qn-mobile .m-drawer-section:active {
+  background: var(--hover);
+}
+html.qn-mobile .m-drawer-section.is-on {
+  background: var(--hover);
+  color: var(--text);
+}
+html.qn-mobile .m-drawer-section.is-on svg {
+  color: var(--accent);
+}
 
-  /* 仓库底行：名字+计数在左（点开 radio sheet），齿轮圆钮在右（图3） */
-  .m-drawer-foot {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 2px 2px 0;
-  }
-  .m-drawer-vault {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 1px;
-    padding: 6px 8px;
-    border: 0;
-    border-radius: 12px;
-    background: transparent;
-    color: var(--text);
-    text-align: left;
-    cursor: pointer;
-  }
-  .m-drawer-vault:active {
-    background: var(--hover);
-  }
-  .m-drawer-vault-name {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 15.5px;
-    font-weight: 650;
-    max-width: 100%;
-    overflow-wrap: anywhere;
-  }
-  .m-drawer-vault-name::after {
-    content: "";
-    width: 0;
-    height: 0;
-    border-left: 4.5px solid transparent;
-    border-right: 4.5px solid transparent;
-    border-top: 5px solid var(--text-faint);
-  }
-  .m-drawer-vault-meta {
-    font-size: 11.5px;
-    color: var(--text-faint);
-  }
-  .m-drawer-gear {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 44px;
-    height: 44px;
-    border: 0;
-    border-radius: 50%;
-    background: var(--hover);
-    color: var(--text-dim);
-    cursor: pointer;
-  }
-  .m-drawer-gear:active {
-    color: var(--text);
-  }
-  /* 0.34.1 用户反馈「输入时底部这些选项没必要显示」：新建/重命名输入行打开
-     期间隐藏动作行/分区卡/仓库底行——键盘弹出后空间紧张，且输入行自带落点
-     提示，这些元素此刻用不到（类由 App.tsx 在 creating/renaming 时挂上） */
-  .sidebar-left.m-inputting .m-drawer-actions,
-  .sidebar-left.m-inputting .m-drawer-sections,
-  .sidebar-left.m-inputting .m-drawer-foot {
-    display: none;
-  }
-  /* 0.34.6 用户反馈「日历分区加日记/待办时，键盘上方还浮着分区胶囊和仓库行」：
-     0.34.1 的 m-inputting 只覆盖抽屉顶部输入行——日历面板的输入行/待办框在
-     内容区里。放宽为「键盘弹出 + 抽屉开着」即藏（抽屉开着时键盘只可能是抽屉
-     内输入弹的，此时底部三件都用不到） */
-  body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-actions,
-  body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-sections,
-  body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-foot {
-    display: none;
-  }
+/* 仓库底行：名字+计数在左（点开 radio sheet），齿轮圆钮在右（图3） */
+html.qn-mobile .m-drawer-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 0;
+}
+html.qn-mobile .m-drawer-vault {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+html.qn-mobile .m-drawer-vault:active {
+  background: var(--hover);
+}
+html.qn-mobile .m-drawer-vault-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 15.5px;
+  font-weight: 650;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+html.qn-mobile .m-drawer-vault-name::after {
+  content: "";
+  width: 0;
+  height: 0;
+  border-left: 4.5px solid transparent;
+  border-right: 4.5px solid transparent;
+  border-top: 5px solid var(--text-faint);
+}
+html.qn-mobile .m-drawer-vault-meta {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+html.qn-mobile .m-drawer-gear {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--hover);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+html.qn-mobile .m-drawer-gear:active {
+  color: var(--text);
+}
+/* 0.34.1 用户反馈「输入时底部这些选项没必要显示」：新建/重命名输入行打开
+   期间隐藏动作行/分区卡/仓库底行——键盘弹出后空间紧张，且输入行自带落点
+   提示，这些元素此刻用不到（类由 App.tsx 在 creating/renaming 时挂上） */
+html.qn-mobile .sidebar-left.m-inputting .m-drawer-actions,
+html.qn-mobile .sidebar-left.m-inputting .m-drawer-sections,
+html.qn-mobile .sidebar-left.m-inputting .m-drawer-foot {
+  display: none;
+}
+/* 0.34.6 用户反馈「日历分区加日记/待办时，键盘上方还浮着分区胶囊和仓库行」：
+   0.34.1 的 m-inputting 只覆盖抽屉顶部输入行——日历面板的输入行/待办框在
+   内容区里。放宽为「键盘弹出 + 抽屉开着」即藏（抽屉开着时键盘只可能是抽屉
+   内输入弹的，此时底部三件都用不到） */
+html.qn-mobile body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-actions,
+html.qn-mobile body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-sections,
+html.qn-mobile body.kbd-open .app.m-drawer-open .sidebar-left .m-drawer-foot {
+  display: none;
+}
 
-  /* 0.34.6 用户反馈「背景预览照用 PC 端逻辑，没自适应手机尺寸」：PC 预览是
-     120px 横向条，手机上竖版壁纸被塞成中间一条，与真实观感（竖屏铺满）完全
-     对不上。移动端改竖屏比例预览（9:16 近似手机屏，高度封顶防占满设置页） */
-  .bg-preview {
-    height: auto;
-    aspect-ratio: 9 / 16;
-    max-height: 44vh;
-    max-width: calc(44vh * 9 / 16);
-  }
+/* 0.34.6 用户反馈「背景预览照用 PC 端逻辑，没自适应手机尺寸」：PC 预览是
+   120px 横向条，手机上竖版壁纸被塞成中间一条，与真实观感（竖屏铺满）完全
+   对不上。移动端改竖屏比例预览（9:16 近似手机屏，高度封顶防占满设置页） */
+html.qn-mobile .bg-preview {
+  height: auto;
+  aspect-ratio: 9 / 16;
+  max-height: 44vh;
+  max-width: calc(44vh * 9 / 16);
 }
 
 /* 0.34.0 仓库主页品牌块（对齐 Obsidian 图5 页顶：logo + 名称 + 版本居中）。
    只加标识，0.33.1 的 13 节功能布局不动 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .vault-home-page .mv-brand,
-  .mv-overlay .mv-brand {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 4px;
-    padding: 18px 0 6px;
-  }
-  .mv-brand-logo {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 46px;
-    height: 46px;
-    border-radius: 14px;
-    background: var(--accent-soft);
-    color: var(--accent);
-  }
-  .mv-brand-name {
-    font-size: 21px;
-    font-weight: 750;
-    letter-spacing: 0.4px;
-    color: var(--text);
-  }
-  .mv-brand-version {
-    font-size: 12px;
-    color: var(--text-faint);
-  }
+html.qn-mobile .vault-home-page .mv-brand,
+html.qn-mobile .mv-overlay .mv-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 18px 0 6px;
+}
+html.qn-mobile .mv-brand-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+html.qn-mobile .mv-brand-name {
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: 0.4px;
+  color: var(--text);
+}
+html.qn-mobile .mv-brand-version {
+  font-size: 12px;
+  color: var(--text-faint);
 }
 
 /* 0.34.0 补丁：任一抽屉开着时浮动药丸/底条整体让位（Obsidian 语义——抽屉
    是全高页面，浮动件叠在上面会挡住知识库页签与底部仓座行）。关闭走抽屉的
    ✕/遮罩/back/边缘滑动。 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .app.m-drawer-open .m-top-pills {
-    transform: translateY(-140%);
-    opacity: 0;
-    pointer-events: none;
-  }
-  .app.m-drawer-open .m-bottom-bar {
-    transform: translateX(-50%) translateY(160%);
-    opacity: 0;
-    pointer-events: none;
-  }
+html.qn-mobile .app.m-drawer-open .m-top-pills {
+  transform: translateY(-140%);
+  opacity: 0;
+  pointer-events: none;
+}
+html.qn-mobile .app.m-drawer-open .m-bottom-bar {
+  transform: translateX(-50%) translateY(160%);
+  opacity: 0;
+  pointer-events: none;
 }
 
 /* 0.34.1 用户反馈三连：①抽屉分区卡默认收起成胶囊（当前分区 + ⇅），点击展开、
    选中后收回（Obsidian 分区切换器语义）；②右上 ⋮ = 当前笔记菜单（与底条 ☰
    应用级菜单分工），行样式复用 .m-sheet-row 无需新增；③沉浸改点正文双向 toggle
    （m-zen-peek 已删）。 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .m-drawer-section-collapsed {
-    min-height: 46px;
-  }
-  /* ⇅ 上下双尖括号（Obsidian 分区切换器的展开记号） */
-  .m-drawer-section-caret {
-    position: relative;
-    flex: 0 0 auto;
-    margin-left: auto;
-    width: 10px;
-    height: 18px;
-  }
-  .m-drawer-section-caret::before,
-  .m-drawer-section-caret::after {
-    content: "";
-    position: absolute;
-    left: 1px;
-    width: 7px;
-    height: 7px;
-    border-right: 1.6px solid currentColor;
-    border-bottom: 1.6px solid currentColor;
-  }
-  .m-drawer-section-caret::before {
-    top: 1px;
-    transform: rotate(-135deg);
-  }
-  .m-drawer-section-caret::after {
-    bottom: 1px;
-    transform: rotate(45deg);
-  }
+html.qn-mobile .m-drawer-section-collapsed {
+  min-height: 46px;
+}
+/* ⇅ 上下双尖括号（Obsidian 分区切换器的展开记号） */
+html.qn-mobile .m-drawer-section-caret {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: auto;
+  width: 10px;
+  height: 18px;
+}
+html.qn-mobile .m-drawer-section-caret::before,
+html.qn-mobile .m-drawer-section-caret::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  width: 7px;
+  height: 7px;
+  border-right: 1.6px solid currentColor;
+  border-bottom: 1.6px solid currentColor;
+}
+html.qn-mobile .m-drawer-section-caret::before {
+  top: 1px;
+  transform: rotate(-135deg);
+}
+html.qn-mobile .m-drawer-section-caret::after {
+  bottom: 1px;
+  transform: rotate(45deg);
 }
 
 /* ==================== 0.34.1 真机反馈批：横幅表层 + 快捷键页头 ==================== */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 用户反馈「报错信息不应该显示在最表层吗，现在被遮挡住了」：.banner 原本
-     在文档流里（.app 顶部），而抽屉 70 / 主页 84 / 设置 85 / sheet 86 全是
-     更高的固定定位浮层——任何浮层开着时错误横幅都被盖住。移动端改成 fixed
-     顶层浮出（z 90 > sheet 86）；桌面维持文档流原样（零视觉变化） */
-  .banner {
-    position: fixed;
-    top: 10px;
-    left: 12px;
-    right: 12px;
-    z-index: 90;
-    margin: 0;
-  }
+/* 用户反馈「报错信息不应该显示在最表层吗，现在被遮挡住了」：.banner 原本
+   在文档流里（.app 顶部），而抽屉 70 / 主页 84 / 设置 85 / sheet 86 全是
+   更高的固定定位浮层——任何浮层开着时错误横幅都被盖住。移动端改成 fixed
+   顶层浮出（z 90 > sheet 86）；桌面维持文档流原样（零视觉变化） */
+html.qn-mobile .banner {
+  position: fixed;
+  top: 10px;
+  left: 12px;
+  right: 12px;
+  z-index: 90;
+  margin: 0;
+}
 
-  /* 用户反馈「快捷键页内容太多时相互重叠」：.hotkey-head 桌面自带 sticky
-     top:-12px（相对分区顶），与二级页 sticky 头（56px、z-5）叠用时按钮行/
-     搜索框滑进页头背后被裁半截。移动端让它吸在二级头下缘（top:56px），
-     负 margin 改吃掉 settings-body 的 16px 左右 padding，宽度与页头对齐 */
-  .settings-panel.is-detail .hotkey-head {
-    position: sticky;
-    top: 56px;
-    margin: 0 -16px 8px;
-    padding: 10px 16px 8px;
-  }
+/* 用户反馈「快捷键页内容太多时相互重叠」：.hotkey-head 桌面自带 sticky
+   top:-12px（相对分区顶），与二级页 sticky 头（56px、z-5）叠用时按钮行/
+   搜索框滑进页头背后被裁半截。移动端让它吸在二级头下缘（top:56px），
+   负 margin 改吃掉 settings-body 的 16px 左右 padding，宽度与页头对齐 */
+html.qn-mobile .settings-panel.is-detail .hotkey-head {
+  position: sticky;
+  top: 56px;
+  margin: 0 -16px 8px;
+  padding: 10px 16px 8px;
+}
 
-  /* ---------- 收件箱（速记管理）三修（0.34.1 用户反馈） ---------- */
+/* ---------- 收件箱（速记管理）三修（0.34.1 用户反馈） ---------- */
 
-  /* ① 「收件箱就不要显示这些悬浮按钮了」：收件箱是全屏工作页，自带 Inbox
-     顶栏（搜索/⟳/⋯/✕）与底部快捷键提示行，浮动药丸/底条叠在顶栏上既挡字
-     又用不到——整个让位（关闭走面板自带 ✕ 或系统返回） */
-  .app.inbox-open .m-top-pills {
-    transform: translateY(-140%);
-    opacity: 0;
-    pointer-events: none;
-  }
-  .app.inbox-open .m-bottom-bar {
-    transform: translateX(-50%) translateY(160%);
-    opacity: 0;
-    pointer-events: none;
-  }
+/* ① 「收件箱就不要显示这些悬浮按钮了」：收件箱是全屏工作页，自带 Inbox
+   顶栏（搜索/⟳/⋯/✕）与底部快捷键提示行，浮动药丸/底条叠在顶栏上既挡字
+   又用不到——整个让位（关闭走面板自带 ✕ 或系统返回） */
+html.qn-mobile .app.inbox-open .m-top-pills {
+  transform: translateY(-140%);
+  opacity: 0;
+  pointer-events: none;
+}
+html.qn-mobile .app.inbox-open .m-bottom-bar {
+  transform: translateX(-50%) translateY(160%);
+  opacity: 0;
+  pointer-events: none;
+}
 
-  /* ③ 「这面板滑动无法进入抽屉页面」：桌面语义收件箱打开时藏左右栏
-     （.app.inbox-open .sidebar-left/right{display:none}），但移动端抽屉是
-     召唤式全屏浮层——内容区滑动手势其实触发了（m-drawer-open 类都翻转了），
-     抽屉却渲染不出来，看起来就是「滑不动」。移动端恢复两侧渲染：右滑开左
-     抽屉、左滑开右抽屉，全屏盖在收件箱上；点文件 openNote 自带关收件箱
-     （0.20 语义已在）。只恢复左边会造出另一种暗坑：左滑开右抽屉时类翻转
-     了、面板不可见，m-drawer-open 还会把药丸永久藏掉 */
-  .app.inbox-open .sidebar-left,
-  .app.inbox-open .sidebar-right {
-    display: flex;
-  }
+/* ③ 「这面板滑动无法进入抽屉页面」：桌面语义收件箱打开时藏左右栏
+   （.app.inbox-open .sidebar-left/right{display:none}），但移动端抽屉是
+   召唤式全屏浮层——内容区滑动手势其实触发了（m-drawer-open 类都翻转了），
+   抽屉却渲染不出来，看起来就是「滑不动」。移动端恢复两侧渲染：右滑开左
+   抽屉、左滑开右抽屉，全屏盖在收件箱上；点文件 openNote 自带关收件箱
+   （0.20 语义已在）。只恢复左边会造出另一种暗坑：左滑开右抽屉时类翻转
+   了、面板不可见，m-drawer-open 还会把药丸永久藏掉 */
+html.qn-mobile .app.inbox-open .sidebar-left,
+html.qn-mobile .app.inbox-open .sidebar-right {
+  display: flex;
+}
 
-  /* ② 「内容行只占左边那么点，功能归纳到 ⋯」：行尾操作区常驻占位
-     （opacity:0 也吃掉 ~150px 行宽），手机上没有 hover 白白留白——编辑/
-     标签/归档收进 ⋯ 菜单（CaptureManager 按 isMobile 增补菜单项），行尾
-     只留常显 ⋯（对齐文件树行）；行内加标签输入框出现时工具区临时显形，
-     否则菜单关掉后输入框 opacity:0 看不见 */
-  .app.inbox-open .cm-row-tool .cm-row-quick {
-    display: none;
-  }
-  .app.inbox-open .cm-row-more {
-    opacity: 1;
-  }
-  .app.inbox-open .cm-row-tool:has(.cm-row-tag-input) {
-    opacity: 1;
-  }
+/* ② 「内容行只占左边那么点，功能归纳到 ⋯」：行尾操作区常驻占位
+   （opacity:0 也吃掉 ~150px 行宽），手机上没有 hover 白白留白——编辑/
+   标签/归档收进 ⋯ 菜单（CaptureManager 按 isMobile 增补菜单项），行尾
+   只留常显 ⋯（对齐文件树行）；行内加标签输入框出现时工具区临时显形，
+   否则菜单关掉后输入框 opacity:0 看不见 */
+html.qn-mobile .app.inbox-open .cm-row-tool .cm-row-quick {
+  display: none;
+}
+html.qn-mobile .app.inbox-open .cm-row-more {
+  opacity: 1;
+}
+html.qn-mobile .app.inbox-open .cm-row-tool:has(.cm-row-tag-input) {
+  opacity: 1;
+}
 
-  /* 0.34.6 用户反馈「启用背景图片后，左右抽屉还会透图」：桌面侧栏半透明是有意
-     的（背景图从表面透出），但移动端抽屉是全屏工作面——透图毁可读性。恢复
-     不透明实底（放专区尾部，同特异性下压过 html.qn-bg-on .sidebar 的 66%） */
-  html.qn-bg-on .sidebar-left,
-  html.qn-bg-on .sidebar-right {
-    background: var(--panel);
-  }
+/* 0.34.6 用户反馈「启用背景图片后，左右抽屉还会透图」：桌面侧栏半透明是有意
+   的（背景图从表面透出），但移动端抽屉是全屏工作面——透图毁可读性。恢复
+   不透明实底（放专区尾部，同特异性下压过 html.qn-bg-on .sidebar 的 66%） */
+html.qn-mobile.qn-bg-on .sidebar-left,
+html.qn-mobile.qn-bg-on .sidebar-right {
+  background: var(--panel);
+}
 
-  /* 0.34.6 文件内搜索面板 z 压到 12（修「遮挡设置/全局搜索」）后，浮动药丸
-     (z75) 反过来会压住面板顶部——移动端把面板整体下移避开药丸带 */
-  .qn-search {
-    top: 64px;
-  }
+/* 0.34.6 文件内搜索面板 z 压到 12（修「遮挡设置/全局搜索」）后，浮动药丸
+   (z75) 反过来会压住面板顶部——移动端把面板整体下移避开药丸带 */
+html.qn-mobile .qn-search {
+  top: 64px;
+}
 
-  /* 0.34.6 应用内目录浏览器（安卓 plugin-dialog 未实现目录选择的替代通道）：
-     底部弹层（与单词详情同款手势语义——点遮罩关），z 95 盖过设置(85) */
-  .mobile-dir-picker {
-    position: fixed;
-    inset: 0;
-    z-index: 95;
-    display: flex;
-    align-items: flex-end;
-    background: rgba(8, 9, 14, 0.55);
-  }
-  .mobile-dir-sheet {
-    display: flex;
-    flex-direction: column;
-    width: 100%;
-    max-height: 72vh;
-    padding: 14px 14px 22px;
-    border-radius: 16px 16px 0 0;
-    background: var(--panel);
-    box-shadow: var(--shadow-2);
-  }
-  .mobile-dir-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-  }
-  .mobile-dir-title {
-    font-size: 14.5px;
-    font-weight: 600;
-    color: var(--text);
-  }
-  .mobile-dir-path {
-    margin-top: 8px;
-    padding: 7px 10px;
-    border: 1px solid var(--border-soft);
-    border-radius: 9px;
-    background: var(--surface-2);
-    font-size: 11.5px;
-    color: var(--text-faint);
-    word-break: break-all;
-    max-height: 54px;
-    overflow: auto;
-  }
-  .mobile-dir-list {
-    flex: 1;
-    min-height: 0;
-    overflow: auto;
-    margin-top: 8px;
-  }
-  .mobile-dir-item {
-    display: block;
-    width: 100%;
-    padding: 11px 12px;
-    border: 0;
-    border-radius: 10px;
-    background: transparent;
-    color: var(--text);
-    font-size: 13.5px;
-    text-align: left;
-    cursor: pointer;
-  }
-  .mobile-dir-item:active {
-    background: var(--hover);
-  }
-  .mobile-dir-item.is-up {
-    color: var(--accent);
-  }
-  .mobile-dir-empty {
-    padding: 16px 12px;
-    font-size: 12.5px;
-    color: var(--text-faint);
-    text-align: center;
-  }
-  .mobile-dir-actions {
-    display: flex;
-    gap: 8px;
-    justify-content: flex-end;
-    margin-top: 10px;
-  }
+/* 0.34.6 应用内目录浏览器（安卓 plugin-dialog 未实现目录选择的替代通道）：
+   底部弹层（与单词详情同款手势语义——点遮罩关），z 95 盖过设置(85) */
+html.qn-mobile .mobile-dir-picker {
+  position: fixed;
+  inset: 0;
+  z-index: 95;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(8, 9, 14, 0.55);
+}
+html.qn-mobile .mobile-dir-sheet {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: 72vh;
+  padding: 14px 14px 22px;
+  border-radius: 16px 16px 0 0;
+  background: var(--panel);
+  box-shadow: var(--shadow-2);
+}
+html.qn-mobile .mobile-dir-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+html.qn-mobile .mobile-dir-title {
+  font-size: 14.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+html.qn-mobile .mobile-dir-path {
+  margin-top: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: var(--surface-2);
+  font-size: 11.5px;
+  color: var(--text-faint);
+  word-break: break-all;
+  max-height: 54px;
+  overflow: auto;
+}
+html.qn-mobile .mobile-dir-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin-top: 8px;
+}
+html.qn-mobile .mobile-dir-item {
+  display: block;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+html.qn-mobile .mobile-dir-item:active {
+  background: var(--hover);
+}
+html.qn-mobile .mobile-dir-item.is-up {
+  color: var(--accent);
+}
+html.qn-mobile .mobile-dir-empty {
+  padding: 16px 12px;
+  font-size: 12.5px;
+  color: var(--text-faint);
+  text-align: center;
+}
+html.qn-mobile .mobile-dir-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 10px;
 }
 
 /* ==================== 0.34.8 真机反馈批：系统栏全幅避让 ==================== */
@@ -13545,202 +13499,205 @@ html.qn-bg-on .editor-pane-col.is-split {
    背景图层（#qn-bg-layer，fixed inset 0）跟着铺到栏后；栏高经 --qn-inset-top/bottom
    CSS 变量喂给前端（启动 qnAndroid.insets() 拉 + 原生经 window.__qnApplyInsets
    推，键盘弹出时 bottom 归零）。变量未就绪时全部 0 兜底；桌面无此变量，下面
-   规则全部退化为原值（零视觉变化）。平板（coarse >900px）同样吃避让。 */
-@media (hover: none) and (pointer: coarse) {
-  /* 0.34.10 用户反馈「顶栏和底栏还是没有显示文字内容，Obsidian 能实现」：
-     .app 不再让出系统栏——编辑区滚动视口全幅铺满，滚动时文字直接穿过
-     状态栏/手势条后面（Obsidian 同款）；初始避让由 .cm-scroller 的
-     padding-top 承担（顶栏高度 + 呼吸），抽屉/主页/设置各自保留 inset padding */
-  .sidebar-left,
-  .sidebar-right {
-    /* 全屏抽屉：内容让开系统栏，抽屉底色照旧铺满全屏（含栏后） */
-    padding-top: calc(8px + var(--qn-inset-top, 0px));
-    padding-bottom: calc(8px + var(--qn-inset-bottom, 0px));
-  }
-  .vault-home-page {
-    padding-top: var(--qn-inset-top, 0px);
-    padding-bottom: var(--qn-inset-bottom, 0px);
-  }
+   规则全部退化为原值（零视觉变化）。平板/横屏（>900px）同样吃避让。 */
+/* 0.34.10 用户反馈「顶栏和底栏还是没有显示文字内容，Obsidian 能实现」：
+   .app 不再让出系统栏——编辑区滚动视口全幅铺满，滚动时文字直接穿过
+   状态栏/手势条后面（Obsidian 同款）；初始避让由 .cm-scroller 的
+   padding-top 承担（顶栏高度 + 呼吸），抽屉/主页/设置各自保留 inset padding */
+html.qn-mobile .sidebar-left,
+html.qn-mobile .sidebar-right {
+  /* 全屏抽屉：内容让开系统栏，抽屉底色照旧铺满全屏（含栏后） */
+  padding-top: calc(8px + var(--qn-inset-top, 0px));
+  padding-bottom: calc(8px + var(--qn-inset-bottom, 0px));
+}
+html.qn-mobile .vault-home-page {
+  padding-top: var(--qn-inset-top, 0px);
+  padding-bottom: var(--qn-inset-bottom, 0px);
 }
 
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .m-top-pills {
-    /* 0.34.10 用户反馈「顶部区域利用起来」：贴住状态栏下缘，少留一截 */
-    top: calc(4px + var(--qn-inset-top, 0px));
-  }
-  .m-bottom-bar {
-    bottom: calc(8px + var(--qn-inset-bottom, 0px));
-  }
-  .banner {
-    /* 顶到药丸带下方：横幅不再盖住可交互的药丸 */
-    top: calc(56px + var(--qn-inset-top, 0px));
-  }
-  .m-sheet {
-    bottom: calc(10px + var(--qn-inset-bottom, 0px));
-  }
-  .quick-capture {
-    bottom: var(--qn-inset-bottom, 0px);
-  }
-  .mobile-md-toolbar {
-    /* 编辑态贴键盘（html.qn-ime-open bottom:0 特异性更高照旧赢）；键盘未弹时
-       让开导航栏 */
-    bottom: var(--qn-inset-bottom, 0px);
-  }
-  .settings-panel {
-    padding-top: var(--qn-inset-top, 0px);
-    padding-bottom: var(--qn-inset-bottom, 0px);
-  }
+html.qn-mobile .m-top-pills {
+  /* 0.34.10 用户反馈「顶部区域利用起来」：贴住状态栏下缘，少留一截 */
+  top: calc(4px + var(--qn-inset-top, 0px));
+}
+html.qn-mobile .m-bottom-bar {
+  bottom: calc(8px + var(--qn-inset-bottom, 0px));
+}
+html.qn-mobile .banner {
+  /* 顶到药丸带下方：横幅不再盖住可交互的药丸 */
+  top: calc(56px + var(--qn-inset-top, 0px));
+}
+html.qn-mobile .m-sheet {
+  bottom: calc(10px + var(--qn-inset-bottom, 0px));
+}
+html.qn-mobile .quick-capture {
+  bottom: var(--qn-inset-bottom, 0px);
+}
+html.qn-mobile .mobile-md-toolbar {
+  /* 编辑态贴键盘（html.qn-ime-open bottom:0 特异性更高照旧赢）；键盘未弹时
+     让开导航栏 */
+  bottom: var(--qn-inset-bottom, 0px);
+}
+html.qn-mobile .settings-panel {
+  padding-top: var(--qn-inset-top, 0px);
+  padding-bottom: var(--qn-inset-bottom, 0px);
 }
 
 /* ============================================================
    0.36.1 反馈批：移动端预览全屏避让 + 语句库管理 UI（手机端）
    ============================================================ */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  /* 用户反馈「手机上预览图片或者文件时，显示面板只是下面一部分，不应该是整个
-     屏幕吗」：根因是 0.36.0 预览标签页化时漏挂 is-special-hidden，编辑器宿主
-     没藏、预览（flex:1）被挤到下半屏——App 层已补挂。这里补系统栏避让。
-     0.38 用户反馈「预览文件为什么不是整个页面」：标题条改**悬浮**（absolute
-     叠在内容上方，半透明），内容区顶到系统栏、底到手势条——整个屏幕都是预览
-     （勿回退成 padding 避让：那是 0.36.1 的形态，用户要的是全幅）；点击内容
-     切 chrome（标题条隐藏/唤回 + App 收走药丸/底条） */
-  .file-preview.is-embedded {
-    padding-top: var(--qn-inset-top, 0px);
-  }
+/* 用户反馈「手机上预览图片或者文件时，显示面板只是下面一部分，不应该是整个
+   屏幕吗」：根因是 0.36.0 预览标签页化时漏挂 is-special-hidden，编辑器宿主
+   没藏、预览（flex:1）被挤到下半屏——App 层已补挂。这里补系统栏避让。
+   0.38 用户反馈「预览文件为什么不是整个页面」：标题条改**悬浮**（absolute
+   叠在内容上方，半透明），内容区顶到系统栏、底到手势条——整个屏幕都是预览
+   （勿回退成 padding 避让：那是 0.36.1 的形态，用户要的是全幅）；点击内容
+   切 chrome（标题条隐藏/唤回 + App 收走药丸/底条） */
+html.qn-mobile .file-preview.is-embedded {
+  padding-top: var(--qn-inset-top, 0px);
+}
 
-  .file-preview.is-embedded .file-preview-bar {
-    position: absolute;
-    top: calc(var(--qn-inset-top, 0px) + 4px);
-    left: 8px;
-    right: 8px;
-    z-index: 7;
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    background: color-mix(in srgb, var(--panel) 88%, transparent);
-    backdrop-filter: blur(6px);
-    padding: 6px 10px;
-  }
+html.qn-mobile .file-preview.is-embedded .file-preview-bar {
+  position: absolute;
+  top: calc(var(--qn-inset-top, 0px) + 4px);
+  left: 8px;
+  right: 8px;
+  z-index: 7;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  backdrop-filter: blur(6px);
+  padding: 6px 10px;
+}
 
-  .file-preview.is-embedded .file-preview-body {
-    padding-top: 44px;
-    padding-bottom: calc(var(--qn-inset-bottom, 0px) + 8px);
-  }
+html.qn-mobile .file-preview.is-embedded .file-preview-body {
+  padding-top: 44px;
+  padding-bottom: calc(var(--qn-inset-bottom, 0px) + 8px);
+}
 
-  /* App 的 .qn-preview-chrome-off：预览态点击内容后，药丸/底条整体收走，
-     再点内容唤回（标题条由组件内 barVisible 管） */
-  .app.qn-preview-chrome-off .m-top-pills,
-  .app.qn-preview-chrome-off .m-bottom-bar {
-    opacity: 0;
-    pointer-events: none;
-  }
+/* 0.38.4：移动端非 PDF 预览无标题条（is-barless）——顶距归零内容全幅，
+   44px 只是给 PDF 标题条让位的 */
+html.qn-mobile .file-preview.is-embedded .file-preview-body.is-barless {
+  padding-top: 0;
+}
 
-  /* HTML 预览的透明触摸层：iframe 是独立文档吞掉一切触摸——盖层接管横滑
-     （派发 qn-preview-swipe 开抽屉）与点击（切 chrome）。sandbox="" 下页面
-     纯静态无交互，覆盖零副作用 */
-  .file-preview-html-touch {
-    position: absolute;
-    inset: 44px 0 0;
-    z-index: 6;
-  }
+/* HTML 预览的透明触摸层：iframe 是独立文档吞掉一切触摸——盖层接管横滑
+   （派发 qn-preview-swipe 开抽屉）与点击（切 chrome）。sandbox="" 下页面
+   纯静态无交互，覆盖零副作用 */
+html.qn-mobile .file-preview-html-touch {
+  position: absolute;
+  inset: 0; /* 0.38.4：HTML 预览标题条已去，触摸层全幅 */
+  z-index: 6;
+}
 
-  .file-preview.is-embedded .file-preview-html {
-    position: absolute;
-    inset: 44px 0 0;
-  }
+/* 0.38.3 用户反馈「预览的 html 不能缩放/滑动」：iframe 从 absolute 改文档流
+   ——body 的原生滚动承担平移（单指拖由触摸层转成 scroll），尺寸由 JS 按
+   「内容自然尺寸 + CSS zoom」写入（zoom 走重排缩放文字锐利，transform:scale
+   是位图拉伸）；桌面维持 absolute + iframe 内部滚动不变 */
+html.qn-mobile .file-preview.is-embedded .file-preview-html {
+  position: static;
+  inset: auto;
+  display: block;
+  max-width: none;
+  max-height: none;
+}
 
-  /* 用户反馈「优化语句库的显示UI效果」：头部避让药丸、底部按钮避让底条；
-     行改两行栅格——名字完整换行（勿回退截断方案），预览片段独占一行（两行
-     截断），三个按钮与名字同排右对齐 */
-  .ddl-manager-page {
-    padding-top: calc(var(--qn-inset-top, 0px) + 52px);
-    padding-bottom: calc(var(--qn-inset-bottom, 0px) + 64px);
-  }
+/* 用户反馈「优化语句库的显示UI效果」：头部避让药丸、底部按钮避让底条；
+   行改两行栅格——名字完整换行（勿回退截断方案），预览片段独占一行（两行
+   截断），三个按钮与名字同排右对齐 */
+html.qn-mobile .ddl-manager-page {
+  /* 0.38.10 用户反馈「上下空白太浪费」：52/84px 是给旧浮动药丸/底条的避让——
+     libpage-open 后两者已让位，只保留状态栏/手势条的最小避让 */
+  padding-top: calc(var(--qn-inset-top, 0px) + 8px);
+  padding-bottom: calc(var(--qn-inset-bottom, 0px) + 16px);
+}
 
-  .ddl-mgr-filters {
-    flex-wrap: wrap;
-  }
+html.qn-mobile .ddl-mgr-filters {
+  flex-wrap: wrap;
+}
 
-  .ddl-mgr-search {
-    flex: 1 1 100%;
-    order: 10;
-    padding: 8px 11px;
-    font-size: 13px;
-  }
+html.qn-mobile .ddl-mgr-search {
+  flex: 1 1 100%;
+  order: 10;
+  padding: 8px 11px;
+  font-size: 13px;
+}
 
-  /* 0.38 行尾按钮收敛成两个（定位 + ⋯）：栅格列数同步收紧；
-     0.38b 行首加勾选框（批量栏）→ 列再 +1（checkbox 固定宽列） */
-  .ddl-mgr-row {
-    display: grid;
-    grid-template-columns: auto minmax(0, 1fr) auto auto;
-    gap: 3px 10px;
-    align-items: center;
-    padding: 8px 10px;
-  }
+/* 0.38 行尾按钮收敛成两个（定位 + ⋯）：栅格列数同步收紧；
+   0.38b 行首加勾选框（批量栏）→ 列再 +1（checkbox 固定宽列） */
+html.qn-mobile .ddl-mgr-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 3px 10px;
+  align-items: center;
+  padding: 8px 10px;
+}
 
-  .ddl-mgr-row .cm-check {
-    grid-column: 1;
-    grid-row: 1;
-  }
+html.qn-mobile .ddl-mgr-row .cm-check {
+  grid-column: 1;
+  grid-row: 1;
+}
 
-  .ddl-mgr-row .ddl-mgr-name {
-    grid-column: 2;
-    grid-row: 1;
-    max-width: none;
-    white-space: normal;
-    word-break: break-all;
-    font-size: 13px;
-    line-height: 1.4;
-  }
+html.qn-mobile .ddl-mgr-row .ddl-mgr-name {
+  grid-column: 2;
+  grid-row: 1;
+  max-width: none;
+  white-space: normal;
+  word-break: break-all;
+  font-size: 13px;
+  line-height: 1.4;
+}
 
-  .ddl-mgr-row .ddl-mgr-preview {
-    grid-column: 1 / -1;
-    grid-row: 2;
-    white-space: normal;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
+html.qn-mobile .ddl-mgr-row .ddl-mgr-preview {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  white-space: normal;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 
-  .ddl-mgr-row > button {
-    grid-row: 1;
-    padding: 5px 11px;
-    font-size: 12px;
-  }
+html.qn-mobile .ddl-mgr-row > button {
+  grid-row: 1;
+  padding: 5px 11px;
+  font-size: 12px;
+}
 
-  .ddl-mgr-row > button:nth-of-type(1) {
-    grid-column: 2;
-  }
+/* 0.38.3 用户反馈（截图实锤「定位」叠在名字上）：栅格 4 列
+   （勾选框|名字|定位|⋯），此前按钮写在 col2/col3 与名字同格 */
+html.qn-mobile .ddl-mgr-row > button:nth-of-type(1) {
+  grid-column: 3;
+}
 
-  .ddl-mgr-row > button:nth-of-type(2) {
-    grid-column: 3;
-  }
+html.qn-mobile .ddl-mgr-row > button:nth-of-type(2) {
+  grid-column: 4;
+}
 
-  /* 展开行（复制/删除/移动项目）与项目筛选 chips：触控目标放宽 */
-  .ddl-mgr-extra {
-    padding: 6px 10px 10px 16px;
-    gap: 8px;
-  }
+/* 展开行（复制/删除/移动项目）与项目筛选 chips：触控目标放宽 */
+html.qn-mobile .ddl-mgr-extra {
+  padding: 6px 10px 10px 16px;
+  gap: 8px;
+}
 
-  .ddl-mgr-extra > button,
-  .ddl-mgr-proj-chip {
-    padding: 6px 12px;
-    font-size: 12.5px;
-  }
+html.qn-mobile .ddl-mgr-extra > button,
+html.qn-mobile .ddl-mgr-proj-chip {
+  padding: 6px 12px;
+  font-size: 12.5px;
+}
 
-  /* Esc 键在手机上不存在：关闭钮改显 ✕ */
-  .ddl-mgr-page-close {
-    padding: 8px 12px;
-  }
+/* Esc 键在手机上不存在：关闭钮改显 ✕ */
+html.qn-mobile .ddl-mgr-page-close {
+  padding: 8px 12px;
+}
 
-  .ddl-mgr-page-close kbd {
-    display: none;
-  }
+html.qn-mobile .ddl-mgr-page-close kbd {
+  display: none;
+}
 
-  .ddl-mgr-page-close::before {
-    content: "✕";
-    font-size: 15px;
-    line-height: 1;
-  }
+html.qn-mobile .ddl-mgr-page-close::before {
+  content: "✕";
+  font-size: 15px;
+  line-height: 1;
 }
 
 /* ---- 0.36.1 用户反馈「设置一级/二级标题头样式不一致，改成复用同一个模板」----
@@ -13748,49 +13705,47 @@ html.qn-bg-on .editor-pane-col.is-split {
    40dp 主题色 ‹（20px 图标）+ 16px/650 标题 flex:1。此前一级头是灰色 24px
    关闭钮 + 负边距贴边（0.33 停点3 的过渡方案），与二级头（40dp 主题色返回）
    并排看明显两套。仅移动端媒体块内生效，桌面头不受影响。 */
-@media (hover: none) and (pointer: coarse) and (max-width: 900px) {
-  .settings-nav-head.settings-page-head,
-  .settings-mobile-head.settings-page-head {
-    display: flex;
-    align-items: center;
-    justify-content: flex-start;
-    gap: 4px;
-    width: 100%;
-    height: 56px;
-    padding: 0 10px;
-    border-bottom: 1px solid var(--border-soft);
-    background: var(--panel);
-  }
+html.qn-mobile .settings-nav-head.settings-page-head,
+html.qn-mobile .settings-mobile-head.settings-page-head {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 4px;
+  width: 100%;
+  height: 56px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border-soft);
+  background: var(--panel);
+}
 
-  .settings-page-head .settings-close {
-    order: -1;
-    margin: 0;
-    width: 40px;
-    height: 40px;
-    color: var(--accent);
-    background: transparent;
-  }
+html.qn-mobile .settings-page-head .settings-close {
+  order: -1;
+  margin: 0;
+  width: 40px;
+  height: 40px;
+  color: var(--accent);
+  background: transparent;
+}
 
-  .settings-page-head .settings-back {
-    width: 40px;
-    height: 40px;
-    color: var(--accent);
-    background: transparent;
-  }
+html.qn-mobile .settings-page-head .settings-back {
+  width: 40px;
+  height: 40px;
+  color: var(--accent);
+  background: transparent;
+}
 
-  .settings-page-head .settings-close svg,
-  .settings-page-head .settings-back svg {
-    width: 20px;
-    height: 20px;
-  }
+html.qn-mobile .settings-page-head .settings-close svg,
+html.qn-mobile .settings-page-head .settings-back svg {
+  width: 20px;
+  height: 20px;
+}
 
-  .settings-page-head .settings-page-title {
-    flex: 1;
-    min-width: 0;
-    font-size: 16px;
-    font-weight: 650;
-    text-align: left;
-  }
+html.qn-mobile .settings-page-head .settings-page-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 16px;
+  font-weight: 650;
+  text-align: left;
 }
 
 /* 0.36.1「只显示选定目录」焦点芯片（0.36.1 用户反馈，移动端大仓库浏览）：
@@ -13829,4 +13784,339 @@ html.qn-bg-on .editor-pane-col.is-split {
 
 .tree-focus-clear:hover {
   background: var(--hover);
+}
+
+/* ============================================================
+   0.38.3 反馈批（真机 + 桌面八项）
+   ============================================================ */
+
+/* ---------- ① 灯箱：工具条避让状态栏 + 单击图片切换显隐 ---------- */
+/* 用户反馈「图片操作选项与系统状态栏重叠」「点击图片时自动隐藏，再次点击
+   恢复」（切换逻辑在 lightbox.ts：单击延迟 320ms 与双击共存） */
+html.qn-mobile .qn-lightbox-bar {
+  top: calc(var(--qn-inset-top, 0px) + 10px);
+}
+
+html.qn-mobile .qn-lightbox-hint {
+  bottom: calc(var(--qn-inset-bottom, 0px) + 14px);
+}
+
+.qn-lightbox-bar,
+.qn-lightbox-hint {
+  transition: opacity 0.18s ease;
+}
+
+.qn-lightbox.is-chrome-off .qn-lightbox-bar,
+.qn-lightbox.is-chrome-off .qn-lightbox-hint {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* ---------- ② SVG 预览 DOM 内联：矢量随容器重排，响应式不发糊 ---------- */
+/* 用户反馈「mermaid 导出文件全屏清晰、响应式布局下模糊」：<img> 展示 svg 按
+   固有尺寸光栅再降采样，窄面板文字糊；内联（DOMPurify 消毒后）真矢量。 */
+.file-preview-image svg {
+  max-width: 100%;
+  max-height: 100%;
+  height: auto;
+  will-change: transform;
+  user-select: none;
+}
+
+/* ---------- ③ 仓库下拉：行尾移除钮（仅列表移除，文件保留在磁盘） ---------- */
+.vault-menu-item {
+  display: flex;
+  align-items: stretch;
+}
+
+.vault-menu-item > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.vault-menu .vault-menu-remove {
+  flex: none;
+  width: 30px;
+  padding: 0;
+  justify-content: center;
+  color: var(--text-faint);
+  opacity: 0.55;
+}
+
+.vault-menu .vault-menu-remove:hover {
+  color: var(--danger);
+  opacity: 1;
+}
+
+/* ============================================================
+   0.38.7 反馈批
+   ============================================================ */
+/* 预览期点击内容切药丸/底条显隐：off 态收走浮动件。必须连**子元素**一起
+   掐 pointer-events——0.34.0 触控规则 `.m-top-pills > * { pointer-events:auto }`
+   会让隐形药丸的子元素照常吃点击（0.38.4 探针实锤：悬浮在预览内容上偷走
+   「再点恢复」的触摸），底条同理。 */
+html.qn-mobile .app.qn-preview-chrome-off .m-top-pills,
+html.qn-mobile .app.qn-preview-chrome-off .m-bottom-bar,
+html.qn-mobile .app.qn-preview-chrome-off .m-top-pills > *,
+html.qn-mobile .app.qn-preview-chrome-off .m-bottom-bar > * {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 0.38.7 用户反馈「语句库管理面板这些药丸选项是不是应该不出现」：全屏工作页
+   （语句库管理）同收件箱口径——药丸/底条整体让位，关闭走面板自带 ✕ 或系统
+   返回（返回消费链已加 libpage-open/inbox-open 退出）。 */
+html.qn-mobile .app.libpage-open .m-top-pills {
+  transform: translateY(-140%);
+  opacity: 0;
+  pointer-events: none;
+}
+html.qn-mobile .app.libpage-open .m-bottom-bar {
+  transform: translateX(-50%) translateY(160%);
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 0.38.7 用户反馈「代码块点击（光标行）会透出背景图」：.cm-activeLine 的
+   !important 背景盖掉了代码块行级装饰的底色（--active-line 半透明），背景图
+   从光标行透出——代码块行把活动行色调叠回 --code-bg 之上（含左缘强调条），
+   保持不透明。 */
+.cm-editor .cm-lp-codeblock.cm-activeLine {
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 45%, transparent) 0 3px, transparent 3px),
+    var(--active-line),
+    var(--code-bg) !important;
+}
+
+/* 0.38.7 ☰ 菜单编辑 sheet：勾选候选行 + 底部操作行 */
+.m-menu-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 18px;
+  font-size: 14.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.m-menu-edit-row input[type="checkbox"] {
+  width: 17px;
+  height: 17px;
+  accent-color: var(--accent);
+  flex: none;
+}
+
+.m-menu-edit-row svg {
+  color: var(--text-dim);
+}
+
+.m-menu-edit-foot {
+  display: flex;
+  gap: 10px;
+  padding: 10px 18px 16px;
+}
+
+.m-menu-edit-btn {
+  flex: 1;
+  padding: 10px 0;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.m-menu-edit-btn.is-done {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 0.38.7 用户反馈「上下滑动屏幕容易误触调节滑杆」：原生 range 的触摸默认
+   消费一切手势（点轨道即跳值）。pan-y 把纵向手势还给页面滚动——只有横向
+   拖动才调值，桌面无此类零变化 */
+html.qn-mobile input[type="range"] {
+  touch-action: pan-y;
+}
+
+/* 0.38.7 背景重置/保存按钮（settings-inline 行内两键） */
+.bg-reset-row {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.settings-btn {
+  padding: 7px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.settings-btn:hover {
+  border-color: var(--accent);
+}
+
+.settings-btn.is-primary {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 0.38.8 背景预览「迷你屏幕」：舞台高度固定，内层按真实视口宽高比等比缩放
+   （aspect-ratio 由 JSX 注入），cover 裁剪区域与实际背景层一致——所见即所得。
+   两侧棋盘格是舞台底，越出比例的部分不属于屏幕。 */
+.bg-preview-screen {
+  position: relative;
+  height: 100%;
+  margin: 0 auto;
+  overflow: hidden;
+}
+
+html.qn-mobile .bg-preview {
+  height: 44vh;
+  max-width: none;
+  aspect-ratio: auto; /* 抵掉旧块的 9/16——舞台满列宽，比例由内层迷你屏幕负责 */
+}
+
+
+/* 0.38.8 用户反馈「只显示指定目录点了没反应」：桌面弹层 absolute 锚在侧栏
+   筛选框下方——手机抽屉里锚到抽屉根 = top:100% 全在屏外。改底部弹层形态，
+   backdrop 盖过抽屉（z70）承接点外关闭 */
+html.qn-mobile .dir-filter-pop {
+  position: fixed;
+  top: auto;
+  bottom: calc(var(--qn-inset-bottom, 0px) + 76px);
+  left: 12px;
+  right: 12px;
+  z-index: 87;
+}
+
+html.qn-mobile .dir-filter-backdrop {
+  z-index: 86;
+}
+
+/* 0.38.8 自定义裁剪编辑态：预览图吃掉手势（防页面滚动），光标提示可编辑 */
+.bg-preview-screen.is-editing {
+  touch-action: none;
+  cursor: grab;
+}
+
+.bg-preview-screen.is-editing:active {
+  cursor: grabbing;
+}
+
+/* 0.38.8 滑杆触摸手势板：原生 range 的触摸在手机上整层接管（覆盖层吃掉
+   pointer），横向意图由手势板调值、纵向放行滚屏、轻点不改值 */
+.settings-slider-touch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.settings-slider-touch-disable {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: auto;
+  background: transparent;
+}
+
+/* 0.38.8 全屏取景裁剪编辑器（参考系统壁纸）：取景框=屏幕，图在框下拖/缩 */
+.bg-crop-editor {
+  position: fixed;
+  inset: 0;
+  z-index: 960;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+}
+
+.bg-crop-stage {
+  position: relative;
+  flex: 1;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.bg-crop-img {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  pointer-events: none;
+}
+
+.bg-crop-hint {
+  padding: 8px 16px 4px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.bg-crop-actions {
+  display: flex;
+  gap: 12px;
+  padding: 8px 16px calc(12px + var(--qn-inset-bottom, 0px));
+}
+
+.bg-crop-btn {
+  flex: 1;
+  padding: 12px 0;
+  border-radius: 10px;
+  border: 1px solid var(--border-soft);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.bg-crop-btn.is-done {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* 0.38.9 背景预览的表面面纱：与真实背景上的编辑区表面层同浓度（随界面浓度
+   滑杆联动），预览可见度=实际可见度 */
+.bg-preview-veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 0.38.9 背景预览的表面面纱：与真实背景上的编辑区表面层同浓度（随界面浓度
+   滑杆联动），预览可见度=实际可见度 */
+.bg-preview-veil {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* 0.38.9 手势板撑满滑杆行（套娃 span 默认收缩，滑杆曾缩到内容宽） */
+.settings-slider-touch {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-slider-touch input[type="range"] {
+  width: 100%;
+}
+
+/* 0.38.11 用户反馈「语句库中输入时会带起下面的功能选项，数据管理也有」：
+   键盘弹出（qn-ime-open）时 WebView 视口被 ime margin 压矮，页脚元素顶到
+   键盘上方悬在内容中间——输入场景里它们是纯噪音，直接隐藏。语句库页脚用
+   .ddl-manager-page 限域（.quick-capture-foot 与速记弹窗共用，不能全局藏） */
+html.qn-mobile.qn-ime-open .ddl-manager-page .quick-capture-foot {
+  display: none;
+}
+
+html.qn-mobile.qn-ime-open .cm-hints {
+  display: none;
 }

@@ -171,6 +171,8 @@ export function openLightbox(src: string, alt: string): void {
   let downY = 0;
   let pinchDist = 0;
   let pinchScale = 1;
+  // 单击切工具条的延迟器（等 320ms 区分双击；双击取消）
+  let chromeTimer: number | null = null;
   const touchDist = (event: TouchEvent) => {
     const a = event.touches[0];
     const b = event.touches[1];
@@ -211,6 +213,15 @@ export function openLightbox(src: string, alt: string): void {
     }
   };
   const onTouchEnd = (event: TouchEvent) => {
+    if (event.touches.length === 1) {
+      // 0.38.3 用户反馈「放大或缩小时一旦手指离开屏幕，图片位置会发生偏移」：
+      // 双指收起一根转单指拖动——基准点必须重置到剩余手指，否则单指一动就从
+      // 捏合前的旧坐标起跳（x/y 直接跳一截）。口径同 mermaid 灯箱
+      const rest = event.touches[0];
+      lastX = rest.clientX;
+      lastY = rest.clientY;
+      return;
+    }
     if (event.touches.length > 0) return;
     pinchDist = 0;
     // 轻点判定（位移 <10px 才算 tap，拖动/捏合收尾不触发）；点背景关闭、
@@ -221,13 +232,30 @@ export function openLightbox(src: string, alt: string): void {
     const target = event.target;
     const now = Date.now();
     if (now - lastTapTime < 320 && target === img) {
+      // 双击：取消待生效的单击切 chrome（见下），执行适应/1:1
+      if (chromeTimer !== null) {
+        window.clearTimeout(chromeTimer);
+        chromeTimer = null;
+      }
       lastTapTime = 0;
       if (scale >= 0.999) fit();
       else actual();
       return;
     }
     lastTapTime = now;
-    if (target === root) destroy();
+    if (target === root) {
+      destroy();
+      return;
+    }
+    // 0.38.3 用户反馈「操作选项能不能点击图片时自动隐藏，再次点击恢复」：
+    // 单击图片延迟 320ms 切工具条显隐（等待期来了第二击就是双击，取消）。
+    // 只在图片上生效，点背景仍是关闭
+    if (target === img) {
+      chromeTimer = window.setTimeout(() => {
+        chromeTimer = null;
+        root.classList.toggle("is-chrome-off");
+      }, 320);
+    }
   };
 
   if (mobile) {
@@ -254,6 +282,10 @@ export function openLightbox(src: string, alt: string): void {
       root.removeEventListener("touchstart", onTouchStart);
       root.removeEventListener("touchmove", onTouchMove);
       root.removeEventListener("touchend", onTouchEnd);
+    }
+    if (chromeTimer !== null) {
+      window.clearTimeout(chromeTimer);
+      chromeTimer = null;
     }
     root.remove();
     if (open && open.destroy === destroy) open = null;

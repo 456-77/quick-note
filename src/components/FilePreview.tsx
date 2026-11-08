@@ -54,6 +54,21 @@ const KIND_LABEL: Record<string, string> = {
   image: "图片",
 };
 
+/**
+ * 0.38.7 用户反馈「预览文件切换回来后，原来的缩放状态会重置」：切走即卸载、
+ * 切回重挂载，缩放状态按 仓库/路径 缓存在模块级（内存态，应用重启即清）。
+ * zoom=pdf/html/docx 的倍率（pdf 的「适应宽度」记 undefined）；图片另存
+ * 位图缩放与平移。 */
+const previewZoomMemo = new Map<string, { zoom?: number; imgScale?: number; imgX?: number; imgY?: number }>();
+function zoomMemoOf(key: string): { zoom?: number; imgScale?: number; imgX?: number; imgY?: number } {
+  let memo = previewZoomMemo.get(key);
+  if (!memo) {
+    memo = {};
+    previewZoomMemo.set(key, memo);
+  }
+  return memo;
+}
+
 /** base64 → 字节（分块转换，避免超长参数撑爆调用栈）。 */
 function base64ToBytes(base64: string): Uint8Array {
   const binary = atob(base64);
@@ -148,6 +163,8 @@ function scheduleOrphanSweep(): void {
 export default function FilePreview({ vault, path, onClose, embedded = false }: Props) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const kind = fileKindOf(name);
+  // 缩放记忆键（0.38.7）：切走再切回按此恢复缩放
+  const zoomKey = `${vault}/${path}`;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   /** docx/xlsx 的 HTML 结果；PDF 走懒渲染画布，图片走 asset URL。 */
@@ -155,6 +172,10 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   const [sheets, setSheets] = useState<{ name: string; html: string }[] | null>(null);
   const [sheetIndex, setSheetIndex] = useState(0);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  /** 0.38.3 SVG 预览改 DOM 内联（消毒后）：`<img>` 展示 svg 时浏览器按固有
+      尺寸光栅再降采样，窄面板下文字糊（用户反馈「mermaid 导出文件全屏清晰、
+      响应式布局下模糊」）；内联矢量随容器重排，任何宽度都锐利。 */
+  const [svgMarkup, setSvgMarkup] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const docxHostRef = useRef<HTMLDivElement | null>(null);
   const pdfHostRef = useRef<HTMLDivElement | null>(null);
@@ -170,21 +191,36 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   /** 在途的文字层（与画布同生命周期，一起取消）。 */
   const textLayersRef = useRef<Map<number, import("pdfjs-dist").TextLayer>>(new Map());
   /** PDF 缩放："fit" = 适应宽度（自动），数字 = 用户手动缩放倍率。 */
-  const [pdfZoom, setPdfZoom] = useState<"fit" | number>("fit");
+  const [pdfZoom, setPdfZoom] = useState<"fit" | number>(() => zoomMemoOf(`${vault}/${path}`).zoom ?? "fit");
   const pdfZoomRef = useRef<"fit" | number>("fit");
   useEffect(() => {
     pdfZoomRef.current = pdfZoom;
-  }, [pdfZoom]);
+    // 缩放记忆写入（0.38.7）：fit 记 undefined
+    zoomMemoOf(`${vault}/${path}`).zoom = pdfZoom === "fit" ? undefined : pdfZoom;
+  }, [pdfZoom, vault, path]);
   const pptxRef = useRef<import("pptx-preview").PPTXPreviewer | null>(null);
   const pptxHostRef = useRef<HTMLDivElement | null>(null);
   const scaleRef = useRef(1);
   /** PDF 捏合手势的目标倍率（touchmove 累计、touchend 落地，见 0.38 捏合 effect）。 */
   const pinchZoomRef = useRef<number | null>(null);
-  /** HTML 覆盖层的触摸起点（横滑开抽屉判定用）。 */
-  const swipeRef = useRef<{ x: number; y: number; at: number } | null>(null);
+  /** HTML 覆盖层手势状态（0.38.3 重做：单指=滚动 body 平移，双指=CSS zoom
+      缩放，轻点=切标题条；「横滑开抽屉」已按用户要求移除——预览内的滑动
+      属于内容，App 手势守卫也加了 .file-preview 排除）。 */
+  const htmlFrameRef = useRef<HTMLIFrameElement | null>(null);
+  const htmlContentSizeRef = useRef<{ w: number; h: number } | null>(null);
+  const htmlZoomRef = useRef(1);
+  const htmlLastRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const htmlPinchRef = useRef(0);
+  // 盖层上的拖动/捏合不算「点击内容」：轻点判定在 touchend 自己做
+  //（0.38.8：部分 WebView 对 preventDefault 过 touchmove 的元素不合成 click）
+  const htmlTapMovedRef = useRef(false);
+  const htmlTapAtRef = useRef(0);
+  const htmlPinchZoomRef = useRef(0);
   const pdfRelayoutRef = useRef<() => void>(() => {});
   /** PDF 缩放的实际执行器（渲染 effect 内部赋值）：按 fit 或指定倍率重建页位。 */
   const pdfZoomApplyRef = useRef<(explicit?: number) => void>(() => {});
+  /** 缩放重建的防抖定时器（0.38.10：手势全程不再触发重渲）。 */
+  const zoomRenderTimerRef = useRef<number | undefined>(undefined);
   const pptxRelayoutRef = useRef<() => void>(() => {});
   const pptxRelayoutTokenRef = useRef(0);
   const pptxBytesRef = useRef<ArrayBuffer | null>(null);
@@ -205,29 +241,69 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   }, [onClose]);
 
   // ---------------------------------------------------------------- 移动端全屏预览（0.38 用户反馈）
-  // 「预览文件为什么不是整个页面」「点击内容区域，药丸按钮不会自动隐藏」：
-  // 移动端预览态点击内容区 = 切换 chrome（标题条 + App 的药丸/底条）。
-  // bar 的显隐由本组件管（barVisible），药丸/底条经窗口事件让 App 挂类收走；
-  // 卸载时必须复位（App 的类不能残留到非预览态）。
-  const [barVisible, setBarVisible] = useState(true);
+  // 0.38.5 用户反馈（推翻 0.38.3 的「预览期收走药丸」）：**预览期药丸/底条常驻**
+  // ——底条 [N] 标签页是快速切换文件的入口（预览文件也以标签页形式在册）；
+  // 移动端所有 kind 一律无标题浮条（PDF 也不再显示，缩放靠捏合、关闭靠系统
+  // 返回手势），只有桌面非嵌入态保留标题条。
+  // 0.38.7 用户反馈「点击预览文件内容时药丸可以隐藏，再次点击取消」：点击
+  // 内容派发 toggle（App 挂 .qn-preview-chrome-off 收走药丸/底条），再点恢复。
   const mobile = isMobile();
-  // 本组件关闭（unmount）时复位 App 侧的 chrome 隐藏（类不能残留到非预览态）
   useEffect(() => {
     if (!mobile) return;
+    // 卸载时复位：预览关掉后药丸必须回来（类不能残留到非预览态）
     return () => {
       window.dispatchEvent(new CustomEvent("qn-preview-chrome", { detail: false }));
     };
   }, [mobile]);
 
-  /** 移动端点击内容区：切换标题条与药丸/底条（App 监听同一事件挂 .app 类）。 */
-  const toggleChrome = useCallback(() => {
+  // -------------------------------------------------- HTML 预览移动端适配（0.38.3）
+  // 按 zoom 重建 iframe 布局：缩放走 CSS zoom（内容随 zoom 重排，文字始终锐利
+  // ——transform:scale 是位图拉伸，正文会糊）。宽度恒铺满 body 视口，高度=内容
+  // 自然高——iframe 内部永不出现滚动条，平移全部由 body 的原生滚动承担。
+  const applyHtmlLayout = useCallback(() => {
+    const frame = htmlFrameRef.current;
+    const body = bodyRef.current;
+    const size = htmlContentSizeRef.current;
+    if (!frame || !body || !size) return;
+    const z = htmlZoomRef.current;
+    const viewW = Math.max(1, body.clientWidth - 28); // body 左右 padding 14×2
+    frame.style.zoom = String(z);
+    frame.style.width = `${Math.max(size.w, viewW / z)}px`;
+    frame.style.height = `${size.h}px`;
+  }, []);
+
+  /** 量内容自然尺寸（sandbox 带 allow-same-origin 才可读；脚本仍被禁）。
+      仅移动端调用生效——桌面 iframe 维持 100%/内部滚动，不改写尺寸。 */
+  const measureHtml = useCallback(() => {
     if (!mobile) return;
-    setBarVisible((prev) => {
-      const next = !prev;
-      window.dispatchEvent(new CustomEvent("qn-preview-chrome", { detail: !next }));
-      return next;
-    });
-  }, [mobile]);
+    const doc = htmlFrameRef.current?.contentDocument;
+    if (!doc?.documentElement) return;
+    const w = Math.max(
+      doc.documentElement.scrollWidth,
+      doc.body?.scrollWidth ?? 0,
+      1,
+    );
+    const h = Math.max(
+      doc.documentElement.scrollHeight,
+      doc.body?.scrollHeight ?? 0,
+      1,
+    );
+    htmlContentSizeRef.current = { w, h };
+    applyHtmlLayout();
+    // 字体/图片晚于 load 到位会改变高度，补一次迟到的复测（组件卸载后 ref
+    // 为空，回调体自然早退）
+    window.setTimeout(() => {
+      if (!mobile) return;
+      const doc2 = htmlFrameRef.current?.contentDocument;
+      if (!doc2?.documentElement || !htmlContentSizeRef.current) return;
+      const w2 = Math.max(doc2.documentElement.scrollWidth, doc2.body?.scrollWidth ?? 0, 1);
+      const h2 = Math.max(doc2.documentElement.scrollHeight, doc2.body?.scrollHeight ?? 0, 1);
+      if (w2 !== htmlContentSizeRef.current.w || h2 !== htmlContentSizeRef.current.h) {
+        htmlContentSizeRef.current = { w: w2, h: h2 };
+        applyHtmlLayout();
+      }
+    }, 400);
+  }, [applyHtmlLayout, mobile]);
 
   // ---------------------------------------------------------------- 图片预览：拖动 + 滚轮缩放
   // 按住左键拖动移动、滚轮缩放（以指针为锚）、双击重置。与 mermaid 灯箱同一套手感。
@@ -236,15 +312,24 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
     if (kind !== "image") return;
     const host = imageHostRef.current;
     if (!host) return;
-    const img = host.querySelector("img");
+    // SVG 内联预览（0.38.3）与位图 img 共用同一套拖动/捏合手势；
+    // SVGElement 无 HTMLElement 事件表，按 HTMLElement 用（只加监听/写 style）
+    const img = host.querySelector("img, svg") as HTMLElement | null;
     if (!img) return;
 
-    let scale = 1;
-    let x = 0;
-    let y = 0;
+    // 0.38.7 缩放记忆：恢复上次的缩放与平移
+    const zoomMemo = zoomMemoOf(zoomKey);
+    let scale = zoomMemo.imgScale ?? 1;
+    let x = zoomMemo.imgX ?? 0;
+    let y = zoomMemo.imgY ?? 0;
     const apply = () => {
       img.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
+      zoomMemo.imgScale = scale;
+      zoomMemo.imgX = x;
+      zoomMemo.imgY = y;
     };
+    // 有历史状态挂载即落地（无记忆保持 CSS 适应尺寸的初始态）
+    if (zoomMemo.imgScale !== undefined) apply();
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
@@ -353,7 +438,15 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
         touchY = cy;
       }
     };
-    const onTouchEnd = () => {
+    const onTouchEnd = (event: TouchEvent) => {
+      if (event.touches.length === 1) {
+        // 0.38.3 用户反馈「手指离开屏幕后图片位置偏移」：双指收起一根转单指，
+        // 平移基准必须重置到剩余手指——沿用旧中点坐标一起手就跳一截
+        touchX = event.touches[0].clientX;
+        touchY = event.touches[0].clientY;
+        touchDist = 0;
+        return;
+      }
       touchDist = 0;
     };
     img.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -372,7 +465,10 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
       img.removeEventListener("touchend", onTouchEnd);
       img.removeEventListener("touchcancel", onTouchEnd);
     };
-  }, [kind, imageUrl]);
+    // 0.38.10 用户反馈「mermaid 导出的文件预览时无法缩放」：svg 走内联渲染，
+    // svgMarkup 异步到位后才有 <svg> 可绑——deps 必须带上它（此前只盯
+    // imageUrl，SVG 预览的手势从未绑定过）
+  }, [kind, imageUrl, svgMarkup]);
 
   /**
    * 切换 PDF 缩放：fit 走适应宽度，数字为手动倍率（PDF_ZOOM_MIN–MAX，
@@ -434,7 +530,18 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
     };
     const onTouchEnd = () => {
       if (baseDist > 0 && pinchZoomRef.current !== null) {
-        changePdfZoom(pinchZoomRef.current);
+        const target = pinchZoomRef.current;
+        const prev = pdfZoomRef.current === "fit" ? scaleRef.current : pdfZoomRef.current;
+        changePdfZoom(target);
+        // 0.38.7 捏合锚定：内容按倍率放大，滚动位置同比缩放——捏合中心的内容
+        // 点不漂移（此前缩放后视口跳到别处，观感也是「卡」）
+        const clamped = Math.min(PDF_ZOOM_MAX, Math.max(PDF_ZOOM_MIN, Math.round(target * 20) / 20));
+        const body = bodyRef.current;
+        if (body && prev > 0 && clamped !== prev) {
+          const ratio = clamped / prev;
+          body.scrollTop *= ratio;
+          body.scrollLeft *= ratio;
+        }
         pinchZoomRef.current = null;
       }
       baseDist = 0;
@@ -450,6 +557,53 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
       host.removeEventListener("touchcancel", onTouchEnd);
     };
   }, [kind, changePdfZoom]);
+
+  // Word 预览双指捏合缩放（0.38.4 用户反馈「word 文件无法缩放」）：口径同 PDF
+  // 捏合——过程中累计目标倍率、松手一次性落地。docx 是纯 HTML（无 canvas 重建
+  // 成本），直接写宿主 CSS zoom：内容按 zoom 真重排文字锐利（transform:scale
+  // 是位图拉伸）；缩放后的平移由 body 原生滚动承担（含横向溢出）。
+  const docxZoomRef = useRef(1);
+  useEffect(() => {
+    if (kind !== "docx" || !mobile) return;
+    const host = docxHostRef.current;
+    if (!host) return;
+    // 0.38.7 缩放记忆：恢复上次缩放
+    docxZoomRef.current = zoomMemoOf(zoomKey).zoom ?? 1;
+    host.style.zoom = String(docxZoomRef.current);
+    let baseDist = 0;
+    let baseZoom = 1;
+    const onTouchStart = (event: TouchEvent) => {
+      if (event.touches.length !== 2) return;
+      const [a, b] = [event.touches[0], event.touches[1]];
+      baseDist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      baseZoom = docxZoomRef.current;
+    };
+    const onTouchMove = (event: TouchEvent) => {
+      if (event.touches.length !== 2 || baseDist <= 0) return;
+      event.preventDefault();
+      const [a, b] = [event.touches[0], event.touches[1]];
+      const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+      docxZoomRef.current = Math.min(4, Math.max(0.5, (baseZoom * dist) / baseDist));
+    };
+    const onTouchEnd = () => {
+      if (baseDist > 0) {
+        host.style.zoom = String(docxZoomRef.current);
+        zoomMemoOf(zoomKey).zoom = docxZoomRef.current;
+      }
+      baseDist = 0;
+    };
+    host.addEventListener("touchstart", onTouchStart, { passive: true });
+    host.addEventListener("touchmove", onTouchMove, { passive: false });
+    host.addEventListener("touchend", onTouchEnd);
+    host.addEventListener("touchcancel", onTouchEnd);
+    return () => {
+      host.removeEventListener("touchstart", onTouchStart);
+      host.removeEventListener("touchmove", onTouchMove);
+      host.removeEventListener("touchend", onTouchEnd);
+      host.removeEventListener("touchcancel", onTouchEnd);
+      host.style.zoom = "";
+    };
+  }, [kind, mobile]);
 
   // 视窗尺寸变化：PDF 换缩放重渲可见页、pptx 按新宽度重建（统一防抖 250ms）
   useEffect(() => {
@@ -477,6 +631,12 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
     setHtml(null);
     setSheets(null);
     setImageUrl(null);
+    setSvgMarkup(null);
+    // 0.38.7 缩放记忆：切回时恢复上次缩放（load 后 measure→apply 落地）
+    htmlZoomRef.current = zoomMemoOf(zoomKey).zoom ?? 1;
+    htmlContentSizeRef.current = null;
+    htmlPinchRef.current = 0;
+    docxZoomRef.current = 1;
     renderedRef.current.clear();
     pdfRelayoutRef.current = () => {};
     pptxRelayoutRef.current = () => {};
@@ -485,6 +645,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
 
     // 释放 PDF 文档与其占用的渲染内存（切换/关闭/StrictMode 二次挂载都走这里）
     const releasePdf = () => {
+      window.clearTimeout(zoomRenderTimerRef.current);
       observerRef.current?.disconnect();
       observerRef.current = null;
       for (const task of renderTasksRef.current.values()) task.cancel();
@@ -513,7 +674,23 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
       try {
         if (kind === "image") {
           const abs = `${vault.replace(/[\\/]+$/, "")}/${path}`;
-          setImageUrl(convertFileSrc(abs));
+          const url = convertFileSrc(abs);
+          if (/\.svg$/i.test(name)) {
+            // 0.38.3：svg 走 DOM 内联（消毒后）——矢量随容器重排，任何宽度锐利；
+            // 读不到文本再退回 <img> 老路
+            try {
+              const text = await fetch(url).then((r) => r.text());
+              if (!cancelled) {
+                setSvgMarkup(
+                  DOMPurify.sanitize(text, { USE_PROFILES: { svg: true, svgFilters: true } }),
+                );
+              }
+            } catch {
+              if (!cancelled) setImageUrl(url);
+            }
+          } else {
+            setImageUrl(url);
+          }
           setLoading(false);
           return;
         }
@@ -587,16 +764,44 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
            * 文字层（pdfjs TextLayer）把 PDF 里的文字以透明 span 铺在画布上——
            * 这样代码/正文都能选中复制（用户在 IDE 导出的 PDF 里看到的"复制按钮"
            * 是烤进 PDF 的位图，点不了；真正可行的复制路径就是选中文字）。
-           * 画布渲染与文字层并行；滚离视口时两者都要 cancel（在途任务白耗
-           * CPU，还会让新旧两套画布同时占内存）。
+           *
+           * 0.38.7 用户反馈「缩放 pdf 会卡顿」两处改造：
+           * ①渲染**排队串行**（enqueueRender→renderChain）：此前缩放后视口内
+           *   所有页并发渲染，几张大画布同时上主线程直接卡死；排队后一次只渲
+           *   一页，主线程保持响应。
+           * ②**旧画布保底换装**：新画布离屏渲染、完成后才整槽替换——重渲期间
+           *   旧位图拉伸显示当即时预览，不再整屏白等。代际号（renderGen）作废
+           *   机制：缩放/滚离时 bump，过期的排队与在途渲染在各检查点自行放弃。
            */
+          let renderChain: Promise<void> = Promise.resolve();
+          const zoomRenderTimer = zoomRenderTimerRef;
+          const renderGen = new Map<number, number>();
+          const visibleRef = new Set<number>();
           const renderPage = async (pageNumber: number, slot: HTMLElement) => {
             const docCurrent = docRef.current;
-            if (!docCurrent || renderedRef.current.has(pageNumber)) return;
-            renderedRef.current.add(pageNumber);
+            if (!docCurrent || cancelled) {
+              renderedRef.current.delete(pageNumber);
+              return;
+            }
+            // 排队期间已滚离视口：放弃本次渲染（标记清掉允许再入队）
+            if (!visibleRef.has(pageNumber)) {
+              renderedRef.current.delete(pageNumber);
+              return;
+            }
+            const gen = renderGen.get(pageNumber) ?? 0;
+            // 读后即落表：首次渲染 map 无条目，gate 的 get() 若仍 undefined 会
+            // 与哨兵 0 恒不等——首渲永远被自己拒绝（0.38.7 探针实锤）
+            renderGen.set(pageNumber, gen);
             try {
               const pdfPage = await docCurrent.getPage(pageNumber);
-              if (cancelled || docRef.current !== docCurrent) return;
+              if (
+                cancelled ||
+                docRef.current !== docCurrent ||
+                !visibleRef.has(pageNumber) ||
+                (renderGen.get(pageNumber) ?? 0) !== gen
+              ) {
+                return;
+              }
               const viewport = pdfPage.getViewport({ scale: scaleRef.current });
               const canvas = document.createElement("canvas");
               // 按设备像素比出图（0.28「适应大小有点模糊」）：此前画布只按 CSS
@@ -623,7 +828,6 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
               textDiv.className = "qn-pdf-text";
               // pdfjs 的文字层 CSS 用 --total-scale-factor 计算字号与位移
               textDiv.style.setProperty("--total-scale-factor", String(viewport.scale));
-              slot.replaceChildren(canvas, textDiv);
               const renderTask = pdfPage.render({
                 canvas,
                 viewport,
@@ -637,23 +841,54 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
               });
               textLayersRef.current.set(pageNumber, textLayer);
               await Promise.all([renderTask.promise, textLayer.render()]);
+              // 渲染期间被新缩放/滚离/销毁取代：丢弃新产物（槽里旧画布继续显示）
+              if (
+                cancelled ||
+                docRef.current !== docCurrent ||
+                !visibleRef.has(pageNumber) ||
+                (renderGen.get(pageNumber) ?? 0) !== gen
+              ) {
+                canvas.width = 0;
+                canvas.height = 0;
+                canvas.remove();
+                textDiv.remove();
+                return;
+              }
+              // 转正：清隐藏样式并整槽换装（旧画布/旧文字层随之移除）
+              canvas.style.position = "";
+              canvas.style.visibility = "";
+              textDiv.style.position = "";
+              textDiv.style.visibility = "";
+              slot.replaceChildren(canvas, textDiv);
             } catch {
-              // 页面渲染被销毁/取消打断：占位保持原样；清掉标记允许 observer 稍后重试
-              renderedRef.current.delete(pageNumber);
+              // 页面渲染被销毁/取消打断：清掉标记允许 observer 稍后重试
+              //（gen 已变时由作废方负责清理，不越权）
+              if (renderGen.get(pageNumber) === gen) renderedRef.current.delete(pageNumber);
             } finally {
-              renderTasksRef.current.delete(pageNumber);
-              textLayersRef.current.delete(pageNumber);
+              if (renderGen.get(pageNumber) === gen) {
+                renderTasksRef.current.delete(pageNumber);
+                textLayersRef.current.delete(pageNumber);
+              }
             }
+          };
+          /** 入渲染队列（串行）；重复入队按标记拦。 */
+          const enqueueRender = (pageNumber: number, slot: HTMLElement) => {
+            if (renderedRef.current.has(pageNumber)) return;
+            renderedRef.current.add(pageNumber);
+            renderChain = renderChain.then(() => renderPage(pageNumber, slot)).catch(() => {});
           };
 
           /** 释放某页的全部渲染产物（画布位图尺寸先清零，立即归还内存）。 */
           const discardPage = (slot: HTMLElement) => {
             const pageNumber = Number((slot as HTMLElement).dataset.page);
+            // bump 代际：排队中/在途的渲染一并作废
+            renderGen.set(pageNumber, (renderGen.get(pageNumber) ?? 0) + 1);
             renderTasksRef.current.get(pageNumber)?.cancel();
             renderTasksRef.current.delete(pageNumber);
             textLayersRef.current.get(pageNumber)?.cancel();
             textLayersRef.current.delete(pageNumber);
             renderedRef.current.delete(pageNumber);
+            visibleRef.delete(pageNumber);
             for (const canvas of slot.querySelectorAll("canvas")) {
               canvas.width = 0;
               canvas.height = 0;
@@ -666,7 +901,10 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
           const initial = Math.min(doc.numPages, Math.ceil((host.clientHeight || 900) / pageHeight) + 1);
           for (let pageNumber = 1; pageNumber <= initial; pageNumber += 1) {
             const slot = host.children[pageNumber - 1] as HTMLElement | undefined;
-            if (slot) void renderPage(pageNumber, slot);
+            if (slot) {
+              visibleRef.add(pageNumber);
+              enqueueRender(pageNumber, slot);
+            }
           }
 
           // 进入视口（前后预渲染 600px）才渲染；离开视口时取消在途任务并释放画布
@@ -676,8 +914,9 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
                 const slot = entry.target as HTMLElement;
                 const pageNumber = Number(slot.dataset.page);
                 if (entry.isIntersecting) {
-                  void renderPage(pageNumber, slot);
-                } else if (renderedRef.current.has(pageNumber)) {
+                  visibleRef.add(pageNumber);
+                  enqueueRender(pageNumber, slot);
+                } else if (renderedRef.current.has(pageNumber) || visibleRef.has(pageNumber)) {
                   discardPage(slot);
                 }
               }
@@ -703,14 +942,34 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
             if (Math.abs(next - scaleRef.current) / scaleRef.current < 0.02) return;
             scaleRef.current = next;
             const width = Math.round(base.width * next);
+            // 0.38.10 用户反馈「放大缩小还是很卡顿」：占位宽度**立即**改（旧画布
+            // 拉伸显示=即时视觉反馈，零重渲），重建渲染延迟 350ms——连续捏合/
+            // 连点只在停顿后按最终倍率重渲一次，长任务不再糊满手势全程
             for (const slot of Array.from(hostNow.children) as HTMLElement[]) {
               slot.style.width = `${width}px`;
-              discardPage(slot);
             }
-            for (const slot of Array.from(hostNow.children)) {
-              observer.unobserve(slot);
-              observer.observe(slot);
-            }
+            if (zoomRenderTimer.current !== undefined) window.clearTimeout(zoomRenderTimer.current);
+            zoomRenderTimer.current = window.setTimeout(() => {
+              zoomRenderTimer.current = undefined;
+              if (cancelled || docRef.current !== doc) return;
+              const hostLate = pdfHostRef.current;
+              if (!hostLate) return;
+              for (const slot of Array.from(hostLate.children) as HTMLElement[]) {
+                const pageNumber = Number(slot.dataset.page);
+                // 旧画布**保留**（拉伸显示当即时预览）；只作废在途/排队的旧
+                // 缩放渲染——observer 重发相交后按新缩放排队重渲，完成后整槽换装
+                renderGen.set(pageNumber, (renderGen.get(pageNumber) ?? 0) + 1);
+                renderTasksRef.current.get(pageNumber)?.cancel();
+                renderTasksRef.current.delete(pageNumber);
+                textLayersRef.current.get(pageNumber)?.cancel();
+                textLayersRef.current.delete(pageNumber);
+                renderedRef.current.delete(pageNumber);
+              }
+              for (const slot of Array.from(hostLate.children)) {
+                observer.unobserve(slot);
+                observer.observe(slot);
+              }
+            }, 350);
           };
           // 视窗尺寸变化只在"适应宽度"模式下跟随；手动缩放时保持用户的选择
           pdfRelayoutRef.current = () => {
@@ -839,15 +1098,15 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   const canZoomIn = pdfScaleNow < PDF_ZOOM_MAX - 0.001;
 
   // 0.36.1 用户反馈「预览标题条与标签栏重复，白白浪费空间」：桌面嵌入态下
-  // 标签栏已显示同名 ◇ 标签（含关闭钮），标题条纯冗余——隐藏；PDF 例外
-  // （缩放控件在条上），移动端例外（标签栏 display:none，这是唯一关闭入口）。
-  // 0.38 用户反馈「点击内容区域，药丸按钮不会自动隐藏」：移动端点击内容切
-  // chrome——barVisible=false 时标题条一并隐藏（点击内容再唤回）
-  const showBar = !embedded || kind === "pdf" || isMobile();
+  // 标签栏已显示同名 ◇ 标签（含关闭钮），标题条纯冗余——隐藏。
+  // 0.38.5 用户反馈：移动端**所有 kind 一律无标题浮条**（PDF 也不显示——缩放
+  // 靠捏合、关闭靠系统返回手势），浮条与常驻药丸二选一，用户要药丸（底条
+  // [N] 标签页是快速切换入口）；桌面非嵌入态（独立预览窗）保留标题条。
+  const showBar = !embedded || (kind === "pdf" && !mobile);
 
   return (
     <div ref={rootRef} className={`file-preview${embedded ? " is-embedded" : ""}`} role="dialog" aria-label={`预览 ${name}`}>
-      {showBar && (!mobile || barVisible) && (
+      {showBar && (
       <div className="file-preview-bar">
         <span className="file-preview-name" title={path}>
           {name}
@@ -896,13 +1155,12 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
       )}
 
       <div
-        className={`file-preview-body${mobile ? " is-mobile-body" : ""}`}
+        className={`file-preview-body${mobile ? " is-mobile-body" : ""}${showBar ? "" : " is-barless"}`}
         ref={bodyRef}
-        onClick={(event) => {
-          // 移动端点击内容区切 chrome（标题条+药丸/底条）；iframe 的点击走覆盖层，
-          // 不冒泡到这里。别拦 PDF 缩放按钮之类——按钮都在 bar 上不在 body 里
-          toggleChrome();
-          void event;
+        onClick={() => {
+          // 移动端点击内容区切药丸/底条显隐（0.38.7）；桌面不参与
+          if (!mobile) return;
+          window.dispatchEvent(new CustomEvent("qn-preview-chrome", { detail: "toggle" }));
         }}
       >
         {loading && <div className="file-preview-loading">正在加载…</div>}
@@ -912,44 +1170,101 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
         {kind === "ppt" && !error && <div className="file-preview-pptx" ref={pptxHostRef} />}
         {kind === "html" && html !== null && (
           <iframe
-            className="file-preview-html"
+            ref={htmlFrameRef}
+            className={`file-preview-html${mobile ? " is-fit" : ""}`}
             title={name}
-            sandbox=""
+            // 0.38.3：加 allow-same-origin——移动端要量内容自然尺寸做铺满/缩放
+            // 布局；**没有 allow-scripts，预览文档里的代码仍然不执行**（同
+            // 0.38 前的 sandbox="" 安全口径）
+            sandbox="allow-same-origin"
             srcDoc={html}
+            onLoad={measureHtml}
           />
         )}
         {kind === "html" && html !== null && mobile && (
-          // 0.38 用户反馈「预览 html 文件时不支持左右滑动屏幕打开左右抽屉」：
-          // iframe 是独立文档，触摸事件全部被吞。sandbox="" 下页面纯静态展示
-          // （无脚本/无导航，链接点击本就无效），盖一层透明触摸层零副作用——
-          // 横滑派发抽屉手势给 App（qn-preview-swipe），点击切 chrome
+          // 0.38.3 用户反馈「预览的 html 不支持放大缩小，也不能左右上下滑动」：
+          // iframe 吞触摸（独立文档），盖层自己实现手势——单指拖=滚动 body
+          // （平移，横竖都通），双指捏合=CSS zoom 缩放（内容重排不糊，中点锚定），
+          // 轻点=切标题条。旧「横滑开抽屉」按用户要求移除（预览内滑动属于内容）
           <div
             className="file-preview-html-touch"
-            onClick={(event) => {
-              // stopPropagation：body 的 onClick 也是切 chrome，冒泡会切两次抵消
-              event.stopPropagation();
-              toggleChrome();
-            }}
             onTouchStart={(event) => {
-              const touch = event.touches[0];
-              swipeRef.current = { x: touch.clientX, y: touch.clientY, at: Date.now() };
+              htmlTapMovedRef.current = false;
+              htmlTapAtRef.current = Date.now();
+              htmlLastRef.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+              if (event.touches.length === 2) {
+                const [a, b] = [event.touches[0], event.touches[1]];
+                htmlPinchRef.current = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+                htmlPinchZoomRef.current = htmlZoomRef.current;
+              }
+            }}
+            onTouchMove={(event) => {
+              event.preventDefault();
+              const body = bodyRef.current;
+              if (!body) return;
+              if (event.touches.length === 1 && htmlPinchRef.current === 0) {
+                const t = event.touches[0];
+                const dx = t.clientX - htmlLastRef.current.x;
+                const dy = t.clientY - htmlLastRef.current.y;
+                if (Math.abs(dx) > 3 || Math.abs(dy) > 3) htmlTapMovedRef.current = true;
+                body.scrollLeft -= dx;
+                body.scrollTop -= dy;
+                htmlLastRef.current = { x: t.clientX, y: t.clientY };
+                return;
+              }
+              if (event.touches.length === 2) {
+                htmlTapMovedRef.current = true;
+                const [a, b] = [event.touches[0], event.touches[1]];
+                const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+                const base = htmlPinchRef.current;
+                if (base <= 0 || dist <= 0) return;
+                const newZoom = Math.min(5, Math.max(0.5, htmlPinchZoomRef.current * (dist / base)));
+                if (newZoom === htmlZoomRef.current) return;
+                const ratio = newZoom / htmlZoomRef.current;
+                htmlZoomRef.current = newZoom;
+                zoomMemoOf(zoomKey).zoom = newZoom;
+                applyHtmlLayout();
+                // 中点锚定：滚动范围随有效内容尺寸同比变化，捏合中心的内容点
+                // 保持不动（横向仅在内容宽超视口、存在横向滚动时修正）
+                const rect = body.getBoundingClientRect();
+                const cx = (a.clientX + b.clientX) / 2 - rect.left;
+                const cy = (a.clientY + b.clientY) / 2 - rect.top;
+                body.scrollTop = (body.scrollTop + cy) * ratio - cy;
+                if (body.scrollWidth > body.clientWidth + 1) {
+                  body.scrollLeft = (body.scrollLeft + cx) * ratio - cx;
+                }
+              }
             }}
             onTouchEnd={(event) => {
-              const start = swipeRef.current;
-              swipeRef.current = null;
-              if (!start) return;
-              const touch = event.changedTouches[0];
-              const dx = touch.clientX - start.x;
-              const dy = touch.clientY - start.y;
-              // 与内容区抽屉手势同口径：横向位移显著大于纵向、时长 400ms 内
-              if (Date.now() - start.at > 400 || Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-              window.dispatchEvent(
-                new CustomEvent("qn-preview-swipe", { detail: dx > 0 ? "left" : "right" }),
-              );
+              if (event.touches.length === 1) {
+                // 双指收起一根转单指：平移基准重置到剩余手指（口径同灯箱）
+                htmlPinchRef.current = 0;
+                htmlLastRef.current = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+                return;
+              }
+              if (event.touches.length === 0) {
+                htmlPinchRef.current = 0;
+                // 0.38.8 用户反馈「HTML 预览点击内容不隐藏药丸（PDF 正常）」：
+                // 部分 WebView 对 preventDefault 过 touchmove 的元素不合成
+                // click——轻点判定在 touchend 自己做（未拖动/捏合 + 时长短）
+                if (
+                  !htmlTapMovedRef.current &&
+                  Date.now() - htmlTapAtRef.current < 350
+                ) {
+                  window.dispatchEvent(new CustomEvent("qn-preview-chrome", { detail: "toggle" }));
+                }
+              }
             }}
           />
         )}
-        {kind === "image" && imageUrl && (
+        {kind === "image" && svgMarkup && (
+          <div
+            className="file-preview-image file-preview-image-pannable"
+            ref={imageHostRef}
+            dangerouslySetInnerHTML={{ __html: svgMarkup }}
+          />
+        )}
+        {kind === "image" && !svgMarkup && imageUrl && (
           <div className="file-preview-image file-preview-image-pannable" ref={imageHostRef}>
             <img src={imageUrl} alt={name} draggable={false} />
           </div>
