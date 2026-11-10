@@ -51,6 +51,14 @@
   --shadow-2: 0 4px 12px rgba(15, 18, 34, 0.1), 0 16px 44px rgba(15, 18, 34, 0.16);
   --active-line: rgba(91, 91, 214, 0.07);
   --selection: rgba(91, 91, 214, 0.22);
+  /* 代码块光标行的活动行色：--active-line 叠在 --code-bg(#e9edf4) 上的**不透明**
+     合成。0.39 用户反馈「选中代码块中的某一行，整行内容都会透出背景图片」——
+     0.38.7 的修复写的是 `background: 渐变, var(--active-line), var(--code-bg)`，
+     而 background 简写里颜色只能出现在**最后一层**，中间层的颜色让整条声明在
+     计算期失效 → activeLine 背景变 initial（全透明），光标/选区头所在的代码块
+     行（含软换行的全部视觉行）直接透背景图。rgb = 0.07*--active-line + 0.93*
+     --code-bg 手工合成，改这两个变量时同步重算。 */
+  --code-active-line: rgb(223, 227, 242);
   --highlight: #fff1a8;
   --math-error: #c4373c;
   --hover: rgba(20, 22, 40, 0.06);
@@ -137,6 +145,10 @@
   --shadow-2: 0 6px 16px rgba(0, 0, 0, 0.45), 0 24px 64px rgba(0, 0, 0, 0.55);
   --active-line: rgba(139, 147, 255, 0.07);
   --selection: rgba(99, 112, 255, 0.32);
+  /* 代码块光标行的活动行色：--active-line 叠在 --code-bg(#212127) 上的不透明
+     合成（同浅色主题的说明；rgb = 0.32 不适用，此处 0.07*--active-line +
+     0.93*--code-bg）。 */
+  --code-active-line: rgb(40, 41, 54);
   --highlight: #4d4416;
   --math-error: #ff7b81;
   --hover: rgba(255, 255, 255, 0.06);
@@ -1617,6 +1629,294 @@ div.tree-item:focus-visible {
   overflow: auto;
 }
 
+/* ---- 0.39 Excel 预览重做（用户反馈「添加对 excel 表的预览支持，同时要支持
+   筛选功能」）：结构化表格 + 表头列筛选 + 粘性表头 ---- */
+.file-preview-xlsx {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.xlsx-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-shrink: 0;
+  padding: 0 2px 8px;
+}
+
+.xlsx-toolbar-count {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.xlsx-toolbar-note {
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.xlsx-filter-chip {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 2px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.xlsx-filter-chip:hover {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.xlsx-filter-clear {
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.xlsx-filter-clear:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.file-preview-xlsx .file-preview-sheet-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.xlsx-table {
+  min-width: 100%;
+  border-collapse: collapse;
+}
+
+.xlsx-table th,
+.xlsx-table td {
+  padding: 3px 9px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #222;
+  text-align: left;
+  vertical-align: top;
+  white-space: nowrap;
+  border: 1px solid #d7d7dd;
+}
+
+.xlsx-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-weight: 600;
+  background: #f3f4f6;
+}
+
+.xlsx-table thead th.is-filtered {
+  background: color-mix(in srgb, var(--accent) 16%, #f3f4f6);
+}
+
+.xlsx-th-label {
+  display: inline-block;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.xlsx-filter-btn {
+  margin-left: 4px;
+  padding: 0 3px;
+  font-size: 11px;
+  line-height: 1.2;
+  color: #888;
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.xlsx-filter-btn:hover,
+.xlsx-filter-btn.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.xlsx-empty {
+  padding: 22px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.xlsx-more {
+  padding: 8px;
+  text-align: center;
+}
+
+.xlsx-more button {
+  padding: 3px 12px;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.xlsx-more button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* 列筛选面板：fixed 定位（表头在滚动容器里，absolute 会被裁），z 高于预览浮层 */
+.xlsx-filter-pop {
+  position: fixed;
+  z-index: 1200;
+  display: flex;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-2);
+}
+
+.xlsx-filter-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  min-height: 0;
+  padding: 9px;
+}
+
+.xlsx-filter-title {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xlsx-filter-search {
+  width: 100%;
+  padding: 5px 9px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  outline: none;
+}
+
+.xlsx-filter-search:focus {
+  border-color: var(--accent);
+}
+
+.xlsx-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.xlsx-filter-actions button,
+.xlsx-filter-foot button {
+  padding: 2px 9px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.xlsx-filter-actions button:hover,
+.xlsx-filter-foot button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.xlsx-filter-count {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.xlsx-filter-values {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.xlsx-filter-value {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 3px 9px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.xlsx-filter-value:hover {
+  background: var(--hover);
+}
+
+.xlsx-filter-value span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.xlsx-filter-empty {
+  padding: 8px;
+  font-size: 11px;
+  color: var(--text-faint);
+  text-align: center;
+}
+
+.xlsx-filter-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* 移动端：弹层内的触控目标放宽 */
+html.qn-mobile .xlsx-filter-value {
+  padding: 8px 10px;
+  font-size: 13px;
+}
+
+html.qn-mobile .xlsx-filter-actions button,
+html.qn-mobile .xlsx-filter-foot button {
+  padding: 6px 11px;
+  font-size: 12px;
+}
+
+html.qn-mobile .xlsx-toolbar {
+  padding-top: 6px;
+}
+
 /* HTML 预览：沙箱 iframe（禁脚本），白底模拟浏览器视图 */
 .file-preview-html {
   width: 100%;
@@ -1738,7 +2038,11 @@ div.tree-item:focus-visible {
    drawSelection 会用 Prec.highest 把原生 ::selection 压成 transparent（配合
    行下的选区层），这里以更高特异性在代码块语境恢复原生 ::selection：按内联
    盒画在行背景之上，多行选区全部可见。代码块内容是纯语法 token，没有带
-   padding 的行内 chip，「选中行底边多一块高度」的坑在这里不存在。 */
+   padding 的行内 chip，「选中行底边多一块高度」的坑在这里不存在。
+   0.39 二轮浏览器实测澄清：Chromium 的 ::selection 是**叠加**在行背景之上
+   （不是替换）——0.39 一轮曾误诊为「替换导致透图」把选区色换成预合成的不
+   透明色（选中区会比全局选区色浓一截），实测后回退；真正的透图凶手是下面
+   activeLine 那条非法简写。 */
 .editor-host .cm-lp-codeblock::selection,
 .editor-host .cm-lp-codeblock ::selection {
   background-color: var(--selection) !important;
@@ -8359,6 +8663,128 @@ button.cm-tag:hover {
   line-height: 1.6;
 }
 
+/* ---------------- 语句库（0.39：整页复用 Inbox 的 cm-* 面板形态） ----------------
+   语句行比速记多一块「名字 + 语句预览」：名字用等宽字体，预览一行省略；
+   详情抽屉里的语句按 pre 展示（横向滚动不折行）。 */
+.lib-page .lib-row-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lib-row-preview {
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+.lib-page .cm-row-meta .cm-tag {
+  font-size: 10.5px;
+}
+
+/* 0.39 二轮响应式（用户截图：宽窗挤进右栏时统计文字压住副标题）——页头允许
+   换行（标题行 / 搜索行），副标题超出即省略，搜索框可收缩 */
+.lib-page .cm-head {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.lib-page .cm-head-titles {
+  flex: 1 1 240px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.lib-page .cm-subtitle {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.lib-page .cm-head-stats {
+  flex-shrink: 0;
+}
+
+.lib-page .cm-search {
+  width: 220px;
+  min-width: 140px;
+  flex-shrink: 1;
+}
+
+/* 详情抽屉放宽（语句 pre 横向滚动，340px 太挤——用户截图实锤） */
+.lib-page .cm-drawer {
+  width: 420px;
+}
+
+.lib-drawer-code {
+  margin: 0;
+  max-height: 42vh;
+  overflow: auto;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.cm-toast.is-error {
+  color: var(--danger);
+}
+
+/* 批量栏的计数/分隔（Inbox 同款结构，补上基础排版） */
+.cm-batch-count {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.cm-batch-sep {
+  width: 1px;
+  height: 16px;
+  background: var(--border);
+}
+
+/* Popover 菜单分隔线（Inbox 与语句库共用） */
+.cm-pop-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border-soft);
+}
+
+/* 批量加标签输入（Inbox 同款结构；Inbox 本体靠浏览器默认样式，这里补齐
+   与 cm-btn 同高的外观，语句库/速记两边共用） */
+.cm-batch-tag-input {
+  width: 170px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.cm-batch-tag-input::placeholder {
+  color: var(--text-faint);
+}
+
+/* 行内加标签的输入框出现时，行尾工具区保持可见（否则鼠标一走输入框跟着淡出） */
+.cm-row-tool:has(.cm-row-tag-input) {
+  opacity: 1;
+}
+
 /* ---------------- 响应式 ---------------- */
 
 @media (max-width: 960px) {
@@ -12048,423 +12474,6 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
-/* 语句库管理面板（0.35.1）：复用 .quick-capture 壳（桌面 600px 弹窗/移动
-   Bottom Sheet 同一套），列表按 ## 项目段落分组 */
-.ddl-mgr-tabs {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 8px;
-}
-
-.ddl-mgr-tabs > button {
-  padding: 4px 12px;
-  font-size: 12px;
-  color: var(--text-dim);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-}
-
-.ddl-mgr-tabs > button.is-on {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.ddl-mgr-search {
-  flex: 1;
-  min-width: 0;
-  padding: 5px 9px;
-  font: inherit;
-  font-size: 12px;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  outline: none;
-}
-
-.ddl-mgr-search:focus {
-  border-color: var(--accent);
-}
-
-/* 筛选 chips 行（0.35.3 五轮反馈：速记管理「未归档/已归档/全部」同位同款——
-   两库**分开看**，不合并；默认数据表） */
-.ddl-mgr-filters {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-  margin-bottom: 10px;
-}
-
-.ddl-mgr-filter {
-  padding: 5px 14px;
-  font-size: 13px;
-  font-weight: 550;
-  color: var(--text-dim);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.ddl-mgr-filter b {
-  font-weight: 650;
-  color: var(--text-faint);
-  margin-left: 4px;
-}
-
-.ddl-mgr-filter.is-on {
-  color: var(--accent);
-  background: var(--accent-soft);
-  border-color: var(--accent);
-}
-
-.ddl-mgr-filter.is-on b {
-  color: var(--accent);
-}
-
-.ddl-mgr-filter-spacer {
-  flex: 1;
-}
-
-.ddl-mgr-list {
-  max-height: 48vh;
-  overflow-y: auto;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-}
-
-.ddl-mgr-empty {
-  padding: 26px 12px;
-  text-align: center;
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-.ddl-mgr-project {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-dim);
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-}
-
-.ddl-mgr-count {
-  margin-left: auto;
-  font-weight: 400;
-  font-size: 11px;
-}
-
-.ddl-mgr-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 10px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--border);
-}
-
-/* 行首勾选框（0.38 对齐 Inbox 批量栏）：勾选行高亮 + Shift 范围多选 */
-.ddl-mgr-row .cm-check {
-  flex: none;
-  margin: 0;
-}
-
-.ddl-mgr-entry.is-sel .ddl-mgr-row {
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-/* 批量态工具行（复用 Inbox cm-toolbar 批量栏观感：已选择 N 条 | 操作按钮组）。
-   .ddl-mgr-filters 原位切换成批量栏（is-batch），布局沿用 Inbox 的 flex 行 */
-.ddl-mgr-filters.is-batch {
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.ddl-mgr-bulk-move {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  min-width: 0;
-}
-
-.ddl-mgr-row:last-child {
-  border-bottom: 0;
-}
-
-.ddl-mgr-row:hover {
-  background: var(--hover);
-}
-
-.ddl-mgr-name {
-  flex: 0 1 auto;
-  max-width: 40%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-family: var(--mono);
-  color: var(--text);
-}
-
-.ddl-mgr-preview {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
-.ddl-mgr-row > button {
-  flex: none;
-  padding: 2px 8px;
-  font-size: 11px;
-  color: var(--text-dim);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-}
-
-.ddl-mgr-row > button:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.ddl-mgr-row > button.is-confirm {
-  color: #fff;
-  background: var(--danger);
-  border-color: transparent;
-}
-
-/* —— 0.38 用户反馈批 —— */
-/* 行尾「⋯」展开钮（默认行内只露 定位+⋯，复制/移动/删除收进展开行） */
-.ddl-mgr-row > button.ddl-mgr-more {
-  min-width: 26px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-}
-
-.ddl-mgr-row > button.ddl-mgr-more.is-open {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-/* 一行 = 主行 + 可选展开行；展开行随内容撑高 */
-.ddl-mgr-entry {
-  border-bottom: 1px solid var(--border);
-}
-
-.ddl-mgr-entry:last-child {
-  border-bottom: 0;
-}
-
-/* 行内边框移交 .ddl-mgr-entry（主行不再自带，避免展开行处出现双线） */
-.ddl-mgr-entry .ddl-mgr-row {
-  border-bottom: 0;
-}
-
-/* 展开行：复制 / 删除 + 目标项目 chips（点击即移动到对应段落） */
-.ddl-mgr-extra {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 4px 10px 8px 18px;
-  background: var(--hover);
-}
-
-.ddl-mgr-extra > button {
-  flex: none;
-  padding: 2px 8px;
-  font-size: 11px;
-  color: var(--text-dim);
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  cursor: pointer;
-}
-
-.ddl-mgr-extra > button:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.ddl-mgr-extra > button.is-confirm {
-  color: #fff;
-  background: var(--danger);
-  border-color: transparent;
-}
-
-/* 展开行的「新项目名」输入（0.38 实测：单项目库没有任何可去 chips，全未分组时
-   移动功能等于不存在——直接输入新项目名落新段落） */
-.ddl-mgr-extra-input {
-  flex: 0 1 140px;
-  min-width: 90px;
-  padding: 2px 8px;
-  font: inherit;
-  font-size: 11px;
-  color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  outline: none;
-}
-
-.ddl-mgr-extra-input:focus {
-  border-color: var(--accent);
-}
-
-.ddl-mgr-extra-label {
-  flex: none;
-  font-size: 11px;
-  color: var(--text-faint);
-}
-
-.ddl-mgr-extra-projs {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
-  min-width: 0;
-}
-
-/* 项目筛选 chips 行（0.38 用户反馈「类似于 inbox，添加一些筛选功能」）：
-   全部 + 各项目，点击只看该项目的条目 */
-.ddl-mgr-projrow {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  flex-shrink: 0;
-  margin: 0 0 8px;
-}
-
-.ddl-mgr-proj-chip {
-  border: 1px solid var(--border);
-  background: transparent;
-  color: var(--text-dim);
-  font: inherit;
-  font-size: 11.5px;
-  padding: 2px 11px;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
-}
-
-.ddl-mgr-proj-chip:hover:not(:disabled) {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-.ddl-mgr-proj-chip.is-on {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  font-weight: 650;
-}
-
-.ddl-mgr-proj-chip:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-/* —— 语句库管理的标签页形态（0.35.3 用户反馈「不应该使用弹窗，新建一个标签页」；
-   二轮反馈改用速记管理面板的版式）—— */
-.ddl-manager-page {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 14px 18px 12px;
-  overflow: hidden;
-  background: var(--surface);
-}
-
-/* 标题行：cm-head 同款（标题 + 副标题 + 右侧 Esc 图标钮） */
-.ddl-mgr-page-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-shrink: 0;
-  margin-bottom: 10px;
-}
-
-.ddl-mgr-page-titles {
-  min-width: 0;
-}
-
-.ddl-mgr-page-title {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-  color: var(--text);
-  line-height: 1.25;
-}
-
-.ddl-mgr-page-subtitle {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text-faint);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.ddl-mgr-page-spacer {
-  flex: 1;
-}
-
-.ddl-mgr-page-close {
-  flex: none;
-  padding: 5px 10px;
-  font-size: 12px;
-  color: var(--text-dim);
-  background: transparent;
-  border: 0;
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.ddl-mgr-page-close:hover {
-  color: var(--text);
-  background: var(--hover);
-}
-
-/* 工具行（页签 + 搜索）随内容行高固定，列表占满剩余高度平铺滚动 */
-.ddl-manager-page .ddl-mgr-tabs {
-  flex-shrink: 0;
-}
-
-.ddl-manager-page .ddl-mgr-list {
-  flex: 1;
-  max-height: none;
-  min-height: 0;
-  overflow-y: auto;
-  border: 0;
-  border-radius: 0;
-  padding: 0 2px;
-}
-
-.ddl-manager-page .quick-capture-foot {
-  flex-shrink: 0;
-  padding-top: 8px;
-}
-
 /* 特殊标签页激活时隐藏左栏编辑器宿主（同 Inbox 的 display:none 纪律：
    回到笔记时 App 会 requestMeasure 重测，不条件卸载宿主 div） */
 .editor-host.is-special-hidden {
@@ -13400,6 +13409,21 @@ html.qn-mobile .app.inbox-open .cm-row-tool:has(.cm-row-tag-input) {
   opacity: 1;
 }
 
+/* 0.39 语句库页（cm-* 复用）同款：手机行尾只留常显 ⋯，定位/标签收进菜单 */
+html.qn-mobile .app.libpage-open .cm-row-tool {
+  opacity: 1;
+}
+html.qn-mobile .app.libpage-open .cm-row-tool .cm-row-quick {
+  display: none;
+}
+html.qn-mobile .app.libpage-open .cm-row-more {
+  opacity: 1;
+}
+html.qn-mobile .app.libpage-open .cm-search {
+  padding: 8px 11px;
+  font-size: 13px;
+}
+
 /* 0.34.6 用户反馈「启用背景图片后，左右抽屉还会透图」：桌面侧栏半透明是有意
    的（背景图从表面透出），但移动端抽屉是全屏工作面——透图毁可读性。恢复
    不透明实底（放专区尾部，同特异性下压过 html.qn-bg-on .sidebar 的 66%） */
@@ -13601,105 +13625,6 @@ html.qn-mobile .file-preview.is-embedded .file-preview-html {
   max-height: none;
 }
 
-/* 用户反馈「优化语句库的显示UI效果」：头部避让药丸、底部按钮避让底条；
-   行改两行栅格——名字完整换行（勿回退截断方案），预览片段独占一行（两行
-   截断），三个按钮与名字同排右对齐 */
-html.qn-mobile .ddl-manager-page {
-  /* 0.38.10 用户反馈「上下空白太浪费」：52/84px 是给旧浮动药丸/底条的避让——
-     libpage-open 后两者已让位，只保留状态栏/手势条的最小避让 */
-  padding-top: calc(var(--qn-inset-top, 0px) + 8px);
-  padding-bottom: calc(var(--qn-inset-bottom, 0px) + 16px);
-}
-
-html.qn-mobile .ddl-mgr-filters {
-  flex-wrap: wrap;
-}
-
-html.qn-mobile .ddl-mgr-search {
-  flex: 1 1 100%;
-  order: 10;
-  padding: 8px 11px;
-  font-size: 13px;
-}
-
-/* 0.38 行尾按钮收敛成两个（定位 + ⋯）：栅格列数同步收紧；
-   0.38b 行首加勾选框（批量栏）→ 列再 +1（checkbox 固定宽列） */
-html.qn-mobile .ddl-mgr-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  gap: 3px 10px;
-  align-items: center;
-  padding: 8px 10px;
-}
-
-html.qn-mobile .ddl-mgr-row .cm-check {
-  grid-column: 1;
-  grid-row: 1;
-}
-
-html.qn-mobile .ddl-mgr-row .ddl-mgr-name {
-  grid-column: 2;
-  grid-row: 1;
-  max-width: none;
-  white-space: normal;
-  word-break: break-all;
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-html.qn-mobile .ddl-mgr-row .ddl-mgr-preview {
-  grid-column: 1 / -1;
-  grid-row: 2;
-  white-space: normal;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-html.qn-mobile .ddl-mgr-row > button {
-  grid-row: 1;
-  padding: 5px 11px;
-  font-size: 12px;
-}
-
-/* 0.38.3 用户反馈（截图实锤「定位」叠在名字上）：栅格 4 列
-   （勾选框|名字|定位|⋯），此前按钮写在 col2/col3 与名字同格 */
-html.qn-mobile .ddl-mgr-row > button:nth-of-type(1) {
-  grid-column: 3;
-}
-
-html.qn-mobile .ddl-mgr-row > button:nth-of-type(2) {
-  grid-column: 4;
-}
-
-/* 展开行（复制/删除/移动项目）与项目筛选 chips：触控目标放宽 */
-html.qn-mobile .ddl-mgr-extra {
-  padding: 6px 10px 10px 16px;
-  gap: 8px;
-}
-
-html.qn-mobile .ddl-mgr-extra > button,
-html.qn-mobile .ddl-mgr-proj-chip {
-  padding: 6px 12px;
-  font-size: 12.5px;
-}
-
-/* Esc 键在手机上不存在：关闭钮改显 ✕ */
-html.qn-mobile .ddl-mgr-page-close {
-  padding: 8px 12px;
-}
-
-html.qn-mobile .ddl-mgr-page-close kbd {
-  display: none;
-}
-
-html.qn-mobile .ddl-mgr-page-close::before {
-  content: "✕";
-  font-size: 15px;
-  line-height: 1;
-}
-
 /* ---- 0.36.1 用户反馈「设置一级/二级标题头样式不一致，改成复用同一个模板」----
    两级头统一挂 .settings-page-head 模板：56px 高 + 底描边 + panel 底色 +
    40dp 主题色 ‹（20px 图标）+ 16px/650 标题 flex:1。此前一级头是灰色 24px
@@ -13848,6 +13773,39 @@ html.qn-mobile .qn-lightbox-hint {
   opacity: 1;
 }
 
+/* 0.39 用户反馈「添加一个状态显示是否同步中，不然的话不清楚这些仓库是否
+   支持同步」：仓库菜单行内的同步状态徽标（绿点=已开启自动同步，灰=未开） */
+.vault-menu-sync {
+  flex: none;
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 2px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  color: var(--text-faint);
+  background: var(--surface-2);
+}
+
+.vault-menu-sync i {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--text-faint);
+}
+
+.vault-menu-sync.is-on {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 12%, transparent);
+}
+
+.vault-menu-sync.is-on i {
+  background: var(--ok);
+}
+
 /* ============================================================
    0.38.7 反馈批
    ============================================================ */
@@ -13879,13 +13837,16 @@ html.qn-mobile .app.libpage-open .m-bottom-bar {
 
 /* 0.38.7 用户反馈「代码块点击（光标行）会透出背景图」：.cm-activeLine 的
    !important 背景盖掉了代码块行级装饰的底色（--active-line 半透明），背景图
-   从光标行透出——代码块行把活动行色调叠回 --code-bg 之上（含左缘强调条），
-   保持不透明。 */
+   从光标行透出。0.39 二轮实测取证：当年写的 `background: 渐变,
+   var(--active-line), var(--code-bg)` 是**非法 CSS**（background 简写的颜色
+   只能出现在最后一层），整条声明在计算期失效 → activeLine 背景变 initial
+   （全透明），光标/选区头所在行（含软换行的全部视觉行）依旧透背景图——
+   也就是说 0.38.7 起这条就没修好过，开背景图才暴露。活动行色改用预合成的
+   不透明 `--code-active-line`（颜色只落在最后一层，声明合法）。 */
 .cm-editor .cm-lp-codeblock.cm-activeLine {
   background:
     linear-gradient(90deg, color-mix(in srgb, var(--accent) 45%, transparent) 0 3px, transparent 3px),
-    var(--active-line),
-    var(--code-bg) !important;
+    var(--code-active-line) !important;
 }
 
 /* 0.38.7 ☰ 菜单编辑 sheet：勾选候选行 + 底部操作行 */
@@ -14107,14 +14068,6 @@ html.qn-mobile .dir-filter-backdrop {
 
 .settings-slider-touch input[type="range"] {
   width: 100%;
-}
-
-/* 0.38.11 用户反馈「语句库中输入时会带起下面的功能选项，数据管理也有」：
-   键盘弹出（qn-ime-open）时 WebView 视口被 ime margin 压矮，页脚元素顶到
-   键盘上方悬在内容中间——输入场景里它们是纯噪音，直接隐藏。语句库页脚用
-   .ddl-manager-page 限域（.quick-capture-foot 与速记弹窗共用，不能全局藏） */
-html.qn-mobile.qn-ime-open .ddl-manager-page .quick-capture-foot {
-  display: none;
 }
 
 html.qn-mobile.qn-ime-open .cm-hints {

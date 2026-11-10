@@ -27,7 +27,7 @@ export const TEXT_EXTS = new Set([
 
 /** 预览类扩展名：点击打开预览窗格而非编辑器（图片/HTML/文档/幻灯片）。 */
 export const PREVIEW_EXTS = new Set([
-  "pdf", "docx", "xlsx", "xlsm",
+  "pdf", "docx", "xlsx", "xlsm", "xls",
   "ppt", "pptx",
   "html", "htm",
   "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico",
@@ -45,7 +45,7 @@ export function fileKindOf(name: string): FileKind {
   if (ext === "docx") return "docx";
   // 旧版 .ppt 也归到预览：点开给出"另存为 .pptx"提示，好过无声无息打不开
   if (ext === "ppt" || ext === "pptx") return "ppt";
-  if (ext === "xlsx" || ext === "xlsm") return "spreadsheet";
+  if (ext === "xlsx" || ext === "xlsm" || ext === "xls") return "spreadsheet";
   if (ext === "html" || ext === "htm") return "html";
   if (["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"].includes(ext)) {
     return "image";

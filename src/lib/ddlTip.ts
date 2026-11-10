@@ -38,9 +38,9 @@ export interface DdlTipOptions {
   defaultProject?: string;
 }
 
-/** 项目名显示：未分组显示「默认」。 */
-export function projectLabel(project: string): string {
-  return project === "" ? "默认" : project;
+/** 条目显示名（0.39 多标签）：标签用「·」连起来，无标签显示「默认」。 */
+export function entryLabel(entry: DdlEntry): string {
+  return entry.tags.length > 0 ? entry.tags.join(" · ") : "默认";
 }
 
 /**
@@ -154,8 +154,8 @@ export function buildDdlTipDom(
       const chip = document.createElement("button");
       chip.type = "button";
       chip.className = "qn-ddl-tip-proj";
-      chip.textContent = projectLabel(entry.project);
-      chip.title = `查看「${projectLabel(entry.project)}」项目里的语句`;
+      chip.textContent = entryLabel(entry);
+      chip.title = `查看「${entryLabel(entry)}」的语句`;
       chip.addEventListener("mousedown", (event) => event.stopPropagation());
       chip.addEventListener("click", (event) => {
         event.stopPropagation();
@@ -393,7 +393,10 @@ export function buildDdlTipDom(
       lang === "java"
         ? parseClassLibrary(edited).get(table)
         : parseDdlTables(edited).get(table.toLowerCase());
-    const statement = found?.find((entry) => entry.project === entries[current].project)?.ddl;
+    // 校验只认「还能识别出这条语句」：编辑框里是裸语句，没有 `## 项目` 段落，
+    // 按 project 匹配会对具名段落里的条目永远失败（0.39 修正——连同标签行也
+    // 不在编辑框里；落盘仍写回原段落，标签行在语句上方、替换区不碰它）
+    const statement = found?.[found.length - 1]?.ddl;
     if (!statement) {
       message.className = "qn-ddl-tip-message is-error";
       message.textContent =
@@ -408,7 +411,7 @@ export function buildDdlTipDom(
       const ok = await onSave(table, statement, entries[current].project);
       message.className = "qn-ddl-tip-message";
       message.textContent = ok;
-      entries[current] = { project: entries[current].project, ddl: statement };
+      entries[current] = { project: entries[current].project, tags: entries[current].tags, time: entries[current].time, ddl: statement };
       render();
     } catch (e) {
       message.className = "qn-ddl-tip-message is-error";

@@ -18,6 +18,7 @@ import { mkdirSync, writeFileSync, readFileSync, appendFileSync, rmSync, existsS
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as XLSX from "xlsx";
 
 const port = process.argv[2] ?? "9421";
 const root = process.cwd();
@@ -145,6 +146,18 @@ const png1px = Buffer.from(
   "base64",
 );
 writeFileSync(join(vaultA, "qn31bg.png"), png1px);
+// Excel 预览 + 列筛选夹具（0.39：两列三行，部门列用于筛选）
+{
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([
+    ["姓名", "部门"],
+    ["张三", "研发"],
+    ["李四", "财务"],
+    ["王五", "研发"],
+  ]);
+  XLSX.utils.book_append_sheet(wb, ws, "人员");
+  XLSX.writeFile(wb, join(vaultA, "qn31表格.xlsx"));
+}
 // 副库（重启恢复仓库断言用）
 writeFileSync(join(vaultB, "副库笔记.md"), ["# 副库笔记", "", "内容。"].join("\n"), "utf8");
 
@@ -654,101 +667,190 @@ try {
     }
   }
 
-  // ============================================== 6c. 语句库管理整页（0.35.3 五轮：Inbox 式整页 + 两库筛选 chips，不占标签外壳）
+  // ============================================== 6c. 语句库整页（0.39：完全复用 Inbox 的 cm-* 面板）
   {
     await key(ws, { mod: CTRL_ALT, key: 'k' }, 'KeyK', 75);
-    const mgrPage = await waitFor(ws, `!!document.querySelector('.ddl-manager-page')`, 3000);
-    check(mgrPage, '语句库管理以整页形态打开（0.35.3）');
-    const noShell = await evaluate(ws, `!document.querySelector('.tab-special')`);
-    check(noShell, '不再占用标签页外壳（无 tab-special）');
+    const mgrPage = await waitFor(ws, `!!document.querySelector('.cm-root.lib-page')`, 3000);
+    check(mgrPage, '语句库以 Inbox 式整页打开（0.39）');
+    const noShell = await evaluate(ws, `!document.querySelector('.tab-special') && !document.querySelector('.ddl-manager-page')`);
+    check(noShell, '不占标签页外壳，旧 ddl-manager-page 设计已移除');
     const notesHidden = await evaluate(ws, `!!document.querySelector('.editor-pane-notes.is-hidden')`);
     check(notesHidden, '整页打开时笔记区 display:none 隐藏（不卸载）');
-    const ddlChipOn = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-filter')].find((c) => c.textContent.includes('数据表'))?.classList.contains('is-on') ?? false`);
-    check(ddlChipOn, '默认选中「数据表」筛选 chip');
-    const ddlRows = await evaluate(ws, `document.querySelectorAll('.ddl-mgr-row').length`);
-    check(ddlRows >= 1, '数据表库列出已收录条目（6b 收录）', String(ddlRows));
-    const javaChip = await evaluate(ws, `(() => { const c = [...document.querySelectorAll('.ddl-mgr-filter')].find((x) => x.textContent.includes('Java 实体')); c?.click(); return !!c; })()`);
-    const javaRows = javaChip ? await waitFor(ws, `[...document.querySelectorAll('.ddl-mgr-filter')].find((c) => c.textContent.includes('Java 实体'))?.classList.contains('is-on') ?? false`, 2000) : false;
-    check(javaChip && javaRows, '切换「Java 实体」筛选 chip');
-    const javaRowN = await evaluate(ws, `document.querySelectorAll('.ddl-mgr-row').length`);
-    check(javaRowN >= 1, '实体库单独列出（两库分开看，不合并）', String(javaRowN));
-    // ---- 0.38 用户反馈批：项目筛选 chips / 行尾按钮折叠 / 移动到项目 ----
-    await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-filter')].find((c) => c.textContent.includes('数据表'))?.click(); return true; })()`);
-    await sleep(400);
-    const rowBtnN = await evaluate(ws, `(() => { const r = document.querySelector('.ddl-mgr-row'); return r ? r.querySelectorAll('button').length : -1; })()`);
-    check(rowBtnN === 2, `行尾默认只露 定位+⋯ 两个按钮（0.38，实际 ${rowBtnN}）`, String(rowBtnN));
-    const projChips = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-projrow .ddl-mgr-proj-chip')].map((c) => c.textContent)`);
-    check(projChips.length >= 2, "项目筛选 chips 行出现（0.38：全部+各项目）", projChips.join("|"));
-    await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-projrow .ddl-mgr-proj-chip')].find((c) => c.textContent === '测试项目B')?.click(); return true; })()`);
-    await sleep(300);
-    const onlyB = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-project')].map((g) => g.textContent)`);
-    check(onlyB.length === 1 && String(onlyB[0]).includes('测试项目B'), "项目筛选生效：只列 测试项目B 分组", onlyB.join("|"));
-    await evaluate(ws, `(() => { document.querySelector('.ddl-mgr-row .ddl-mgr-more')?.click(); return true; })()`);
+    const headInfo = await evaluate(ws, `({
+      title: document.querySelector('.lib-page .cm-title')?.textContent ?? '',
+      subtitle: document.querySelector('.lib-page .cm-subtitle')?.textContent ?? '',
+      segs: [...document.querySelectorAll('.lib-page .cm-seg-btn')].map((b) => b.textContent),
+    })`);
+    check(headInfo.title.includes('语句库') && headInfo.subtitle.includes('数据表'), 'Inbox 同款页头（标题 / 副标题）', JSON.stringify(headInfo));
+    check(headInfo.segs.some((s) => s.includes('数据表')) && headInfo.segs.some((s) => s.includes('Java 实体')), 'cm-seg 分段含 数据表 / Java 实体', headInfo.segs.join('|'));
+    const ddlOn = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('数据表'))?.classList.contains('is-on') ?? false`);
+    check(ddlOn, '默认选中「数据表」分段');
+    const ddlRows = await evaluate(ws, `document.querySelectorAll('.lib-page .cm-row').length`);
+    check(ddlRows >= 2, '数据表库列出两条（6b 收录 + 测试项目B 同名）', String(ddlRows));
+    const rowInfo = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-row')].map((r) => ({
+      name: r.querySelector('.lib-row-name')?.textContent ?? '',
+      preview: r.querySelector('.lib-row-preview')?.textContent ?? '',
+      tags: [...r.querySelectorAll('.cm-tag')].map((t) => t.textContent),
+      time: r.querySelector('.cm-row-time')?.textContent ?? '',
+      hasCheck: !!r.querySelector('.cm-check'),
+    }))`);
+    check(rowInfo.every((r) => r.hasCheck && r.name.includes('ids_qn31_tab') && r.preview.includes('CREATE TABLE')), 'Inbox 同款行：勾选框 + 表名 + 语句预览', JSON.stringify(rowInfo));
+    check(rowInfo.some((r) => r.tags.some((t) => t.includes('测试项目B'))), '行内显示标签 chips', JSON.stringify(rowInfo.map((r) => r.tags)));
+    check(rowInfo.every((r) => /^\d{2}:\d{2}$/.test(r.time)), '行上显示收录时间（@time 行，0.39 二轮）', JSON.stringify(rowInfo.map((r) => r.time)));
+    // 工具栏四件套对齐速记：筛选 / 标签 / 日期 / 排序（0.39 二轮）
+    const toolBtns = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-toolbar .cm-tool-btn')].map((b) => b.textContent)`);
+    check(['筛选', '标签', '日期', '排序'].every((label) => toolBtns.some((t) => t.includes(label))), '工具栏 筛选/标签/日期/排序 四件套（对齐速记）', toolBtns.join('|'));
+    const groupPopUp = await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-toolbar .cm-tool-btn')].find((b) => b.textContent.includes('筛选'))?.click(); return true; })()`);
     await sleep(200);
-    const extra = await evaluate(ws, `(() => {
-      const x = document.querySelector('.ddl-mgr-extra');
-      if (!x) return { open: false };
-      return { open: true, hasCopy: x.textContent.includes('复制'), hasDel: x.textContent.includes('删除'), chips: [...x.querySelectorAll('.ddl-mgr-proj-chip')].map((c) => c.textContent) };
+    const groupPopRows = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-pop .cm-pop-row')].map((r) => r.textContent)`);
+    check(groupPopUp && groupPopRows.some((t) => t.includes('未分组')), '「筛选」弹层按分组列出（含未分组）', groupPopRows.join('|'));
+    await evaluate(ws, `document.querySelector('.cm-pop-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await sleep(150);
+    // Java 实体分段
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('Java 实体'))?.click(); return true; })()`);
+    await sleep(300);
+    const javaInfo = await evaluate(ws, `({ rows: document.querySelectorAll('.lib-page .cm-row').length, name: document.querySelector('.lib-page .lib-row-name')?.textContent ?? '', on: [...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('Java 实体'))?.classList.contains('is-on') ?? false })`);
+    check(javaInfo.rows === 1 && javaInfo.name === 'Qn31User' && javaInfo.on, '切换到 Java 实体分段（单独列出）', JSON.stringify(javaInfo));
+    // 回数据表 + 标签筛选 popover（Inbox 同款 cm-pop）
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('数据表'))?.click(); return true; })()`);
+    await sleep(300);
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-toolbar .cm-tool-btn')].find((b) => b.textContent.includes('标签'))?.click(); return true; })()`);
+    await sleep(200);
+    const tagPop = await waitFor(ws, `!!document.querySelector('.lib-page .cm-pop')`, 2000).catch(() => false);
+    check(tagPop, '「标签」筛选工具弹出 Inbox 同款 cm-pop（0.39）');
+    const tagRows = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-pop .cm-pop-row')].map((r) => r.textContent)`);
+    check(tagRows.some((t) => t.includes('测试项目B')) && tagRows.some((t) => t.includes('无标签')), '标签弹层列出各标签 + 无标签计数', tagRows.join('|'));
+    await evaluate(ws, `(() => { const row = [...document.querySelectorAll('.lib-page .cm-pop .cm-pop-row')].find((r) => r.textContent.includes('测试项目B')); row?.querySelector('input')?.click(); return true; })()`);
+    await sleep(300);
+    const onlyB = await evaluate(ws, `({ rows: document.querySelectorAll('.lib-page .cm-row').length, name: document.querySelector('.lib-page .lib-row-name')?.textContent ?? '', chips: [...document.querySelectorAll('.lib-page .cm-chip')].map((c) => c.textContent) })`);
+    check(onlyB.rows === 1 && onlyB.name.includes('ids_qn31_tab') && onlyB.chips.some((c) => c.includes('测试项目B')), '标签多选筛选生效 + active chip 出现（0.39）', JSON.stringify(onlyB));
+    // 关弹层 → 再开 → 取消勾选
+    await evaluate(ws, `document.querySelector('.cm-pop-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await sleep(150);
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-toolbar .cm-tool-btn')].find((b) => b.textContent.includes('标签'))?.click(); return true; })()`);
+    await sleep(150);
+    await evaluate(ws, `(() => { const row = [...document.querySelectorAll('.lib-page .cm-pop .cm-pop-row')].find((r) => r.textContent.includes('测试项目B')); row?.querySelector('input')?.click(); return true; })()`);
+    await sleep(250);
+    await evaluate(ws, `document.querySelector('.cm-pop-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+    await sleep(150);
+    const allBack = await evaluate(ws, `document.querySelectorAll('.lib-page .cm-row').length`);
+    check(allBack >= 2, '取消标签筛选恢复全部行', String(allBack));
+    // 行点击 → Inbox 同款详情抽屉；抽屉内加/删标签
+    const openDrawer = await evaluate(ws, `(() => { const row = [...document.querySelectorAll('.lib-page .cm-row')].find((r) => r.textContent.includes('测试项目B')); row?.click(); return !!row; })()`);
+    const drawerUp = await waitFor(ws, `!!document.querySelector('.lib-page .cm-drawer')`, 2000).catch(() => false);
+    check(openDrawer && drawerUp, '点击行打开 cm-drawer 详情抽屉（0.39）');
+    const drawerInfo = await evaluate(ws, `({
+      title: document.querySelector('.lib-page .cm-drawer-title')?.textContent ?? '',
+      fields: [...document.querySelectorAll('.lib-page .cm-drawer .cm-field-label')].map((el) => el.textContent),
+      code: document.querySelector('.lib-page .lib-drawer-code')?.textContent ?? '',
+      tags: [...document.querySelectorAll('.lib-page .cm-drawer .cm-tag')].map((el) => el.textContent),
+    })`);
+    check(drawerInfo.title.includes('ids_qn31_tab') && drawerInfo.fields.some((f) => f.includes('标签')) && drawerInfo.code.includes('CREATE TABLE'), '抽屉展示库 / 分组 / 标签 / 语句（0.39）', JSON.stringify(drawerInfo.fields));
+    check(drawerInfo.fields.some((f) => f.includes('收录时间')), '抽屉展示收录时间（0.39 二轮）', JSON.stringify(drawerInfo.fields));
+    const hlOk = await evaluate(ws, `(() => {
+      const code = document.querySelector('.lib-page .lib-drawer-code');
+      return { kw: !!code?.querySelector('.qn-sql-kw'), cmt: !!code?.querySelector('.qn-sql-cmt, .qn-sql-str') };
     })()`);
-    check(extra.open && extra.hasCopy && extra.hasDel, "⋯ 展开行含 复制/删除（0.38 按钮折叠）", JSON.stringify(extra));
-    const toUngrouped = (extra.chips ?? []).includes('未分组');
-    if (toUngrouped) {
-      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-extra .ddl-mgr-proj-chip')].find((c) => c.textContent === '未分组')?.click(); return true; })()`);
-      const movedMsg = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已把')`, 5000).catch(() => false);
-      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-projrow .ddl-mgr-proj-chip')].find((c) => c.textContent === '全部')?.click(); return true; })()`);
-      await sleep(400);
-      const groupStats = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-group')].map((g) => (g.querySelector('.ddl-mgr-project')?.textContent ?? '') + ':' + g.querySelectorAll('.ddl-mgr-row').length)`);
-      check(movedMsg, "移动项目成功提示（0.38）", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
-      check(groupStats.some((g) => String(g).startsWith('未分组')), "移动后行落到目标项目分组（0.38）", groupStats.join("|"));
-    } else {
-      // 0.38 实测「这个功能用不了」：单项目库（全未分组）没有任何可去 chips——
-      // 走展开行的新项目输入框移动，同一段落协议落盘
-      const movedInput = await evaluate(ws, `(() => {
-        const input = document.querySelector('.ddl-mgr-extra-input');
-        if (!input) return false;
-        const set = ${nativeSet}; set(input, "批测新项目");
-        return true;
-      })()`);
-      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-extra > button')].find((b) => b.textContent === '移动')?.click(); return true; })()`);
-      const movedMsg2 = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已把')`, 5000).catch(() => false);
-      await sleep(400);
-      const groupStats2 = await evaluate(ws, `[...document.querySelectorAll('.ddl-mgr-group')].map((g) => (g.querySelector('.ddl-mgr-project')?.textContent ?? '') + ':' + g.querySelectorAll('.ddl-mgr-row').length)`);
-      check(movedInput && movedMsg2, "单项目库：展开行输入新项目名移动成功（0.38）", await evaluate(ws, `document.querySelector('.add-word-message')?.textContent ?? ''`));
-      check(groupStats2.some((g) => String(g).includes('批测新项目')), "语句落进新建的 ## 批测新项目 段落", groupStats2.join("|"));
-      const ddlOnDisk2 = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
-      check(ddlOnDisk2.includes("## 批测新项目"), "库笔记出现 ## 批测新项目 段落头（0.38 移动落盘）");
-      // 0.38b 对齐 Inbox：勾选批量栏（移动到项目 / 两步确认删除）
-      await evaluate(ws, `(() => {
-        const boxes = [...document.querySelectorAll('.ddl-mgr-row .cm-check')].filter((b) => !b.checked);
-        boxes[0]?.click();
-        return true;
-      })()`);
-      await sleep(200);
-      await evaluate(ws, `(() => {
-        const boxes = [...document.querySelectorAll('.ddl-mgr-row .cm-check')].filter((b) => !b.checked);
-        boxes[0]?.click();
-        return true;
-      })()`);
-      await sleep(200);
-      const batchUp = await waitFor(ws, `(document.querySelector('.ddl-mgr-filters.is-batch')?.textContent ?? '').includes('已选择 2 条')`, 3000).catch(() => false);
-      check(batchUp, "勾选两条进批量栏（0.38b 对齐 Inbox）");
-      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-filters.is-batch .cm-btn')].find((b) => b.textContent === '移动到项目…')?.click(); return true; })()`);
-      await sleep(200);
-      await evaluate(ws, `(() => { const input = document.querySelector('.ddl-mgr-filters.is-batch input'); if (!input) return false; const set = ${nativeSet}; set(input, "批测批量项目"); return true; })()`);
-      await evaluate(ws, `(() => { [...document.querySelectorAll('.ddl-mgr-filters.is-batch .cm-btn')].find((b) => b.textContent === '移动')?.click(); return true; })()`);
-      const batchMoved = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已把 2 条')`, 6000).catch(() => false);
-      check(batchMoved, "批量移动两条到新项目（一次落盘，0.38b）");
-      const ddlOnDisk3 = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
-      check(ddlOnDisk3.includes("## 批测批量项目"), "批量移动后库笔记出现 ## 批测批量项目 段落");
-    }
+    check(hlOk.kw, '抽屉语句关键字高亮（tokenizeSql 与悬浮卡同款，0.39 二轮）', JSON.stringify(hlOk));
+    check(drawerInfo.tags.some((t) => t.includes('测试项目B')), '抽屉预选当前标签（复用同一份 DDL 的起点）', drawerInfo.tags.join('|'));
+    await evaluate(ws, `(() => { const i = document.querySelector('.lib-page .cm-drawer-tag-input'); i.focus(); const set = ${nativeSet}; set(i, "批测标签C"); return true; })()`);
+    await sleep(150);
+    await key(ws, { mod: 0, key: 'Enter' }, 'Enter', 13);
+    const tagSaved = await waitFor(ws, `(document.querySelector('.lib-page .cm-toast')?.textContent ?? '').includes('标签')`, 6000).catch(() => false);
+    check(tagSaved, '抽屉内 Enter 添加标签 → 落盘提示（0.39）', await evaluate(ws, `document.querySelector('.lib-page .cm-toast')?.textContent ?? ''`));
+    await sleep(400);
+    const ddlDisk1 = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
+    check(/- @tags: 测试项目B, 批测标签C/.test(ddlDisk1), '标签行落盘 -- @tags: 测试项目B, 批测标签C（0.39）', ddlDisk1.match(/@tags:[^\n]*/g)?.join(' | ') ?? '');
+    // 抽屉里 × 移除刚加的标签
+    const removeTag = await evaluate(ws, `(() => { const tag = [...document.querySelectorAll('.lib-page .cm-drawer .cm-tag')].find((el) => el.textContent.includes('批测标签C')); tag?.querySelector('.cm-tag-x')?.click(); return !!tag; })()`);
+    const removed = await waitFor(ws, `![...document.querySelectorAll('.lib-page .cm-drawer .cm-tag')].some((el) => el.textContent.includes('批测标签C'))`, 4000).catch(() => false);
+    check(removeTag && removed, '抽屉内 × 移除标签（0.39）', await evaluate(ws, `document.querySelector('.lib-page .cm-toast')?.textContent ?? ''`));
+    await evaluate(ws, `document.querySelector('.lib-page .cm-drawer-head .cm-icon-btn')?.click()`);
+    await sleep(250);
+    // 行上「标签」按钮 = Inbox 同款行内输入框（0.39 二轮）
+    const rowTagInput = await evaluate(ws, `(() => {
+      const row = [...document.querySelectorAll('.lib-page .cm-row')].find((r) => r.textContent.includes('测试项目B'));
+      const btn = [...(row?.querySelectorAll('.cm-row-tool .cm-row-quick') ?? [])].find((b) => b.textContent.trim() === '标签');
+      btn?.click();
+      return !!document.querySelector('.lib-page .cm-row-tag-input');
+    })()`);
+    check(rowTagInput, '行上「标签」按钮出现行内输入框（对齐速记，0.39 二轮）');
+    await evaluate(ws, `(() => { const i = document.querySelector('.lib-page .cm-row-tag-input'); i.focus(); const set = ${nativeSet}; set(i, "批测行内标签"); return true; })()`);
+    await key(ws, { mod: 0, key: 'Enter' }, 'Enter', 13);
+    const rowTagSaved = await waitFor(ws, `(document.querySelector('.lib-page .cm-toast')?.textContent ?? '').includes('批测行内标签')`, 6000).catch(() => false);
+    check(rowTagSaved, '行内输入 Enter 添加标签 → 落盘（0.39 二轮）', await evaluate(ws, `document.querySelector('.lib-page .cm-toast')?.textContent ?? ''`));
+    await sleep(300);
+    const ddlDiskRow = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
+    check(/- @tags: .*批测行内标签/.test(ddlDiskRow), '行内标签落盘', ddlDiskRow.match(/@tags:[^\n]*/g)?.join(' | ') ?? '');
+    await sleep(250);
+    // 批量：勾选两条 → 批量栏（cm-toolbar.is-batch）→ 添加标签
+    await evaluate(ws, `(() => { const boxes = [...document.querySelectorAll('.lib-page .cm-row .cm-check')].filter((b) => !b.checked); boxes[0]?.click(); return true; })()`);
+    await sleep(150);
+    await evaluate(ws, `(() => { const boxes = [...document.querySelectorAll('.lib-page .cm-row .cm-check')].filter((b) => !b.checked); boxes[0]?.click(); return true; })()`);
+    await sleep(200);
+    const batchUp = await waitFor(ws, `(document.querySelector('.lib-page .cm-toolbar.is-batch')?.textContent ?? '').includes('已选择 2 条')`, 3000).catch(() => false);
+    check(batchUp, '勾选两条 → Inbox 同款批量栏（0.39）');
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-toolbar.is-batch .cm-btn')].find((b) => b.textContent.trim() === '添加标签')?.click(); return true; })()`);
+    await sleep(150);
+    const bulkInput = await waitFor(ws, `!!document.querySelector('.lib-page .cm-batch-tag-input')`, 2000).catch(() => false);
+    check(bulkInput, '批量栏「添加标签」原位输入（Inbox 同款，0.39）');
+    await evaluate(ws, `(() => { const i = document.querySelector('.lib-page .cm-batch-tag-input'); i.focus(); const set = ${nativeSet}; set(i, "批测批量标签"); return true; })()`);
+    await key(ws, { mod: 0, key: 'Enter' }, 'Enter', 13);
+    const bulkSaved = await waitFor(ws, `(document.querySelector('.lib-page .cm-toast')?.textContent ?? '').includes('添加标签')`, 6000).catch(() => false);
+    check(bulkSaved, '批量添加标签成功（0.39）', await evaluate(ws, `document.querySelector('.lib-page .cm-toast')?.textContent ?? ''`));
+    await sleep(300);
+    const ddlDisk2 = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
+    const tagLines = ddlDisk2.match(/@tags:[^\n]*/g) ?? [];
+    check(tagLines.filter((line) => line.includes('批测批量标签')).length === 2, '两条语句都写入批量标签（0.39）', tagLines.join(' | '));
+    check(ddlDisk2.includes('## 测试项目B') && !ddlDisk2.includes('## 批测批量项目'), '标签操作不搬动语句 / 段落（0.39）');
+    // Esc 回编辑器；Ctrl+Alt+K 再按开合
     await key(ws, { mod: 0, key: 'Escape' }, 'Escape', 27);
-    const editorBack = await waitFor(ws, `!document.querySelector('.editor-pane-notes.is-hidden') && !document.querySelector('.ddl-manager-page')`, 2500);
+    const editorBack = await waitFor(ws, `!document.querySelector('.editor-pane-notes.is-hidden') && !document.querySelector('.lib-page')`, 2500);
     check(editorBack, 'Esc 回编辑器（笔记区恢复、整页退场）');
     await key(ws, { mod: CTRL_ALT, key: 'k' }, 'KeyK', 75);
-    await waitFor(ws, `!!document.querySelector('.ddl-manager-page')`, 2500);
+    await waitFor(ws, `!!document.querySelector('.lib-page')`, 2500);
     await key(ws, { mod: CTRL_ALT, key: 'k' }, 'KeyK', 75);
-    const toggledOff = await waitFor(ws, `!document.querySelector('.ddl-manager-page')`, 2500);
+    const toggledOff = await waitFor(ws, `!document.querySelector('.lib-page')`, 2500);
     check(toggledOff, 'Ctrl+Alt+K 再按一次 = 回编辑器（toggle 语义）');
+  }
+
+  // ============================================== 6d. Excel 预览 + 列筛选（0.39 用户反馈）
+  {
+    await evaluate(ws, `(() => { const t = [...document.querySelectorAll('.tree-item')].find((el) => el.textContent.includes('qn31表格.xlsx')); t?.click(); return !!t; })()`);
+    const tableUp = await waitFor(ws, `document.querySelectorAll('.xlsx-table tbody tr').length >= 3`, 8000).catch(() => false);
+    check(tableUp, "xlsx 预览渲染成表格（0.39 结构化预览）", await evaluate(ws, `document.querySelectorAll('.xlsx-table tbody tr').length`));
+    const headText = await evaluate(ws, `[...document.querySelectorAll('.xlsx-table thead th')].map((th) => th.textContent.replace('▾', '').trim())`);
+    check(headText.join(",").includes("姓名") && headText.join(",").includes("部门"), "表头显示（姓名 / 部门）", headText.join("|"));
+    // 部门列 ▾ → 筛选面板
+    const filterBtn = await evaluate(ws, `(() => {
+      const ths = [...document.querySelectorAll('.xlsx-table thead th')];
+      const th = ths.find((el) => el.textContent.includes('部门'));
+      const b = th?.querySelector('.xlsx-filter-btn');
+      b?.click();
+      return !!b;
+    })()`);
+    await sleep(250);
+    const popUp = await waitFor(ws, `!!document.querySelector('.xlsx-filter-pop')`, 2000).catch(() => false);
+    check(filterBtn && popUp, "点表头 ▾ 打开列筛选面板（0.39）");
+    // 取消「财务」→ 应用 → 只剩研发两行
+    const uncheck = await evaluate(ws, `(() => {
+      const label = [...document.querySelectorAll('.xlsx-filter-pop .xlsx-filter-value')].find((el) => el.textContent.includes('财务'));
+      const box = label?.querySelector('input');
+      if (!box) return false;
+      box.click();
+      return true;
+    })()`);
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.xlsx-filter-pop button')].find((b) => b.textContent.trim() === '应用')?.click(); return true; })()`);
+    await sleep(300);
+    const after = await evaluate(ws, `({ rows: document.querySelectorAll('.xlsx-table tbody tr').length, chip: document.querySelector('.xlsx-filter-chip')?.textContent ?? '' })`);
+    check(uncheck && after.rows === 2 && after.chip.includes('部门'), "列筛选生效：财务行被过滤 + 出现筛选 chip（0.39）", JSON.stringify(after));
+    // 清除筛选恢复全部
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.xlsx-toolbar button')].find((b) => b.textContent.includes('清除筛选'))?.click(); return true; })()`);
+    await sleep(250);
+    const cleared = await evaluate(ws, `({ rows: document.querySelectorAll('.xlsx-table tbody tr').length, chips: document.querySelectorAll('.xlsx-filter-chip').length })`);
+    check(cleared.rows === 3 && cleared.chips === 0, "清除筛选恢复全部行（0.39）", JSON.stringify(cleared));
+    await key(ws, { mod: 0, key: 'Escape' }, 'Escape', 27);
+    await sleep(500);
   }
 
   // ============================================== 7. 阅读位置记忆

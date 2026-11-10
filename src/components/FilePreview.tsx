@@ -29,6 +29,8 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { readBinary, readNote } from "../lib/api";
 import { extOf, fileKindOf } from "../lib/fileTypes";
 import { isMobile } from "../lib/platform";
+import type { ParsedSheet } from "../lib/xlsxWorkerHost";
+import SpreadsheetPreview from "./SpreadsheetPreview";
 import { IconMinus, IconPlus, IconX } from "./icons";
 
 interface Props {
@@ -167,10 +169,9 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   const zoomKey = `${vault}/${path}`;
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  /** docx/xlsx 的 HTML 结果；PDF 走懒渲染画布，图片走 asset URL。 */
+  /** docx 的 HTML 结果；xlsx 走结构化行数据（0.39 列筛选）；PDF 走懒渲染画布，图片走 asset URL。 */
   const [html, setHtml] = useState<string | null>(null);
-  const [sheets, setSheets] = useState<{ name: string; html: string }[] | null>(null);
-  const [sheetIndex, setSheetIndex] = useState(0);
+  const [sheets, setSheets] = useState<ParsedSheet[] | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   /** 0.38.3 SVG 预览改 DOM 内联（消毒后）：`<img>` 展示 svg 时浏览器按固有
       尺寸光栅再降采样，窄面板下文字糊（用户反馈「mermaid 导出文件全屏清晰、
@@ -1046,19 +1047,12 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
         }
 
         if (kind === "spreadsheet") {
-          // 0.34.3 内存轮（M5 改动二）：解析搬进一次性 Worker，用完即 terminate
-          // ——SheetJS 的模块底数（~8–15MB）不再常驻主线程。DOMPurify 依赖
-          // DOM，消毒留在主线程。
+          // 0.39：Worker 返回二维显示字符串（不再走 sheet_to_html），主线程
+          // 自己渲染表格以支持列筛选。SheetJS 底数仍只在 Worker 里活着。
           const { parseXlsxInWorker } = await import("../lib/xlsxWorkerHost");
           const parsed = await parseXlsxInWorker(data.base64);
-          const list = parsed.map((sheet) => ({
-            name: sheet.name,
-            html: DOMPurify.sanitize(sheet.html),
-          }));
           if (cancelled) return;
-          setSheets(list);
-          setSheetIndex(0);
-          setHtml(list[0]?.html ?? "");
+          setSheets(parsed);
           setLoading(false);
           return;
         }
@@ -1270,28 +1264,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
           </div>
         )}
         {kind === "spreadsheet" && sheets && sheets.length > 0 && (
-          <div className="file-preview-xlsx">
-            {sheets.length > 1 && (
-              <div className="file-preview-sheets" role="tablist">
-                {sheets.map((sheet, index) => (
-                  <button
-                    key={sheet.name}
-                    type="button"
-                    role="tab"
-                    aria-selected={index === sheetIndex}
-                    className={`file-preview-sheet${index === sheetIndex ? " is-on" : ""}`}
-                    onClick={() => {
-                      setSheetIndex(index);
-                      setHtml(sheet.html);
-                    }}
-                  >
-                    {sheet.name}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="file-preview-sheet-body" dangerouslySetInnerHTML={{ __html: html ?? "" }} />
-          </div>
+          <SpreadsheetPreview sheets={sheets} />
         )}
       </div>
     </div>

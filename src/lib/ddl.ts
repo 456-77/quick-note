@@ -15,6 +15,19 @@
  * 全部语句落在这里，行为与单项目版完全一致）。同名表可以在不同项目里各存
  * 一份（悬浮弹窗里可切换）；同一项目内同名仍以最后一次出现为准。
  *
+ * ## 多标签（0.39 用户反馈「将移动归类到某个项目改成设置标签，因为多个项目
+ * 可能复用同一个 ddl」）
+ *
+ * 段落仍负责**物理分组**，语义归属改由语句上方一行的标签注释表达：
+ *
+ *     -- @tags: 运维, out
+ *     CREATE TABLE `t` (...);
+ *
+ * Java 实体用 `// @tags: …`（解析两种注释都认）。有标签行时它**覆盖**段落名
+ * （`-- @tags:` 空值 = 显式无标签），没有标签行时回落到段落名——老笔记/老
+ * 收录通道零迁移。一条语句可挂任意多个标签，多个项目复用同一份 DDL 不再需要
+ * 复制两份。
+ *
  * ## 纯函数
  *
  * 不碰 DOM、不碰 Tauri，Node 里直接断言（verify-all 的一节）。
@@ -26,6 +39,10 @@ const CREATE_RE =
 /** 库里的一条语句：project "" = 未分组（老笔记兼容）。 */
 export interface DdlEntry {
   project: string;
+  /** 生效的标签集（声明的 `@tags` 行；没有该行时=段落名；都没有=[]）。 */
+  tags: string[];
+  /** 收录时间（`@time` 行，"YYYY-MM-DD HH:mm"；老语句没有=undefined）。 */
+  time?: string;
   ddl: string;
 }
 
@@ -93,6 +110,222 @@ export function ddlProjectNames(text: string): string[] {
   return names;
 }
 
+// -------------------------------------------------------- 多标签 + 收录时间（0.39）
+
+/**
+ * 语句元数据行（0.39）：紧贴语句上方的 `-- @tags: A, B` 与 `-- @time:
+ * 2026-11-10 14:03`（Java 用 `//`；两种注释都认，避免语句被粘进另一种库时
+ * 丢失）。两种行组成一个**元数据块**，存在 `@tags` 时它覆盖段落名（空值 =
+ * 显式无标签），`@time` 是收录时间——速记有记录时间，语句库同样要有（0.39
+ * 用户反馈「目前 ddl 添加时没有设置时间，类似地给 ddl 也添加时间」）。
+ */
+const TAGS_LINE_RE = /^[ \t]*(?:--|\/\/)[ \t]*@tags[ \t]*:[ \t]*(.*?)[ \t]*$/;
+const TIME_LINE_RE = /^[ \t]*(?:--|\/\/)[ \t]*@time[ \t]*:[ \t]*(.*?)[ \t]*$/;
+
+/** 标签名去重（大小写不敏感，保留第一次出现的写法）+ 清掉换行/分隔符/前缀 #。 */
+function dedupeTags(tags: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of tags) {
+    const name = raw
+      .replace(/[\r\n,，、]+/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/^#+\s*/, "")
+      .trim();
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+/** 标签串 → 标签数组（`,` `，` `、` 分隔；去重；空串返回 []）。 */
+export function parseTagList(raw: string): string[] {
+  return dedupeTags(raw.split(/[,，、]/));
+}
+
+/** 写进笔记的标签行（空标签集写成 `-- @tags:` = 显式无标签）。 */
+export function tagsLineText(lang: "sql" | "java", tags: string[]): string {
+  const prefix = lang === "java" ? "//" : "--";
+  return tags.length > 0 ? `${prefix} @tags: ${tags.join(", ")}` : `${prefix} @tags:`;
+}
+
+/** 写进笔记的时间行。 */
+export function timeLineText(lang: "sql" | "java", time: string): string {
+  return `${lang === "java" ? "//" : "--"} @time: ${time}`;
+}
+
+/** 本地时间串（"YYYY-MM-DD HH:mm"，收录时间落盘用）。 */
+export function nowStamp(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
+}
+
+/** `@time` 串 → 本地时间戳（毫秒）；解析不了返回 0（老语句无时间）。 */
+export function entryTimeOf(time: string | undefined): number {
+  if (!time) return 0;
+  const hit = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(time.trim());
+  if (!hit) return 0;
+  const [, year, month, day, hour = "0", minute = "0"] = hit;
+  const ts = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+  ).getTime();
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+/** pos 所在行的行首下标。 */
+function lineStartAt(text: string, pos: number): number {
+  return text.lastIndexOf("\n", Math.max(0, pos - 1)) + 1;
+}
+
+/** 语句上方元数据块（@tags / @time 行，允许中间夹空行）。 */
+export interface StatementMeta {
+  /** 块区间 [start, end)（不含行尾换行；重写整块 / 随语句删除用）。 */
+  start: number;
+  end: number;
+  /** 是否有显式 @tags 行（没有 = 回落段落名）。 */
+  hasTags: boolean;
+  tags: string[];
+  /** @time 的值；没有/空值 = null。 */
+  time: string | null;
+}
+
+/**
+ * 语句上方（跳过至多 12 行空白）的元数据块。逐行向上收 `@tags`/`@time`，
+ * 碰到第一条其它内容就停——说明文字里偶然出现的 `@tags` 不参与归属。
+ */
+export function metaBlockAbove(text: string, at: number): StatementMeta | null {
+  const found: Array<{ start: number; end: number; kind: "tags" | "time"; value: string }> = [];
+  let cursor = lineStartAt(text, at);
+  for (let guard = 0; guard < 12; guard += 1) {
+    if (cursor <= 0) break;
+    const nl = cursor - 1; // 上一行行尾的 \n
+    // nl=0 时上一行就是文件第 1 行（可能为空行），不能再用 lastIndexOf 回退
+    const prevStart = nl === 0 ? 0 : text.lastIndexOf("\n", nl - 1) + 1;
+    const lineEnd = text[nl - 1] === "\r" ? nl - 1 : nl;
+    const line = text.slice(prevStart, lineEnd);
+    if (line.trim() === "") {
+      cursor = prevStart;
+      continue;
+    }
+    const tagsHit = TAGS_LINE_RE.exec(line);
+    const timeHit = TIME_LINE_RE.exec(line);
+    if (tagsHit) found.push({ start: prevStart, end: lineEnd, kind: "tags", value: tagsHit[1] });
+    else if (timeHit) found.push({ start: prevStart, end: lineEnd, kind: "time", value: timeHit[1] });
+    else break;
+    cursor = prevStart;
+  }
+  if (found.length === 0) return null;
+  const tagsLine = found.find((line) => line.kind === "tags");
+  const timeLine = found.find((line) => line.kind === "time");
+  return {
+    start: Math.min(...found.map((line) => line.start)),
+    end: Math.max(...found.map((line) => line.end)),
+    hasTags: Boolean(tagsLine),
+    tags: tagsLine ? parseTagList(tagsLine.value) : [],
+    time: timeLine ? timeLine.value.trim() || null : null,
+  };
+}
+
+/** 语句所在位置的行尾风格（插入元数据行时跟随文件）。 */
+function eolNear(text: string, at: number): string {
+  const nl = text.indexOf("\n", at);
+  if (nl > 0 && text[nl - 1] === "\r") return "\r\n";
+  return text.includes("\r\n") ? "\r\n" : "\n";
+}
+
+/**
+ * 给某条语句写标签（面板「设置标签」的落盘核心）。
+ *
+ * `mode="set"` 整组覆盖；`mode="add"` 与现有标签取并集（批量添加）。写入位置
+ * 是语句上方的元数据块，不碰语句正文；块里已有的 `@time` 原样保留。显式无
+ * 标签时：语句在未分组段落里就删掉标签行（保持干净），在具名段落里写空标签
+ * 行（覆盖段落名，否则会回落到段落）。调用方传入整篇笔记文本；找不到返回 null。
+ */
+export function setDdlEntryTags(
+  text: string,
+  table: string,
+  project = "",
+  tags: string[],
+  options: { mode?: "set" | "add"; lang?: "sql" | "java" } = {},
+): { text: string } | null {
+  const hit = locateDdlEntry(text, table, project);
+  if (!hit) return null;
+  return {
+    text: applyStatementTags(
+      text,
+      hit.from,
+      project,
+      tags,
+      options.lang ?? "sql",
+      options.mode ?? "set",
+    ),
+  };
+}
+
+/**
+ * 在语句起点 at 处应用标签编辑（DDL 与 Java 实体共用）。整块重写元数据区：
+ * 标签行在前、时间行在后，两次编辑不会互相冲掉。导出给 javaEntity.ts。
+ */
+export function applyStatementTags(
+  text: string,
+  at: number,
+  project: string,
+  tags: string[],
+  lang: "sql" | "java",
+  mode: "set" | "add" = "set",
+): string {
+  if (mode === "add" && tags.length === 0) return text;
+  const block = metaBlockAbove(text, at);
+  const base = block?.hasTags ? block.tags : project ? [project] : [];
+  const next = dedupeTags(mode === "add" ? [...base, ...tags] : tags);
+  const lines: string[] = [];
+  if (next.length > 0) lines.push(tagsLineText(lang, next));
+  else if (project !== "") lines.push(tagsLineText(lang, [])); // 具名段落清空 = 显式无标签
+  if (block?.time) lines.push(timeLineText(lang, block.time));
+  if (block) {
+    if (lines.length === 0) {
+      // 未分组 + 清空标签 + 无时间行：元数据块没有存在意义，整块连同换行删掉
+      let end = block.end;
+      if (text.startsWith("\r\n", end)) end += 2;
+      else if (text[end] === "\n") end += 1;
+      return text.slice(0, block.start) + text.slice(end);
+    }
+    const eol = text.startsWith("\r\n", block.end) ? "\r\n" : "\n";
+    return text.slice(0, block.start) + lines.join(eol) + text.slice(block.end);
+  }
+  // 没有元数据块：未分组的空标签 = 本来就没有，无需落盘
+  if (lines.length === 0) return text;
+  const start = lineStartAt(text, at);
+  const eol = eolNear(text, at);
+  return text.slice(0, start) + lines.join(eol) + eol + text.slice(start);
+}
+
+/** 一个库里出现过的全部标签（按出现顺序去重；面板筛选 chips / 收录候选用）。 */
+export function collectLibraryTags(lib: DdlLibrary): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entries of lib.values()) {
+    for (const entry of entries) {
+      for (const tag of entry.tags) {
+        const key = tag.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(tag);
+      }
+    }
+  }
+  return out;
+}
+
 
 /**
  * 语句结束分号的位置：跳过 `'...'` 字符串与 `--` 行注释里的分号（COMMENT
@@ -144,8 +377,12 @@ export function parseDdlTables(text: string): DdlLibrary {
     if (table && ddl) {
       const key = table.toLowerCase();
       const project = sectionProjectAt(sections, match.index);
+      // 0.39：显式 `@tags` 行覆盖段落名；没有该行的老笔记回落到 `## 项目`；
+      // `@time` 行带出收录时间
+      const meta = metaBlockAbove(text, match.index);
+      const tags = meta?.hasTags ? meta.tags : project ? [project] : [];
       const entries = (out.get(key) ?? []).filter((entry) => entry.project !== project);
-      entries.push({ project, ddl });
+      entries.push({ project, tags, time: meta?.time ?? undefined, ddl });
       out.set(key, entries);
     }
     // 消费掉语句体再继续扫（advance ≥ 匹配头部长度，游标永远向前）
@@ -192,6 +429,9 @@ export function nextStatementBoundary(text: string, from: number): number {
       }
       if (ch === "`" && text.startsWith("```", i)) return i - lead;
       if (CREATE_LINE_RE.test(text.slice(i, i + 32))) return i - lead;
+      // 0.39 元数据行也是硬边界：上一条无分号的残段不能把下一条的 `@tags`/
+      // `@time` 吞进自己的语句体（否则悬浮编辑保存会把注释行复制一份）
+      if (/^(?:--|\/\/)[ \t]*@(?:tags|time)\b/.test(text.slice(i, i + 32))) return i - lead;
       atLineStart = false;
       lead = 0;
       continue;
@@ -267,9 +507,16 @@ function tableAt(table: string, flags: string): RegExp {
  * 跳过字符串/注释；多张表从后往前替换，位置不漂移）；段落内没有的追加到该段
  * 落末尾（下一个 `##` 标题之前），项目不存在就在文末新建 `## 项目` 段落；
  * 未分组（project = ""）没有段落时追加到文末——与单项目版行为一致。
- * 用户自己的说明文字原样保留。返回新文本；无变化返回原串（调用方据此跳过写盘）。
+ * `opts.time` 给**新追加**的语句写 `@time` 收录时间行（0.39；替换旧语句不动
+ * 它原有的元数据块，收录时间保持第一次收录的时刻）。用户自己的说明文字原样
+ * 保留。返回新文本；无变化返回原串（调用方据此跳过写盘）。
  */
-export function mergeDdlIntoNote(existing: string, incoming: string, project = ""): string {
+export function mergeDdlIntoNote(
+  existing: string,
+  incoming: string,
+  project = "",
+  opts: { time?: string } = {},
+): string {
   const fresh = parseDdlTables(incoming);
   if (fresh.size === 0) return existing;
   // 收录弹窗选定的项目对整批生效；同表多次出现取最后一次（与旧约定一致）
@@ -302,7 +549,10 @@ export function mergeDdlIntoNote(existing: string, incoming: string, project = "
 
   const pending = [...batch].filter(([table]) => !replaced.has(table)).map(([, ddl]) => ddl);
   if (pending.length === 0) return text;
-  const block = pending.join("\n\n");
+  // 0.39：新追加的语句带 @time 收录时间行（每条一行，替换旧语句不带——保留原时间）
+  const block = pending
+    .map((ddl) => (opts.time ? `${timeLineText("sql", opts.time)}\n${ddl}` : ddl))
+    .join("\n\n");
   const targetNow = ddlSections(text).find((section) => section.project === project);
   if (targetNow) {
     // 插到目标段落末尾：段落边界收干净空白，新语句用 ```sql 围栏块垫进去
@@ -377,6 +627,9 @@ export function removeDdlEntry(
 ): { text: string; line: number } | null {
   const hit = locateDdlEntry(existing, table, project);
   if (!hit) return null;
+  // 0.39：语句上方的元数据块（@tags/@time）一并删除（否则留下孤立注释行）
+  const meta = metaBlockAbove(existing, hit.from);
+  const from = meta ? meta.start : hit.from;
   let end = hit.to;
   // 语句自己的行尾换行
   if (existing.startsWith("\r\n", end)) end += 2;
@@ -388,8 +641,8 @@ export function removeDdlEntry(
     if (lineEnd === end || existing.slice(end, lineEnd).trim() !== "") break;
     end = lineEnd;
   }
-  let text = existing.slice(0, hit.from) + existing.slice(end);
-  text = dropEmptyFence(text, hit.from);
+  let text = existing.slice(0, from) + existing.slice(end);
+  text = dropEmptyFence(text, from);
   return { text, line: hit.line };
 }
 

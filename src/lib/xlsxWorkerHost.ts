@@ -12,12 +12,9 @@
  */
 
 import XlsxWorker from "./xlsxWorker.ts?worker&inline";
+import type { ParsedSheet } from "./xlsxWorker.ts";
 
-export interface ParsedSheet {
-  name: string;
-  /** sheet_to_html 的原始输出（未消毒；主线程 DOMPurify.sanitize 后再用）。 */
-  html: string;
-}
+export type { ParsedSheet };
 
 /** 解析一个 xlsx/xls 字节流（base64）。任何失败都以 Error 抛出。 */
 export function parseXlsxInWorker(base64: string, timeoutMs = 30_000): Promise<ParsedSheet[]> {

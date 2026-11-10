@@ -96,7 +96,7 @@ import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
-import { ddlNoteIntro, ddlProjectNames, extractTableNames, locateDdlEntry, mergeDdlIntoNote, parseDdlTables, removeDdlEntry } from "./lib/ddl";
+import { collectLibraryTags, ddlNoteIntro, ddlProjectNames, extractTableNames, locateDdlEntry, mergeDdlIntoNote, nowStamp, parseDdlTables, removeDdlEntry, setDdlEntryTags } from "./lib/ddl";
 import {
   extractClassNames,
   javaNoteIntro,
@@ -104,6 +104,7 @@ import {
   mergeClassesIntoNote,
   parseClassLibrary,
   removeClassEntry,
+  setClassEntryTags,
 } from "./lib/javaEntity";
 import { closeDdlTip, installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
 import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
@@ -2735,7 +2736,14 @@ export default function App() {
         splitCtxRef.current.ddlTables = tables;
         splitCtxRef.current.javaClasses = classes;
       }
-      setDdlProjects(ddlProjectNames(ddlNote?.content ?? ""));
+      setDdlProjects(
+        // 0.39 多标签：收录弹窗的候选 = 段落名 ∪ 语句标签（标签也能直接作为新分组）
+        [...new Set([
+          ...ddlProjectNames(ddlNote?.content ?? ""),
+          ...collectLibraryTags(tables),
+          ...collectLibraryTags(classes),
+        ])].filter(Boolean),
+      );
     } catch {
       resourcesRef.current.ddlTables = new Map();
       resourcesRef.current.javaClasses = new Map();
@@ -2831,7 +2839,8 @@ export default function App() {
       const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
       const existing = await readNoteOptional(dir, path);
       const base = existing?.content ?? ddlNoteIntro();
-      const merged = mergeDdlIntoNote(base, ddlText, project);
+      // 0.39：新语句带 @time 收录时间行（速记有记录时间，语句库同样要有）
+      const merged = mergeDdlIntoNote(base, ddlText, project, { time: nowStamp() });
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
       // 0.38 用户实锤「明明设置了所属项目，为什么还是显示未分组」：库笔记开着
       // 标签时，落盘后的新文本不回写缓冲，随后的自动保存把旧缓冲整篇写回——
@@ -2854,7 +2863,7 @@ export default function App() {
       if (!path) throw new Error("实体库路径为空（设置 → 编辑 可配置）");
       const existing = await readNoteOptional(dir, path);
       const base = existing?.content ?? javaNoteIntro();
-      const merged = mergeClassesIntoNote(base, ddlText, project);
+      const merged = mergeClassesIntoNote(base, ddlText, project, { time: nowStamp() });
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
       // 同 saveDdlStatements：防自动保存把旧缓冲写回冲掉刚落的段落
       if (existing) syncLibraryNoteBuffers(path, existing.content, merged);
@@ -2932,91 +2941,57 @@ export default function App() {
     [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
 
-  /**
-   * 面板「移动到项目」（0.38 用户反馈「添加设置所属项目」）：先按收录同口径
-   * 在原段落里定位语句原文，删除通道原样移除，再走收录合并插进目标项目段落
-   * （merge 的「同项目内同名替换」正好覆盖目标段落已有同名的情况），一次落盘。
-   */
-  const moveLibraryEntry = useCallback(
-    async (kind: LibraryKind, name: string, fromProject: string, toProject: string) => {
-      if (fromProject === toProject) throw new Error("这条语句已经在这个项目里了");
-      const dir = vaultRef.current;
-      if (!dir) throw new Error("打开仓库后才能移动语句");
-      const path = libraryPathOf(kind);
-      const note = await readNoteOptional(dir, path);
-      if (!note) throw new Error(`库笔记「${path}」不存在`);
-      const located =
-        kind === "ddl"
-          ? locateDdlEntry(note.content, name, fromProject)
-          : locateClassEntry(note.content, name, fromProject);
-      if (!located) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
-      const statement = note.content.slice(located.from, located.to);
-      const removed =
-        kind === "ddl"
-          ? removeDdlEntry(note.content, name, fromProject)
-          : removeClassEntry(note.content, name, fromProject);
-      if (!removed) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
-      const merged =
-        kind === "ddl"
-          ? mergeDdlIntoNote(removed.text, statement, toProject)
-          : mergeClassesIntoNote(removed.text, statement, toProject);
-      await writeNote(dir, path, merged, note.hasBom);
-      syncLibraryNoteBuffers(path, note.content, merged);
-      await loadDdlLibrary(dir);
-      void refresh(dir);
-      return `已把「${name}」移动到${toProject ? `项目「${toProject}」` : "未分组"}`;
-    },
-    [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
-  );
-
-  /** 批量条目（0.38 语句库管理对齐 Inbox）：定位/删除按（名, 原项目）对。 */
+  /** 批量条目（0.39 语句库标签）：定位/删除按（名, 所在段落）对。 */
   type LibraryItemRef = { name: string; project: string };
 
   /**
-   * 批量移动到项目（0.38 用户反馈「语句库管理面板功能向速记管理面板对齐」——
-   * Inbox 有勾选批量栏，逐条移动 51 条不可接受）：一次读盘，逐条定位+摘除
-   * （串行在更新后的文本上找，位置互不影响），统一合并进目标段落，一次写盘 +
-   * 一次缓冲同步 + 一次悬浮库重载。移动会跳过「已经在目标项目」的条目。
+   * 语句库「设置标签」（0.39 用户反馈「将移动归类到某个项目改成设置标签，
+   * 因为多个项目可能复用同一个 ddl」）：不再搬动语句（旧「移动到项目」会整段
+   * 摘除再插进目标段落），只在语句上方写/改一行 `-- @tags: …`——一条语句可挂
+   * 多个项目标签，多个项目复用同一份 DDL 不必复制两份。mode="add" 是批量添加
+   * （对齐 Inbox 批量「添加标签」，与现有标签取并集、绝不误删）；"set" 是单条
+   * 整组覆盖（可清空）。一次读盘逐条改、一次写盘 + 一次缓冲同步 + 一次悬浮库重载。
    */
-  const batchMoveLibraryEntries = useCallback(
-    async (kind: LibraryKind, items: LibraryItemRef[], toProject: string) => {
+  const setLibraryTags = useCallback(
+    async (
+      kind: LibraryKind,
+      items: LibraryItemRef[],
+      tags: string[],
+      mode: "set" | "add" = "set",
+    ) => {
       const dir = vaultRef.current;
-      if (!dir) throw new Error("打开仓库后才能移动语句");
-      if (items.length === 0) throw new Error("先勾选要移动的语句");
+      if (!dir) throw new Error("打开仓库后才能修改标签");
+      if (items.length === 0) throw new Error("先勾选要修改的语句");
       const path = libraryPathOf(kind);
       const note = await readNoteOptional(dir, path);
       if (!note) throw new Error(`库笔记「${path}」不存在`);
       let text = note.content;
-      let moved = 0;
+      let changed = 0;
       for (const item of items) {
-        if (item.project === toProject) continue;
-        const located =
+        const next =
           kind === "ddl"
-            ? locateDdlEntry(text, item.name, item.project)
-            : locateClassEntry(text, item.name, item.project);
-        if (!located) continue;
-        const statement = text.slice(located.from, located.to);
-        const removed =
-          kind === "ddl"
-            ? removeDdlEntry(text, item.name, item.project)
-            : removeClassEntry(text, item.name, item.project);
-        if (!removed) continue;
-        text =
-          kind === "ddl"
-            ? mergeDdlIntoNote(removed.text, statement, toProject)
-            : mergeClassesIntoNote(removed.text, statement, toProject);
-        moved += 1;
+            ? setDdlEntryTags(text, item.name, item.project, tags, { mode })
+            : setClassEntryTags(text, item.name, item.project, tags, { mode });
+        if (!next || next.text === text) continue;
+        text = next.text;
+        changed += 1;
       }
-      if (moved === 0) {
+      if (changed === 0) {
         throw new Error(
-          items.length === 1 ? "这条语句已经在这个项目里了" : "选中的语句都已在目标项目里",
+          mode === "add"
+            ? items.length === 1
+              ? "这条语句已经有这些标签了"
+              : "选中的语句都已有这些标签"
+            : "标签没有变化",
         );
       }
       await writeNote(dir, path, text, note.hasBom);
       syncLibraryNoteBuffers(path, note.content, text);
       await loadDdlLibrary(dir);
       void refresh(dir);
-      return `已把 ${moved} 条语句移动到${toProject ? `项目「${toProject}」` : "未分组"}`;
+      return mode === "add"
+        ? `已给 ${changed} 条语句添加标签${tags.length ? `（${tags.join("、")}）` : ""}`
+        : `已更新 ${changed} 条语句的标签`;
     },
     [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
@@ -4043,6 +4018,34 @@ export default function App() {
       alive = false;
     };
   }, [vaultMenu]);
+
+  /**
+   * 仓库切换菜单里每个仓库的同步开关状态（0.39 用户反馈「添加一个状态显示
+   * 是否同步中，不然的话不清楚这些仓库是否支持同步」）：菜单打开时对可见的
+   * 最近仓库并行查一遍 enabledForVault（设备内存优先，查不到才读 per-vault
+   * 状态文件，开销小）；关闭即清空，下次打开重查。
+   */
+  const [vaultSyncMap, setVaultSyncMap] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!vaultMenu) {
+      setVaultSyncMap({});
+      return;
+    }
+    const targets = vaultRecents
+      .filter((p) => !vaultHiddenSet.has(p) && !(vault && sameVaultPath(p, vault)))
+      .slice(0, 8);
+    let alive = true;
+    void (async () => {
+      const entries = await Promise.all(
+        targets.map(async (p) => [p, await sync.enabledForVault(p).catch(() => false)] as const),
+      );
+      if (alive) setVaultSyncMap(Object.fromEntries(entries));
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [vaultMenu, vaultRecents]);
 
   /** 云端仓库是否已在本机：最近仓库里有同名目录（路径先归一成正斜杠再切），或
    * 本机同步状态里出现过同名 vaultName。 */
@@ -7198,9 +7201,12 @@ export default function App() {
         setHeadingMenu(null);
         return;
       }
-      // 语句库整页：Esc = 回编辑器
+      // 语句库整页：先让面板消费 Esc（关详情抽屉/菜单/批量态），不消费才回编辑器
+      // （0.39 面板整体改成 Inbox 形态后，抽屉与弹层自己的 Esc 优先级更高）
       if (libraryPageOpen) {
-        setLibraryPageOpen(false);
+        const esc = new CustomEvent("qn-library-esc", { cancelable: true });
+        window.dispatchEvent(esc);
+        if (!esc.defaultPrevented) setLibraryPageOpen(false);
         return;
       }
       if (captureManagerOpen) {
@@ -8314,26 +8320,42 @@ export default function App() {
             {vaultRecents
               .filter((p) => !vaultHiddenSet.has(p) && !(vault && sameVaultPath(p, vault)))
               .slice(0, 8)
-              .map((p) => (
-                // 0.38.3：行改容器（主按钮 + 行尾移除钮）——button 不能嵌 button
-                <div className="vault-menu-item" key={p}>
-                  <button type="button" title={p} onClick={() => openRecentVault(p)}>
-                    <IconLibrary size={13} />
-                    <span className="vault-menu-name">{vaultDisplayName(p)}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="vault-menu-remove"
-                    title="从列表移除（文件保留在磁盘）"
-                    onClick={() => hideRecentVault(p)}
-                  >
-                    <IconX size={12} />
-                  </button>
-                </div>
-              ))}
+              .map((p) => {
+                // 0.39 用户反馈「不清楚这些仓库是否支持同步」：行内同步状态徽标
+                const syncOn = vaultSyncMap[p];
+                return (
+                  <div className="vault-menu-item" key={p}>
+                    <button type="button" title={p} onClick={() => openRecentVault(p)}>
+                      <IconLibrary size={13} />
+                      <span className="vault-menu-name">{vaultDisplayName(p)}</span>
+                    </button>
+                    {syncOn !== undefined && (
+                      <span
+                        className={`vault-menu-sync${syncOn ? " is-on" : " is-off"}`}
+                        title={
+                          syncOn
+                            ? "此仓库已开启自动同步"
+                            : "此仓库未开启同步（设置 → 云同步 里可按仓库开启）"
+                        }
+                      >
+                        <i aria-hidden />
+                        {syncOn ? "同步中" : "未同步"}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className="vault-menu-remove"
+                      title="从列表移除（文件保留在磁盘）"
+                      onClick={() => hideRecentVault(p)}
+                    >
+                      <IconX size={12} />
+                    </button>
+                  </div>
+                );
+              })}
             {/* 服务器仓库（0.32.2）：云端可同步仓库一键落地/打开 */}
             <div className="vault-menu-sep" />
-            <div className="vault-menu-caption">服务器仓库</div>
+            <div className="vault-menu-caption">服务器仓库（落地到本机后可开启同步）</div>
             {!sync.config.serverUrl || !sync.config.username || !sync.config.password ? (
               <button
                 type="button"
@@ -9551,18 +9573,19 @@ export default function App() {
           {/* 语句库管理整页（0.35.3 四轮反馈：速记管理同款形态，不占标签外壳） */}
           {libraryPageOpen && vault && (
             <LibraryManagerDialog
-              variant="page"
               tables={resourcesRef.current.ddlTables ?? new Map()}
               classes={resourcesRef.current.javaClasses ?? new Map()}
-              projects={ddlProjects}
               ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
               javaPath={getSettings().javaEntityFilePath.trim()}
               onClose={() => setLibraryPageOpen(false)}
               onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
               onDelete={deleteLibraryEntry}
-              onMove={moveLibraryEntry}
-              onBatchMove={batchMoveLibraryEntries}
+              onSetTags={setLibraryTags}
               onBatchDelete={batchDeleteLibraryEntries}
+              onRefresh={() => {
+                const dir = vaultRef.current;
+                if (dir) void loadDdlLibrary(dir);
+              }}
               onOpenNote={(kind) => {
                 setLibraryPageOpen(false);
                 void openNoteAt(

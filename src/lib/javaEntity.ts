@@ -21,7 +21,16 @@
  * 不碰 DOM、不碰 Tauri，Node 里直接断言（verify-all 的一节）。
  */
 
-import { ddlSections, dropEmptyFence, sectionProjectAt, type DdlEntry, type DdlLibrary } from "./ddl.ts";
+import {
+  applyStatementTags,
+  ddlSections,
+  dropEmptyFence,
+  metaBlockAbove,
+  sectionProjectAt,
+  timeLineText,
+  type DdlEntry,
+  type DdlLibrary,
+} from "./ddl.ts";
 
 const CLASS_RE =
   /(?:^|\n)[ \t]*(?:(?:public|protected|private|static|final|abstract|sealed)\s+)*(?:class|interface|enum|record)[ \t]+([A-Za-z_$][A-Za-z0-9_$]*)/g;
@@ -62,8 +71,11 @@ export function parseClassLibrary(text: string): ClassLibrary {
     if (name && code) {
       const key = name;
       const project = sectionProjectAt(sections, lineStart);
+      // 0.39 多标签 + 收录时间：类声明上方的 `// @tags:` / `// @time:` 元数据块
+      const meta = metaBlockAbove(text, lineStart);
+      const tags = meta?.hasTags ? meta.tags : project ? [project] : [];
       const entries = (out.get(key) ?? []).filter((entry) => entry.project !== project);
-      entries.push({ project, ddl: code });
+      entries.push({ project, tags, time: meta?.time ?? undefined, ddl: code });
       out.set(key, entries);
     }
     // 游标永远向前：从声明行首起消费整个类体
@@ -124,9 +136,9 @@ function classSpan(text: string): { cut: number; advance: number } {
   return { cut, advance: Math.max(cut, 1) };
 }
 
-/** 下一个硬边界（类声明行首或 ``` 围栏行首）的绝对下标；找不到 -1。 */
+/** 下一个硬边界（类声明行首、``` 围栏行首或 `@tags`/`@time` 元数据行）的绝对下标；找不到 -1。 */
 function nextClassBoundary(text: string): number {
-  const re = /^[ \t]*(?:(?:public|protected|private|static|final|abstract|sealed)\s+)*(?:class|interface|enum|record)\b|^[ \t]*```/gm;
+  const re = /^[ \t]*(?:(?:public|protected|private|static|final|abstract|sealed)\s+)*(?:class|interface|enum|record)\b|^[ \t]*```|^[ \t]*(?:--|\/\/)[ \t]*@(?:tags|time)\b/gm;
   re.lastIndex = 1; // 跳过自己这个声明的行首（从第 1 个字符起找）
   const at = re.exec(text);
   return at ? at.index : -1;
@@ -167,8 +179,14 @@ function classAt(name: string, flags: string): RegExp {
  * 把新的一批类源码合进实体库笔记（弹窗「收录」用）。策略与 mergeDdlIntoNote
  * 完全同构：目标项目段落内同名类整段替换；段落内没有的插到段落末尾；
  * 项目不存在就在文末新建 `## 项目` 段落；未分组无段落时追加文末。
+ * `opts.time` 给**新追加**的类写 `@time` 收录时间行（替换旧类不动原元数据块）。
  */
-export function mergeClassesIntoNote(existing: string, incoming: string, project = ""): string {
+export function mergeClassesIntoNote(
+  existing: string,
+  incoming: string,
+  project = "",
+  opts: { time?: string } = {},
+): string {
   const fresh = parseClassLibrary(incoming);
   if (fresh.size === 0) return existing;
   const batch = new Map<string, string>();
@@ -204,7 +222,10 @@ export function mergeClassesIntoNote(existing: string, incoming: string, project
 
   const pending = [...batch].filter(([name]) => !replaced.has(name)).map(([, ddl]) => ddl);
   if (pending.length === 0) return text;
-  const block = pending.join("\n\n");
+  // 0.39：新追加的类带 @time 收录时间行（每类一行；替换旧类保留原时间）
+  const block = pending
+    .map((ddl) => (opts.time ? `${timeLineText("java", opts.time)}\n${ddl}` : ddl))
+    .join("\n\n");
   const targetNow = ddlSections(text).find((section) => section.project === project);
   if (targetNow) {
     const insert = `\n\n\`\`\`java\n${block}\n\`\`\`\n`;
@@ -262,6 +283,9 @@ export function removeClassEntry(
 ): { text: string; line: number } | null {
   const hit = locateClassEntry(existing, name, project);
   if (!hit) return null;
+  // 0.39：元数据块（@tags/@time）一并删除（同 removeDdlEntry）
+  const meta = metaBlockAbove(existing, hit.from);
+  const from = meta ? meta.start : hit.from;
   let end = hit.to;
   if (existing.startsWith("\r\n", end)) end += 2;
   else if (existing[end] === "\n") end += 1;
@@ -271,9 +295,31 @@ export function removeClassEntry(
     if (lineEnd === end || existing.slice(end, lineEnd).trim() !== "") break;
     end = lineEnd;
   }
-  let text = existing.slice(0, hit.from) + existing.slice(end);
-  text = dropEmptyFence(text, hit.from);
+  let text = existing.slice(0, from) + existing.slice(end);
+  text = dropEmptyFence(text, from);
   return { text, line: hit.line };
+}
+
+/** 给某个类定义写标签（0.39；面板「设置标签」用，同 setDdlEntryTags）。 */
+export function setClassEntryTags(
+  text: string,
+  name: string,
+  project = "",
+  tags: string[],
+  options: { mode?: "set" | "add" } = {},
+): { text: string } | null {
+  const hit = locateClassEntry(text, name, project);
+  if (!hit) return null;
+  return {
+    text: applyStatementTags(
+      text,
+      hit.from,
+      project,
+      tags,
+      "java",
+      options.mode ?? "set",
+    ),
+  };
 }
 
 /** pos 之前的换行数（0 基行号）。 */

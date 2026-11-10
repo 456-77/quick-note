@@ -125,9 +125,11 @@ export default function DdlDialog({
           }}
         />
         <div className="ddl-project-row">
-          <label>项目</label>
+          <label>项目 / 标签</label>
           {/* 0.38 用户反馈「下拉框风格要对齐软件」：原生 datalist 是浏览器控件
-              （深色主题里泛白突兀），换 ComboInput 自定义候选列表 */}
+              （深色主题里泛白突兀），换 ComboInput 自定义候选列表。
+              0.39 起项目段落名同时是语句的默认标签；多项目复用同一语句可在
+              管理面板（Ctrl+Alt+K）里追加多个标签。 */}
           <ComboInput
             inputRef={projectRef}
             ariaLabel="所属项目"
@@ -135,7 +137,7 @@ export default function DdlDialog({
             onChange={setProject}
             suggestions={projects.filter((name) => name !== "")}
             placeholder="留空 = 默认（未分组）"
-            title="语句归入该项目段落（## 项目名）；同名表/类只在同项目内替换，多项目可各存一份"
+            title="语句归入该项目段落（## 项目名），段落名同时作为默认标签；多项目复用可在管理面板追加标签"
           />
         </div>
         <div className="quick-capture-help">

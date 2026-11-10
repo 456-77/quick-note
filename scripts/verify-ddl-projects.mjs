@@ -3,15 +3,26 @@
 // 段落内替换与段落末尾追加、新项目段落落盘。跑法：node --experimental-strip-types。
 
 import {
+  collectLibraryTags,
   ddlSections,
   ddlProjectNames,
+  entryTimeOf,
   parseDdlTables,
+  parseTagList,
   mergeDdlIntoNote,
+  nowStamp,
+  setDdlEntryTags,
   tableCommentOf,
   removeDdlEntry,
   locateDdlEntry,
 } from "../src/lib/ddl.ts";
-import { parseClassLibrary, mergeClassesIntoNote, extractClassNames } from "../src/lib/javaEntity.ts";
+import {
+  parseClassLibrary,
+  mergeClassesIntoNote,
+  extractClassNames,
+  removeClassEntry,
+  setClassEntryTags,
+} from "../src/lib/javaEntity.ts";
 
 const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); process.exit(1); } };
 
@@ -254,7 +265,7 @@ const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); proces
 
 console.log("DDL/实体多项目断言全部通过");
 
-// ---------------- 表级 COMMENT 与「移动到项目」（0.38 用户反馈批） ----------------
+// ---------------- 表级 COMMENT 与定位/删除/合并链（0.38 用户反馈批） ----------------
 {
   // 表级 COMMENT：弹窗标题旁要展示表的作用说明（取末括号后的表选项区）
   const withComment = "CREATE TABLE `t` (\n  `id` bigint NOT NULL COMMENT '主键',\n  `name` varchar(30) COMMENT '名称''含引号''的'\n) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='费用项目定义表';";
@@ -266,7 +277,8 @@ console.log("DDL/实体多项目断言全部通过");
   const escaped = "CREATE TABLE `t` (\n `a` int\n) COMMENT='it''s a test';";
   assert(tableCommentOf(escaped) === "it's a test", "COMMENT 的 '' 还原成单引号", String(tableCommentOf(escaped)));
 
-  // 移动到项目 = 原段落定位 + 删除 + 目标段落合并（App.moveLibraryEntry 的纯函数链）
+  // 定位 + 删除 + 合并链（0.39 面板已把「移动到项目」换成标签，但这套纯函数
+  // 仍是收录/删除/悬浮编辑共用的落盘基础：跨段落定位、整段摘除、合并回写）
   const lib0 = "```sql\nCREATE TABLE `a` (x int);\nCREATE TABLE `b` (y int);\n```\n\n## 海亮\n\n```sql\nCREATE TABLE `c` (z int);\n```\n";
   const located = locateDdlEntry(lib0, "a", "");
   assert(located !== null, "未分组段落定位到 a");
@@ -283,3 +295,119 @@ console.log("DDL/实体多项目断言全部通过");
   assert(movedA?.project === "海亮", "a 落进海亮段落", JSON.stringify([...movedLib.keys()]));
   assert(moved.includes("## 海亮") && moved.indexOf("CREATE TABLE `a`") > moved.indexOf("## 海亮"), "a 语句位于海亮段落内");
 }
+
+// ---------------- 多标签（0.39 用户反馈「将移动归类到某个项目改成设置标签」） ----------------
+{
+  assert(parseTagList("运维, out，运维、third").join(",") === "运维,out,third", "标签串解析：中英文逗号/顿号 + 去重");
+
+  // 老笔记没有 @tags 行 → 回落段落名；显式标签行覆盖段落名
+  const legacy = "## 海亮\n```sql\nCREATE TABLE `users` (id bigint);\n```\n";
+  const legacyEntry = parseDdlTables(legacy).get("users")[0];
+  assert(legacyEntry.project === "海亮", "段落名仍是物理分组");
+  assert(legacyEntry.tags.join(",") === "海亮", "无 @tags 行回落段落名（零迁移）");
+
+  const both = [
+    "## 海亮",
+    "```sql",
+    "-- @tags: 运维, out, 运维",
+    "CREATE TABLE `users` (id bigint);",
+    "// @tags: A、B",
+    "CREATE TABLE `t2` (y int);",
+    "```",
+  ].join("\n");
+  const bothLib = parseDdlTables(both);
+  assert(bothLib.get("users")[0].tags.join(",") === "运维,out", "DDL 标签行解析 + 去重", JSON.stringify(bothLib.get("users")[0].tags));
+  assert(bothLib.get("t2")[0].tags.join(",") === "A,B", "`// @tags:` 也认、顿号分隔", JSON.stringify(bothLib.get("t2")[0].tags));
+  assert(collectLibraryTags(bothLib).join(",") === "运维,out,A,B", "库内标签顺序去重", collectLibraryTags(bothLib).join(","));
+
+  // 写标签：未分组插入标签行、add 并集、set 覆盖
+  const base = "```sql\nCREATE TABLE `t` (x int);\n```\n";
+  let res = setDdlEntryTags(base, "t", "", ["运维", "out"]);
+  assert(res && res.text.includes("-- @tags: 运维, out\nCREATE TABLE"), "未分组插入标签行", res?.text);
+  assert(parseDdlTables(res.text).get("t")[0].tags.join(",") === "运维,out", "标签行解析回读");
+  res = setDdlEntryTags(res.text, "t", "", ["新项目"], { mode: "add" });
+  assert(parseDdlTables(res.text).get("t")[0].tags.join(",") === "运维,out,新项目", "add 模式取并集");
+  res = setDdlEntryTags(res.text, "t", "", ["仅此一个"]);
+  assert(parseDdlTables(res.text).get("t")[0].tags.join(",") === "仅此一个", "set 模式整组覆盖");
+  res = setDdlEntryTags(res.text, "t", "", []);
+  assert(!res.text.includes("@tags"), "未分组清空标签 → 标签行整行删除", res.text);
+  assert(parseDdlTables(res.text).get("t")[0].tags.length === 0, "清空后无标签");
+
+  // 具名段落里清空 = 写空标签行（否则会回落到段落名）
+  const named = "## 海亮\n```sql\nCREATE TABLE `t` (x int);\n```\n";
+  const cleared = setDdlEntryTags(named, "t", "海亮", []);
+  assert(cleared.text.includes("-- @tags:\n"), "具名段落清空 → 空标签行覆盖段落名", cleared.text);
+  assert(parseDdlTables(cleared.text).get("t")[0].tags.length === 0, "空标签行 = 显式无标签");
+
+  // 无分号残段不能吞掉下一条语句的标签行（0.39：标签行也是硬边界）
+  const unclosed = "```sql\nCREATE TABLE `a` (x int\n-- @tags: B\nCREATE TABLE `b` (y int);\n```\n";
+  const unclosedLib = parseDdlTables(unclosed);
+  assert(!(unclosedLib.get("a")?.[0]?.ddl ?? "").includes("@tags"), "无分号残段不吞下一条的标签行", unclosedLib.get("a")?.[0]?.ddl);
+  assert((unclosedLib.get("b")?.[0]?.tags ?? []).join(",") === "B", "下一条语句的标签照常解析");
+
+  // 删除语句连带删标签行；CRLF 文件中插入的标签行跟随 CRLF
+  const tagged = "```sql\n-- @tags: A, B\nCREATE TABLE `t` (x int);\nCREATE TABLE `u` (y int);\n```\n";
+  const removedTagged = removeDdlEntry(tagged, "t", "");
+  assert(removedTagged && !removedTagged.text.includes("@tags"), "删除语句连带删标签行", removedTagged?.text);
+  assert(removedTagged.text.includes("CREATE TABLE `u`"), "其它语句保留");
+  const crlf = "```sql\r\nCREATE TABLE `t` (x int);\r\n```\r\n";
+  const crlfTagged = setDdlEntryTags(crlf, "t", "", ["A"]).text;
+  assert(crlfTagged.includes("-- @tags: A\r\nCREATE TABLE"), "CRLF 文件插入标签行不混行尾", JSON.stringify(crlfTagged));
+
+  // Java 实体同构：解析 / 写 / 删
+  const jn = "## 海亮\n```java\n// @tags: A, B\npublic class Foo { int x; }\n```\n";
+  assert(parseClassLibrary(jn).get("Foo")[0].tags.join(",") === "A,B", "Java 实体标签解析");
+  const jSet = setClassEntryTags(jn, "Foo", "海亮", ["C"]);
+  assert(parseClassLibrary(jSet.text).get("Foo")[0].tags.join(",") === "C", "Java set 标签落盘");
+  const jRm = removeClassEntry(jSet.text, "Foo", "海亮");
+  assert(jRm && !jRm.text.includes("@tags"), "Java 删除连带标签行", jRm?.text);
+}
+
+// ---------------- 收录时间（0.39 二轮「ddl 也添加时间」） ----------------
+{
+  assert(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(nowStamp()), "nowStamp 格式 YYYY-MM-DD HH:mm", nowStamp());
+  assert(entryTimeOf("2026-11-10 14:03") === new Date(2026, 10, 10, 14, 3).getTime(), "entryTimeOf 解析本地时间");
+  assert(entryTimeOf("2026-11-10") === new Date(2026, 10, 10).getTime(), "entryTimeOf 兼容纯日期");
+  assert(entryTimeOf(undefined) === 0 && entryTimeOf("垃圾") === 0, "无时间/坏串 → 0");
+
+  // 收录（merge）给新语句写 @time 行；替换旧语句不动它原有的时间
+  const merged = mergeDdlIntoNote(
+    "```sql\nCREATE TABLE `a` (x int);\n```\n",
+    "CREATE TABLE `a` (y int);\nCREATE TABLE `b` (z int);",
+    "",
+    { time: "2026-11-10 14:03" },
+  );
+  const lib = parseDdlTables(merged);
+  assert((lib.get("a")?.[0]?.time ?? "") === "", "替换旧语句保留原时间（无时间→仍无）", lib.get("a")?.[0]?.time);
+  const bEntry = lib.get("b")?.[0];
+  assert(bEntry?.time === "2026-11-10 14:03", "新追加语句带 @time", bEntry?.time);
+  assert(/@time: 2026-11-10 14:03\nCREATE TABLE `b`/.test(merged), "时间行紧贴语句上方", merged);
+
+  // 有 @time 的语句：解析带出时间；设置标签时时间行保留（标签在前、时间在后）
+  const tagged = mergeDdlIntoNote("", "CREATE TABLE `t` (x int);", "", { time: "2026-11-10 09:00" });
+  const res2 = setDdlEntryTags(tagged, "t", "", ["运维"]);
+  const tEntry = parseDdlTables(res2.text).get("t")?.[0];
+  assert(tEntry?.time === "2026-11-10 09:00", "设置标签不丢时间", JSON.stringify(tEntry));
+  assert(/- @tags: 运维\n-- @time: 2026-11-10 09:00\nCREATE TABLE/.test(res2.text), "标签行在前、时间行在后", res2.text);
+  // 清空标签：时间行保留、标签行删掉
+  const cleared2 = setDdlEntryTags(res2.text, "t", "", []);
+  assert(!cleared2.text.includes("@tags") && cleared2.text.includes("@time"), "未分组清空标签保留时间行", cleared2.text);
+
+  // 删除语句连带整块元数据（@tags + @time）
+  const both = "```sql\n-- @tags: A\n-- @time: 2026-11-10 09:00\nCREATE TABLE `t` (x int);\nCREATE TABLE `u` (y int);\n```\n";
+  const rmBoth = removeDdlEntry(both, "t", "");
+  assert(rmBoth && !rmBoth.text.includes("@tags") && !rmBoth.text.includes("@time"), "删除连带 @tags/@time", rmBoth?.text);
+  assert(rmBoth.text.includes("CREATE TABLE `u`"), "其它语句保留");
+  // 无分号残段不吞下一条的时间行
+  const unclosed2 = "```sql\nCREATE TABLE `a` (x int\n-- @time: 2026-11-10 08:00\nCREATE TABLE `b` (y int);\n```\n";
+  assert(!(parseDdlTables(unclosed2).get("a")?.[0]?.ddl ?? "").includes("@time"), "残段不吞时间行");
+
+  // Java 实体同构
+  const jMerged = mergeClassesIntoNote("", "public class Foo { int x; }", "", { time: "2026-11-10 10:00" });
+  const jEntry = parseClassLibrary(jMerged).get("Foo")?.[0];
+  assert(jEntry?.time === "2026-11-10 10:00", "Java 收录带时间", JSON.stringify(jEntry));
+  const jTag = setClassEntryTags(jMerged, "Foo", "", ["A"]);
+  assert(parseClassLibrary(jTag.text).get("Foo")?.[0]?.time === "2026-11-10 10:00", "Java 设置标签保留时间");
+}
+
+console.log("多标签断言全部通过");
