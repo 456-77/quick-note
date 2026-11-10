@@ -153,8 +153,14 @@ fn send_once(
         .collect();
 
     let mut response = response;
+    // ureq 的 read_to_vec 默认 10MB 上限（防内存耗尽），同步附件里的大日志文件
+    // 轻松超过——0.39 用户反馈「文件太大时客户端拉取会失败，daily-sync 是支持
+    // 大文件的」。上限提到 200MB：仍兜底防失控响应，同时远超真实附件量级；
+    // 再大的文件应走分块，别回调小。
     let bytes = response
         .body_mut()
+        .with_config()
+        .limit(200 * 1024 * 1024)
         .read_to_vec()
         .map_err(|e| format!("读取响应失败: {e}"))?;
 

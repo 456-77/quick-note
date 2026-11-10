@@ -23,6 +23,9 @@ export const TEXT_EXTS = new Set([
   "txt", "json", "jsonc", "sql", "yaml", "yml", "toml", "ini", "cfg", "conf",
   "xml", "css", "js", "mjs", "ts", "jsx", "tsx", "py", "java", "rs", "go",
   "sh", "bat", "ps1",
+  // 0.39 用户反馈「添加对 .log/.jsonl 文件的阅读和编辑支持，日志文件经常变化」：
+  // 日志/行式 JSON 进编辑器（纯文本源码态），配合外部改动跟随实现实时刷新
+  "log", "jsonl",
 ]);
 
 /** 预览类扩展名：点击打开预览窗格而非编辑器（图片/HTML/文档/幻灯片）。 */

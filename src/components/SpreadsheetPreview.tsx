@@ -163,6 +163,8 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
     maxHeight: number;
   } | null>(null);
   const popRef = useRef<HTMLDivElement | null>(null);
+  /** 表格容器：筛选 chips 打开时用它找对应列头做锚点。 */
+  const bodyWrapRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setFilters({});
@@ -170,14 +172,19 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
     setPop(null);
   }, [sheetIndex]);
 
-  // 点面板外 / 滚动预览（表格或页面）都收起筛选面板；面板内点击不算
+  // 点面板外收起；滚动预览（表格或页面）也收起——但**弹窗内部滚值列表不算**
+  // （0.39 用户反馈「鼠标聚焦在弹窗上滚动滚轮，弹窗会消失」：捕获阶段的
+  // scroll 事件对任何滚动元素都触发，弹窗自己的值列表滚动被误判成页面滚动）
   useEffect(() => {
     if (!pop) return;
     const onDown = (event: MouseEvent) => {
       if (popRef.current?.contains(event.target as Node)) return;
       setPop(null);
     };
-    const onScroll = () => setPop(null);
+    const onScroll = (event: Event) => {
+      if (popRef.current?.contains(event.target as Node)) return;
+      setPop(null);
+    };
     window.addEventListener("mousedown", onDown);
     window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", onScroll);
@@ -216,7 +223,11 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
     }
     const rect = anchor.getBoundingClientRect();
     const width = Math.min(320, Math.max(230, window.innerWidth - 16));
-    const left = Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8));
+    // 0.39 用户反馈「优化弹窗出现的位置」：弹窗**中心对齐锚点中心**再夹进视口
+    // （此前锚右缘对齐，靠左的列/筛选 chips 会把弹窗推到屏幕外）；筛选 chips
+    // 打开时也锚到对应列头（见 onClick），不再浮在工具栏旁
+    const centered = rect.left + rect.width / 2 - width / 2;
+    const left = Math.max(8, Math.min(centered, window.innerWidth - width - 8));
     const below = window.innerHeight - rect.bottom - 12;
     const above = rect.top - 12;
     const up = below < 240 && above > below;
@@ -269,7 +280,14 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
             type="button"
             className="xlsx-filter-chip"
             title={`编辑「${headerLabel(col)}」的筛选`}
-            onClick={(event) => openPop(col, event.currentTarget)}
+            onClick={(event) => {
+              // 0.39 用户反馈「优化弹窗出现的位置」：从 chips 打开也锚到对应列头
+              const th = bodyWrapRef.current
+                ?.querySelector("thead")
+                ?.children[col] as HTMLElement | null;
+              const btn = (th?.querySelector(".xlsx-filter-btn") ?? th) as HTMLElement | null;
+              openPop(col, btn ?? event.currentTarget);
+            }}
           >
             {headerLabel(col)}:{" "}
             {filters[col].length === 1 ? displayValue(filters[col][0]) : `${filters[col].length} 个值`}
@@ -300,7 +318,7 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
       {header.length === 0 ? (
         <div className="xlsx-empty">这个工作表是空的</div>
       ) : (
-        <div className="file-preview-sheet-body">
+        <div className="file-preview-sheet-body" ref={bodyWrapRef}>
           <table className="xlsx-table">
             <thead>
               <tr>

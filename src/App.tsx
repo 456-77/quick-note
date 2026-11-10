@@ -3532,7 +3532,20 @@ export default function App() {
         return;
       }
 
+      // 0.39 用户反馈「.log 要支持实时更新，日志文件经常变化」：采纳前记住滚动
+      // 状态——原来停在底部就贴回底部（tail 观感），否则保持原滚动位置
+      const view = viewRef.current;
+      const scroller = view?.scrollDOM;
+      const wasAtBottom = scroller
+        ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 8
+        : false;
+      const top = scroller?.scrollTop ?? 0;
       adoptFromDisk(fresh);
+      const scrollerNow = viewRef.current?.scrollDOM;
+      if (scrollerNow) {
+        if (wasAtBottom) scrollerNow.scrollTop = scrollerNow.scrollHeight;
+        else scrollerNow.scrollTop = Math.min(top, scrollerNow.scrollHeight);
+      }
       setStatus("已跟随外部改动");
     },
     [vault, scheduleRefresh, adoptFromDisk],
