@@ -85,6 +85,12 @@ class MainActivity : TauriActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    // 0.39.1 用户反馈「下载完没装的安装包要保留一段时间，超期自动删除」：
+    // 更新包保留 3 天——期间再次点更新命中同大小包就免重下直接装；超期清理。
+    File(filesDir, "update").takeIf { it.isDirectory }?.let { dir ->
+      val cutoff = System.currentTimeMillis() - 3L * 24 * 60 * 60 * 1000
+      dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
+    }
     captureShare(intent)
     // window 背景取主题的 windowBackground——edge-to-edge 下系统栏透明，
     // 透出应用配色而不是刺眼白色
@@ -383,9 +389,19 @@ class MainActivity : TauriActivity() {
       Thread {
         try {
           val dir = File(filesDir, "update").apply { mkdirs() }
-          // 清旧包：只保留本次下载
-          dir.listFiles()?.forEach { it.delete() }
           val dest = File(dir, "quick-note-update.apk")
+          // 0.39.1 用户反馈「下载完没装的话安装包会被自动删掉，不可能一直等在页面」：
+          // 已下载完成且与服务器当前包**同大小**的，直接复用拉起安装器（免重下，
+          // 秒进安装页）；半包（比服务器小）留给断点续传；只有等不了大小校验的
+          // 残留才清掉。老包的保留期清理在启动时做（见 cleanupStaleUpdateApk）。
+          if (dest.exists() && dest.length() > 0L) {
+            val remoteLen = headContentLength(url)
+            if (remoteLen != null && remoteLen == dest.length()) {
+              mainHandler.post { launchInstaller(webView, dest) }
+              return@Thread
+            }
+          }
+          dir.listFiles()?.forEach { if (it != dest) it.delete() }
           var lastError: IOException? = null
           var attempts = 0
           while (attempts < 3) {
@@ -418,26 +434,50 @@ class MainActivity : TauriActivity() {
             return@Thread
           }
           mainHandler.post {
-            try {
-              val uri: Uri = FileProvider.getUriForFile(
-                this@MainActivity,
-                "$packageName.fileprovider",
-                dest
-              )
-              val install = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-              }
-              startActivity(install)
-              notifyUpdateDone(webView, true, "已开始安装")
-            } catch (e: Exception) {
-              notifyUpdateDone(webView, false, "拉起安装器失败：${e.message}")
-            }
+            launchInstaller(webView, dest)
           }
         } finally {
           downloading.set(false)
         }
       }.start()
+    }
+
+    /** 用 FileProvider 拉起系统安装器（下载完成与「复用已下载的包」共用一条路）。 */
+    private fun launchInstaller(webView: WebView, dest: File) {
+      try {
+        val uri: Uri = FileProvider.getUriForFile(
+          this@MainActivity,
+          "$packageName.fileprovider",
+          dest
+        )
+        val install = Intent(Intent.ACTION_VIEW).apply {
+          setDataAndType(uri, "application/vnd.android.package-archive")
+          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        startActivity(install)
+        notifyUpdateDone(webView, true, "已开始安装")
+      } catch (e: Exception) {
+        notifyUpdateDone(webView, false, "拉起安装器失败：${e.message}")
+      }
+    }
+
+    /**
+     * HEAD 探服务器安装包大小（复用已下载包的校验依据）。失败返回 null——
+     * 探不到就照旧走下载（断点续传兜底），不因为预检失败堵死更新。
+     */
+    private fun headContentLength(url: String): Long? {
+      return try {
+        val connection = URL(url).openConnection() as HttpURLConnection
+        connection.requestMethod = "HEAD"
+        connection.connectTimeout = 10_000
+        connection.readTimeout = 10_000
+        connection.instanceFollowRedirects = true
+        val len = connection.contentLengthLong
+        connection.disconnect()
+        if (len > 0) len else null
+      } catch (_: Exception) {
+        null
+      }
     }
 
     /** 下载互斥闸：同一时刻只允许一路下载（0.34.2 用户反馈「可能会下载多次」）。 */

@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.39.1"
+version = "0.39.2"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
@@ -21,6 +21,9 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
+# 非 UTF-8 文本的兼容解码（0.39 用户反馈「预览日志文件报错 文件不是合法 UTF-8」：
+# Windows 工具写的 .log 常是 GBK/UTF-16）。纯 Rust，双端通用。
+encoding_rs = "0.8"
 # 定时提醒的系统通知（M4）。Windows 上走系统通知中心，Android 走系统通知（需权限）
 tauri-plugin-notification = "2"
 tauri-plugin-process = "2"

@@ -670,10 +670,23 @@ fn read_note_at(root: &Path, path: &str) -> Result<NoteContent, String> {
     let has_bom = bytes.starts_with(UTF8_BOM);
     let body = if has_bom { &bytes[UTF8_BOM.len()..] } else { &bytes[..] };
 
-    // 严格 UTF-8：不是 UTF-8 的文本文件宁可报错，也不要静默替换字符（会破坏内容）。
-    let content = std::str::from_utf8(body)
-        .map_err(|e| format!("文件不是合法 UTF-8（偏移 {}）", e.valid_up_to()))?
-        .to_string();
+    // 严格 UTF-8 优先。失败时分流（0.39 用户反馈「预览日志文件报错 文件不是合法
+    // UTF-8（偏移 0）」：Windows 工具写的 .log 常是 GBK/UTF-16）：
+    // - Markdown 保持严格——笔记要字节级往返，静默转码等于改写内容；
+    // - 其它文本（log/txt/jsonl…）兼容解码：UTF-16 BOM → UTF-16，否则按 GBK
+    //   （中文 Windows 日志最常见），解不干净的字节替换成 U+FFFD，宁可显示出来。
+    //   保存时会写回 UTF-8（见 write_note）——对日志这类「看为主」的文件可接受。
+    let is_markdown = {
+        let lower = path.to_lowercase();
+        lower.ends_with(".md") || lower.ends_with(".markdown")
+    };
+    let content = match std::str::from_utf8(body) {
+        Ok(value) => value.to_string(),
+        Err(e) if is_markdown => {
+            return Err(format!("文件不是合法 UTF-8（偏移 {}）", e.valid_up_to()));
+        }
+        Err(_) => decode_legacy_text(body),
+    };
 
     let (line_ending, mixed) = detect_line_ending(&content);
 
@@ -688,6 +701,21 @@ fn read_note_at(root: &Path, path: &str) -> Result<NoteContent, String> {
         size: meta.len(),
         modified: mtime_ms(&meta),
     })
+}
+
+/// 非 UTF-8 文本的兼容解码：UTF-16 BOM → UTF-16，否则按 GBK（encoding_rs 的
+/// decode 带 BOM 嗅探，这里手动判过 BOM，直接用 without_bom_handling 走指定编码）。
+fn decode_legacy_text(body: &[u8]) -> String {
+    if body.starts_with(&[0xFF, 0xFE]) {
+        let (cow, _) = encoding_rs::UTF_16LE.decode_without_bom_handling(body);
+        return cow.into_owned();
+    }
+    if body.starts_with(&[0xFE, 0xFF]) {
+        let (cow, _) = encoding_rs::UTF_16BE.decode_without_bom_handling(body);
+        return cow.into_owned();
+    }
+    let (cow, _) = encoding_rs::GBK.decode_without_bom_handling(body);
+    cow.into_owned()
 }
 
 #[tauri::command]
