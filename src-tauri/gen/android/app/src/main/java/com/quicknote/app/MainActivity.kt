@@ -395,9 +395,11 @@ class MainActivity : TauriActivity() {
           val remoteLen = headContentLength(url)
           // 0.39.1 用户反馈「下载完没装的话安装包会被自动删掉，不可能一直等在页面」：
           // 已下载完成且与服务器当前包**同大小**的，直接复用拉起安装器（免重下，
-          // 秒进安装页）。0.39.4 起复用还要求是合法 ZIP（同长度的坏包不重演解析错误）。
+          // 秒进安装页）。0.39.4 起复用还要求能被 PackageManager 完整解析+版本更新
+          // （见 validateDownloadedApk——0.39.5 用户实测「还是解析错误」：vivo 等
+          // ROM 对同版重装/解析失败一律报「解析包时出现问题」，必须在源头拦住）。
           if (dest.exists() && dest.length() > 0L && remoteLen != null &&
-              remoteLen == dest.length() && looksLikeApk(dest)
+              remoteLen == dest.length() && validateDownloadedApk(dest) == null
           ) {
             mainHandler.post { launchInstaller(webView, dest) }
             return@Thread
@@ -448,36 +450,6 @@ class MainActivity : TauriActivity() {
           downloading.set(false)
         }
       }.start()
-    }
-
-    /**
-     * APK 最小完整性检查（0.39.4「解析错误」防御）：文件头是 ZIP 魔数 PK\x03\x04，
-     * 且文件尾 64KB+22 字节内找得到 ZIP 的 EOCD（0x06054b50）——被掐断的半包
-     * 没有 EOCD，长度校验漏掉的坏包在这里拦住，不让它到系统安装器那里才炸。
-     */
-    private fun looksLikeApk(file: File): Boolean {
-      return try {
-        java.io.RandomAccessFile(file, "r").use { raf ->
-          val len = raf.length()
-          if (len < 22L) return false
-          val head = ByteArray(4)
-          raf.seek(0)
-          raf.readFully(head)
-          if (!(head[0] == 0x50.toByte() && head[1] == 0x4B.toByte() &&
-                head[2] == 0x03.toByte() && head[3] == 0x04.toByte())
-          ) return false
-          val tailLen = minOf(len, 65536L + 22L).toInt()
-          val tail = ByteArray(tailLen)
-          raf.seek(len - tailLen)
-          raf.readFully(tail)
-          (0..tailLen - 4).any { i ->
-            tail[i] == 0x50.toByte() && tail[i + 1] == 0x4B.toByte() &&
-                tail[i + 2] == 0x05.toByte() && tail[i + 3] == 0x06.toByte()
-          }
-        }
-      } catch (_: Exception) {
-        false
-      }
     }
 
     /** 用 FileProvider 拉起系统安装器（下载完成与「复用已下载的包」共用一条路）。 */
@@ -614,14 +586,49 @@ class MainActivity : TauriActivity() {
       // 0.39.4 用户反馈「安装时解析包出现问题」：连接被掐时 read 会"干净地"
       // 返回 -1，循环正常退出、文件比服务器短——旧代码到这就当成功拉安装器，
       // 残包必然解析错误（且 IOException 重试根本不触发）。收尾必须校验总长
-      // 一致 + ZIP 结构；不一致当失败上抛，让外层重试（下一发带 Range 续传）。
+      // 一致；不一致当失败上抛，让外层重试（下一发带 Range 续传）。
       val expected = if (total > 0) total else -1L
       if (expected > 0 && dest.length() != expected) {
         throw IOException("下载不完整（已收 ${dest.length()} / 共 $expected 字节）")
       }
-      if (!looksLikeApk(dest)) {
-        throw IOException("下载内容不是有效的安装包")
+      // 0.39.5 用户实测「还是解析错误」： PackageManager 是系统安装器同源的解析
+      // 逻辑——这里解析不动/版本不比当前新的包，到安装器那里只会同样报「解析
+      // 包时出现问题」。拦在源头：清掉残包/旧包，让外层重试从零下。
+      val problem = validateDownloadedApk(dest)
+      if (problem != null) {
+        dest.delete()
+        meta.delete()
+        throw IOException("$problem，已清理重下")
       }
+    }
+
+    /**
+     * 下载包的权威校验（0.39.5「还是解析错误」防御）：PackageManager 完整解析
+     * 归档包（系统安装器同源——解析得动这里，安装器就解析得动），再要求
+     * versionCode 严格大于当前版本（同版/旧版重装在部分 ROM 上也报「解析
+     * 包时出现问题」，且一定不是用户要的更新）。返回 null = 可安装。
+     */
+    private fun validateDownloadedApk(file: File): String? {
+      val info = try {
+        packageManager.getPackageArchiveInfo(file.absolutePath, 0)
+      } catch (_: Exception) {
+        null
+      }
+      if (info == null) return "下载的文件不是有效的安装包"
+      val current = try {
+        val pkg = packageManager.getPackageInfo(packageName, 0)
+        // longVersionCode 是 API 28+；minSdk 24 的设备走旧字段
+        if (android.os.Build.VERSION.SDK_INT >= 28) pkg.longVersionCode
+        else @Suppress("DEPRECATION") pkg.versionCode.toLong()
+      } catch (_: Exception) {
+        0L
+      }
+      val apkVersion = if (android.os.Build.VERSION.SDK_INT >= 28) info.longVersionCode
+      else @Suppress("DEPRECATION") info.versionCode.toLong()
+      if (apkVersion <= current) {
+        return "下载到的是旧版本安装包（${info.versionName}）"
+      }
+      return null
     }
   }
 
