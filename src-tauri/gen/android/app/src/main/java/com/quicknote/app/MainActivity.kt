@@ -390,27 +390,32 @@ class MainActivity : TauriActivity() {
         try {
           val dir = File(filesDir, "update").apply { mkdirs() }
           val dest = File(dir, "quick-note-update.apk")
+          // 0.39.4 用户反馈「安装时系统报解析错误」：HEAD 服务器当前包大小提前到
+          // 下载决策之前——复用/续传/重下三种走向都要以它为准。
+          val remoteLen = headContentLength(url)
           // 0.39.1 用户反馈「下载完没装的话安装包会被自动删掉，不可能一直等在页面」：
           // 已下载完成且与服务器当前包**同大小**的，直接复用拉起安装器（免重下，
-          // 秒进安装页）；半包（比服务器小）留给断点续传；只有等不了大小校验的
-          // 残留才清掉。老包的保留期清理在启动时做（见 cleanupStaleUpdateApk）。
-          if (dest.exists() && dest.length() > 0L) {
-            val remoteLen = headContentLength(url)
-            // 0.39.4 用户反馈「安装时系统报解析错误」：复用已下载包除了同大小，
-            // 还必须是合法 ZIP（半包/被掐断的文件可能长度恰好一致却缺尾部）；
-            // 校验不过当半包处理，走下载（200 重下会覆盖坏包）
-            if (remoteLen != null && remoteLen == dest.length() && looksLikeApk(dest)) {
-              mainHandler.post { launchInstaller(webView, dest) }
-              return@Thread
-            }
+          // 秒进安装页）。0.39.4 起复用还要求是合法 ZIP（同长度的坏包不重演解析错误）。
+          if (dest.exists() && dest.length() > 0L && remoteLen != null &&
+              remoteLen == dest.length() && looksLikeApk(dest)
+          ) {
+            mainHandler.post { launchInstaller(webView, dest) }
+            return@Thread
           }
-          dir.listFiles()?.forEach { if (it != dest) it.delete() }
+          val meta = File(dir, dest.name + ".meta")
+          // 半包比服务器当前包还长：要么是换过版本的残包，要么长度坏掉——续传必
+          // 416/拼出跨版本杂合包，先清掉（0.39.4）
+          if (dest.exists() && remoteLen != null && dest.length() > remoteLen) {
+            dest.delete()
+            meta.delete()
+          }
+          dir.listFiles()?.forEach { if (it != dest && it != meta) it.delete() }
           var lastError: IOException? = null
           var attempts = 0
           while (attempts < 3) {
             attempts += 1
             try {
-              downloadApk(webView, url, dest)
+              downloadApk(webView, url, dest, remoteLen, meta)
               lastError = null
               break
             } catch (e: IOException) {
@@ -522,8 +527,18 @@ class MainActivity : TauriActivity() {
      * 长连接中途掐断（0.34.2 实锤 Software caused connection abort），此前每次
      * 重试都从头拉整个 APK。服务端下载端点已带 `Accept-Ranges: bytes`——
      * 半包续传：带 Range 重试，206 追加、200 重下。
+     *
+     * 0.39.4「解析错误」两道闸：收尾校验总长+APK 结构（干净 EOF 的残包不再
+     * 冒充成功）；meta 边车记着半包所属的服务器总长，续传前比对——半包是
+     * 旧版本下载的话，拼出来的是长度恰好正确的跨版本杂合包，光比长度拦不住。
      */
-    private fun downloadApk(webView: WebView, url: String, dest: File) {
+    private fun downloadApk(
+      webView: WebView,
+      url: String,
+      dest: File,
+      remoteLen: Long?,
+      meta: File
+    ) {
       val resumeFrom = if (dest.exists()) dest.length() else 0L
       val connection = URL(url).openConnection() as HttpURLConnection
       connection.connectTimeout = 15_000
@@ -536,9 +551,10 @@ class MainActivity : TauriActivity() {
       val code = connection.responseCode
       if (code == 416 && resumeFrom > 0) {
         // 半包比服务器当前文件还长（服务器上的包换过版本）：Range 起点越界会
-        // 一直 416——清掉半包抛错，下一发重试从零下（0.39.4 随解析错误防御补）
+        // 一直 416——清掉半包抛错，下一发重试从零下
         connection.disconnect()
         dest.delete()
+        meta.delete()
         throw IOException("续传起点越界（服务器安装包已更换），已清半包重下")
       }
       if (code !in 200..299) {
@@ -551,6 +567,22 @@ class MainActivity : TauriActivity() {
       }
       val base = if (resuming) resumeFrom else 0L
       val total = if (resuming) base + connection.contentLengthLong else connection.contentLengthLong
+      // 半包归属校验：meta 记着它初次下载时的服务器总长，与服务器当前包（或本次
+      // 响应推得的总长）对不上 = 跨版本残包，清掉重来
+      if (resuming) {
+        val metaTotal = meta.takeIf { it.isFile }?.readText()?.trim()?.toLongOrNull()
+        if (metaTotal == null || (remoteLen != null && metaTotal != remoteLen) ||
+            (total > 0 && metaTotal != total)
+        ) {
+          connection.disconnect()
+          dest.delete()
+          meta.delete()
+          throw IOException("半包与服务器安装包不一致，已清半包重下")
+        }
+      }
+      if (total > 0) {
+        try { meta.writeText(total.toString()) } catch (_: Exception) {}
+      }
       connection.inputStream.use { input ->
         java.io.FileOutputStream(dest, resuming).use { output ->
           val buffer = ByteArray(64 * 1024)
