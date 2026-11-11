@@ -209,6 +209,23 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
   const rows = sheet?.rows ?? [];
   const header = rows[0] ?? [];
   const body = useMemo(() => rows.slice(1), [rows]);
+  // 合并单元格（0.39.5 用户反馈「表头合并了多个单元格，预览只占一格」）：
+  // origins = 区间左上角 → 跨行/跨列数；covered = 被覆盖格 → 跳过不渲染。
+  // rowSpan 允许表头的纵向合并跨进体部（HTML 表格天然支持，覆盖格跳过即可）。
+  const { mergeOrigins, mergeCovered } = useMemo(() => {
+    const origins = new Map<string, { rs: number; cs: number }>();
+    const covered = new Set<string>();
+    for (const m of sheet?.merges ?? []) {
+      origins.set(`${m.r}:${m.c}`, { rs: m.rs, cs: m.cs });
+      for (let r = m.r; r < m.r + m.rs; r += 1) {
+        for (let c = m.c; c < m.c + m.cs; c += 1) {
+          if (r !== m.r || c !== m.c) covered.add(`${r}:${c}`);
+        }
+      }
+    }
+    return { mergeOrigins: origins, mergeCovered: covered };
+  }, [sheet]);
+  const mergeSpan = (r: number, c: number) => mergeOrigins.get(`${r}:${c}`);
 
   const filtered = useMemo(() => {
     const active = Object.entries(filters).filter(([, values]) => values.length > 0);
@@ -292,10 +309,11 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
             className="xlsx-filter-chip"
             title={`编辑「${headerLabel(col)}」的筛选`}
             onClick={(event) => {
-              // 0.39 用户反馈「优化弹窗出现的位置」：从 chips 打开也锚到对应列头
+              // 0.39 用户反馈「优化弹窗出现的位置」：从 chips 打开也锚到对应列头。
+              // 0.39.5 合并单元格后 thead 的位置下标 ≠ 列号（colSpan 占位），按
+              // data-col 找；被合并盖住的列没有自己的 th，回退锚在 chip 上
               const th = bodyWrapRef.current
-                ?.querySelector("thead")
-                ?.children[col] as HTMLElement | null;
+                ?.querySelector(`thead th[data-col="${col}"]`) as HTMLElement | null;
               const btn = (th?.querySelector(".xlsx-filter-btn") ?? th) as HTMLElement | null;
               openPop(col, btn ?? event.currentTarget);
             }}
@@ -336,34 +354,56 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
           <table className="xlsx-table">
             <thead>
               <tr>
-                {header.map((label, col) => (
-                  <th key={col} className={filters[col]?.length ? "is-filtered" : ""}>
-                    <span className="xlsx-th-label" title={label}>
-                      {label || `(${columnName(col)})`}
-                    </span>
-                    <button
-                      type="button"
-                      className={`xlsx-filter-btn${filters[col]?.length ? " is-on" : ""}`}
-                      title={`筛选「${headerLabel(col)}」`}
-                      aria-label={`筛选 ${headerLabel(col)}`}
-                      onClick={(event) => openPop(col, event.currentTarget)}
+                {header.map((label, col) => {
+                  if (mergeCovered.has(`0:${col}`)) return null;
+                  const span = mergeSpan(0, col);
+                  return (
+                    <th
+                      key={col}
+                      data-col={col}
+                      colSpan={span && span.cs > 1 ? span.cs : undefined}
+                      rowSpan={span && span.rs > 1 ? span.rs : undefined}
+                      className={filters[col]?.length ? "is-filtered" : ""}
                     >
-                      ▾
-                    </button>
-                  </th>
-                ))}
+                      <span className="xlsx-th-label" title={label}>
+                        {label || `(${columnName(col)})`}
+                      </span>
+                      <button
+                        type="button"
+                        className={`xlsx-filter-btn${filters[col]?.length ? " is-on" : ""}`}
+                        title={`筛选「${headerLabel(col)}」`}
+                        aria-label={`筛选 ${headerLabel(col)}`}
+                        onClick={(event) => openPop(col, event.currentTarget)}
+                      >
+                        ▾
+                      </button>
+                    </th>
+                  );
+                })}
               </tr>
             </thead>
             <tbody>
-              {visible.map((row, index) => (
-                <tr key={index}>
-                  {header.map((_label, col) => (
-                    <td key={col} title={row[col] ?? ""}>
-                      {row[col] ?? ""}
-                    </td>
-                  ))}
-                </tr>
-              ))}
+              {visible.map((row, index) => {
+                const rowIdx = index + 1; // rows 里的 0 基行号（含表头）
+                return (
+                  <tr key={index}>
+                    {header.map((_label, col) => {
+                      if (mergeCovered.has(`${rowIdx}:${col}`)) return null;
+                      const span = mergeSpan(rowIdx, col);
+                      return (
+                        <td
+                          key={col}
+                          colSpan={span && span.cs > 1 ? span.cs : undefined}
+                          rowSpan={span && span.rs > 1 ? span.rs : undefined}
+                          title={row[col] ?? ""}
+                        >
+                          {row[col] ?? ""}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {filtered.length === 0 && (

@@ -60,6 +60,10 @@ echo "=== 7/18 额外行内语法扫描测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-inline-syntax.mjs
 
 echo
+echo "=== 7b/18 Excel 合并单元格裁剪测试 ==="
+node --experimental-strip-types --no-warnings scripts/verify-xlsx-merges.mjs
+
+echo
 echo "=== 8/18 附件命名与链接测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-attachments.mjs
 

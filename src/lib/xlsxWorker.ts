@@ -14,6 +14,7 @@
  */
 
 import * as XLSX from "xlsx";
+import { clampMerges } from "./xlsxMerges.ts";
 
 /** 单表最大预览行数/列数（0.39.3 由 5000 放大；超出只提示，不解析进内存）。 */
 const MAX_ROWS = 20000;
@@ -27,6 +28,12 @@ export interface ParsedSheet {
   totalRows: number;
   /** 行或列被截断。 */
   truncated: boolean;
+  /**
+   * 合并单元格区间（0.39.5：相对解析窗口的 (r,c,rs,cs)）——渲染层按区间
+   * 左上角带 colSpan/rowSpan 铺开、被覆盖格跳过；没有它，WPS 里跨列合并的
+   * 表头在预览里只占一格、其余列变字母占位。
+   */
+  merges: { r: number; c: number; rs: number; cs: number }[];
 }
 
 self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
@@ -37,12 +44,19 @@ self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
     const sheets: ParsedSheet[] = workbook.SheetNames.map((name) => {
       const ws = workbook.Sheets[name];
       const ref = ws?.["!ref"];
-      if (!ws || !ref) return { name, rows: [], totalRows: 0, truncated: false };
+      if (!ws || !ref) return { name, rows: [], totalRows: 0, truncated: false, merges: [] };
       const range = XLSX.utils.decode_range(ref);
       const rowCount = range.e.r - range.s.r + 1;
       const colCount = range.e.c - range.s.c + 1;
       const rowEnd = Math.min(range.e.r, range.s.r + MAX_ROWS - 1);
       const colEnd = Math.min(range.e.c, range.s.c + MAX_COLS - 1);
+      const merges = clampMerges(
+        ws["!merges"] as { s: { r: number; c: number }; e: { r: number; c: number } }[] | undefined,
+        range.s.r,
+        rowEnd,
+        range.s.c,
+        colEnd,
+      );
       const rows: string[][] = [];
       for (let r = range.s.r; r <= rowEnd; r += 1) {
         const row: string[] = [];
@@ -58,6 +72,7 @@ self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
         rows,
         totalRows: rowCount,
         truncated: rowCount > MAX_ROWS || colCount > MAX_COLS,
+        merges,
       };
     });
     self.postMessage({ id, sheets });
