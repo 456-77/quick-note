@@ -396,7 +396,10 @@ class MainActivity : TauriActivity() {
           // 残留才清掉。老包的保留期清理在启动时做（见 cleanupStaleUpdateApk）。
           if (dest.exists() && dest.length() > 0L) {
             val remoteLen = headContentLength(url)
-            if (remoteLen != null && remoteLen == dest.length()) {
+            // 0.39.4 用户反馈「安装时系统报解析错误」：复用已下载包除了同大小，
+            // 还必须是合法 ZIP（半包/被掐断的文件可能长度恰好一致却缺尾部）；
+            // 校验不过当半包处理，走下载（200 重下会覆盖坏包）
+            if (remoteLen != null && remoteLen == dest.length() && looksLikeApk(dest)) {
               mainHandler.post { launchInstaller(webView, dest) }
               return@Thread
             }
@@ -440,6 +443,36 @@ class MainActivity : TauriActivity() {
           downloading.set(false)
         }
       }.start()
+    }
+
+    /**
+     * APK 最小完整性检查（0.39.4「解析错误」防御）：文件头是 ZIP 魔数 PK\x03\x04，
+     * 且文件尾 64KB+22 字节内找得到 ZIP 的 EOCD（0x06054b50）——被掐断的半包
+     * 没有 EOCD，长度校验漏掉的坏包在这里拦住，不让它到系统安装器那里才炸。
+     */
+    private fun looksLikeApk(file: File): Boolean {
+      return try {
+        java.io.RandomAccessFile(file, "r").use { raf ->
+          val len = raf.length()
+          if (len < 22L) return false
+          val head = ByteArray(4)
+          raf.seek(0)
+          raf.readFully(head)
+          if (!(head[0] == 0x50.toByte() && head[1] == 0x4B.toByte() &&
+                head[2] == 0x03.toByte() && head[3] == 0x04.toByte())
+          ) return false
+          val tailLen = minOf(len, 65536L + 22L).toInt()
+          val tail = ByteArray(tailLen)
+          raf.seek(len - tailLen)
+          raf.readFully(tail)
+          (0..tailLen - 4).any { i ->
+            tail[i] == 0x50.toByte() && tail[i + 1] == 0x4B.toByte() &&
+                tail[i + 2] == 0x05.toByte() && tail[i + 3] == 0x06.toByte()
+          }
+        }
+      } catch (_: Exception) {
+        false
+      }
     }
 
     /** 用 FileProvider 拉起系统安装器（下载完成与「复用已下载的包」共用一条路）。 */
@@ -501,6 +534,13 @@ class MainActivity : TauriActivity() {
       }
       connection.connect()
       val code = connection.responseCode
+      if (code == 416 && resumeFrom > 0) {
+        // 半包比服务器当前文件还长（服务器上的包换过版本）：Range 起点越界会
+        // 一直 416——清掉半包抛错，下一发重试从零下（0.39.4 随解析错误防御补）
+        connection.disconnect()
+        dest.delete()
+        throw IOException("续传起点越界（服务器安装包已更换），已清半包重下")
+      }
       if (code !in 200..299) {
         throw IOException("HTTP $code")
       }
@@ -538,6 +578,17 @@ class MainActivity : TauriActivity() {
             }
           }
         }
+      }
+      // 0.39.4 用户反馈「安装时解析包出现问题」：连接被掐时 read 会"干净地"
+      // 返回 -1，循环正常退出、文件比服务器短——旧代码到这就当成功拉安装器，
+      // 残包必然解析错误（且 IOException 重试根本不触发）。收尾必须校验总长
+      // 一致 + ZIP 结构；不一致当失败上抛，让外层重试（下一发带 Range 续传）。
+      val expected = if (total > 0) total else -1L
+      if (expected > 0 && dest.length() != expected) {
+        throw IOException("下载不完整（已收 ${dest.length()} / 共 $expected 字节）")
+      }
+      if (!looksLikeApk(dest)) {
+        throw IOException("下载内容不是有效的安装包")
       }
     }
   }

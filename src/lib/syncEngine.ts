@@ -188,6 +188,8 @@ export class SyncEngine {
   private virtualPaths = new Set<string>();
   /** 已经报告过"无法同步"的文件，避免每个周期重复提示同一件事。 */
   private reportedSkips = new Set<string>();
+  /** 附件下载失败已报过横幅的路径（0.39.4）：连续多轮失败只报一次，成功即复位。 */
+  private reportedDownloadFails = new Set<string>();
 
   /** 待裁决冲突扣住的路径：推送扫描与 doFlush 都跳过，防止未裁决就被自动覆盖云端。 */
   private readonly conflictHold: Set<string>;
@@ -978,14 +980,38 @@ export class SyncEngine {
     await this.saveAttachmentBytes(path, bytes);
   }
 
+  /**
+   * 带重试的附件 GET（0.39.4 用户反馈「手机上下载附件报 Peer disconnected」）：
+   * 蜂窝网络传大附件容易中途断流，整包缓冲的单发 GET 一断就废、只能等下一轮
+   * 同步。这里退避重试两次（共 3 发）；404 是语义结果不是网络问题，原样上抛。
+   */
+  private async attachmentGetWithRetry(query: string): Promise<HttpResponse> {
+    let lastErr: unknown = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
+      try {
+        return await this.attachmentRequest("GET", query);
+      } catch (err) {
+        if (err instanceof AttachmentMissingError) throw err;
+        lastErr = err;
+      }
+    }
+    throw lastErr;
+  }
+
   /** 下载附件原始字节。404（云端没有）返回 null；凭证问题照旧上抛。 */
   private async downloadAttachment(path: string): Promise<Uint8Array | null> {
     try {
-      const response = await this.attachmentRequest("GET", `&path=${encodeURIComponent(path)}`);
+      const response = await this.attachmentGetWithRetry(`&path=${encodeURIComponent(path)}`);
       return atobToBytes(response.bodyBase64);
     } catch (err) {
       if (err instanceof AttachmentMissingError) return null;
-      this.host.onNotice(`云同步：附件下载失败 ${path}（${String(err)}）`, "error");
+      // 横幅按路径去重：连续多轮失败只报第一次（0.39.4——同一文件每轮刷一条
+      // 错误横幅等于骚扰），下载成功即复位
+      if (!this.reportedDownloadFails.has(path)) {
+        this.reportedDownloadFails.add(path);
+        this.host.onNotice(`云同步：附件下载失败 ${path}（${String(err)}）`, "error");
+      }
       return null;
     }
   }
@@ -996,6 +1022,7 @@ export class SyncEngine {
     this.state.attachmentHashes[path] = written.sha256;
     // mtime 已变，别让下一轮命中旧 stamp
     delete this.state.attachmentStamps[path];
+    this.reportedDownloadFails.delete(path);
     this.downloadBudget.record(written.bytes);
   }
 
@@ -1092,6 +1119,10 @@ export class SyncEngine {
     const url = `${baseUrl(this.state.serverUrl)}/api/v1/sync/attachments?vault=${encodeURIComponent(
       this.host.getVaultName(),
     )}${query}`;
+    // GET 是拉附件本体（整包缓冲）：蜂窝弱网下 200K/s 传 50MB 要 250s+，默认
+    // 120s 全局超时必撞（0.39.4 用户反馈手机上大附件下载失败）——放宽到 300s，
+    // 服务端单文件上限 50MB 在此之内。上传/删除仍是默认超时。
+    const timeoutMs = method === "GET" ? 300_000 : undefined;
     const sendOnce = async () =>
       httpRequest({
         method,
@@ -1101,6 +1132,7 @@ export class SyncEngine {
           { name: "Authorization", value: `Bearer ${await this.ensureAccessToken()}` },
         ],
         bodyBase64,
+        timeoutMs,
       });
     let response = await sendOnce().catch((e) => {
       throw new Error(String(e));
@@ -1115,6 +1147,7 @@ export class SyncEngine {
           { name: "Authorization", value: `Bearer ${await this.ensureAccessToken(true)}` },
         ],
         bodyBase64,
+        timeoutMs,
       }).catch((e) => {
         throw new Error(String(e));
       });
