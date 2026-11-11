@@ -1727,6 +1727,13 @@ div.tree-item:focus-visible {
   background: color-mix(in srgb, var(--accent) 16%, #f3f4f6);
 }
 
+/* 0.39.7 「合并大标题行 + 字段名行」：横幅 th 不吸附（真正表头行独占 sticky
+   top:0，横幅随滚动收起），居中展示与 WPS 观感一致 */
+.xlsx-table thead th.xlsx-th-banner {
+  position: static;
+  text-align: center;
+}
+
 .xlsx-th-label {
   display: inline-block;
   max-width: 260px;

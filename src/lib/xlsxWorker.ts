@@ -15,6 +15,7 @@
 
 import * as XLSX from "xlsx";
 import { clampMerges } from "./xlsxMerges.ts";
+import { detectHeaderRow } from "./xlsxHeader.ts";
 
 /** 单表最大预览行数/列数（0.39.3 由 5000 放大；超出只提示，不解析进内存）。 */
 const MAX_ROWS = 20000;
@@ -34,6 +35,12 @@ export interface ParsedSheet {
    * 表头在预览里只占一格、其余列变字母占位。
    */
   merges: { r: number; c: number; rs: number; cs: number }[];
+  /**
+   * 真正的表头行号（0.39.7）：「合并大标题行 + 字段名行」两行头的文件里，
+   * 0..headerRow-1 作为横幅行渲染（不吸附、无筛选），筛选与列头用紧挨数据
+   * 的那一行。普通表恒为 0，行为不变。
+   */
+  headerRow: number;
 }
 
 self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
@@ -44,7 +51,7 @@ self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
     const sheets: ParsedSheet[] = workbook.SheetNames.map((name) => {
       const ws = workbook.Sheets[name];
       const ref = ws?.["!ref"];
-      if (!ws || !ref) return { name, rows: [], totalRows: 0, truncated: false, merges: [] };
+      if (!ws || !ref) return { name, rows: [], totalRows: 0, truncated: false, merges: [], headerRow: 0 };
       const range = XLSX.utils.decode_range(ref);
       const rowCount = range.e.r - range.s.r + 1;
       const colCount = range.e.c - range.s.c + 1;
@@ -73,6 +80,7 @@ self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
         totalRows: rowCount,
         truncated: rowCount > MAX_ROWS || colCount > MAX_COLS,
         merges,
+        headerRow: detectHeaderRow(rows),
       };
     });
     self.postMessage({ id, sheets });

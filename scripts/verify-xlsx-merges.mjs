@@ -4,6 +4,7 @@
 // 用法：node --experimental-strip-types scripts/verify-xlsx-merges.mjs
 
 import { clampMerges } from "../src/lib/xlsxMerges.ts";
+import { detectHeaderRow } from "../src/lib/xlsxHeader.ts";
 
 let failures = 0;
 const check = (ok, label, detail = "") => {
@@ -78,6 +79,40 @@ check(
     JSON.stringify([{ r: 0, c: 0, rs: 3, cs: 3 }]),
   "窗口起点非 0：坐标转为相对",
 );
+
+// ---------------------------------------------------------------- 表头行识别
+// 0.39.7 用户反馈「筛选只能根据第一行内容筛，应该根据紧挨数据的那一行」——
+// 「合并大标题行 + 字段名行」两行头结构。保守启发式：仅当第 1 行非空格数
+// 不到前 4 行最满行的一半时才下移，普通表行为不变。
+console.log("\n表头行识别（detectHeaderRow）\n");
+const banner = ["完全匹配（共计245张）", "", "", "", "", "", "部分匹配（157 张单 / 205 个节点）", "", ""];
+const fields = ["单据类型", "单据类型名称", "旧系统单据编号", "新系统单据编号", "", "单据类型", "单据类型名称", "旧单号", "新单号"];
+const dataRow = ["REQ002", "业务招待事前申请", "S2186260800107", "S2186261100450", "", "REQ002", "业务招待事前申请", "S1100260800064", "S1100261103373"];
+
+check(detectHeaderRow([banner, fields, dataRow]) === 1, "合并大标题行 + 字段名行 → 表头行=1（用户实测文件）");
+check(
+  detectHeaderRow([["报表标题", "", "", ""], ["A", "B", "C", "D"], [1, 2, 3, 4], [5, 6, 7, 8]]) === 1,
+  "整行合并横幅 + 表头 → 表头行=1",
+);
+check(
+  detectHeaderRow([["标题一", "", "", ""], ["标题二", "", "", ""], ["A", "B", "C", "D"], [1, 2, 3, 4]]) === 2,
+  "两行横幅 → 表头行=2",
+);
+check(
+  detectHeaderRow([["A", "B", "C", "D"], [1, 2, 3, 4], [5, 6, 7, 8]]) === 0,
+  "普通表（第 1 行即满表头）→ 保持 0（平局不抢）",
+);
+check(
+  detectHeaderRow([["A", "B"], [1, 2, 3, 4], [5, 6, 7, 8]]) === 0,
+  "表头稀疏但未过半 → 不误判（数据行不抢当表头）",
+);
+check(
+  detectHeaderRow([["标题"], [], ["A", "B", "C"], [1, 2, 3]]) === 2,
+  "横幅与表头之间隔空行 → 跳到字段名行",
+);
+check(detectHeaderRow([["唯一一行"]]) === 0, "单行表 → 0");
+check(detectHeaderRow([]) === 0, "空表 → 0");
+
 
 console.log(failures === 0 ? "\n合并单元格裁剪验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);
 process.exit(failures === 0 ? 0 : 1);

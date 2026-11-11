@@ -207,8 +207,12 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
   }, [pop]);
 
   const rows = sheet?.rows ?? [];
-  const header = rows[0] ?? [];
-  const body = useMemo(() => rows.slice(1), [rows]);
+  // 0.39.7 表头行识别：「合并大标题行 + 字段名行」文件里横幅行进 thead（不吸附、
+  // 无筛选钮），列头/筛选/数据全从紧挨数据的那一行开始——普通表 headerRow=0 行为不变
+  const headerRow = sheet?.headerRow ?? 0;
+  const bannerRows = rows.slice(0, headerRow);
+  const header = rows[headerRow] ?? [];
+  const body = useMemo(() => rows.slice(headerRow + 1), [rows, headerRow]);
   // 合并单元格（0.39.5 用户反馈「表头合并了多个单元格，预览只占一格」）：
   // origins = 区间左上角 → 跨行/跨列数；covered = 被覆盖格 → 跳过不渲染。
   // rowSpan 允许表头的纵向合并跨进体部（HTML 表格天然支持，覆盖格跳过即可）。
@@ -338,7 +342,7 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
             className="xlsx-toolbar-note"
             title={`表共 ${sheet.totalRows} 行 / ${header.length} 列，只解析了前 ${rows.length} 行（0.39.3 上限 20000 行）`}
           >
-            表格过大：共 {sheet.totalRows} 行，仅预览前 {rows.length - 1} 行
+            表格过大：共 {sheet.totalRows} 行，仅预览前 {rows.length - 1 - headerRow} 行数据
           </span>
         )}
         {header.length > 0 && (
@@ -353,10 +357,28 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
         <div className="file-preview-sheet-body" ref={bodyWrapRef}>
           <table className="xlsx-table">
             <thead>
+              {bannerRows.map((bannerRow, br) => (
+                <tr key={`banner-${br}`}>
+                  {header.map((_label, col) => {
+                    if (mergeCovered.has(`${br}:${col}`)) return null;
+                    const span = mergeSpan(br, col);
+                    return (
+                      <th
+                        key={col}
+                        className="xlsx-th-banner"
+                        colSpan={span && span.cs > 1 ? span.cs : undefined}
+                        rowSpan={span && span.rs > 1 ? span.rs : undefined}
+                      >
+                        {bannerRow[col] ?? ""}
+                      </th>
+                    );
+                  })}
+                </tr>
+              ))}
               <tr>
                 {header.map((label, col) => {
-                  if (mergeCovered.has(`0:${col}`)) return null;
-                  const span = mergeSpan(0, col);
+                  if (mergeCovered.has(`${headerRow}:${col}`)) return null;
+                  const span = mergeSpan(headerRow, col);
                   return (
                     <th
                       key={col}
