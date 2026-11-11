@@ -878,6 +878,9 @@ export class SyncEngine {
    * 这是"云端主动告知"的补充路径；主要下载入口是按引用反推（见 scanAttachments）。
    */
   private async applyAttachment(rec: RemoteAttachment): Promise<void> {
+    // 0.39.3：库内配置等「不该走附件通道」的路径，云端可能还留着旧版客户端传的
+    // 记录——拉取侧同样按判定拦一道，否则历史记录会在下一轮整文件覆盖本地。
+    if (!isAttachmentPath(rec.path)) return;
     const exists = await this.pathExists(rec.path);
     const knownHash = this.state.attachmentHashes[rec.path];
 

@@ -6,7 +6,8 @@
  * - 表头每列一个筛选按钮（Excel 式）：搜索值 + 多选 + 全选/清空/清除筛选；
  * - 多列筛选叠加，筛选后显示「N / M 行」，表头粘性置顶；
  * - 大表只渲染前 600 行（「显示更多」追加），筛选仍作用于全部已解析行；
- * - 解析侧 5000 行 × 80 列截断，超大表给提示，避免百万行表拖死预览。
+ * - 解析侧 20000 行 × 80 列截断（0.39.3 由 5000 放大——用户实测表 4999 行就撞顶），
+ *   超大表给明确提示，避免百万行表拖死预览。
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -88,7 +89,17 @@ function ColumnFilter({
         }
         if (event.key === "Enter" && !event.shiftKey) {
           event.preventDefault();
-          apply();
+          // 0.39.3 用户反馈「表格筛选后，回车应该只显示筛选后的行」：搜索框有
+          // 内容时按「勾选 ∩ 搜索匹配」应用——用户在搜索框打字回车，期望是把
+          // 看得见的值变成筛选结果；旧的 apply() 只看勾选集（初始全选，回车
+          // 等于全量原样应用=没筛），看起来就像"回车恢复成当前状态"。
+          if (q) {
+            const visible = values.filter((value) => chosen.has(value) && matched.includes(value));
+            if (visible.length === 0 || visible.length === values.length) onApply(null);
+            else onApply(visible);
+          } else {
+            apply();
+          }
         }
       }}
     >
@@ -305,8 +316,11 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
         )}
         <span className="spacer" />
         {sheet.truncated && (
-          <span className="xlsx-toolbar-note" title={`只解析前 ${rows.length} 行 / ${header.length} 列`}>
-            表格过大，仅预览部分内容
+          <span
+            className="xlsx-toolbar-note"
+            title={`表共 ${sheet.totalRows} 行 / ${header.length} 列，只解析了前 ${rows.length} 行（0.39.3 上限 20000 行）`}
+          >
+            表格过大：共 {sheet.totalRows} 行，仅预览前 {rows.length - 1} 行
           </span>
         )}
         {header.length > 0 && (

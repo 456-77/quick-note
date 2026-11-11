@@ -588,7 +588,8 @@ console.log("\n附件同步（纯逻辑部分）\n");
   check(isAttachmentPath("子目录/archive.tar.gz"), "多段后缀的压缩包也算附件");
   check(!isAttachmentPath("日记/a.md"), "正文不算附件");
   check(!isAttachmentPath(TODO_SYNC_PATH), "待办快照走正文通道，盘上残留不参与附件");
-  check(isAttachmentPath("quick-daily-note.json"), "普通 json 也是附件（仅 todo 快照特判）");
+  check(!isAttachmentPath("quick-daily-note.json"), "库内配置不进附件通道（多端各写各的，整文件同步会互相覆盖——0.39.3 设置被重置根因）");
+  check(isAttachmentPath("notes.json"), "其他普通 json 仍是附件");
   check(!isAttachmentPath(".trash/图.png"), "点开头目录里的不同步");
   check(!isAttachmentPath("a/.hidden/图.png"), "路径中任何一段点开头都不同步");
 

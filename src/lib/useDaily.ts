@@ -209,11 +209,15 @@ export function useDaily(options: {
       .catch((e) => {
         if (cancelled) return;
         // 读不出来也要让日历可用：按默认值走，并把问题说出来。
-        const fallback = parseDailyConfig(null);
+        // **但必须按 broken 处理（禁写回）**：0.39.3 用户反馈「更新后设置项被重置」
+        // 的帮凶之一——读失败的兜底态原本 broken=false，待办合并（同步引擎每轮
+        // 都会跑）随即以这个兜底态整份写盘，等于用默认配置覆盖磁盘上的真配置。
+        // 宁可设置改不了（重开仓库即恢复），不能静默覆写用户的配置文件。
+        const fallback = { ...parseDailyConfig(null), broken: true };
         stateRef.current = fallback;
         setState(fallback);
         setSelectedDate(moment().format(dateFormatOf(fallback.settings.dateFormat)));
-        setConfigError(`读取 ${DAILY_CONFIG_FILE} 失败：${e}`);
+        setConfigError(`读取 ${DAILY_CONFIG_FILE} 失败：${e}（期间日记设置只读，重开仓库后恢复）`);
       });
 
     return () => {

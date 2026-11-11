@@ -4672,6 +4672,11 @@ export default function App() {
   }, []);
 
   const beginCreate = useCallback((kind: "note" | "folder" | "diary", folder = "") => {
+    // 与重命名互斥（0.39.3 用户反馈「重命名出现的输入框提示是新建」）：两者共用
+    // 同一行输入，只看"谁后来"。此前 beginCreate 不清 renaming，重命名关闭后
+    // 残留的 creating 会把输入行"复活"成新建模式（提示新建到…、不预填原名），
+    // 用户以为还在重命名，回车就在目标目录里误建了同名条目。
+    setRenaming(null);
     setCreating(kind);
     setCreateFolderOverride(folder);
     setDraft("");
@@ -4800,8 +4805,13 @@ export default function App() {
   );
 
   const beginRename = useCallback((path: string, owner: "tree" | "daily" = "tree") => {
+    // 与新建互斥（同 beginCreate 处的注释）：开重命名就收掉开着的新建输入行，
+    // 否则重命名结束后输入行会切换回新建模式继续挂着。
+    setCreating(null);
+    setCreateFolderOverride("");
     setRenaming(path);
     setRenameOwner(owner);
+    // 预填原名并全选：Enter 直接换名，打字即整体替换
     setDraft(path.slice(path.lastIndexOf("/") + 1));
     setMenu(null);
     setError(null);

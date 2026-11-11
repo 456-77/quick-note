@@ -140,15 +140,23 @@ export function tagAddEdit(text: string, tag: string, lineBreak: string): TagEdi
     const at = lines.slice(0, index + 1).join("\n").length;
     return { at, insert: ` #${tag}`, to: at };
   }
-  // 落点在文档内：在该行位置插入一条标签行（带尾随换行，把原行顶下去）；
-  // 落点越界（文档不满两行）：退化为追加文末，沿用旧的接续规则
+  // 落点在文档内：在该行位置插入一条标签行（带尾随换行，把原行顶下去）
   if (index < lines.length) {
     const at = lines.slice(0, index).join("\n").length + (index > 0 ? 1 : 0);
     return { at, insert: `#${tag}${lineBreak}`, to: at };
   }
+  // 落点越界（文档行数不足）：按行数**补空行**把标签顶到约定的行上（0.39.3
+  // 用户反馈「文件第二行没内容时，第一个标签落到第二行」——「标题 + 尾随空行」
+  // 两行的文件旧逻辑直接追加文末，标签接在空行上=第 2 行）。空文档例外：
+  // 不造前导空行，标签放第 1 行。
   const at = text.length;
-  const prefix = text.endsWith("\n") || text.length === 0 ? "" : lineBreak;
-  return { at, insert: `${prefix}#${tag}`, to: at };
+  if (text.length === 0) {
+    return { at, insert: `#${tag}`, to: at };
+  }
+  // 缺几个行边界就补几个换行：文本以换行结尾时末行是空行（已占一行），不以
+  // 换行结尾时第一个换行同时把末行收口——两种情况需要的换行数相同
+  const breaks = index + 1 - lines.length;
+  return { at, insert: `${lineBreak.repeat(breaks)}#${tag}`, to: at };
 }
 
 /**

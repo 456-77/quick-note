@@ -13,7 +13,7 @@ import {
   findTags,
   parseCalloutLine,
 } from "../src/lib/inlineSyntax.ts";
-import { noteTags, tagRenameEdits } from "../src/lib/tags.ts";
+import { noteTags, tagRenameEdits, tagAddEdit } from "../src/lib/tags.ts";
 
 let failures = 0;
 const check = (ok, label, detail = "") => {
@@ -190,6 +190,56 @@ check(parseCalloutLine("> 普通引用", 0) === null, "普通引用不被当成 
 check(parseCalloutLine("普通段落 [!note]", 0) === null, "不在引用里的不算 callout");
 check(parseCalloutLine("> [!NOTE] 大写也行", 0)?.type === "note", "类型大小写归一化");
 check(parseCalloutLine(">  [!tip]  空格多一些", 0)?.title === "空格多一些", "容忍多余空格");
+
+// ---------------------------------------------------------------- 标签行落点
+// 标签行约定第 3 行（标题/天气之后）。0.39.3 用户反馈「文件第二行没内容时，
+// 添加标签会把第一个标签放到第二行」——「标题+尾随空行」两行文件旧逻辑追加
+// 文末，标签接在空行上。逐形状钉住。
+console.log("\n标签行落点（tagAddEdit）\n");
+const applied = (text, tag = "测试", br = "\n") => {
+  const edit = tagAddEdit(text, tag, br);
+  if (!edit) return null;
+  return text.slice(0, edit.at) + edit.insert + text.slice(edit.to);
+};
+
+// 常规：标题/空行/内容 → 插到第 3 行，内容被顶下去
+check(applied("# 标题\n\n正文") === "# 标题\n\n#测试\n正文", "常规三行文件：标签落第 3 行");
+// 0.39.3 修复形状：标题+尾随空行（两行）→ 补空行，标签仍落第 3 行
+check(
+  applied("# 标题\n") === "# 标题\n\n#测试",
+  "标题+尾随空行：标签顶到第 3 行（不再落第 2 行）",
+  JSON.stringify(applied("# 标题\n")),
+);
+// 单行无尾随换行 → 补两个换行，第 2 行留空（天气槽位）
+check(
+  applied("# 标题") === "# 标题\n\n#测试",
+  "单行文件：标签落第 3 行，第 2 行留空",
+  JSON.stringify(applied("# 标题")),
+);
+// 已有标签行（第 3 行）→ 并入行尾
+check(applied("# 标题\n\n#甲", "乙") === "# 标题\n\n#甲 #乙", "第 3 行已是标签行：并入行尾");
+// 第 2 行是天气引用行 → 标签落第 3 行（天气行之后）
+check(
+  applied("# 标题\n> 🌤 晴 25°C\n正文") === "# 标题\n> 🌤 晴 25°C\n#测试\n正文",
+  "有天气行：标签紧跟其后（第 3 行）",
+  JSON.stringify(applied("# 标题\n> 🌤 晴 25°C\n正文")),
+);
+// frontmatter → 落闭合 --- 之后
+check(
+  applied("---\ntitle: x\n---\n正文") === "---\ntitle: x\n---\n#测试\n正文",
+  "frontmatter：标签落闭合 --- 之后",
+);
+// 空文档 → 标签放第 1 行（不造前导空行）
+check(applied("") === "#测试", "空文档：标签放第 1 行");
+// CRLF：行数统计按行边界，插入用 \r\n
+check(
+  applied("# 标题\r\n", "测试", "\r\n") === "# 标题\r\n\r\n#测试",
+  "CRLF 文件：同样顶到第 3 行",
+  JSON.stringify(applied("# 标题\r\n", "测试", "\r\n")),
+);
+// 已有同名标签 → 不动文档
+check(tagAddEdit("# 标题\n\n#测试\n正文", "测试", "\n") === null, "已有同名标签返回 null");
+
 
 console.log(failures === 0 ? "\n额外行内语法扫描验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);
 process.exit(failures === 0 ? 0 : 1);

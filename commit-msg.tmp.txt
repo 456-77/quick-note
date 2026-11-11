@@ -1,1 +1,0 @@
-fix: 0.39.2——预览日志文件报「文件不是合法 UTF-8」修复（Windows 工具写的 .log 常是 GBK/UTF-16；read_note_at 严格 UTF-8 失败后对非 Markdown 文本兼容解码：UTF-16 BOM→UTF-16、否则按 GBK，解不干净的字节 U+FFFD 显示出来，Markdown 保持严格保字节往返；新增 encoding_rs 依赖；保存写回 UTF-8）+ 安卓更新包保留策略（下载完没装不再被动等在页面：再次点更新时 HEAD 校验同大小直接复用已下载的 APK 秒进安装页，半包留给断点续传，保留期 3 天超期启动时自动清理；拉起安装器抽成 launchInstaller 与复用路径共用）——beta 测试版

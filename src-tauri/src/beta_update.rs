@@ -42,6 +42,35 @@ async fn check_at(app: &AppHandle, manifest_url: &str) -> Result<Option<Update>,
         .map_err(|e| format!("检查测试版失败：{e}"))
 }
 
+/// 用清单地址的 origin 重写下载直链的 origin。
+///
+/// 服务端拼下载直链时按请求 Host 反推对外地址，而反代（nginx）转发时不带端口，
+/// Spring 拿到的 Host 是裸域名 → 清单里的 url 缺 `:8080` → updater 去连 80 端口
+/// （另一套 nginx）→ 404。0.39.3 用户反馈「软件内更新时报错 404 Not Found」根因。
+/// 清单地址是前端按用户配置的服务端地址拼的，必然带对端口——以它为准。
+fn rewrite_download_origin(update: &mut Update, manifest_url: &str) {
+    let Ok(manifest) = manifest_url.parse::<Url>() else {
+        return;
+    };
+    let Some(host) = manifest.host_str().map(str::to_owned) else {
+        return;
+    };
+    let mut url = update.download_url.clone();
+    if url.set_scheme(manifest.scheme()).is_err() {
+        return;
+    }
+    if url.set_host(Some(&host)).is_err() {
+        return;
+    }
+    let set_port = match manifest.port() {
+        Some(port) => url.set_port(Some(port)),
+        None => url.set_port(None),
+    };
+    if set_port.is_ok() {
+        update.download_url = url;
+    }
+}
+
 /// 检查测试版是否有更新（不下载）。清单解析失败/网络不通都以 Err 返回，
 /// 前端显示原因；「无更新」不是错误，走 available=false。
 #[tauri::command]
@@ -66,9 +95,10 @@ pub async fn beta_update_check(app: AppHandle, manifest_url: String) -> Result<B
 /// 与稳定版 JS 链路 downloadAndInstall + relaunch 的语义一致。
 #[tauri::command]
 pub async fn beta_update_install(app: AppHandle, manifest_url: String) -> Result<(), String> {
-    let update = check_at(&app, &manifest_url)
+    let mut update = check_at(&app, &manifest_url)
         .await?
         .ok_or_else(|| "服务器上没有可安装的测试版".to_string())?;
+    rewrite_download_origin(&mut update, &manifest_url);
 
     let progress_app = app.clone();
     let downloaded = AtomicU64::new(0);

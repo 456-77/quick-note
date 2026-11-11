@@ -9,6 +9,7 @@
  * 服务端与同一份仓库：常量一旦分叉，最轻的后果是两边互相把对方推的变更又推一遍。
  */
 
+import { DAILY_CONFIG_FILE } from "./daily.ts";
 import { mergeTodos, parseSnapshot, TODO_SYNC_PATH, type TodoMap } from "./todos.ts";
 
 /** 本设备独立的同步配置与状态（落盘在应用配置目录，**不进仓库**）。 */
@@ -379,10 +380,17 @@ export function decideRecord(input: RecordDecisionInput): RecordAction {
  * 路径是否走附件（字节）通道：非 .md（区分大小写）即附件（M8 全类型同步，与
  * Rust 侧 `vault::is_attachment_path` 同一套规则）。
  * 待办快照是虚拟文件走正文通道，盘上残留的同名文件不参与；点开头路径段排除。
+ *
+ * 库内配置 `quick-daily-note.json` 也排除（0.39.3 用户反馈「更新后设置项被重置」）：
+ * 它是多端各自读写的共享配置（M8 的「非 .md 即附件」判定会把它整份双向同步），
+ * 任何一台设备上的旧副本都会在下一轮同步里整文件覆盖其他端——更新重启后的第一轮
+ * 同步拉下云端旧副本，就是那次"设置被重置"。且配置里可能有插件凭据
+ * （emailAccessKey），整份上传等于把凭据送到服务端（todos.ts 头注警告过的事）。
  */
 export function isAttachmentPath(path: string): boolean {
   if (path.endsWith(".md")) return false;
   if (path === TODO_SYNC_PATH) return false;
+  if (path === DAILY_CONFIG_FILE) return false;
   return !path.split("/").some((segment) => segment.startsWith("."));
 }
 

@@ -497,6 +497,46 @@ fn update_wiki_references(
 ///
 /// 只改名称、不支持移动位置（想移动就改父目录，属于另一件事）。目标已存在时报错，
 /// 不覆盖、也不静默加序号——重命名是"改名"，名字被占用应当让用户知道。
+/// 同名改位的重试版 `fs::rename`。
+///
+/// Windows 上 `ERROR_ACCESS_DENIED`(5) / `ERROR_SHARING_VIOLATION`(32) 的头号成因
+/// 是目标（或其子孙文件）被别的进程短暂占用——杀软/索引器正在扫描、同步客户端正在
+/// 读写。这类锁通常毫秒级释放，间隔重试几次就能过；Excel/WPS 那种长占用救不了，
+/// 交给 [`rename_busy_error`] 说人话。只对占用类错误重试，目标已存在之类的
+/// 确定性错误立即返回。
+fn rename_with_retry(source: &Path, target: &Path) -> std::io::Result<()> {
+    let mut last: Option<std::io::Error> = None;
+    for attempt in 0..4 {
+        if attempt > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        match fs::rename(source, target) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let code = e.raw_os_error().unwrap_or(0);
+                if code != 5 && code != 32 && e.kind() != std::io::ErrorKind::PermissionDenied {
+                    return Err(e);
+                }
+                last = Some(e);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("重命名失败")))
+}
+
+/// 把占用类 io 错误翻成人话（0.39.3 用户反馈「重命名失败: 拒绝访问 os error 5」
+/// 看不懂）：文件夹里开着 Excel 表格、杀软正在扫描是最常见的两种成因。
+fn rename_busy_error(action: &str, e: &std::io::Error) -> String {
+    let code = e.raw_os_error().unwrap_or(0);
+    if code == 5 || code == 32 || e.kind() == std::io::ErrorKind::PermissionDenied {
+        format!(
+            "{action}失败：目标可能被其他程序占用（比如 Excel/WPS 正开着里面的文件，或杀毒软件正在扫描），请关闭后重试（{e}）"
+        )
+    } else {
+        format!("{action}失败: {e}")
+    }
+}
+
 #[tauri::command]
 pub fn rename_entry(vault: String, path: String, new_name: String) -> Result<RenameResult, String> {
     let root = vault_root(&vault)?;
@@ -546,7 +586,7 @@ pub fn rename_entry(vault: String, path: String, new_name: String) -> Result<Ren
         return Err(format!("「{filename}」已存在，请换个名字"));
     }
 
-    fs::rename(&source, &target).map_err(|e| format!("重命名失败: {e}"))?;
+    rename_with_retry(&source, &target).map_err(|e| rename_busy_error("重命名", &e))?;
 
     // 笔记改名要同步引用；目录改名后里面的文件路径变了，但 wiki 引用按文件名解析，不受影响。
     // 附件（图片）的 wiki 嵌入 `![[图.png]]` 带扩展名，同样按文件名匹配更新。
@@ -586,7 +626,7 @@ pub fn delete_entry(vault: String, path: String) -> Result<String, String> {
         .to_string();
     let target = unique_path(&trash, &name);
 
-    fs::rename(&source, &target).map_err(|e| format!("删除失败: {e}"))?;
+    rename_with_retry(&source, &target).map_err(|e| rename_busy_error("删除", &e))?;
     to_relative(&root, &target)
 }
 
@@ -1188,7 +1228,7 @@ pub fn move_entry(vault: String, path: String, dest_dir: String) -> Result<Strin
         .to_string_lossy()
         .to_string();
     let target = unique_path(&dest_root, &filename);
-    fs::rename(&source, &target).map_err(|e| format!("移动失败: {e}"))?;
+    rename_with_retry(&source, &target).map_err(|e| rename_busy_error("移动", &e))?;
     to_relative(&root, &target)
 }
 
@@ -1368,6 +1408,12 @@ fn is_attachment_path(path: &str) -> bool {
     }
     if path == "daily-sync-todos.json" {
         // TODO_SYNC_PATH，与 src/lib/todos.ts 的常量一致（两处必须同步改）
+        return false;
+    }
+    if path == "quick-daily-note.json" {
+        // 库内配置（0.39.3 用户反馈「更新后设置项被重置」）：多端各自读写的共享
+        // 配置不能整文件双向同步——旧副本会把其他端的新设置覆盖掉，且可能含插件
+        // 凭据。与 src/lib/sync.ts 的 isAttachmentPath 同口径（两处必须同步改）。
         return false;
     }
     !path.split('/').any(|segment| segment.starts_with('.'))
@@ -1987,7 +2033,11 @@ mod tests {
         assert!(is_attachment_path("图.svg"), "svg 也是附件（服务端强制 attachment 下载防 XSS）");
         assert!(is_attachment_path("a.txt"));
         assert!(is_attachment_path("没有扩展名"));
-        assert!(is_attachment_path("quick-daily-note.json"), "普通 json 也是附件");
+        assert!(is_attachment_path("notes.json"), "普通 json 也是附件");
+        assert!(
+            !is_attachment_path("quick-daily-note.json"),
+            "库内配置多端各写各的，整文件同步会互相覆盖（0.39.3 设置被重置根因）"
+        );
         // 正文与 todo 快照（虚拟文件）不走附件通道
         assert!(!is_attachment_path("日记/a.md"));
         assert!(!is_attachment_path("daily-sync-todos.json"));
