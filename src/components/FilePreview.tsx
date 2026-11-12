@@ -39,6 +39,9 @@ interface Props {
   onClose: () => void;
   /** true = 嵌在内容区标签页里（0.35.3），不再是全屏浮层；默认 false = 浮层。 */
   embedded?: boolean;
+  /** Esc 关闭预览是否生效（0.39.8）：App 在任何浮层/菜单开着时传 false——
+   *  预览的 window 级 Esc 监听是浮层时代遗留，标签页化后不能抢别的弹层的 Esc。 */
+  escClose?: boolean;
 }
 
 /** PDF 手动缩放范围：下限防糊、上限防画布爆内存（3× A4 = 约 1800×2400 CSS px）。 */
@@ -162,7 +165,7 @@ function scheduleOrphanSweep(): void {
   }, IDLE_RELEASE_MS);
 }
 
-export default function FilePreview({ vault, path, onClose, embedded = false }: Props) {
+export default function FilePreview({ vault, path, onClose, embedded = false, escClose = true }: Props) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const kind = fileKindOf(name);
   // 缩放记忆键（0.38.7）：切走再切回按此恢复缩放
@@ -229,9 +232,16 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
   /** 最近一次 pptx 渲染容器：关闭时还来不及清理的图表实例从这里兜底回收。 */
   const orphanSourceRef = useRef<HTMLElement | null>(null);
 
-  // Esc 关闭预览
+  // Esc 关闭预览。0.39.8 用户反馈「使用 esc 关闭弹窗时，也会关闭一个选中的
+  // 预览文件」：这是浮层时代的遗留——预览改标签页后，快速笔记/收录弹窗等任何
+  // 弹层的 Esc（局部 preventDefault 后事件仍冒泡到 window）都会连带关掉预览
+  // 标签。现在两层门：①事件已被局部处理器消费（defaultPrevented）就不抢；
+  // ②App 侧有浮层/菜单开着时传 escClose=false 整体让位。无浮层时保留
+  // 「Esc 关预览」的原有便捷。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (!escClose) return;
+      if (event.defaultPrevented) return;
       if (event.key === "Escape") {
         event.stopPropagation();
         onClose();
@@ -239,7 +249,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  }, [onClose, escClose]);
 
   // ---------------------------------------------------------------- 移动端全屏预览（0.38 用户反馈）
   // 0.38.5 用户反馈（推翻 0.38.3 的「预览期收走药丸」）：**预览期药丸/底条常驻**
@@ -1264,7 +1274,8 @@ export default function FilePreview({ vault, path, onClose, embedded = false }: 
           </div>
         )}
         {kind === "spreadsheet" && sheets && sheets.length > 0 && (
-          <SpreadsheetPreview sheets={sheets} />
+          /* 0.39.8 筛选状态跨切换留存：以「仓库::路径」为键记进会话级缓存 */
+          <SpreadsheetPreview sheets={sheets} cacheKey={`${vault}::${path}`} />
         )}
       </div>
     </div>

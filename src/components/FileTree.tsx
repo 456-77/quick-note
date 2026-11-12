@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { EntryMeta } from "../lib/api";
 import { fileKindOf } from "../lib/fileTypes";
+import { compareFileNames } from "../lib/fileNameSort";
 import {
   IconChevronDown,
   IconChevronRight,
@@ -42,6 +43,8 @@ function datePrefixOf(name: string): [number, number, number] | null {
 /**
  * 同组内的文件名比较：带日期前缀的按日期先后（同年月日再比全名），
  * 日期条目整体排在无日期条目之前——日记按时间线聚在一起，草稿等散文件殿后。
+ * 兜底走 compareFileNames（0.39.8：主名优先让 -v2 之类变体排回原文件之后，
+ * 数字段数值感知），不再用裸 localeCompare。
  */
 const compareByDatePrefix = (a: string, b: string): number => {
   const da = datePrefixOf(a);
@@ -55,7 +58,7 @@ const compareByDatePrefix = (a: string, b: string): number => {
   } else if (db) {
     return 1;
   }
-  return a.localeCompare(b, "zh");
+  return compareFileNames(a, b);
 };
 
 export type LeftView = "files" | "favorites" | "recents";

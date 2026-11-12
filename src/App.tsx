@@ -145,6 +145,11 @@ import "./styles.css";
 
 const VAULT_KEY = "quicknote.vault";
 
+/** 左栏宽度拖拽的边界（0.39.8 用户反馈「得有一个最小宽度限制」）：下限保证
+ *  树行/重命名输入行不挤破，上限别把编辑区挤没。 */
+const SIDEBAR_MIN_WIDTH = 220;
+const SIDEBAR_MAX_WIDTH = 560;
+
 /**
  * 无笔记空态的编辑器状态：editable=false。0.34.6 用户反馈「没打开任何文件时，
  * 内容区域可以编辑」（桌面/移动都能聚焦出光标+软键盘，0.33.0 只把启动首帧
@@ -342,7 +347,14 @@ export default function App() {
       之后切视图/进分区导致的树重挂会把上一次的目标再闪一遍（0.34.6 用户
       反馈「高亮的是上次点按钮时的文件，不是当前打开的文件」）。 */
   const revealCurrentNote = useCallback(() => {
-    const path = currentRef.current?.path;
+    // 0.39.8 用户反馈「选中预览文件时，左侧的定位按钮功能失效」：预览激活时
+    // current 为空、按钮此前直接禁用——定位目标改为「激活预览 → 当前笔记 →
+    // 分屏预览 → 树里最后选中的条目」，预览文件同样能在树里展开并高亮
+    const path =
+      activePreviewRef.current ??
+      currentRef.current?.path ??
+      activePreviewSplitRef.current ??
+      selectedPathRef.current;
     if (!path) return;
     setTreeReveal({ path, seq: Date.now() });
     window.setTimeout(() => setTreeReveal(null), 2500);
@@ -550,6 +562,15 @@ export default function App() {
   useEffect(() => {
     previewTabsSplitRef.current = previewTabsSplit;
   }, [previewTabsSplit]);
+  // 激活预览的 ref 镜像（revealCurrentNote 等 [] 依赖回调要读实时值）
+  const activePreviewRef = useRef<string | null>(null);
+  useEffect(() => {
+    activePreviewRef.current = activePreview;
+  }, [activePreview]);
+  const activePreviewSplitRef = useRef<string | null>(null);
+  useEffect(() => {
+    activePreviewSplitRef.current = activePreviewSplit;
+  }, [activePreviewSplit]);
   /** 语句库管理整页（0.35.3 四轮反馈：不再占用标签页外壳，Ctrl+Alt+K / Esc /
       菜单切换——与收件箱（Inbox）同一种页面形态）。 */
   const [libraryPageOpen, setLibraryPageOpen] = useState(false);
@@ -560,13 +581,24 @@ export default function App() {
   }, []);
   /** 关预览标签；关的是激活页就回编辑器。左右两栏各自判断归属。 */
   const closeSpecialTab = useCallback((path: string) => {
+    // 0.39.8 用户反馈「关闭预览文件时，不会自动切换到其他文件」：关掉的是激活
+    // 预览时，就近激活同栏剩余预览（编辑器关标签的同语义：优先原位置的右边，
+    // 没有就落最后一项）；没有剩余才让位回编辑器
     if (previewTabsSplitRef.current.includes(path)) {
-      setPreviewTabsSplit((prev) => prev.filter((p) => p !== path));
-      setActivePreviewSplit((cur) => (cur === path ? null : cur));
+      const closedAt = previewTabsSplitRef.current.indexOf(path);
+      const rest = previewTabsSplitRef.current.filter((p) => p !== path);
+      setPreviewTabsSplit(rest);
+      setActivePreviewSplit((cur) =>
+        cur === path ? (rest.length > 0 ? rest[Math.min(closedAt, rest.length - 1)] : null) : cur,
+      );
       return;
     }
-    setPreviewTabs((prev) => prev.filter((p) => p !== path));
-    setActivePreview((cur) => (cur === path ? null : cur));
+    const closedAt = previewTabsRef.current.indexOf(path);
+    const rest = previewTabsRef.current.filter((p) => p !== path);
+    setPreviewTabs(rest);
+    setActivePreview((cur) =>
+      cur === path ? (rest.length > 0 ? rest[Math.min(closedAt, rest.length - 1)] : null) : cur,
+    );
   }, []);
   /**
    * 预览标签在左右栏之间移动 / 同栏重排（拖拽落点）。target 给定时插到该栏
@@ -1395,6 +1427,45 @@ export default function App() {
   const sidebarLeftRef = useRef<HTMLElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
 
+  // 0.39.8 用户反馈「左侧面板支持左右调节宽度用来方便阅读文件名称，但是得有
+  // 一个最小宽度限制」：拖左栏右缘的手柄调节，宽度持久化到 quicknote.ui.*，
+  // 双击复位。--sidebar-width 经行内样式只覆盖左栏子树（右栏/其余规则不动）
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const raw = Number(window.localStorage.getItem("quicknote.ui.sidebarWidth"));
+      if (Number.isFinite(raw) && raw >= SIDEBAR_MIN_WIDTH && raw <= SIDEBAR_MAX_WIDTH) return raw;
+    } catch {
+      // 读不到就用默认宽
+    }
+    return 272;
+  });
+  const [sidebarResizing, setSidebarResizing] = useState(false);
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const onSidebarResizeDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    sidebarDragRef.current = { startX: event.clientX, startWidth: sidebarWidth };
+    setSidebarResizing(true);
+  };
+  const onSidebarResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const drag = sidebarDragRef.current;
+    if (!drag) return;
+    const next = drag.startWidth + (event.clientX - drag.startX);
+    setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, next)));
+  };
+  const onSidebarResizeUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (!sidebarDragRef.current) return;
+    sidebarDragRef.current = null;
+    setSidebarResizing(false);
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    try {
+      window.localStorage.setItem("quicknote.ui.sidebarWidth", String(sidebarWidth));
+    } catch {
+      // 尽力而为
+    }
+  };
+
   const daily = useDaily({
     vault,
     files: mdFiles,
@@ -1956,14 +2027,17 @@ export default function App() {
    * 分屏里打字会把内容写进主编辑器当前路径的键下（静默串内容）。
    */
   const handleDocChanged = useCallback((changed: EditorView) => {
+    // 0.39.8 外部增量采纳（日志追加）：内容来自磁盘，不标脏（stateStore 仍照写——
+    // 它必须始终等于编辑器里的内容）
+    const adopting = externalAdoptingRef.current;
     if (changed === splitViewRef.current) {
       // 右栏：每次文档变更都把实时 EditorState 回写 stateStore + 标脏
       const splitPathNow = splitActiveRef.current;
       if (splitPathNow) {
         stateStore.current.set(splitPathNow, changed.state);
-        dirtyTabs.current.add(splitPathNow);
+        if (!adopting) dirtyTabs.current.add(splitPathNow);
       }
-      setSplitDirty(true);
+      if (!adopting) setSplitDirty(true);
       setRevision((value) => value + 1);
       return;
     }
@@ -1976,9 +2050,9 @@ export default function App() {
     // 存进已换掉的旧路径键下（之后用旧名新建就"复用"了它的内容）。
     if (path && view) {
       stateStore.current.set(path, view.state);
-      dirtyTabs.current.add(path);
+      if (!adopting) dirtyTabs.current.add(path);
     }
-    setDirty(true);
+    if (!adopting) setDirty(true);
     setRevision((r) => r + 1);
   }, []);
 
@@ -2149,6 +2223,12 @@ export default function App() {
   }, [splitActiveTab]);
   /** 最后聚焦的窗格（0.32.2）：文件树/搜索打开新笔记落在哪一栏由它决定。 */
   const focusedPaneRef = useRef<"main" | "split">("main");
+  /** 外部改动采纳中（0.39.8 增量追加事务）：handleDocChanged 据此跳过标脏——
+   *  追加是磁盘来的内容，不是用户编辑，不该把标签置成有未保存改动。 */
+  const externalAdoptingRef = useRef(false);
+  /** 左右两栏标签栏（激活标签头自动居中用，0.39.8 用户反馈）。 */
+  const mainTabbarRef = useRef<HTMLDivElement | null>(null);
+  const splitTabbarRef = useRef<HTMLDivElement | null>(null);
   /**
    * 右栏编辑器视图的就绪代际（0.32.2 加固）：SplitPane 的 onReady 建视图后
    * +1——装载 effect 依赖它，视图晚于激活切换创建时（挂载竞态）也能重触发，
@@ -2333,6 +2413,23 @@ export default function App() {
   useEffect(() => {
     if (!activePreviewSplit) splitViewRef.current?.requestMeasure();
   }, [activePreviewSplit]);
+
+  // 0.39.8 用户反馈「阅读某个文件时，对应的标签头能不能自动居中」：激活的
+  // 标签滚到标签栏视口中央——标签多到溢出后，切回/新开的标签可能整个在视口外，
+  // 看起来像"点了没反应"。手动算 scrollLeft（scrollIntoView 会把竖向祖先也
+  // 滚一遍）；移动端标签栏 display:none，clientWidth=0 自然跳过
+  useEffect(() => {
+    for (const bar of [mainTabbarRef.current, splitTabbarRef.current]) {
+      if (!bar || bar.clientWidth === 0) continue;
+      const active = bar.querySelector<HTMLElement>('[role="tab"].is-active');
+      if (!active) continue;
+      const barRect = bar.getBoundingClientRect();
+      const elRect = active.getBoundingClientRect();
+      const rel = elRect.left - barRect.left + bar.scrollLeft;
+      const max = bar.scrollWidth - bar.clientWidth;
+      bar.scrollLeft = Math.max(0, Math.min(rel - (bar.clientWidth - elRect.width) / 2, max));
+    }
+  }, [activeTab, activePreview, splitActiveTab, activePreviewSplit]);
 
   const submitQuickCapture = useCallback(
     async (
@@ -2833,14 +2930,15 @@ export default function App() {
    * 中直接修改 DDL 语句」）共用这一条通道。
    */
   const saveDdlStatements = useCallback(
-    async (ddlText: string, project = "") => {
+    async (ddlText: string, project = "", tags: string[] = []) => {
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能保存建表语句");
       const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
       const existing = await readNoteOptional(dir, path);
       const base = existing?.content ?? ddlNoteIntro();
-      // 0.39：新语句带 @time 收录时间行（速记有记录时间，语句库同样要有）
-      const merged = mergeDdlIntoNote(base, ddlText, project, { time: nowStamp() });
+      // 0.39：新语句带 @time 收录时间行（速记有记录时间，语句库同样要有）；
+      // 0.39.8 收录弹窗多标签（首个词=项目段落，全部词=@tags 行）
+      const merged = mergeDdlIntoNote(base, ddlText, project, { time: nowStamp(), tags });
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
       // 0.38 用户实锤「明明设置了所属项目，为什么还是显示未分组」：库笔记开着
       // 标签时，落盘后的新文本不回写缓冲，随后的自动保存把旧缓冲整篇写回——
@@ -2856,14 +2954,14 @@ export default function App() {
 
   /** Java 实体落盘（0.34.13）：与 DDL 同一条通道，库笔记路径独立配置。 */
   const saveJavaStatements = useCallback(
-    async (ddlText: string, project = "") => {
+    async (ddlText: string, project = "", tags: string[] = []) => {
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能保存实体类");
       const path = getSettings().javaEntityFilePath.trim();
       if (!path) throw new Error("实体库路径为空（设置 → 编辑 可配置）");
       const existing = await readNoteOptional(dir, path);
       const base = existing?.content ?? javaNoteIntro();
-      const merged = mergeClassesIntoNote(base, ddlText, project, { time: nowStamp() });
+      const merged = mergeClassesIntoNote(base, ddlText, project, { time: nowStamp(), tags });
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
       // 同 saveDdlStatements：防自动保存把旧缓冲写回冲掉刚落的段落
       if (existing) syncLibraryNoteBuffers(path, existing.content, merged);
@@ -2880,13 +2978,13 @@ export default function App() {
    * 识别到 class/interface/enum/record 走实体库，两者都有就两边都收。
    */
   const saveLibraryStatements = useCallback(
-    async (ddlText: string, project = "") => {
+    async (ddlText: string, project = "", tags: string[] = []) => {
       const messages: string[] = [];
       if (extractTableNames(ddlText).length > 0) {
-        messages.push(await saveDdlStatements(ddlText, project));
+        messages.push(await saveDdlStatements(ddlText, project, tags));
       }
       if (extractClassNames(ddlText).length > 0) {
-        messages.push(await saveJavaStatements(ddlText, project));
+        messages.push(await saveJavaStatements(ddlText, project, tags));
       }
       if (messages.length === 0) {
         throw new Error("没有识别到 CREATE TABLE 语句或 Java 类定义");
@@ -3470,6 +3568,29 @@ export default function App() {
       }
 
       // 同步引擎按同一批路径排队推送（自己写入产生的回声靠内容哈希跳过）。
+
+      /**
+       * 尾部追加的增量采纳（0.39.8 用户反馈「日志是追加到尾部的，我看前面的
+       * 内容是不会被影响的」）：新内容以当前文档为前缀（追加写/日志的常态）时，
+       * 只把新增段接到文末，不整份重建 EditorState。整份 setState 会换掉高度
+       * 图，之后按旧 scrollTop 恢复——异步重测量落地前拿旧值兜底，看前文时
+       * 位置照样漂。增量事务里改动只在文末，CM 自己保住视口锚点，未贴底时
+       * 什么都不用做。返回 false = 不是纯追加（改写/截断），调用方走整份重建。
+       */
+      const appendAdopt = (view: EditorView, fresh: NoteContent): boolean => {
+        const old = view.state.sliceDoc();
+        if (!fresh.content.startsWith(old)) return false;
+        externalAdoptingRef.current = true;
+        try {
+          view.dispatch({
+            changes: { from: view.state.doc.length, insert: fresh.content.slice(old.length) },
+          });
+        } finally {
+          externalAdoptingRef.current = false;
+        }
+        return true;
+      };
+
       syncRef.current?.handleVaultChange(paths);
 
       // 后台标签：只标记"文件被外部改过"，等它再次激活时与磁盘对账（openNote 的 stale 分支）
@@ -3494,18 +3615,30 @@ export default function App() {
             setStatus("分屏文件被外部修改，保存时以本窗口内容为准");
           } else {
             const splitView = splitViewRef.current;
-            const top = splitView.scrollDOM.scrollTop;
-            const adopted = createSplitState(freshSplit);
-            stateStore.current.set(splitPathNow, adopted);
-            splitView.setState(adopted);
-            applyMode(splitView, effectiveViewMode(modeRef.current));
-            applyDarkTheme(splitView, resolveTheme(getSettings().theme) === "dark");
-            splitView.scrollDOM.scrollTop = top;
-            staleTabs.current.delete(splitPathNow);
-            setOpenTabs((prev) =>
-              prev.map((tab) => (tab.path === splitPathNow ? freshSplit : tab)),
-            );
-            setStatus("分屏已跟随外部改动");
+            // 0.39.8 纯尾部追加走增量事务（同主编辑器）：stateStore 由
+            // handleDocChanged 在事务里照写，这里只清脏标记 + 换标签 meta
+            if (appendAdopt(splitView, freshSplit)) {
+              dirtyTabs.current.delete(splitPathNow);
+              staleTabs.current.delete(splitPathNow);
+              setSplitDirty(false);
+              setOpenTabs((prev) =>
+                prev.map((tab) => (tab.path === splitPathNow ? freshSplit : tab)),
+              );
+              setStatus("分屏已跟随外部改动");
+            } else {
+              const top = splitView.scrollDOM.scrollTop;
+              const adopted = createSplitState(freshSplit);
+              stateStore.current.set(splitPathNow, adopted);
+              splitView.setState(adopted);
+              applyMode(splitView, effectiveViewMode(modeRef.current));
+              applyDarkTheme(splitView, resolveTheme(getSettings().theme) === "dark");
+              splitView.scrollDOM.scrollTop = top;
+              staleTabs.current.delete(splitPathNow);
+              setOpenTabs((prev) =>
+                prev.map((tab) => (tab.path === splitPathNow ? freshSplit : tab)),
+              );
+              setStatus("分屏已跟随外部改动");
+            }
           }
         } catch {
           // 读失败保持现状
@@ -3533,12 +3666,25 @@ export default function App() {
       }
 
       // 0.39 用户反馈「.log 要支持实时更新，日志文件经常变化」：采纳前记住滚动
-      // 状态——原来停在底部就贴回底部（tail 观感），否则保持原滚动位置
+      // 状态——原来停在底部就贴回底部（tail 观感），否则保持原滚动位置。
+      // 0.39.8 纯尾部追加走增量事务：改动只在文末，未贴底时 CM 的视口锚点
+      // 原样保留，前文观感零位移（整份重建的滚动恢复在异步测量落地前救不回来）；
+      // 贴底则照旧贴回底部续 tail。
       const view = viewRef.current;
       const scroller = view?.scrollDOM;
       const wasAtBottom = scroller
         ? scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 8
         : false;
+      if (view && appendAdopt(view, fresh)) {
+        staleTabs.current.delete(open.path);
+        setOpenTabs((prev) => prev.map((tab) => (tab.path === open.path ? fresh : tab)));
+        if (wasAtBottom) {
+          const scrollerNow = viewRef.current?.scrollDOM;
+          if (scrollerNow) scrollerNow.scrollTop = scrollerNow.scrollHeight;
+        }
+        setStatus("已跟随外部改动");
+        return;
+      }
       const top = scroller?.scrollTop ?? 0;
       adoptFromDisk(fresh);
       const scrollerNow = viewRef.current?.scrollDOM;
@@ -4472,8 +4618,26 @@ export default function App() {
         // 切到预览页同样收起文件内搜索面板（0.23 用户反馈：换页面不残留）
         closeSearchPanelIfOpen();
         setSelectedPath(path);
-        // 0.35.3：预览从独立浮层改为标签页——关闭/切走后从标签栏点得回来
-        openPreviewTab(path);
+        // 0.39.8 用户反馈「excel 预览文件为什么不支持分屏浏览」：预览类此前
+        // 只进左栏，想并排看只能靠拖拽（不可发现）。对齐笔记的 0.32.2 分栏
+        // 语义——最后聚焦的窗格在分屏时，点击预览类文件直接开到分屏预览组；
+        // 反向同理，点回左栏把它从分屏组移回来。跨栏都是移动不是复制，
+        // 同一预览不会同现两栏（与编辑器标签唯一归属一致）。
+        const splitOpen = rightTabsRef.current.length > 0 || previewTabsSplitRef.current.length > 0;
+        if (focusedPaneRef.current === "split" && splitOpen) {
+          setPreviewTabs((prev) => (prev.includes(path) ? prev.filter((p) => p !== path) : prev));
+          setActivePreview((cur) => (cur === path ? null : cur));
+          setPreviewTabsSplit((prev) => (prev.includes(path) ? prev : [...prev, path]));
+          setActivePreviewSplit(path);
+          focusedPaneRef.current = "split";
+        } else {
+          if (previewTabsSplitRef.current.includes(path)) {
+            setPreviewTabsSplit((prev) => prev.filter((p) => p !== path));
+            setActivePreviewSplit((cur) => (cur === path ? null : cur));
+          }
+          openPreviewTab(path);
+          focusedPaneRef.current = "main";
+        }
         // 预览类文件同样进「最近」列表（此前只记笔记，最近里永远看不到 pdf/docx）
         recordRecent(path);
         return;
@@ -7519,6 +7683,24 @@ export default function App() {
     },
   ];
 
+  // 0.39.8 用户反馈「使用 esc 关闭弹窗时，也会关闭一个选中的预览文件」：
+  // 任何浮层/菜单开着时 Esc 归它所有，预览标签的 window 级 Esc 监听整体让位
+  //（FilePreview 的 escClose prop；事件被局部 preventDefault 的弹层自己也能挡）
+  const overlayOpen =
+    quickCaptureOpen ||
+    paletteOpen ||
+    showSettings ||
+    captureManagerOpen ||
+    libraryPageOpen ||
+    vaultChoice !== null ||
+    addWordDialog !== null ||
+    ddlDialogOpen ||
+    tabMenu !== null ||
+    vaultMenu !== null ||
+    menu !== null ||
+    headingMenu !== null ||
+    conflict !== null;
+
   return (
     <div
       className={`app${zen ? " zen" : ""}${captureManagerOpen ? " inbox-open" : ""}${
@@ -8293,7 +8475,8 @@ export default function App() {
       )}
       {current?.mixedLineEndings && (
         <div className="banner banner-warn">
-          该文件混用了多种换行符。保存不会改写它们，但编辑时显示可能异常。
+          该文件混用了多种换行符。保存不会改写它们；少数派行尾已按行断开显示（红色
+          控制符标记处），只是那里的回车/删除与普通换行略有差异。
         </div>
       )}
       {conflict && (
@@ -8700,7 +8883,8 @@ export default function App() {
           />
         )}
           <aside
-            className={`sidebar sidebar-left${creating || (renaming && renameOwner === "tree") ? " m-inputting" : ""}`}
+            className={`sidebar sidebar-left${creating || (renaming && renameOwner === "tree") ? " m-inputting" : ""}${sidebarResizing ? " is-resizing" : ""}`}
+            style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
             ref={sidebarLeftRef}
             onClick={(event) => {
               // 移动端：点中笔记/目录行后自动收抽屉（事件委托，不逐行改回调）
@@ -8860,11 +9044,11 @@ export default function App() {
                     onClose={() => setDrawerDirFilterOpen(false)}
                   />
                 )}
-                {drawerView === "files" && (
+                  {drawerView === "files" && (
                   <div className="m-drawer-actions">
                     <button
                       type="button"
-                      disabled={!current}
+                      disabled={!current && !activePreview && !activePreviewSplit}
                       onClick={revealCurrentNote}
                       title="定位当前文件"
                     >
@@ -9016,7 +9200,7 @@ export default function App() {
                 <button
                   type="button"
                   className="icon-btn"
-                  disabled={!current}
+                  disabled={!current && !activePreview && !activePreviewSplit}
                   onClick={revealCurrentNote}
                   title="定位当前文件：在文件树中展开并高亮"
                 >
@@ -9140,6 +9324,24 @@ export default function App() {
               </>
             )}
         </aside>
+        {/* 0.39.8 用户反馈：左栏宽度拖拽手柄（最小 220px，双击复位；桌面专属） */}
+        {!isMobile() && !leftCollapsed && (
+          <div
+            className={`sidebar-resizer${sidebarResizing ? " is-resizing" : ""}`}
+            onPointerDown={onSidebarResizeDown}
+            onPointerMove={onSidebarResizeMove}
+            onPointerUp={onSidebarResizeUp}
+            onDoubleClick={() => {
+              setSidebarWidth(272);
+              try {
+                window.localStorage.setItem("quicknote.ui.sidebarWidth", "272");
+              } catch {
+                // 尽力而为
+              }
+            }}
+            title="拖动调节宽度（双击复位）"
+          />
+        )}
         <main className="editor-pane">
           {/* 笔记内容**常驻挂载**（Inbox 打开时仅 CSS 隐藏）：条件卸载会让一次性
               创建的 EditorView 附着在已销毁的 host div 上，返回笔记后编辑器空白 */}
@@ -9155,6 +9357,7 @@ export default function App() {
             <div className={`editor-pane-col${dropHint?.kind === "pane" && dropHint.side === "main" ? " is-drop-pane" : ""}`} {...paneDropProps("main")}>
             {(leftTabs.length > 0 || previewTabs.length > 0) && (
             <div
+              ref={mainTabbarRef}
               className={`tabbar${dropHint?.kind === "pane" && dropHint.side === "main" ? " is-drop-pane-end" : ""}`}
               role="tablist"
               aria-label="打开的笔记"
@@ -9279,6 +9482,7 @@ export default function App() {
                 embedded
                 vault={vault}
                 path={activePreview}
+                escClose={!overlayOpen}
                 onClose={() => closeSpecialTab(activePreview)}
               />
             )}
@@ -9296,6 +9500,7 @@ export default function App() {
             {(rightTabs.length > 0 || previewTabsSplit.length > 0) && (
               <div className={`editor-pane-col is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane" : ""}`} style={{ flexBasis: `${splitPct}%` }} {...paneDropProps("split")}>
                 <div
+                  ref={splitTabbarRef}
                   className={`tabbar is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane-end" : ""}`}
                   role="tablist"
                   aria-label="分屏栏的笔记"
@@ -9414,6 +9619,7 @@ export default function App() {
                     embedded
                     vault={vault}
                     path={activePreviewSplit}
+                    escClose={!overlayOpen}
                     onClose={() => closeSpecialTab(activePreviewSplit)}
                   />
                 )}

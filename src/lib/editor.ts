@@ -1,7 +1,14 @@
 import { basicSetup, EditorView } from "codemirror";
-import { Compartment, EditorSelection, EditorState, Prec, type Extension } from "@codemirror/state";
+import { Compartment, EditorSelection, EditorState, Prec, type Extension, type Range } from "@codemirror/state";
 import type { SyntaxNode } from "@lezer/common";
-import { keymap } from "@codemirror/view";
+import {
+  Decoration,
+  keymap,
+  ViewPlugin,
+  ViewUpdate,
+  WidgetType,
+  type DecorationSet,
+} from "@codemirror/view";
 import { ensureSyntaxTree, syntaxTree, type LanguageDescription } from "@codemirror/language";
 import { autocompletion, type Completion, type CompletionContext, type CompletionResult } from "@codemirror/autocomplete";
 import { insertNewlineContinueMarkup, markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -164,6 +171,70 @@ export interface CreateEditorStateOptions {
 }
 
 /**
+ * 混用换行符的断行显示（0.39.8 用户反馈：混用 CRLF/LF 的日志里，「待修复」
+ * 之类的行被挤到上一行行尾，阅读观感是"断行坏了"）。
+ *
+ * 文件的主换行符由 lineSeparator facet 锁定（保存原样字节、同步哈希稳定的前提），
+ * 少数派的行尾字符就留在逻辑行内部——basicSetup 的 highlightSpecialChars 会把它
+ * 渲染成红色控制符块（NL/CR），但后续内容仍跟在同一行上。这里在每个"行内换行
+ * 控制符"**之后**补一个 display:block 的零高 widget，把后续内容推到下一视觉行：
+ * 阅读时与真正的断行一致，红色控制符块保留在上一段行尾作为"少数派行尾"的标记，
+ * 保存仍不改写任何字节。
+ *
+ * 插件自触发：按主分隔符切分的正常文件行内不会出现 \n/\r，只有混用文件会命中，
+ * 无需额外开关；只扫视口内的行，大日志也不受影响。
+ */
+
+const STRAY_EOL_RE = /[\n\r]/g;
+
+class StrayEolBreak extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "qn-stray-eol-break";
+    span.setAttribute("aria-hidden", "true");
+    return span;
+  }
+}
+
+function strayEolDecos(view: EditorView): DecorationSet {
+  const builder: Range<Decoration>[] = [];
+  const { from, to } = view.viewport;
+  for (let pos = from; pos <= to; ) {
+    const line = view.state.doc.lineAt(pos);
+    const text = line.text;
+    STRAY_EOL_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = STRAY_EOL_RE.exec(text))) {
+      const at = line.from + match.index;
+      builder.push(
+        Decoration.widget({ widget: new StrayEolBreak(), side: 1 }).range(at + 1),
+      );
+    }
+    if (line.to >= to) break;
+    pos = line.to + 1;
+  }
+  return Decoration.set(builder, true);
+}
+
+const strayEolPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = strayEolDecos(view);
+    }
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged) {
+        this.decorations = strayEolDecos(update.view);
+      }
+    }
+  },
+  { decorations: (plugin) => plugin.decorations },
+);
+
+/**
  * 为一个文档建立编辑器状态。
  *
  * 配置 `EditorState.lineSeparator` 后，CodeMirror 只把这一种分隔符当换行，回车
@@ -215,6 +286,8 @@ export function createEditorState(
       autoPairExtension(language),
       EditorView.lineWrapping,
       EditorState.lineSeparator.of(separatorFor(lineEnding)),
+      // 混用换行符的断行显示（见 strayEolPlugin 注释）
+      strayEolPlugin,
       // 资源上下文进 Compartment（0.32 分屏）：stateStore 里的存量状态装进
       // 分屏视图时要换成分屏自己的上下文（notePath 不同），不能重建状态丢历史
       livePreviewContextCompartment.of(

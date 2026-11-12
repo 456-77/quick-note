@@ -747,8 +747,9 @@ kbd {
   display: flex;
   align-items: center;
   gap: 6px;
-  /* 0.33.1 用户反馈：与上方页签行间距太大——收紧上下留白 */
-  padding: 5px 10px 4px;
+  /* 0.33.1 用户反馈：与上方页签行间距太大——收紧上下留白；
+     0.39.8 再收一档（用户截图实测两行间仍有约 25px 视觉空隙） */
+  padding: 3px 10px 4px;
   flex: none;
 }
 
@@ -772,11 +773,12 @@ kbd {
 /* 左栏视图切换：知识库 / 收藏 / 最近 */
 .left-view {
   /* 0.33.1 用户反馈：展示效果向右侧面板的功能选项（.sidebar-tabs）看齐——
-     同款分段选项卡（去容器底色胶囊） */
+     同款分段选项卡（去容器底色胶囊）。
+     0.39.8 用户反馈「这里的上下空隙有点大」：页签行与下方标题行之间收紧 */
   display: flex;
   gap: 4px;
-  margin: 0 10px 6px;
-  padding: 8px 10px 6px;
+  margin: 0 10px 2px;
+  padding: 8px 10px 4px;
   flex: none;
 }
 
@@ -1658,23 +1660,50 @@ div.tree-item:focus-visible {
   color: var(--text-faint);
 }
 
+/* 0.39.8 筛选条件加关闭钮：外壳变 span 承接胶囊（button 嵌 button 不合 HTML
+   规范，原生解析会拆开），文本与 × 各是一个透明按钮 */
 .xlsx-filter-chip {
   max-width: 220px;
+  display: inline-flex;
+  align-items: stretch;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  padding: 2px 10px;
-  font: inherit;
-  font-size: 11px;
-  color: var(--accent);
   background: color-mix(in srgb, var(--accent) 12%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
   border-radius: 999px;
+}
+
+.xlsx-filter-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 2px 2px 2px 10px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--accent);
+  background: transparent;
+  border: none;
   cursor: pointer;
+}
+
+.xlsx-filter-chip-x {
+  padding: 2px 9px 2px 3px;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0.7;
 }
 
 .xlsx-filter-chip:hover {
   background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.xlsx-filter-chip-x:hover {
+  opacity: 1;
 }
 
 .xlsx-filter-clear {
@@ -12052,38 +12081,30 @@ html.qn-mobile .vocab-status {
   white-space: nowrap;
 }
 
-/* 多项目切换 chips（0.34.13）：同一表名/类名在多个 `## 项目` 段落里各有一条
-   语句时出现，点击切换展示与保存目标；默认选中的是笔记标签匹配的项目 */
-.qn-ddl-tip-projects {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 7px 12px 0;
-  flex: none;
-}
-
-.qn-ddl-tip-proj {
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  color: var(--text-dim);
+/* 多项目切换下拉（0.39.8，替代 0.34.13 的标题行下 chips 行——用户反馈「多个
+   项目存在同名 ddl 或者实体时，在这里添加一个下拉框供选择」）：同一表名/类名
+   在多个 `## 项目` 段落里各有一条语句时出现在标题行内；默认选中笔记标签匹配
+   的项目。color-scheme: dark（见 :root 主题块）让原生弹层走深色 */
+.qn-ddl-tip-project-select {
+  max-width: 150px;
+  padding: 2px 6px;
   font: inherit;
   font-size: 11.5px;
-  padding: 2px 10px;
-  border-radius: 999px;
-  cursor: pointer;
-  transition: color 0.13s ease, border-color 0.13s ease, background 0.13s ease;
-}
-
-.qn-ddl-tip-proj:hover {
+  font-weight: 400;
   color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.qn-ddl-tip-project-select:hover {
   border-color: var(--accent);
 }
 
-.qn-ddl-tip-proj.is-on {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  font-weight: 650;
+.qn-ddl-tip-project-select:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 0;
 }
 
 /* 编辑态（0.34.5）：textarea 聚焦/组词中的弹窗——ddlHover 的隐藏通道见类即退避；
@@ -12469,6 +12490,11 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* 候选列表是 max-height + overflow:auto 的纵向 flex：默认 flex-shrink:1 会在
+     候选变多时把每行压扁（overflow:hidden 的元素没有自动最小尺寸，一行被压到
+     几 px、文字横向切开只露上半段）——0.39.8 用户截图实锤。flex:none 让列表
+     正常滚动不压行 */
+  flex: none;
 }
 
 .combo-option:hover {
@@ -14078,5 +14104,44 @@ html.qn-mobile .dir-filter-backdrop {
 }
 
 html.qn-mobile.qn-ime-open .cm-hints {
+  display: none;
+}
+
+/* ==================== 0.39.8 反馈批 ==================== */
+
+/* 混用换行符的断行显示（editor.ts strayEolPlugin）：display:block 的零高块把
+   少数派行尾之后的内容推到下一视觉行，阅读观感与真正断行一致；行内仍见到的
+   红色控制符块（basicSetup highlightSpecialChars 渲染的 NL/CR）就是少数派行尾
+   的标记。height:0 + overflow:hidden 防止 widget 自身撑出空隙。 */
+.qn-stray-eol-break {
+  display: block;
+  height: 0;
+  overflow: hidden;
+}
+
+/* 0.39.8 左栏宽度拖拽手柄：贴在左栏右缘的细条（负 margin 不占布局宽），
+   hover/拖拽中显示主题色；zen 隐藏侧栏时一并隐藏 */
+.sidebar-resizer {
+  flex: none;
+  width: 6px;
+  margin: 0 -3px;
+  z-index: 30;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 0.13s ease;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer.is-resizing {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* 拖拽中关掉宽度过渡，否则手柄移动与面板宽度脱节 */
+.sidebar.is-resizing {
+  transition: none;
+}
+
+.app.zen .sidebar-resizer,
+html.qn-mobile .sidebar-resizer {
   display: none;
 }

@@ -411,3 +411,48 @@ console.log("DDL/实体多项目断言全部通过");
 }
 
 console.log("多标签断言全部通过");
+
+// ---------------- 收录弹窗多标签（0.39.8）----------------
+{
+  // 多于一个值 → 显式 @tags 行（标签行在前、时间行在后）；首个词=归属段落
+  const m1 = mergeDdlIntoNote("", "CREATE TABLE `t1` (x int);", "海亮", {
+    time: "2026-11-12 23:00",
+    tags: ["海亮", "中远"],
+  });
+  const e1 = parseDdlTables(m1).get("t1")?.[0];
+  assert(e1, "多标签收录落库");
+  assert(
+    JSON.stringify(e1?.tags) === JSON.stringify(["海亮", "中远"]),
+    "多标签生效", JSON.stringify(e1?.tags),
+  );
+  assert(e1?.time === "2026-11-12 23:00", "多标签收录保留时间行");
+  const lines = m1.split("\n").filter((l) => l.startsWith("-- @"));
+  assert(
+    lines[0]?.startsWith("-- @tags:") && lines[1]?.startsWith("-- @time:"),
+    "标签行在前时间行在后", lines.join(" | "),
+  );
+
+  // 单值 → 不写 @tags 行（段落名回落同义，少一行噪音）
+  const m2 = mergeDdlIntoNote("", "CREATE TABLE `t2` (x int);", "海亮", {
+    time: "2026-11-12 23:00",
+    tags: ["海亮"],
+  });
+  const sec2 = ddlSections(m2).find((s) => s.project === "海亮");
+  assert(sec2 && !m2.slice(sec2.from, sec2.to).includes("@tags"), "单值不写标签行", m2);
+  const e2 = parseDdlTables(m2).get("t2")?.[0];
+  assert(JSON.stringify(e2?.tags) === JSON.stringify(["海亮"]), "单值回落段落名为标签");
+
+  // Java 实体同构
+  const m3 = mergeClassesIntoNote("", "public class Foo { int x; }", "海亮", {
+    time: "2026-11-12 23:00",
+    tags: ["海亮", "问题"],
+  });
+  const e3 = parseClassLibrary(m3).get("Foo")?.[0];
+  assert(
+    JSON.stringify(e3?.tags) === JSON.stringify(["海亮", "问题"]),
+    "Java 多标签生效", JSON.stringify(e3?.tags),
+  );
+  assert(e3?.time === "2026-11-12 23:00", "Java 多标签保留时间行");
+}
+
+console.log("收录多标签断言全部通过");

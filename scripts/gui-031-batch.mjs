@@ -626,13 +626,14 @@ try {
       // hoverTime 350ms：最后一次移动后弹窗要再等一个悬停周期才出现——必须
       // waitFor，否则检查跑在弹窗出现之前（门禁首跑踩中，永远差半拍）
       const tipUp = await waitFor(ws, `!!document.querySelector('.qn-ddl-tip')`, 4000);
-      chipsOk = !!tipUp && await evaluate(ws, `document.querySelectorAll('.qn-ddl-tip-projects .qn-ddl-tip-proj').length >= 2`);
+      // 0.39.8：多项目切换从标题行下的 chips 行改为标题行内嵌下拉 select
+      chipsOk = !!tipUp && await evaluate(ws, `document.querySelectorAll('.qn-ddl-tip-project-select option').length >= 2`);
       if (!chipsOk && i >= 12) {
         // 诊断：磁盘上的库文件 vs 页面里弹窗的实态（门禁排查用，不影响判定）
         const ddlOnDisk = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
         const diag = await evaluate(ws, `({
           tip: !!document.querySelector('.qn-ddl-tip'),
-          chips: document.querySelectorAll('.qn-ddl-tip-projects .qn-ddl-tip-proj').length,
+          options: document.querySelectorAll('.qn-ddl-tip-project-select option').length,
           head: document.querySelector('.qn-ddl-tip-head')?.textContent ?? '',
           value: (document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? '').slice(0, 60),
         })`);
@@ -645,21 +646,28 @@ try {
         await sleep(300);
       }
     }
-    check(chipsOk, "同表名双项目时悬浮出现项目切换 chips（0.34.13）");
+    check(chipsOk, "同表名双项目时悬浮标题行出现项目切换下拉（0.39.8）");
     if (chipsOk) {
       const chipInfo = await evaluate(ws, `({
-        labels: [...document.querySelectorAll('.qn-ddl-tip-proj')].map((c) => c.textContent),
-        onAt: [...document.querySelectorAll('.qn-ddl-tip-proj')].findIndex((c) => c.classList.contains('is-on')),
+        labels: [...document.querySelectorAll('.qn-ddl-tip-project-select option')].map((c) => c.textContent),
+        selected: document.querySelector('.qn-ddl-tip-project-select')?.selectedOptions?.[0]?.textContent ?? '',
         value: document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? '',
       })`);
       // 默认选中：笔记刚打了 #测试项目B 标签 → 应落在 B（若标签索引还没扫到则退回第一条，这里两者都提示）
-      check(chipInfo.labels.length >= 2, "chips 文案含两个项目", chipInfo.labels.join("|"));
+      check(chipInfo.labels.length >= 2, "下拉选项含两个项目", chipInfo.labels.join("|"));
       const bIndex = chipInfo.labels.findIndex((l) => l === "测试项目B");
       if (bIndex >= 0) {
-        await evaluate(ws, `document.querySelectorAll('.qn-ddl-tip-proj')[${bIndex}]?.click()`);
+        // 原生 select 用赋值 + change 事件切换（合成点击打不开弹层）
+        await evaluate(ws, `(() => {
+          const select = document.querySelector('.qn-ddl-tip-project-select');
+          if (!select) return false;
+          select.value = String(${bIndex});
+          select.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`);
         await sleep(300);
         const switched = await evaluate(ws, `document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? ''`);
-        check(switched.includes("B项目版"), "点击 chip 切换到对应项目的语句", switched.slice(0, 50));
+        check(switched.includes("B项目版"), "切换下拉切到对应项目的语句", switched.slice(0, 50));
       }
       await mouse(ws, "mouseMoved", 6, 6);
       await waitFor(ws, `!document.querySelector('.qn-ddl-tip')`, 3000);

@@ -515,7 +515,7 @@ export function mergeDdlIntoNote(
   existing: string,
   incoming: string,
   project = "",
-  opts: { time?: string } = {},
+  opts: { time?: string; tags?: string[] } = {},
 ): string {
   const fresh = parseDdlTables(incoming);
   if (fresh.size === 0) return existing;
@@ -549,9 +549,18 @@ export function mergeDdlIntoNote(
 
   const pending = [...batch].filter(([table]) => !replaced.has(table)).map(([, ddl]) => ddl);
   if (pending.length === 0) return text;
-  // 0.39：新追加的语句带 @time 收录时间行（每条一行，替换旧语句不带——保留原时间）
+  // 0.39：新追加的语句带 @time 收录时间行（每条一行，替换旧语句不带——保留原时间）。
+  // 0.39.8 收录弹窗支持一次输多个标签：显式 @tags 行只在**多于一个值**时写——
+  // 单值与「段落名回落」语义相同，少一行噪音；标签行在前、时间行在后，与
+  // applyStatementTags 的块内次序一致
+  const metaHead = [
+    opts.tags && opts.tags.length > 1 ? tagsLineText("sql", opts.tags) : null,
+    opts.time ? timeLineText("sql", opts.time) : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
   const block = pending
-    .map((ddl) => (opts.time ? `${timeLineText("sql", opts.time)}\n${ddl}` : ddl))
+    .map((ddl) => (metaHead ? `${metaHead}\n${ddl}` : ddl))
     .join("\n\n");
   const targetNow = ddlSections(text).find((section) => section.project === project);
   if (targetNow) {

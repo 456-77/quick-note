@@ -44,8 +44,8 @@ export function entryLabel(entry: DdlEntry): string {
 }
 
 /**
- * 悬浮弹窗 DOM：标题行（表名 + [消息 + 保存钮]）+ 可编辑文本域，否则着色只读体；
- * 多项目时标题行下有一排切换 chips。
+ * 悬浮弹窗 DOM：标题行（表名 + 多项目下拉 + [消息 + 保存钮]）+ 可编辑文本域，
+ * 否则着色只读体。
  */
 export function buildDdlTipDom(
   table: string,
@@ -60,6 +60,18 @@ export function buildDdlTipDom(
   // 互斥走窗口事件——ddlHover 两条路径（CM hover/单元格悬浮）都经这里装配，
   // App 监听后收起快速笔记弹窗
   window.dispatchEvent(new CustomEvent("qn-ddl-tip-open"));
+
+  // ---- 当前条目（多项目切换共用）---------------------------------------------
+  // 选中态是局部变量：切换只重铺体部内容，不重建弹窗
+  let current = 0;
+  // 0.34.13 用户反馈「笔记里一般有一个标签提示属于哪个项目，默认显示标签中
+  // 指定的项目」：defaultProject 由调用方按笔记标签算好传进来
+  const defaultAt = options?.defaultProject
+    ? entries.findIndex((entry) => entry.project === options.defaultProject)
+    : -1;
+  if (defaultAt >= 0) current = defaultAt;
+  // 体部渲染器按形态在后面赋值（只读 pre / 可编辑双层）；下拉闭包先建后调
+  let render: () => void = () => {};
 
   // ---- 标题行 ---------------------------------------------------------------
   const head = document.createElement("div");
@@ -134,41 +146,31 @@ export function buildDdlTipDom(
     head.append(message, saveBtn);
   }
 
-  // ---- 多项目切换 chips（>1 条才渲染）---------------------------------------
-  // 选中态是局部变量：切换只重铺体部内容，不重建弹窗
-  let current = 0;
-  // 0.34.13 用户反馈「笔记里一般有一个标签提示属于哪个项目，默认显示标签中
-  // 指定的项目」：defaultProject 由调用方按笔记标签算好传进来
-  const defaultAt = options?.defaultProject
-    ? entries.findIndex((entry) => entry.project === options.defaultProject)
-    : -1;
-  if (defaultAt >= 0) current = defaultAt;
-  // 体部渲染器按形态在后面赋值（只读 pre / 可编辑双层）；chips 闭包先建后调
-  let render: () => void = () => {};
-  const chips: HTMLElement[] = [];
-  let projectsRow: HTMLElement | null = null;
+  // ---- 多项目切换下拉（>1 条才渲染，0.39.8 用户反馈「多个项目存在同名 ddl
+  // 或者实体时，在这里添加一个下拉框供选择」）--------------------------------
+  // 0.35.0 的项目 chips 行占一整行且不够直观，改为标题行内嵌原生 select：
+  // color-scheme: dark 下弹层走深色；切换只重铺体部，不重建弹窗
   if (entries.length > 1) {
-    const row = document.createElement("div");
-    row.className = "qn-ddl-tip-projects";
+    const select = document.createElement("select");
+    select.className = "qn-ddl-tip-project-select";
+    select.title = "同名语句存在于多个项目，选择要查看的项目";
+    select.addEventListener("mousedown", (event) => event.stopPropagation());
     entries.forEach((entry, index) => {
-      const chip = document.createElement("button");
-      chip.type = "button";
-      chip.className = "qn-ddl-tip-proj";
-      chip.textContent = entryLabel(entry);
-      chip.title = `查看「${entryLabel(entry)}」的语句`;
-      chip.addEventListener("mousedown", (event) => event.stopPropagation());
-      chip.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (current === index) return;
-        current = index;
-        chips.forEach((c, i) => c.classList.toggle("is-on", i === current));
-        render();
-      });
-      chips.push(chip);
-      row.appendChild(chip);
+      const option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = entry.project || "未分组";
+      option.title = entryLabel(entry);
+      select.appendChild(option);
     });
-    chips[current]?.classList.add("is-on");
-    projectsRow = row;
+    select.value = String(current);
+    select.addEventListener("change", () => {
+      const next = Number(select.value);
+      if (next === current) return;
+      current = next;
+      render();
+    });
+    // 位置=用户截图里框的空位：↑↓ 命中按钮之后、消息与保存钮之前
+    head.insertBefore(select, message);
   }
 
   // ---- 体部 -----------------------------------------------------------------
@@ -185,8 +187,7 @@ export function buildDdlTipDom(
     };
     render();
     body.replaceChildren(pre);
-    if (projectsRow) dom.append(head, projectsRow, body);
-    else dom.append(head, body);
+    dom.append(head, body);
     return dom;
   }
 
@@ -423,8 +424,7 @@ export function buildDdlTipDom(
   };
 
   body.append(hl, input);
-  if (projectsRow) dom.append(head, projectsRow, body);
-  else dom.append(head, body);
+  dom.append(head, body);
   return dom;
 }
 

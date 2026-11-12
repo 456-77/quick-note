@@ -27,6 +27,7 @@ import {
   dropEmptyFence,
   metaBlockAbove,
   sectionProjectAt,
+  tagsLineText,
   timeLineText,
   type DdlEntry,
   type DdlLibrary,
@@ -185,7 +186,7 @@ export function mergeClassesIntoNote(
   existing: string,
   incoming: string,
   project = "",
-  opts: { time?: string } = {},
+  opts: { time?: string; tags?: string[] } = {},
 ): string {
   const fresh = parseClassLibrary(incoming);
   if (fresh.size === 0) return existing;
@@ -222,9 +223,17 @@ export function mergeClassesIntoNote(
 
   const pending = [...batch].filter(([name]) => !replaced.has(name)).map(([, ddl]) => ddl);
   if (pending.length === 0) return text;
-  // 0.39：新追加的类带 @time 收录时间行（每类一行；替换旧类保留原时间）
+  // 0.39：新追加的类带 @time 收录时间行（每类一行；替换旧类保留原时间）。
+  // 0.39.8 收录弹窗多标签：@tags 行只在多于一个值时写（单值=段落名回落同义），
+  // 标签行在前、时间行在后（与 ddl.ts applyStatementTags 次序一致）
+  const metaHead = [
+    opts.tags && opts.tags.length > 1 ? tagsLineText("java", opts.tags) : null,
+    opts.time ? timeLineText("java", opts.time) : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
   const block = pending
-    .map((ddl) => (opts.time ? `${timeLineText("java", opts.time)}\n${ddl}` : ddl))
+    .map((ddl) => (metaHead ? `${metaHead}\n${ddl}` : ddl))
     .join("\n\n");
   const targetNow = ddlSections(text).find((section) => section.project === project);
   if (targetNow) {

@@ -18,6 +18,15 @@ const RENDER_STEP = 600;
 /** 单列筛选面板里最多列出的不同值（再多请用搜索缩小范围）。 */
 const MAX_FILTER_VALUES = 500;
 
+/**
+ * 列筛选的会话级缓存（0.39.8 用户反馈「从表格切换到别的文件然后又切换回来，
+ * 原来设置的筛选条件被清空了」）：FilePreview 按激活预览条件渲染，切走即卸载，
+ * 组件 state 全丢。以「cacheKey::sheet 名」为键把每列筛选记在模块级 Map，
+ * 重挂载/切 sheet 时回填。只活在本会话（重启即清），键带 sheet 名所以各 sheet
+ * 互不串扰，清除筛选即从缓存删除。
+ */
+const filterCache = new Map<string, Record<number, string[]>>();
+
 /** 列序号 → Excel 列名（0 → A，26 → AA）。表头为空时用它兜底显示。 */
 function columnName(index: number): string {
   let n = index + 1;
@@ -62,8 +71,21 @@ function ColumnFilter({
   const [chosen, setChosen] = useState<Set<string>>(
     () => new Set(applied ?? values),
   );
-  const q = search.trim().toLowerCase();
-  const matched = q ? values.filter((value) => value.toLowerCase().includes(q)) : values;
+  // 0.39.8 用户反馈「优化筛选，支持多值输入」：手头常有一串单号要一起筛，
+  // 空格/逗号/顿号/分号（含全角）拆成多个词，值命中**任一**词即算匹配——
+  // 粘一串值进来 → 列表收敛到这几个 → 回车（勾选 ∩ 搜索）直接应用。
+  // 单词时与旧的子串匹配行为完全一致。
+  const terms = search
+    .split(/[\s,，、;；]+/)
+    .map((term) => term.trim().toLowerCase())
+    .filter(Boolean);
+  const matched =
+    terms.length > 0
+      ? values.filter((value) => {
+          const lowered = value.toLowerCase();
+          return terms.some((term) => lowered.includes(term));
+        })
+      : values;
   const listed = matched.slice(0, MAX_FILTER_VALUES);
   const toggle = (value: string) =>
     setChosen((prev) => {
@@ -93,7 +115,7 @@ function ColumnFilter({
           // 内容时按「勾选 ∩ 搜索匹配」应用——用户在搜索框打字回车，期望是把
           // 看得见的值变成筛选结果；旧的 apply() 只看勾选集（初始全选，回车
           // 等于全量原样应用=没筛），看起来就像"回车恢复成当前状态"。
-          if (q) {
+          if (terms.length > 0) {
             const visible = values.filter((value) => chosen.has(value) && matched.includes(value));
             if (visible.length === 0 || visible.length === values.length) onApply(null);
             else onApply(visible);
@@ -112,7 +134,7 @@ function ColumnFilter({
         className="xlsx-filter-search"
         value={search}
         spellCheck={false}
-        placeholder="搜索值…（Enter 应用 · Esc 关闭）"
+        placeholder="搜索值…（空格分隔可多值 · Enter 应用 · Esc 关闭）"
         onChange={(event) => setSearch(event.target.value)}
       />
       <div className="xlsx-filter-actions">
@@ -159,11 +181,23 @@ function ColumnFilter({
   );
 }
 
-export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }) {
+export default function SpreadsheetPreview({
+  sheets,
+  cacheKey,
+}: {
+  sheets: ParsedSheet[];
+  /** 筛选缓存的键来源（FilePreview 传 `${vault}::${path}`）；缺省不缓存。 */
+  cacheKey?: string;
+}) {
   const [sheetIndex, setSheetIndex] = useState(0);
   const sheet = sheets[Math.min(sheetIndex, sheets.length - 1)];
-  /** 生效的列筛选：列下标 → 选中的显示值（数组非空）。 */
-  const [filters, setFilters] = useState<Record<number, string[]>>({});
+  /** 生效的列筛选：列下标 → 选中的显示值（数组非空）。初始从缓存回填——
+   *  切走文件再切回来（组件重挂载）时筛选还在。 */
+  const [filters, setFilters] = useState<Record<number, string[]>>(() => {
+    const first = sheets[0];
+    const cached = cacheKey && first ? filterCache.get(`${cacheKey}::${first.name}`) : undefined;
+    return cached ? { ...cached } : {};
+  });
   const [cap, setCap] = useState(RENDER_STEP);
   /** 筛选面板：列下标 + fixed 定位（相对视口）。 */
   const [pop, setPop] = useState<{
@@ -177,11 +211,31 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
   /** 表格容器：筛选 chips 打开时用它找对应列头做锚点。 */
   const bodyWrapRef = useRef<HTMLDivElement | null>(null);
 
+  // 切 sheet / 换文件（同一实例被复用，如分屏栏）：收起面板、重置分页，
+  // 筛选从该 sheet 的缓存回填（没记录过 = 空）。
   useEffect(() => {
-    setFilters({});
+    const target = sheets[Math.min(sheetIndex, sheets.length - 1)];
+    const cached =
+      cacheKey && target ? filterCache.get(`${cacheKey}::${target.name}`) : undefined;
+    setFilters(cached ? { ...cached } : {});
     setCap(RENDER_STEP);
     setPop(null);
-  }, [sheetIndex]);
+  }, [sheetIndex, cacheKey, sheets]);
+
+  // 换文件（cacheKey 变化）时回到第一个 sheet；分屏栏复用同一实例，不重置的话
+  // sheetIndex 指着上一个文件的 sheet 序号
+  useEffect(() => {
+    setSheetIndex(0);
+  }, [cacheKey]);
+
+  // 筛选变化写回缓存（清除筛选 = 从缓存删除），保证切走再切回是"最后一次"的状态
+  useEffect(() => {
+    const target = sheets[Math.min(sheetIndex, sheets.length - 1)];
+    if (!cacheKey || !target) return;
+    const key = `${cacheKey}::${target.name}`;
+    if (Object.keys(filters).length === 0) filterCache.delete(key);
+    else filterCache.set(key, filters);
+  }, [filters, sheetIndex, cacheKey, sheets]);
 
   // 点面板外收起；滚动预览（表格或页面）也收起——但**弹窗内部滚值列表不算**
   // （0.39 用户反馈「鼠标聚焦在弹窗上滚动滚轮，弹窗会消失」：捕获阶段的
@@ -307,24 +361,44 @@ export default function SpreadsheetPreview({ sheets }: { sheets: ParsedSheet[] }
           )}
         </span>
         {activeCols.map((col) => (
-          <button
-            key={col}
-            type="button"
-            className="xlsx-filter-chip"
-            title={`编辑「${headerLabel(col)}」的筛选`}
-            onClick={(event) => {
-              // 0.39 用户反馈「优化弹窗出现的位置」：从 chips 打开也锚到对应列头。
-              // 0.39.5 合并单元格后 thead 的位置下标 ≠ 列号（colSpan 占位），按
-              // data-col 找；被合并盖住的列没有自己的 th，回退锚在 chip 上
-              const th = bodyWrapRef.current
-                ?.querySelector(`thead th[data-col="${col}"]`) as HTMLElement | null;
-              const btn = (th?.querySelector(".xlsx-filter-btn") ?? th) as HTMLElement | null;
-              openPop(col, btn ?? event.currentTarget);
-            }}
-          >
-            {headerLabel(col)}:{" "}
-            {filters[col].length === 1 ? displayValue(filters[col][0]) : `${filters[col].length} 个值`}
-          </button>
+          // 0.39.8 用户反馈「筛选条件添加关闭按钮」：chip 拆成「条件标签（点开
+          // 编辑面板）+ ×（直接清掉该列筛选）」。外壳用 span 承接胶囊样式——
+          // button 里再嵌 button 不合 HTML 规范，原生解析会把它拆开。
+          <span key={col} className="xlsx-filter-chip">
+            <button
+              type="button"
+              className="xlsx-filter-chip-label"
+              title={`编辑「${headerLabel(col)}」的筛选`}
+              onClick={(event) => {
+                // 0.39 用户反馈「优化弹窗出现的位置」：从 chips 打开也锚到对应列头。
+                // 0.39.5 合并单元格后 thead 的位置下标 ≠ 列号（colSpan 占位），按
+                // data-col 找；被合并盖住的列没有自己的 th，回退锚在 chip 上
+                const th = bodyWrapRef.current
+                  ?.querySelector(`thead th[data-col="${col}"]`) as HTMLElement | null;
+                const btn = (th?.querySelector(".xlsx-filter-btn") ?? th) as HTMLElement | null;
+                openPop(col, btn ?? event.currentTarget);
+              }}
+            >
+              {headerLabel(col)}:{" "}
+              {filters[col].length === 1 ? displayValue(filters[col][0]) : `${filters[col].length} 个值`}
+            </button>
+            <button
+              type="button"
+              className="xlsx-filter-chip-x"
+              aria-label={`清除「${headerLabel(col)}」的筛选`}
+              title="清除该列筛选"
+              onClick={(event) => {
+                event.stopPropagation();
+                setFilters((prev) => {
+                  const next = { ...prev };
+                  delete next[col];
+                  return next;
+                });
+              }}
+            >
+              ×
+            </button>
+          </span>
         ))}
         {activeCols.length > 0 && (
           <button

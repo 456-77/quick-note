@@ -47,8 +47,9 @@ export default function DdlDialog({
   ddlPath,
   projects = [],
 }: {
-  /** 落盘由父组件做。返回结果文案；抛错显示在弹窗里。project = 选定的项目名。 */
-  onSubmit: (ddlText: string, project: string) => Promise<string>;
+  /** 落盘由父组件做。返回结果文案；抛错显示在弹窗里。project = 归属项目段落名
+   *  （输入的第一个词），tags = 输入的全部词（>1 时写显式 @tags 行）。 */
+  onSubmit: (ddlText: string, project: string, tags: string[]) => Promise<string>;
   onClose: () => void;
   /** DDL 笔记路径（提示文案里显示，让用户知道语句存去了哪）。 */
   ddlPath: string;
@@ -75,7 +76,17 @@ export default function DdlDialog({
     setBusy(true);
     setMessage(null);
     try {
-      const text = await onSubmit(draft, project.trim());
+      // 0.39.8 用户反馈「ddl 弹窗中的标签输入框，支持同时输入多个标签」：
+      // 空格/逗号/顿号/分号（含全角）拆词——第一个词是归属项目段落（## 项目名），
+      // 全部词一起写进语句的 @tags 行（多于一个值才写，单值与段落名回落同义）。
+      // 「海亮 中远」= 归入海亮段落、标签含海亮与中远。
+      const parts = project
+        .split(/[\s,，、;；]+/)
+        .map((part) => part.trim())
+        .filter(Boolean);
+      const first = parts[0] ?? "";
+      const tags = parts.length > 1 ? [...new Set(parts)] : [];
+      const text = await onSubmit(draft, first, tags);
       setMessage({ text, kind: "ok" });
       setDraft("");
       areaRef.current?.focus();
@@ -136,8 +147,8 @@ export default function DdlDialog({
             value={project}
             onChange={setProject}
             suggestions={projects.filter((name) => name !== "")}
-            placeholder="留空 = 默认（未分组）"
-            title="语句归入该项目段落（## 项目名），段落名同时作为默认标签；多项目复用可在管理面板追加标签"
+            placeholder="项目名，空格分隔可加多个标签 · 留空 = 未分组"
+            title="第一个词 = 归属项目段落（## 项目名）；空格/逗号分隔可一次写多个标签（@tags 行）。例：海亮 中远 → 归入海亮段落、标签为海亮+中远"
           />
         </div>
         <div className="quick-capture-help">
