@@ -109,7 +109,13 @@ import {
 import { closeDdlTip, installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
 import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
 import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
-import { fetchWeather, insertWeatherLine } from "./lib/weather";
+import {
+  fetchWeather,
+  insertWeatherPlaceholder,
+  weatherPlaceholderRange,
+  replaceWeatherPlaceholder,
+  removeWeatherPlaceholder,
+} from "./lib/weather";
 import { blobTypeOf, removeImageReferences } from "./lib/imageOps";
 import { buildWeeklyReview, weekdayZh, type ReviewDiary } from "./lib/weeklyReview";
 import { exportNoteToPdf } from "./lib/printExport";
@@ -149,6 +155,10 @@ const VAULT_KEY = "quicknote.vault";
  *  树行/重命名输入行不挤破，上限别把编辑区挤没。 */
 const SIDEBAR_MIN_WIDTH = 220;
 const SIDEBAR_MAX_WIDTH = 560;
+/** 0.39.9 用户反馈「宽度不足以显示所有元素时，只显示图标不显示中文提示」：
+ *  左栏窄于此值时顶栏页签只留图标、标题行收起标题（280px 起四个文字页签
+ *  恰好放得下，见 .left-view 的宽度账）。 */
+const SIDEBAR_NARROW_AT = 280;
 
 /**
  * 无笔记空态的编辑器状态：editable=false。0.34.6 用户反馈「没打开任何文件时，
@@ -625,18 +635,43 @@ export default function App() {
         return;
       }
       if (fromSide === "main") {
-        setPreviewTabs((prev) => prev.filter((p) => p !== path));
-        setActivePreview((cur) => (cur === path ? null : cur));
+        // 源栏收尾（0.39.9 用户反馈「右侧分屏文件拖到左侧，右侧显示空白，不
+        // 应该自动显示紧挨他的文件吗」）：被拖走的是激活预览时，先就近激活
+        // 同栏剩余预览（同 closeSpecialTab 的取法）；预览没了该栏编辑器又没有
+        // 激活标签，就点亮标签栏里紧邻的笔记标签，别让整栏悬空
+        const closedAt = previewTabsRef.current.indexOf(path);
+        const rest = previewTabsRef.current.filter((p) => p !== path);
+        setPreviewTabs(rest);
+        if (activePreviewRef.current === path) {
+          const next = rest.length > 0 ? rest[Math.min(closedAt, rest.length - 1)] : null;
+          setActivePreview(next);
+          if (!next && !activeTabRef.current && openTabsRef.current.length > 0) {
+            const neighbor = openTabsRef.current[openTabsRef.current.length - 1].path;
+            if (!rightTabsRef.current.includes(neighbor)) activateTab(neighbor);
+          }
+        }
         setPreviewTabsSplit((prev) => insert(prev));
         setActivePreviewSplit(path);
       } else {
-        setPreviewTabsSplit((prev) => prev.filter((p) => p !== path));
-        setActivePreviewSplit((cur) => (cur === path ? null : cur));
+        const closedAt = previewTabsSplitRef.current.indexOf(path);
+        const rest = previewTabsSplitRef.current.filter((p) => p !== path);
+        setPreviewTabsSplit(rest);
+        if (activePreviewSplitRef.current === path) {
+          const next = rest.length > 0 ? rest[Math.min(closedAt, rest.length - 1)] : null;
+          setActivePreviewSplit(next);
+          // 预览没了且该栏编辑器没有激活标签：点亮标签栏里紧挨预览组的笔记标签
+          //（预览组在标签栏末尾，左邻=最后一个笔记标签）
+          if (!next && !splitActiveRef.current && rightTabsRef.current.length > 0) {
+            setSplitActiveTab(rightTabsRef.current[rightTabsRef.current.length - 1]);
+          }
+        }
         setPreviewTabs((prev) => insert(prev));
         setActivePreview(path);
       }
       focusedPaneRef.current = toSide;
     },
+    // activateTab/各 ref 都晚于本声明：闭包体在事件期执行（届时已初始化），
+    // 引用安全；activateTab 读 ref+setState，首渲实例可长期用
     [],
   );
   /** 知识库内"复制"的文件（Ctrl+V 粘贴进选中的目录；同时已写入系统剪贴板）。 */
@@ -707,7 +742,8 @@ export default function App() {
   /** 正在裁剪的图片（仓库相对路径；null = 弹窗关闭）。 */
   const [cropPath, setCropPath] = useState<string | null>(null);
   /** 标签页右键菜单（固定 / 关闭左侧·右侧·其他·全部）。 */
-  const [tabMenu, setTabMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  /** 标签右键菜单（0.39.9 加 kind：preview=预览标签的精简菜单——移动/关闭）。 */
+  const [tabMenu, setTabMenu] = useState<{ path: string; x: number; y: number; kind?: "preview" } | null>(null);
   /** 标题行右键菜单（0.35.3 用户需求：光标定位在标题上，右键复制该标题的链接）。 */
   const [headingMenu, setHeadingMenu] = useState<{ x: number; y: number; text: string } | null>(
     null,
@@ -1440,27 +1476,67 @@ export default function App() {
     return 272;
   });
   const [sidebarResizing, setSidebarResizing] = useState(false);
-  const sidebarDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const sidebarDragRef = useRef<{ startX: number; startWidth: number; live: number; latestX: number } | null>(null);
+  // 拖动中的实时宽度镜像：拖动期间若发生无关渲染（自动保存落 state 等），
+  // React 会用渲染值重写内联样式——读镜像才不会把宽度闪回旧值
+  const sidebarLiveRef = useRef(sidebarWidth);
+  // 高轮询鼠标（1000Hz）一秒能来上千次 pointermove：逐次写 DOM + 失效布局
+  // 每帧做几十遍就是卡顿（0.39.9 用户反馈「拖动分界线还是很卡顿」）——
+  // move 只记最新位置，rAF 每帧最多应用一次
+  const sidebarRafRef = useRef<number | undefined>(undefined);
+  const applySidebarWidth = () => {
+    const drag = sidebarDragRef.current;
+    if (!drag) return;
+    const next = Math.min(
+      SIDEBAR_MAX_WIDTH,
+      Math.max(SIDEBAR_MIN_WIDTH, drag.startWidth + (drag.latestX - drag.startX)),
+    );
+    drag.live = next;
+    sidebarLiveRef.current = next;
+    const aside = sidebarLeftRef.current;
+    if (aside) {
+      aside.style.setProperty("--sidebar-width", `${next}px`);
+      aside.classList.toggle("is-narrow", next < SIDEBAR_NARROW_AT);
+    }
+  };
   const onSidebarResizeDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    sidebarDragRef.current = { startX: event.clientX, startWidth: sidebarWidth };
+    sidebarDragRef.current = {
+      startX: event.clientX,
+      startWidth: sidebarWidth,
+      live: sidebarWidth,
+      latestX: event.clientX,
+    };
     setSidebarResizing(true);
   };
   const onSidebarResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
     const drag = sidebarDragRef.current;
     if (!drag) return;
-    const next = drag.startWidth + (event.clientX - drag.startX);
-    setSidebarWidth(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, next)));
+    drag.latestX = event.clientX;
+    if (sidebarRafRef.current === undefined) {
+      sidebarRafRef.current = window.requestAnimationFrame(() => {
+        sidebarRafRef.current = undefined;
+        applySidebarWidth();
+      });
+    }
   };
   const onSidebarResizeUp = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (!sidebarDragRef.current) return;
+    const drag = sidebarDragRef.current;
+    if (!drag) return;
+    drag.latestX = event.clientX;
+    if (sidebarRafRef.current !== undefined) {
+      window.cancelAnimationFrame(sidebarRafRef.current);
+      sidebarRafRef.current = undefined;
+    }
+    applySidebarWidth(); // 收尾帧没来得及跑就同步应用，别丢最后的位移
     sidebarDragRef.current = null;
     setSidebarResizing(false);
     event.currentTarget.releasePointerCapture(event.pointerId);
+    setSidebarWidth(drag.live);
     try {
-      window.localStorage.setItem("quicknote.ui.sidebarWidth", String(sidebarWidth));
+      window.localStorage.setItem("quicknote.ui.sidebarWidth", String(drag.live));
     } catch {
       // 尽力而为
     }
@@ -2271,6 +2347,11 @@ export default function App() {
       pointer capture 在部分输入通道下不重定向——window 监听对真实鼠标与
       合成事件都可靠）→ 按容器宽度换算比例 → up 落盘。 */
   const paneDividerRef = useRef<HTMLDivElement | null>(null);
+  // 0.39.9 用户反馈「打开表时拖动分界线会卡顿」（与左栏宽度拖拽同修）：拖动
+  // 期间绕过 React，直接写分屏列的 flex-basis，松手才 setSplitPct 一次；
+  // live ref 兜住拖动中无关渲染用陈旧 state 重写内联样式的闪跳
+  const splitColRef = useRef<HTMLDivElement | null>(null);
+  const splitPctLiveRef = useRef<number | null>(null);
   const onPaneDividerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       event.preventDefault();
@@ -2282,17 +2363,31 @@ export default function App() {
       const startPct = splitPct;
       const total = container.getBoundingClientRect().width || 1;
       let latest = startPct;
+      let latestX = event.clientX;
+      let raf = 0;
+      const apply = () => {
+        raf = 0;
+        splitPctLiveRef.current = latest;
+        const col = splitColRef.current;
+        if (col) col.style.flexBasis = `${latest}%`;
+      };
       const onMove = (move: PointerEvent) => {
-        // 右栏在右侧：向右拖 → 右栏变窄（占比减小）
-        const dxPct = ((move.clientX - startX) / total) * 100;
-        latest = Math.min(72, Math.max(28, startPct - dxPct));
-        setSplitPct(latest);
+        // 右栏在右侧：向右拖 → 右栏变窄（占比减小）。高轮询鼠标下 move 一秒
+        // 上千次——只记位置，rAF 每帧最多应用一次（同左栏宽度手柄）
+        latestX = move.clientX;
+        latest = Math.min(72, Math.max(28, startPct - ((latestX - startX) / total) * 100));
+        if (!raf) raf = window.requestAnimationFrame(apply);
       };
       const onUp = () => {
         window.removeEventListener("pointermove", onMove);
         window.removeEventListener("pointerup", onUp);
+        if (raf) window.cancelAnimationFrame(raf);
+        latest = Math.min(72, Math.max(28, startPct - ((latestX - startX) / total) * 100));
+        apply(); // 收尾同步应用
+        splitPctLiveRef.current = null;
         document.body.style.userSelect = "";
         document.body.style.cursor = "";
+        setSplitPct(latest);
         try {
           localStorage.setItem(SPLIT_RATIO_KEY, String(Math.round(latest)));
         } catch {
@@ -4606,6 +4701,55 @@ export default function App() {
   );
 
   /**
+   * 预览类文件路由到某一栏（0.39.8 引入按聚焦栏路由；0.39.9 拆出独立入口——
+   * 点击看「最后聚焦的窗格」，拖放看「落点所在的栏」：拖放落点是显式意图，
+   * 不该被聚焦栏覆盖，否则拖到左栏却开进右栏（0.39.9 用户实测）。跨栏都是
+   * 移动不是复制，同一预览不会同现两栏（与编辑器标签唯一归属一致）。
+   */
+  const routePreviewToPane = useCallback(
+    (path: string, side: "main" | "split") => {
+      // 预览与收件箱面板互斥：面板开着时打开附件，把面板收起来让预览可见
+      setCaptureManagerOpen(false);
+      // 切到预览页同样收起文件内搜索面板（0.23 用户反馈：换页面不残留）
+      closeSearchPanelIfOpen();
+      setSelectedPath(path);
+      // 0.39.9 用户反馈「预览已在分屏一侧打开，聚焦另一侧后再点树里的同一
+      // 文件，文件会移动到另一侧重新打开」：**已打开的预览点树=定位激活**，
+      // 归属栏不动（换栏是拖拽的事）；只有从未打开过的才按聚焦/落点路由
+      if (previewTabsSplitRef.current.includes(path)) {
+        setActivePreviewSplit(path);
+        focusedPaneRef.current = "split";
+        recordRecent(path);
+        return;
+      }
+      if (previewTabsRef.current.includes(path)) {
+        setActivePreview(path);
+        focusedPaneRef.current = "main";
+        recordRecent(path);
+        return;
+      }
+      const splitOpen = rightTabsRef.current.length > 0 || previewTabsSplitRef.current.length > 0;
+      if (side === "split" && splitOpen) {
+        setPreviewTabs((prev) => (prev.includes(path) ? prev.filter((p) => p !== path) : prev));
+        setActivePreview((cur) => (cur === path ? null : cur));
+        setPreviewTabsSplit((prev) => (prev.includes(path) ? prev : [...prev, path]));
+        setActivePreviewSplit(path);
+        focusedPaneRef.current = "split";
+      } else {
+        if (previewTabsSplitRef.current.includes(path)) {
+          setPreviewTabsSplit((prev) => prev.filter((p) => p !== path));
+          setActivePreviewSplit((cur) => (cur === path ? null : cur));
+        }
+        openPreviewTab(path);
+        focusedPaneRef.current = "main";
+      }
+      // 预览类文件同样进「最近」列表（此前只记笔记，最近里永远看不到 pdf/docx）
+      recordRecent(path);
+    },
+    [openPreviewTab, recordRecent, closeSearchPanelIfOpen],
+  );
+
+  /**
    * 文件树的打开入口（按类型路由）：预览类（pdf/docx/xlsx）开预览标签页，
    * markdown 与数据文件（json/sql/yaml/txt 等）进编辑器。
    */
@@ -4613,33 +4757,17 @@ export default function App() {
     async (path: string) => {
       const kind = fileKindOf(path);
       if (kind === "pdf" || kind === "docx" || kind === "ppt" || kind === "spreadsheet" || kind === "html" || kind === "image") {
-        // 预览与收件箱面板互斥：面板开着时点附件，把面板收起来让预览可见
-        setCaptureManagerOpen(false);
-        // 切到预览页同样收起文件内搜索面板（0.23 用户反馈：换页面不残留）
-        closeSearchPanelIfOpen();
-        setSelectedPath(path);
         // 0.39.8 用户反馈「excel 预览文件为什么不支持分屏浏览」：预览类此前
         // 只进左栏，想并排看只能靠拖拽（不可发现）。对齐笔记的 0.32.2 分栏
-        // 语义——最后聚焦的窗格在分屏时，点击预览类文件直接开到分屏预览组；
-        // 反向同理，点回左栏把它从分屏组移回来。跨栏都是移动不是复制，
-        // 同一预览不会同现两栏（与编辑器标签唯一归属一致）。
-        const splitOpen = rightTabsRef.current.length > 0 || previewTabsSplitRef.current.length > 0;
-        if (focusedPaneRef.current === "split" && splitOpen) {
-          setPreviewTabs((prev) => (prev.includes(path) ? prev.filter((p) => p !== path) : prev));
-          setActivePreview((cur) => (cur === path ? null : cur));
-          setPreviewTabsSplit((prev) => (prev.includes(path) ? prev : [...prev, path]));
-          setActivePreviewSplit(path);
-          focusedPaneRef.current = "split";
-        } else {
-          if (previewTabsSplitRef.current.includes(path)) {
-            setPreviewTabsSplit((prev) => prev.filter((p) => p !== path));
-            setActivePreviewSplit((cur) => (cur === path ? null : cur));
-          }
-          openPreviewTab(path);
-          focusedPaneRef.current = "main";
-        }
-        // 预览类文件同样进「最近」列表（此前只记笔记，最近里永远看不到 pdf/docx）
-        recordRecent(path);
+        // 语义——最后聚焦的窗格在分屏时，点击预览类文件直接开到分屏预览组。
+        // 0.39.9 澄清：已打开的预览点树=就地激活不搬家，见 routePreviewToPane。
+        routePreviewToPane(
+          path,
+          focusedPaneRef.current === "split" &&
+            (rightTabsRef.current.length > 0 || previewTabsSplitRef.current.length > 0)
+            ? "split"
+            : "main",
+        );
         return;
       }
       // 打开编辑类文件时离开预览/语句库页（预览标签保留在标签栏，可点回）
@@ -4648,7 +4776,7 @@ export default function App() {
       setSelectedPath(path);
       await openNote(path);
     },
-    [openNote, recordRecent, openPreviewTab],
+    [openNote, routePreviewToPane],
   );
 
   /** 最新 openEntry：启动参数「双击 .md 打开」的 effect 只跑一次，用它避免旧闭包。 */
@@ -4669,14 +4797,10 @@ export default function App() {
       const kind = fileKindOf(path);
       if (kind !== "markdown" && kind !== "text") {
         // 0.36.1 用户反馈「无法拖动预览文件移动到左右栏」：预览类拖到哪栏就在
-        // 哪栏开预览标签（左栏走 openEntry 原语义；右栏进分屏预览组）
-        if (side === "split") {
-          setPreviewTabsSplit((prev) => (prev.includes(path) ? prev : [...prev, path]));
-          setActivePreviewSplit(path);
-          focusedPaneRef.current = "split";
-        } else {
-          void openEntryRef.current(path);
-        }
+        // 哪栏开预览标签。0.39.9 修复：此前左栏落点转手给 openEntry（按聚焦栏
+        // 路由），右栏聚焦着时拖到左栏却开进右栏（用户实测）——拖放按**落点**
+        // 路由，点击才按聚焦栏
+        routePreviewToPane(path, side);
         return;
       }
       setActivePreview(null);
@@ -4728,19 +4852,50 @@ export default function App() {
   );
 
   /**
-   * 抓取天气并插进日记正文（M4）。城市未配置或抓取失败都原样返回内容——
-   * 天气是锦上添花，宁可缺一瓣也不能挡住「新建日记」。
+   * 天气占位行的异步回填（0.39.9 用户反馈「新建日记速度很慢…可以先创建日记，
+   * 占位第二行，等后面自动填充」）。此前天气抓取（地理编码+预报两段串行 HTTP，
+   * 各 8s 超时）await 在落盘前，网络一慢「新建日记」就干等十几秒；现在先带
+   * 占位行落盘立刻打开，天气回来后原地处理：成功把占位行换成真天气、失败
+   * 删掉占位行（别留一句「获取中」在日记里）。
+   *
+   * 落点按笔记当前位置分流：激活中的编辑器（主栏/分栏）直接 dispatch 事务，
+   * 走正常脏→自动保存链路落盘——**不走磁盘写+监听采纳**：占位行在文件头部，
+   * 非尾部改动的采纳会整份重建状态/弹冲突横幅；后台标签与未打开的走磁盘
+   * 读改写，后台标签标 stale，激活时与磁盘对账。
    */
-  const prependWeather = useCallback(
-    async (content: string, city: string): Promise<string> => {
-      const trimmed = city.trim();
-      if (!trimmed) return content;
-      const weather = await fetchWeather(trimmed);
-      if (!weather) return content;
-      return insertWeatherLine(content, weather);
-    },
-    [],
-  );
+  const fillWeatherPlaceholder = useCallback(async (path: string, city: string) => {
+    const weather = await fetchWeather(city.trim());
+    const applyToView = (view: EditorView): boolean => {
+      const text = view.state.sliceDoc();
+      const range = weatherPlaceholderRange(text);
+      if (!range) return false; // 用户已自己动过这行：尊重现状
+      if (weather) {
+        view.dispatch({ changes: { from: range.from, to: range.to, insert: `> ${weather}` } });
+      } else {
+        // 失败删除整行：连同行尾分隔符一起删，别留空行
+        const sep =
+          text.startsWith("\r\n", range.to) ? 2 : text.startsWith("\n", range.to) || text.startsWith("\r", range.to) ? 1 : 0;
+        view.dispatch({ changes: { from: range.from, to: range.to + sep } });
+      }
+      return true;
+    };
+    if (viewOwnerRef.current === path && viewRef.current && applyToView(viewRef.current)) return;
+    if (splitActiveRef.current === path && splitViewRef.current && applyToView(splitViewRef.current)) return;
+    const v = vaultRef.current;
+    if (!v) return;
+    try {
+      const note = await readNote(v, path);
+      const next = weather
+        ? replaceWeatherPlaceholder(note.content, weather)
+        : removeWeatherPlaceholder(note.content);
+      if (!next) return;
+      await writeNote(v, path, next, note.hasBom);
+      // 后台标签：标 stale，激活时与磁盘对账（未打开就不用管）
+      if (openTabsRef.current.some((tab) => tab.path === path)) staleTabs.current.add(path);
+    } catch {
+      // 读写失败就放弃——占位行留着无害，天气本来也是锦上添花
+    }
+  }, []);
 
   /**
    * 打开某天的日记：已有就打开，没有就用模板新建再打开。
@@ -4767,20 +4922,21 @@ export default function App() {
             daily.settings.dailyTemplatePath,
             { title, dateMoment: parseDateStrict(dateStr, daily.dateFormat) },
           )) ?? defaultNoteContent(title);
-        // 天气（M4）：创建时抓取一次并插进正文，失败静默——不能让天气挡住日记。
-        // 落盘前并入内容，文件只写一次，也就不会有"先建再补写"的监听回声。
-        const withWeather = daily.settings.weatherEnabled
-          ? await prependWeather(content, daily.settings.weatherCity)
-          : content;
-        await writeNote(vault, path, withWeather, false);
+        // 天气（M4；0.39.9 改异步回填）：抓取是两段串行 HTTP，await 它会让
+        // 「新建日记」在网络慢时干等十几秒——先带占位行落盘立刻打开，天气回来
+        // 后由 fillWeatherPlaceholder 原地替换/删除占位行。
+        const wantWeather =
+          daily.settings.weatherEnabled && !!daily.settings.weatherCity.trim();
+        await writeNote(vault, path, wantWeather ? insertWeatherPlaceholder(content) : content, false);
         await refresh(vault);
         await openNote(path);
         notice(`已新建日记「${title}」`);
+        if (wantWeather) void fillWeatherPlaceholder(path, daily.settings.weatherCity);
       } catch (e) {
         notice(String(e), "error");
       }
     },
-    [vault, daily.settings, daily.dateFormat, openNote, refresh, notice, templateContent],
+    [vault, daily.settings, daily.dateFormat, openNote, refresh, notice, templateContent, fillWeatherPlaceholder],
   );
 
   /**
@@ -8735,6 +8891,60 @@ export default function App() {
 
       {tabMenu &&
         (() => {
+          // 预览标签的精简菜单（0.39.9）：不属于 openTabs，笔记标签的固定/
+          // 关闭左侧右侧等都不适用——给移动/关闭三个动作
+          if (tabMenu.kind === "preview") {
+            const inSplit = previewTabsSplitRef.current.includes(tabMenu.path);
+            return (
+              <>
+                <div
+                  className="menu-backdrop"
+                  onClick={() => setTabMenu(null)}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setTabMenu(null);
+                  }}
+                />
+                <div
+                  className="context-menu"
+                  ref={menuRefClampedToViewport(tabMenu.x, tabMenu.y)}
+                  style={{ left: tabMenu.x, top: tabMenu.y }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => {
+                      movePreviewTab(tabMenu.path, inSplit ? "main" : "split");
+                      setTabMenu(null);
+                    }}
+                  >
+                    {inSplit ? "移回左侧" : "分屏到右侧"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      closeSpecialTab(tabMenu.path);
+                      setTabMenu(null);
+                    }}
+                  >
+                    关闭标签
+                  </button>
+                  <button
+                    type="button"
+                    className="danger"
+                    onClick={() => {
+                      setPreviewTabs([]);
+                      setPreviewTabsSplit([]);
+                      setActivePreview(null);
+                      setActivePreviewSplit(null);
+                      setTabMenu(null);
+                    }}
+                  >
+                    关闭全部预览标签
+                  </button>
+                </div>
+              </>
+            );
+          }
           const index = orderedOpenTabs.findIndex((tab) => tab.path === tabMenu.path);
           const closable = (tab: NoteContent) => !pinnedSet.has(tab.path);
           const left = orderedOpenTabs.slice(0, index).filter(closable);
@@ -8883,8 +9093,12 @@ export default function App() {
           />
         )}
           <aside
-            className={`sidebar sidebar-left${creating || (renaming && renameOwner === "tree") ? " m-inputting" : ""}${sidebarResizing ? " is-resizing" : ""}`}
-            style={{ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
+            className={`sidebar sidebar-left${creating || (renaming && renameOwner === "tree") ? " m-inputting" : ""}${sidebarResizing ? " is-resizing" : ""}${!isMobile() && (sidebarResizing ? sidebarLiveRef.current : sidebarWidth) < SIDEBAR_NARROW_AT ? " is-narrow" : ""}`}
+            style={
+              {
+                "--sidebar-width": `${sidebarResizing ? sidebarLiveRef.current : sidebarWidth}px`,
+              } as React.CSSProperties
+            }
             ref={sidebarLeftRef}
             onClick={(event) => {
               // 移动端：点中笔记/目录行后自动收抽屉（事件委托，不逐行改回调）
@@ -9153,9 +9367,10 @@ export default function App() {
               aria-selected={leftView === "files"}
               className={`left-view-tab${leftView === "files" ? " is-on" : ""}`}
               onClick={() => setLeftView("files")}
+              title="知识库"
             >
               <IconLibrary size={13} />
-              知识库
+              <span className="left-view-tab-text">知识库</span>
             </button>
             <button
               type="button"
@@ -9163,9 +9378,10 @@ export default function App() {
               aria-selected={leftView === "favorites"}
               className={`left-view-tab${leftView === "favorites" ? " is-on" : ""}`}
               onClick={() => setLeftView("favorites")}
+              title="收藏"
             >
               <IconStar size={13} />
-              收藏{visibleFavorites.length > 0 ? ` ${visibleFavorites.length}` : ""}
+              <span className="left-view-tab-text">收藏{visibleFavorites.length > 0 ? ` ${visibleFavorites.length}` : ""}</span>
             </button>
             <button
               type="button"
@@ -9173,9 +9389,10 @@ export default function App() {
               aria-selected={leftView === "recents"}
               className={`left-view-tab${leftView === "recents" ? " is-on" : ""}`}
               onClick={() => setLeftView("recents")}
+              title="最近"
             >
               <IconClock size={13} />
-              最近
+              <span className="left-view-tab-text">最近</span>
             </button>
             <button
               type="button"
@@ -9186,7 +9403,7 @@ export default function App() {
               title="标签仪表盘：集中查看与整理标签"
             >
               <IconTag size={13} />
-              标签
+              <span className="left-view-tab-text">标签</span>
             </button>
           </div>
           <div className="panel-head">
@@ -9376,13 +9593,18 @@ export default function App() {
             >
               {leftTabs.map((tab) => {
                 const isPinned = pinnedSet.has(tab.path);
+                // 0.39.9 用户反馈「选中预览文件时，标签栏为什么同时高亮 md 文档
+                // 和预览文件」：本栏预览激活时编辑器整体被盖住，md 标签让出
+                // is-active——也顺带让 0.39.8 的标签居中 effect 选对目标（此前
+                // querySelector 永远先命中 md 标签，预览标签从不被居中）
+                const isTabActive = tab.path === activeTab && !activePreview;
                 return (
                   <div
                     key={tab.path}
                     role="tab"
-                    aria-selected={tab.path === activeTab}
+                    aria-selected={isTabActive}
                     tabIndex={0}
-                    className={`tab${tab.path === activeTab ? " is-active" : ""}${
+                    className={`tab${isTabActive ? " is-active" : ""}${
                       dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
                     }${isPinned ? " is-pinned" : ""}${
                       dropHint?.kind === "before" && dropHint.path === tab.path && dropHint.side === "main"
@@ -9442,6 +9664,12 @@ export default function App() {
                       setCaptureManagerOpen(false);
                       setLibraryPageOpen(false);
                     }}
+                    onContextMenu={(event) => {
+                      // 0.39.9 用户反馈「右键右侧分屏的标签头出现原生弹窗」：预览
+                      // 标签此前没有右键菜单——左栏笔记标签有、预览标签没有
+                      event.preventDefault();
+                      setTabMenu({ path, x: event.clientX, y: event.clientY, kind: "preview" });
+                    }}
                     {...previewTabDragProps(path, "main")}
                   >
                     <span className="tab-title">{title}</span>
@@ -9483,6 +9711,11 @@ export default function App() {
                 vault={vault}
                 path={activePreview}
                 escClose={!overlayOpen}
+                onActivate={() => {
+                  // 0.39.9：预览盖住编辑器，预览上的 mousedown 也算聚焦本栏
+                  focusedPaneRef.current = "main";
+                  if (outlineFollow === "split") setOutlineFollow("editor");
+                }}
                 onClose={() => closeSpecialTab(activePreview)}
               />
             )}
@@ -9498,7 +9731,7 @@ export default function App() {
               />
             )}
             {(rightTabs.length > 0 || previewTabsSplit.length > 0) && (
-              <div className={`editor-pane-col is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane" : ""}`} style={{ flexBasis: `${splitPct}%` }} {...paneDropProps("split")}>
+              <div ref={splitColRef} className={`editor-pane-col is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane" : ""}`} style={{ flexBasis: `${splitPctLiveRef.current ?? splitPct}%` }} {...paneDropProps("split")}>
                 <div
                   ref={splitTabbarRef}
                   className={`tabbar is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane-end" : ""}`}
@@ -9517,13 +9750,15 @@ export default function App() {
                 >
                   {rightTabs.map((tab) => {
                     const isPinned = pinnedSet.has(tab.path);
+                    // 同左栏：分屏预览激活时右栏 md 标签让出 is-active（0.39.9）
+                    const isTabActive = tab.path === splitActiveTab && !activePreviewSplit;
                     return (
                       <div
                         key={tab.path}
                         role="tab"
-                        aria-selected={tab.path === splitActiveTab}
+                        aria-selected={isTabActive}
                         tabIndex={0}
-                        className={`tab${tab.path === splitActiveTab ? " is-active" : ""}${
+                        className={`tab${isTabActive ? " is-active" : ""}${
                           dirtyTabs.current.has(tab.path) ? " is-dirty" : ""
                         }${isPinned ? " is-pinned" : ""}${
                           dropHint?.kind === "before" && dropHint.path === tab.path && dropHint.side === "split"
@@ -9578,6 +9813,10 @@ export default function App() {
                           focusedPaneRef.current = "split";
                           setActivePreviewSplit(path);
                         }}
+                        onContextMenu={(event) => {
+                          event.preventDefault();
+                          setTabMenu({ path, x: event.clientX, y: event.clientY, kind: "preview" });
+                        }}
                         {...previewTabDragProps(path, "split")}
                       >
                         <span className="tab-title">{title}</span>
@@ -9620,6 +9859,10 @@ export default function App() {
                     vault={vault}
                     path={activePreviewSplit}
                     escClose={!overlayOpen}
+                    onActivate={() => {
+                      focusedPaneRef.current = "split";
+                      if (outlineFollow !== "split") setOutlineFollow("split");
+                    }}
                     onClose={() => closeSpecialTab(activePreviewSplit)}
                   />
                 )}

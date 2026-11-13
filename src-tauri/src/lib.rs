@@ -5,6 +5,7 @@ pub mod open_vaults;
 pub mod screenshot;
 pub mod sync_store;
 pub mod vault;
+pub mod xlsx_parse;
 pub mod vault_home;
 pub mod vocab;
 mod watch;
@@ -453,6 +454,7 @@ pub fn run() {
             vault::sync_scan,
             vault::sync_scan_attachments,
             vault::read_binary,
+            xlsx_parse::parse_xlsx,
             vault::write_binary,
             watch::watch_vault,
             watch::allow_asset_dir,

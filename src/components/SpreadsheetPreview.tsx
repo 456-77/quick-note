@@ -10,7 +10,8 @@
  *   超大表给明确提示，避免百万行表拖死预览。
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
 
 /** 每次渲染的行数（点「显示更多」翻倍追加；筛选作用于全部行）。 */
@@ -52,16 +53,30 @@ function distinctValues(rows: string[][], col: number): string[] {
   );
 }
 
+/** 每个值在该列的出现次数（0.39.9 用户反馈「筛选时显示该条件下的数量」），
+ *  按**未筛选的全量行**统计——与筛选值列表同一口径。 */
+function valueCounts(rows: string[][], col: number): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const row of rows) {
+    const v = row[col] ?? "";
+    counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  return counts;
+}
+
 /** 列筛选面板本体（挂载/卸载由 pop 状态控制，状态天然按列重置）。 */
 function ColumnFilter({
   title,
   values,
+  counts,
   applied,
   onApply,
   onClose,
 }: {
   title: string;
   values: string[];
+  /** 每个值的行数（未筛选全量口径，0.39.9 用户反馈「筛选时显示该条件下的数量」）。 */
+  counts?: Map<string, number>;
   /** 已生效的值；undefined = 该列没筛选（面板初始全选）。 */
   applied?: string[];
   onApply: (values: string[] | null) => void;
@@ -155,7 +170,12 @@ function ColumnFilter({
         {listed.map((value) => (
           <label key={value || "\u0000"} className="xlsx-filter-value" title={displayValue(value)}>
             <input type="checkbox" checked={chosen.has(value)} onChange={() => toggle(value)} />
-            <span>{displayValue(value)}</span>
+            <span className="xlsx-filter-value-text">{displayValue(value)}</span>
+            {counts && (
+              <span className="xlsx-filter-value-count" title={`${counts.get(value) ?? 0} 行`}>
+                {counts.get(value) ?? 0}
+              </span>
+            )}
           </label>
         ))}
         {listed.length === 0 && <div className="xlsx-filter-empty">没有匹配的值</div>}
@@ -210,6 +230,44 @@ export default function SpreadsheetPreview({
   const popRef = useRef<HTMLDivElement | null>(null);
   /** 表格容器：筛选 chips 打开时用它找对应列头做锚点。 */
   const bodyWrapRef = useRef<HTMLDivElement | null>(null);
+  const tableRef = useRef<HTMLTableElement | null>(null);
+  /**
+   * 钉死的列宽（0.39.9 用户反馈「筛选后水平位置偏移」）：null = auto 布局
+   * （空表/隐藏中）。宽度**直接取浏览器首帧自己算出的自然列宽**（读 DOM 后
+   * 立即回填 colgroup——量到的就是正在显示的宽度，回填不产生可见变化），
+   * 没有 canvas 测宽、没有分片、没有「渲染完再等一会才能操作」的死窗；
+   * 筛选/翻页前后列位钉死不动。
+   */
+  const [colWidths, setColWidthsState] = useState<number[] | null>(null);
+  const colWidthsRef = useRef<number[] | null>(null);
+  const setColWidths = (value: number[] | null) => {
+    colWidthsRef.current = value;
+    setColWidthsState(value);
+  };
+  useLayoutEffect(() => {
+    if (!sheet || header.length === 0) {
+      setColWidths(null);
+      return;
+    }
+    // 切 sheet 时旧 colgroup 还挂在 DOM 上——先同步清回 auto（layout effect
+    // 里 flushSync 合法），量到的才是新表的自然宽
+    if (colWidthsRef.current !== null) flushSync(() => setColWidths(null));
+    const table = tableRef.current;
+    if (!table || table.clientWidth === 0) return; // 隐藏中量不到，保持 auto
+    // 列头可能带 colSpan（0.39.5 合并表头）：把合并 th 的自然宽均分到各列，
+    // 被 rowSpan 盖住没有自己 th 的列由 origin 补齐，colgroup 才能与列对齐
+    const widths = new Array<number>(header.length).fill(0);
+    for (const th of Array.from(table.querySelectorAll<HTMLTableCellElement>("thead th[data-col]"))) {
+      const col = Number(th.dataset.col);
+      if (!(col >= 0) || col >= header.length) continue;
+      const span = Math.max(1, th.colSpan);
+      const share = Math.max(40, th.getBoundingClientRect().width) / span;
+      for (let k = 0; k < span && col + k < header.length; k += 1) widths[col + k] = share;
+    }
+    setColWidths(widths.some((w) => w > 0) ? widths : null);
+    // header 由 sheet 派生，随 sheet 一起变
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheet]);
 
   // 切 sheet / 换文件（同一实例被复用，如分屏栏）：收起面板、重置分页，
   // 筛选从该 sheet 的缓存回填（没记录过 = 空）。
@@ -299,6 +357,7 @@ export default function SpreadsheetPreview({
     .filter((col) => (filters[col]?.length ?? 0) > 0)
     .sort((a, b) => a - b);
   const popValues = useMemo(() => (pop ? distinctValues(body, pop.col) : []), [pop, body]);
+  const popCounts = useMemo(() => (pop ? valueCounts(body, pop.col) : undefined), [pop, body]);
 
   if (!sheet) return null;
 
@@ -429,7 +488,29 @@ export default function SpreadsheetPreview({
         <div className="xlsx-empty">这个工作表是空的</div>
       ) : (
         <div className="file-preview-sheet-body" ref={bodyWrapRef}>
-          <table className="xlsx-table">
+          <table
+            ref={tableRef}
+            className={`xlsx-table${colWidths ? " is-fixed" : ""}`}
+            style={
+              colWidths
+                ? {
+                    tableLayout: "fixed",
+                    // Chrome 对 width:auto 的表格**不启用 fixed 算法**（列宽照样
+                    // 跟内容走，0.39.9 用户实测筛选仍偏移 + 本地复现实锤）——
+                    // 必须给显式宽度，用列宽之和；min-width:100% 继续兜住
+                    // 「列比容器窄」的拉伸，拉伸分配只依赖容器宽度，筛选不影响
+                    width: `${colWidths.reduce((a, b) => a + b, 0)}px`,
+                  }
+                : undefined
+            }
+          >
+            {colWidths && (
+              <colgroup>
+                {colWidths.map((w, col) => (
+                  <col key={col} style={{ width: `${w}px` }} />
+                ))}
+              </colgroup>
+            )}
             <thead>
               {bannerRows.map((bannerRow, br) => (
                 <tr key={`banner-${br}`}>
@@ -529,6 +610,7 @@ export default function SpreadsheetPreview({
             key={pop.col}
             title={headerLabel(pop.col)}
             values={popValues}
+            counts={popCounts}
             applied={filters[pop.col]}
             onApply={(values) => {
               setFilters((prev) => {

@@ -46,8 +46,14 @@ export interface ParsedSheet {
 self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
   const { id, base64 } = event.data;
   try {
-    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
-    const workbook = XLSX.read(bytes, { type: "array" });
+    // 快速 base64→字节：Uint8Array.from(atob, 映射) 在数兆字节上比手写循环慢
+    // 2-3 倍（0.39.9 用户反馈「优化表格加载速度」）
+    const bin = atob(base64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+    // dense:true：单元格存进二维数组、按 ws[R][C] 直取——省掉每格的 A1 地址
+    // 字符串拼装 + 稀疏哈希查找，大表解析的主要开销之一；!ref/!merges 照常在
+    const workbook = XLSX.read(bytes, { type: "array", dense: true });
     const sheets: ParsedSheet[] = workbook.SheetNames.map((name) => {
       const ws = workbook.Sheets[name];
       const ref = ws?.["!ref"];
@@ -64,11 +70,16 @@ self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
         range.s.c,
         colEnd,
       );
+      // dense 形态（ws 是数组、ws[R][C] 即单元格）与稀疏形态都接：万一某个
+      // 格式没走 dense，回退旧地址查找，行为与之前一致
+      const denseRows = Array.isArray(ws)
+        ? (ws as unknown as (XLSX.CellObject | undefined)[][])
+        : null;
       const rows: string[][] = [];
       for (let r = range.s.r; r <= rowEnd; r += 1) {
         const row: string[] = [];
         for (let c = range.s.c; c <= colEnd; c += 1) {
-          const cell = ws[XLSX.utils.encode_cell({ r, c })];
+          const cell = denseRows ? denseRows[r]?.[c] : ws[XLSX.utils.encode_cell({ r, c })];
           // format_cell 走 cell.w（数字/日期按表里的显示格式）——预览要所见即所得
           row.push(cell ? XLSX.utils.format_cell(cell) : "");
         }

@@ -120,6 +120,10 @@ echo "=== 18c/20 JSON 格式化与转换纯函数（0.34.6/0.34.13） ==="
 node --experimental-strip-types --no-warnings scripts/verify-format-json.mjs
 
 echo
+echo "=== 18d/20 天气占位行协议（0.39.9 新建日记先落盘后回填） ==="
+node --experimental-strip-types --no-warnings scripts/verify-weather-placeholder.mjs
+
+echo
 echo "=== 19/19 比对基线：确认文件未被改动 ==="
 bash scripts/verify-roundtrip.sh check "$VAULT"
 

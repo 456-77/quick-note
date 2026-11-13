@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.39.8"
+version = "0.39.9"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
@@ -33,6 +33,8 @@ sha2 = "0.10"
 notify = "8"
 # 附件是二进制（图片等），走 base64 比 JSON 数字数组小三倍左右、也快得多
 base64 = "0.22"
+calamine = { version = "0.38.0", features = ["dates"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "alloc"] }
 # 同步用的 HTTP 客户端。阻塞式（不需要 async 运行时）。
 
 # ---- 桌面专属依赖 --------------------------------------------------------
@@ -86,3 +88,15 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# 0.39.9 用户反馈「表格加载比上次发版慢好多」：dev 跑 debug 编译的 Rust，
+# calamine/serde/zip 零优化下大表解析 900ms+（release 55ms，16 倍差距）——
+# dev 下把**依赖**开 O2（应用代码本身仍零优化保持秒级改码重编），发版
+# release 不受影响。
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+overflow-checks = false
+debug-assertions = false

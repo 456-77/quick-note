@@ -42,6 +42,10 @@ interface Props {
   /** Esc 关闭预览是否生效（0.39.8）：App 在任何浮层/菜单开着时传 false——
    *  预览的 window 级 Esc 监听是浮层时代遗留，标签页化后不能抢别的弹层的 Esc。 */
   escClose?: boolean;
+  /** 用户在预览内容上按下鼠标（0.39.9）：嵌入形态的预览盖住编辑器，App 的
+   *  「最后聚焦窗格」此前只能靠编辑器/标签栏的 mousedown 更新——左栏预览上
+   *  点来点去焦点永远停在右栏，之后点文件树的文件全开进右栏。 */
+  onActivate?: () => void;
 }
 
 /** PDF 手动缩放范围：下限防糊、上限防画布爆内存（3× A4 = 约 1800×2400 CSS px）。 */
@@ -165,7 +169,7 @@ function scheduleOrphanSweep(): void {
   }, IDLE_RELEASE_MS);
 }
 
-export default function FilePreview({ vault, path, onClose, embedded = false, escClose = true }: Props) {
+export default function FilePreview({ vault, path, onClose, embedded = false, escClose = true, onActivate }: Props) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const kind = fileKindOf(name);
   // 缩放记忆键（0.38.7）：切走再切回按此恢复缩放
@@ -723,6 +727,22 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
           return;
         }
 
+        if (kind === "spreadsheet") {
+          // 0.39.9 Rust（calamine）直读解析优先：Rust 自己读盘，read_binary 的
+          // base64 IPC、atob、SheetJS Worker 三段全省；打不开（加密/损坏/老
+          // 版式）回退下面的 SheetJS Worker 路径
+          try {
+            const { parseXlsxNative } = await import("../lib/xlsxWorkerHost");
+            const parsed = await parseXlsxNative(vault, path);
+            if (cancelled) return;
+            setSheets(parsed);
+            setLoading(false);
+            return;
+          } catch {
+            // 回退，不提示——native 只是快路径，不是唯一路径
+          }
+        }
+
         const data = await readBinary(vault, path);
         const bytes = base64ToBytes(data.base64);
 
@@ -1059,8 +1079,13 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
         if (kind === "spreadsheet") {
           // 0.39：Worker 返回二维显示字符串（不再走 sheet_to_html），主线程
           // 自己渲染表格以支持列筛选。SheetJS 底数仍只在 Worker 里活着。
+          // 0.39.9：缓存键带读盘哈希——同一文件两栏各开/切走再切回不再重解析
           const { parseXlsxInWorker } = await import("../lib/xlsxWorkerHost");
-          const parsed = await parseXlsxInWorker(data.base64);
+          const parsed = await parseXlsxInWorker(
+            data.base64,
+            30_000,
+            `${vault}::${path}::${data.sha256}`,
+          );
           if (cancelled) return;
           setSheets(parsed);
           setLoading(false);
@@ -1109,7 +1134,13 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
   const showBar = !embedded || (kind === "pdf" && !mobile);
 
   return (
-    <div ref={rootRef} className={`file-preview${embedded ? " is-embedded" : ""}`} role="dialog" aria-label={`预览 ${name}`}>
+    <div
+      ref={rootRef}
+      className={`file-preview${embedded ? " is-embedded" : ""}`}
+      role="dialog"
+      aria-label={`预览 ${name}`}
+      onMouseDown={onActivate}
+    >
       {showBar && (
       <div className="file-preview-bar">
         <span className="file-preview-name" title={path}>

@@ -759,6 +759,11 @@ kbd {
   letter-spacing: 0.09em;
   text-transform: uppercase;
   color: var(--text-faint);
+  /* 0.39.9 用户反馈「优化左侧面板最低宽度下的显示」：CJK 标题的 min-content
+     是单个字符，空间一紧就被压成竖排（「知识库」一字一行）——nowrap + 省略号 */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .panel-count {
@@ -768,28 +773,63 @@ kbd {
   background: var(--surface-2);
   border-radius: 999px;
   padding: 1px 7px;
+  /* 0.39.9 最小宽度适配：让位顺序 = 计数胶囊收缩前，标题先省略、按钮不动 */
+  flex: none;
 }
 
 /* 左栏视图切换：知识库 / 收藏 / 最近 */
 .left-view {
   /* 0.33.1 用户反馈：展示效果向右侧面板的功能选项（.sidebar-tabs）看齐——
      同款分段选项卡（去容器底色胶囊）。
-     0.39.8 用户反馈「这里的上下空隙有点大」：页签行与下方标题行之间收紧 */
+     0.39.8 用户反馈「这里的上下空隙有点大」：页签行与下方标题行之间收紧。
+     0.39.9 用户反馈「优化左侧面板最低宽度下的显示」：四个页签在最小宽度
+     （220px）下装不下，此前 overflow:visible 直接溢出到内容区（「标签」叠进
+     编辑区）——改横向滚动（滚动条隐藏，滚轮/触控板横移可达），页签自身
+     nowrap 不再截字。
+     0.39.9 用户反馈「最左边空白是不是有点大」：margin 10px + padding 10px
+     叠出 20px 左缩进，是右栏 .sidebar-tabs（10px）的两倍——去掉 margin，
+     左右都向右栏页签行看齐，顺带给最小宽度多让出 20px */
   display: flex;
   gap: 4px;
-  margin: 0 10px 2px;
+  margin: 0 0 2px;
   padding: 8px 10px 4px;
   flex: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.left-view::-webkit-scrollbar {
+  display: none;
+}
+
+/* 0.39.9 用户反馈「改变左侧面板宽度时，顶栏元素布局应该动态变化……宽度
+   不足以显示所有元素时，考虑不显示中文提示，只显示图标」：< 280px 时
+   页签文字隐藏只留图标（title 悬浮兜底语义）、标题行收起被截断的标题——
+   is-narrow 类由 App 按宽度挂（拖动中直接写 DOM 类不走 React 渲染） */
+.sidebar-left.is-narrow .left-view-tab-text {
+  display: none;
+}
+
+.sidebar-left.is-narrow .left-view-tab {
+  gap: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.sidebar-left.is-narrow .panel-title {
+  display: none;
 }
 
 .left-view-tab {
+  /* flex:1（basis 0）保持宽态四页签等宽；缩到 min-content 后溢出交给容器的
+     横向滚动（0.39.9 最小宽度适配） */
   flex: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
   min-height: 28px;
-  padding: 5px 0;
+  padding: 5px 8px;
   font: inherit;
   font-size: 12px;
   font-weight: 500;
@@ -1763,6 +1803,21 @@ div.tree-item:focus-visible {
   text-align: center;
 }
 
+/* 0.39.9 用户反馈「筛选后水平位置发生偏移」：列宽钉死（colgroup +
+   table-layout:fixed，宽度=首帧自然宽回填，见 SpreadsheetPreview 的
+   useLayoutEffect；Chrome 对 width:auto 的表格不启用 fixed 算法，表格必须
+   显式给 width=列宽之和），筛选/翻页列位不再漂；代价是超出列宽的内容要
+   截断——nowrap 单元格加裁剪 + 省略号（全文在 title 悬浮里），列头标签的
+   最大宽度改成跟着列宽走（固定 260px 会在窄列里压不住 ▾ 按钮） */
+.xlsx-table.is-fixed th,
+.xlsx-table.is-fixed td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.xlsx-table.is-fixed .xlsx-th-label {
+  max-width: calc(100% - 26px);
+}
+
 .xlsx-th-label {
   display: inline-block;
   max-width: 260px;
@@ -1922,6 +1977,20 @@ div.tree-item:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 0.39.9 用户反馈「筛选时显示该条件下的数量」：值文字占满一行，次数贴右、
+   弱化显示（表内全文仍在 title 悬浮里） */
+.xlsx-filter-value-text {
+  flex: 1;
+}
+
+.xlsx-filter-value-count {
+  flex: none;
+  margin-left: auto;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
 }
 
 .xlsx-filter-empty {

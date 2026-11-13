@@ -65,7 +65,7 @@ pub struct WriteResult {
     pub changed: bool,
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())
@@ -187,7 +187,7 @@ pub(crate) fn vault_root(vault: &str) -> Result<PathBuf, String> {
 }
 
 /// 解析一个已存在的文件路径，并确认没有越出仓库。
-fn resolve_existing(root: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(crate) fn resolve_existing(root: &Path, rel: &str) -> Result<PathBuf, String> {
     let full = root.join(validate_rel(rel)?);
     let c = full
         .canonicalize()

@@ -78,14 +78,8 @@ export function formatWeather(geo: GeocodingResponse, forecast: ForecastResponse
   return `${w.icon} ${w.desc} ${temp}°C（${tmin}~${tmax}°C）`;
 }
 
-/**
- * 把天气行插进日记正文：`> ☀️ 晴 25°C（18~27°C）`。
- *
- * 模板可能带 frontmatter，插到它**之后**（无 frontmatter 则第一行后）——
- * 与插件的 appendWeatherToNote 同一条规则，这里做成纯函数以便在落盘前并入内容。
- */
-export function insertWeatherLine(content: string, weather: string): string {
-  const lines = content.split("\n");
+/** 插入行位置的共享规则：frontmatter 之后（无 frontmatter 则第一行后）。 */
+function weatherInsertAt(lines: string[]): number {
   let insertAt = 1;
   if (lines[0]?.trim() === "---") {
     for (let i = 1; i < lines.length; i += 1) {
@@ -95,8 +89,63 @@ export function insertWeatherLine(content: string, weather: string): string {
       }
     }
   }
-  lines.splice(insertAt, 0, `> ${weather}`);
+  return insertAt;
+}
+
+/**
+ * 把天气行插进日记正文：`> ☀️ 晴 25°C（18~27°C）`。
+ *
+ * 模板可能带 frontmatter，插到它**之后**（无 frontmatter 则第一行后）——
+ * 与插件的 appendWeatherToNote 同一条规则，这里做成纯函数以便在落盘前并入内容。
+ */
+export function insertWeatherLine(content: string, weather: string): string {
+  const lines = content.split("\n");
+  lines.splice(weatherInsertAt(lines), 0, `> ${weather}`);
   return lines.join("\n");
+}
+
+/**
+ * 占位天气行（0.39.9 用户反馈「新建日记速度很慢，可以先创建日记，占位第二行，
+ * 等后面自动填充」）：天气抓取是两段串行 HTTP（最坏 8s×2），此前在落盘前 await
+ * 它，网络一慢「新建日记」就干等十几秒。现在先带占位行落盘，天气回来再原地
+ * 替换/删除占位行。
+ */
+export const WEATHER_PLACEHOLDER_TEXT = "⏳ 天气获取中…";
+export const WEATHER_PLACEHOLDER_LINE = `> ${WEATHER_PLACEHOLDER_TEXT}`;
+
+export function insertWeatherPlaceholder(content: string): string {
+  const lines = content.split("\n");
+  lines.splice(weatherInsertAt(lines), 0, WEATHER_PLACEHOLDER_LINE);
+  return lines.join("\n");
+}
+
+/** 在文本里找占位行的 [from, to) 字符偏移（整行含 `> ` 前缀；to 在行尾分隔符
+ *  之前——`\r\n` 文件里 `to` 停在 `\r` 上，替换时原分隔符原样保留）。 */
+export function weatherPlaceholderRange(text: string): { from: number; to: number } | null {
+  const idx = text.indexOf(WEATHER_PLACEHOLDER_TEXT);
+  if (idx < 0) return null;
+  const from = text.lastIndexOf("\n", idx) + 1;
+  const nl = text.indexOf("\n", idx);
+  let to = nl < 0 ? text.length : nl;
+  if (to > from && text[to - 1] === "\r") to -= 1;
+  return { from, to };
+}
+
+/** 占位行 → 真天气行；没找到占位行返回 null（用户已自己动过这行，就不碰了）。 */
+export function replaceWeatherPlaceholder(content: string, weather: string): string | null {
+  const range = weatherPlaceholderRange(content);
+  if (!range) return null;
+  return content.slice(0, range.from) + `> ${weather}` + content.slice(range.to);
+}
+
+/** 删掉占位行（抓取失败时用，别留一句「获取中」在日记里）；没找到返回 null。 */
+export function removeWeatherPlaceholder(content: string): string | null {
+  const range = weatherPlaceholderRange(content);
+  if (!range) return null;
+  // 连同行尾换行一起删，别留空行
+  const nl = content.indexOf("\n", range.to);
+  const end = nl < 0 ? content.length : nl + 1;
+  return content.slice(0, range.from) + content.slice(end);
 }
 
 /**

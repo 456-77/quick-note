@@ -45,3 +45,4 @@ latest.json
 
 # 脱敏词表（本地自留，不入库）
 scripts/sensitive-words.local.txt
+src-tauri/tests/fixtures/big-sample.xlsx
