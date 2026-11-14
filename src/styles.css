@@ -12662,6 +12662,45 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   background: var(--accent-soft);
 }
 
+/* 分界线中点的同步滚动开关（0.39.12 用户反馈「对比两张表，移动左右两个
+   滑杆时两边同步移动」）：小圆钮悬浮在分界线上，开=accent 高亮 */
+.pane-sync-toggle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text-faint);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+}
+
+.pane-divider:hover .pane-sync-toggle,
+.pane-sync-toggle.is-on {
+  opacity: 1;
+}
+
+.pane-sync-toggle.is-on {
+  color: var(--accent);
+  border-color: var(--accent-soft);
+}
+
+.pane-sync-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 /* 0.34.4 用户反馈「启用分屏后不显示背景图片」：qn-bg-on 时 .editor-pane 自身
    已垫一层半透明 surface，右栏列再叠一层就把两层浓度乘起来（80%×80%≈96%
    不透明），背景图被盖死（左栏没有自己的底所以正常）。右栏改透明，与左栏

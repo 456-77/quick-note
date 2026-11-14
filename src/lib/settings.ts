@@ -216,8 +216,10 @@ export const DEFAULTS: Settings = {
   savePastedAttachments: true,
   // 默认深色：这套界面按"深色高级"设计（浅色仍可在设置里切换/跟随系统）
   theme: "dark",
-  // 默认 Obsidian 式：打开笔记替换当前标签；要并存才切 newTab
-  openNoteMode: "replace",
+  // 默认新开标签（0.39.12 用户反馈「后面打开的文件的标签头都应该出现在所在
+  // 分屏侧的标签栏最右侧」——replace 是 0.32.2 的旧默认，存量配置经下面的
+  // 一次性迁移翻成 newTab；要替换行为在设置里改回即可）
+  openNoteMode: "newTab",
   showLineNumbers: false,
   syncRenameHeading: true,
   quickCaptureVault: "",
@@ -262,10 +264,35 @@ function load(): Settings {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return { ...DEFAULTS };
-    return { ...DEFAULTS, ...(JSON.parse(raw) as Partial<Settings>) };
+    return migrateSettings({ ...DEFAULTS, ...(JSON.parse(raw) as Partial<Settings>) });
   } catch {
     return { ...DEFAULTS };
   }
+}
+
+/**
+ * 一次性设置迁移（0.39.12）：打开方式旧默认「replace 替换当前标签」翻转为
+ * 「newTab 新开标签」（用户口径：后面打开的文件的标签应落在所在分屏侧标签栏
+ * 最右侧）。迁移过的机器落标记，用户之后再手动改回 replace 不会被翻走。
+ * 迁移结果要**写回存储**——只改内存的话，下次启动标记已在、旧值原样读回，
+ * 迁移等于没发生。
+ */
+function migrateSettings(merged: Settings): Settings {
+  const FLAG = "quicknote.settings.openNoteModeMigrated.v1";
+  if (localStorage.getItem(FLAG)) return merged;
+  try {
+    localStorage.setItem(FLAG, "1");
+  } catch {
+    return merged; // 存不进标记就没法保证一次性，宁可不迁
+  }
+  if (merged.openNoteMode !== "replace") return merged;
+  const next = { ...merged, openNoteMode: "newTab" as const };
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  } catch {
+    // 写不回只影响下次启动，本次会话照常生效
+  }
+  return next;
 }
 
 let current: Settings = load();

@@ -25,7 +25,7 @@ import { ddlHover } from "./ddlHover";
 import { ddlKnownMarks } from "./ddlMark";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
-import { codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList, toggleWikiLink } from "./codeEdit";
+import { codeAtCursor, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList, toggleWikiLink } from "./codeEdit";
 import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing, isHotkeyEnabled } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
@@ -618,6 +618,12 @@ function editorToggleKeymap(): Extension {
       if (hits("toggleNumberList")) {
         event.preventDefault();
         return toggleNumberList(view);
+      }
+      // 复选框（0.39.12 用户反馈「添加快捷复选框快捷键」）：无选区当前行、
+      // 有选区逐行加/去「- [ ] 」
+      if (hits("toggleTaskList")) {
+        event.preventDefault();
+        return toggleTaskList(view);
       }
       // 标题 1–6（Ctrl+1..6）：作用于光标所在行，再按同级别取消
       for (let level = 1; level <= 6; level += 1) {

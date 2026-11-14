@@ -52,6 +52,13 @@ export const COMMAND_KEYS: CommandKeys[] = [
   },
   { id: "toggleBulletList", label: "切换无序列表", desc: "选中多行整体加/去「- 」标记", group: "markdown", keys: ["Mod-Shift-8"] },
   { id: "toggleNumberList", label: "切换有序列表", desc: "选中多行整体加/去「1. 」序号", group: "markdown", keys: ["Mod-Shift-9"] },
+  {
+    id: "toggleTaskList",
+    label: "切换复选框（任务列表）",
+    desc: "无选区作用于当前行；选中内容时每行各加一个「- [ ] 」复选框，再按整批去掉（0.39.12 用户反馈）",
+    group: "markdown",
+    keys: ["Mod-Shift-7"],
+  },
   { id: "insertDate", label: "插入今天日期", desc: "在光标处插入当前日期（日记日期格式）", group: "edit", keys: ["Mod-Shift-D"] },
   { id: "insertTime", label: "插入当前时间", desc: "在光标处插入 HH:mm（Ctrl+Shift+T 是浏览器保留键，勿绑）", group: "edit", keys: ["Mod-Alt-T"] },
   { id: "toggleTags", label: "添加 / 管理标签", desc: "打开当前笔记的标签浮层", group: "edit", keys: ["Mod-Shift-G"] },

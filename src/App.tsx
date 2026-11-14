@@ -2352,6 +2352,81 @@ export default function App() {
   // live ref 兜住拖动中无关渲染用陈旧 state 重写内联样式的闪跳
   const splitColRef = useRef<HTMLDivElement | null>(null);
   const splitPctLiveRef = useRef<number | null>(null);
+  // 0.39.12 用户反馈「对比两张表，能不能移动左右两个滑杆时两边同步移动」：
+  // 分屏两侧滚动联动（纵向按比例，横向按比例），分界线中点的小按钮开关，
+  // 默认开（quicknote.ui.splitSync = "0" 关）
+  const [splitSyncOn, setSplitSyncOn] = useState(() => {
+    try {
+      return localStorage.getItem("quicknote.ui.splitSync") !== "0";
+    } catch {
+      return true;
+    }
+  });
+  const toggleSplitSync = useCallback(() => {
+    setSplitSyncOn((value) => {
+      const next = !value;
+      try {
+        if (next) localStorage.removeItem("quicknote.ui.splitSync");
+        else localStorage.setItem("quicknote.ui.splitSync", "0");
+      } catch {}
+      return next;
+    });
+  }, []);
+  /** 程序滚动回声锁：被联动驱动过的容器 120ms 内不再作为滚动源回传。 */
+  const splitSyncEchoRef = useRef<{ el: HTMLElement; at: number } | null>(null);
+  /** 找一栏里「主滚动容器」：编辑器 scroller / 预览体 / 表格体，取可滚余量
+      最大的那个（隐藏的 display:none 容器余量为 0，自然落选）。 */
+  const paneScrollableOf = useCallback((root: HTMLElement | null): HTMLElement | null => {
+    if (!root) return null;
+    const candidates = root.querySelectorAll<HTMLElement>(
+      ".cm-scroller, .file-preview-body, .file-preview-sheet-body",
+    );
+    let best: HTMLElement | null = null;
+    let bestExtra = 0;
+    for (const el of candidates) {
+      const extra = el.scrollHeight - el.clientHeight;
+      if (extra > bestExtra) {
+        best = el;
+        bestExtra = extra;
+      }
+    }
+    return bestExtra > 40 ? best : null;
+  }, []);
+  const mainColRef = useRef<HTMLDivElement | null>(null);
+  // 同步滚动：window 捕获阶段收所有 scroll（scroll 不冒泡但捕获下传），源在
+  // 哪一栏就把另一栏的主滚动容器按比例带过去（纵向+横向）；被联动驱动的容器
+  // 120ms 内不回传，防两栏互相追尾
+  useEffect(() => {
+    if (!splitSyncOn) return;
+    if (rightTabPaths.length === 0 && previewTabsSplit.length === 0) return;
+    const onScroll = (event: Event) => {
+      const src = event.target as HTMLElement | null;
+      if (!src || src.nodeType !== 1) return;
+      const mainRoot = mainColRef.current;
+      const splitRoot = splitColRef.current;
+      if (!mainRoot || !splitRoot) return;
+      const srcInMain = mainRoot.contains(src);
+      const srcInSplit = splitRoot.contains(src);
+      if (srcInMain === srcInSplit) return; // 两栏之外（页面本身/弹层）不联动
+      const echo = splitSyncEchoRef.current;
+      if (echo && echo.el === src && Date.now() - echo.at < 120) return;
+      const dst = paneScrollableOf(srcInMain ? splitRoot : mainRoot);
+      if (!dst || dst === src) return;
+      const srcMax = src.scrollHeight - src.clientHeight;
+      const dstMax = dst.scrollHeight - dst.clientHeight;
+      if (srcMax > 0 && dstMax > 0) {
+        splitSyncEchoRef.current = { el: dst, at: Date.now() };
+        dst.scrollTop = (src.scrollTop / srcMax) * dstMax;
+      }
+      const srcXMax = src.scrollWidth - src.clientWidth;
+      const dstXMax = dst.scrollWidth - dst.clientWidth;
+      if (srcXMax > 0 && dstXMax > 0) {
+        dst.scrollLeft = (src.scrollLeft / srcXMax) * dstXMax;
+      }
+    };
+    window.addEventListener("scroll", onScroll, true);
+    return () => window.removeEventListener("scroll", onScroll, true);
+  }, [splitSyncOn, rightTabPaths, previewTabsSplit, paneScrollableOf]);
   const onPaneDividerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       event.preventDefault();
@@ -3939,8 +4014,13 @@ export default function App() {
       recordVault(picked);
       setVault(picked);
       // 切仓库：预览标签与语句库页一并清掉——面板数据与新仓库无关
+      // （0.39.12 用户反馈「切换仓库为什么还会存在上个仓库的分屏文件」：
+      //   这里漏了右栏预览——previewTabsSplit/activePreviewSplit 不清，
+      //   上个仓库的 xlsx/pdf 预览标签原样留在分屏栏，读盘必然 os error 3）
       setPreviewTabs([]);
       setActivePreview(null);
+      setPreviewTabsSplit([]);
+      setActivePreviewSplit(null);
       setLibraryPageOpen(false);
       setSelectedPath(null);
       setTagDashTag(null);
@@ -4502,10 +4582,15 @@ export default function App() {
       setCaptureManagerOpen(false);
       // 0.32.2 分栏路由：标签唯一归属一栏——右栏的标签在右栏激活，左栏的在左栏
       // 激活；还没有标签的新文件落在**最后聚焦的窗格**（Obsidian 语义）。
+      // 0.39.12 用户反馈「点击最近文件弹窗中的文件，文件打开位置不是鼠标聚焦的
+      // 分屏侧」：右栏只有预览标签（md 标签数 0）时旧条件会把新笔记按死在左栏
+      // ——分屏开着（右栏有 md 标签**或**预览）就算数
       const isRight = rightTabsRef.current.includes(path);
+      const splitOpen =
+        rightTabsRef.current.length > 0 || previewTabsSplitRef.current.length > 0;
       const targetSide: "main" | "split" = isRight
         ? "split"
-        : focusedPaneRef.current === "split" && rightTabsRef.current.length > 0
+        : focusedPaneRef.current === "split" && splitOpen
           ? "split"
           : "main";
       // 0.36.1：右栏开笔记 = 该栏预览让位（预览标签保留在右栏标签组可点回）
@@ -4582,8 +4667,9 @@ export default function App() {
           }
           staleTabs.current.delete(path);
         }
-        // 「替换当前」模式（Obsidian 默认）：新笔记顶掉**目标栏**激活标签的位置，
-        // 标签数不增长；被顶掉的标签存量状态一并清掉，否则下次打开还会复活。
+        // 「替换当前」模式（0.32.2 引入的 Obsidian 式选项；0.39.12 起默认已改
+        // 为 newTab 新开标签）：新笔记顶掉**目标栏**激活标签的位置，标签数不
+        // 增长；被顶掉的标签存量状态一并清掉，否则下次打开还会复活。
         // 已打开过的笔记在前面就走激活了，两种模式一致。
         const sideActive = targetSide === "split" ? splitActiveRef.current : activeTabRef.current;
         const replaceCurrent =
@@ -7353,6 +7439,9 @@ export default function App() {
         case "toggleNumberList":
           toggleNumberList(view);
           return;
+        case "toggleTaskList":
+          toggleTaskList(view);
+          return;
         case "insertDate":
           insertAtCursor(daily.today);
           return;
@@ -8842,6 +8931,16 @@ export default function App() {
             </button>
             <button
               type="button"
+              onClick={() => {
+                // 0.39.12 用户反馈「添加选项：新建文件夹」：落点口径与新建笔记一致
+                beginCreate("folder", menu.isDir ? menu.path : parentFolderOf(menu.path));
+                setMenu(null);
+              }}
+            >
+              新建文件夹
+            </button>
+            <button
+              type="button"
               onClick={() => beginRename(menu.path, menu.origin === "daily" ? "daily" : "tree")}
             >
               重命名
@@ -8891,10 +8990,17 @@ export default function App() {
 
       {tabMenu &&
         (() => {
-          // 预览标签的精简菜单（0.39.9）：不属于 openTabs，笔记标签的固定/
-          // 关闭左侧右侧等都不适用——给移动/关闭三个动作
+          // 预览标签菜单（0.39.9 起步三动作；0.39.12 用户反馈「左右分屏的右键
+          // 标签头，功能太少了吧」——对齐笔记标签菜单补齐：定位/复制路径/
+          // 关闭右侧/关闭其他，关闭类都按预览标签自己的两栏归属算）
           if (tabMenu.kind === "preview") {
             const inSplit = previewTabsSplitRef.current.includes(tabMenu.path);
+            const paneTabs = inSplit ? previewTabsSplitRef.current : previewTabsRef.current;
+            const paneIndex = paneTabs.indexOf(tabMenu.path);
+            const rightPreviews = paneTabs.slice(paneIndex + 1);
+            const otherCount =
+              previewTabsRef.current.length + previewTabsSplitRef.current.length - 1;
+            const keepInSplit = inSplit;
             return (
               <>
                 <div
@@ -8918,6 +9024,72 @@ export default function App() {
                     }}
                   >
                     {inSplit ? "移回左侧" : "分屏到右侧"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      // 0.39.12：树里展开并高亮该预览文件（同定位按钮的 treeReveal 通道）
+                      setTreeReveal({ path: tabMenu.path, seq: Date.now() });
+                      window.setTimeout(() => setTreeReveal(null), 2500);
+                      setTabMenu(null);
+                    }}
+                  >
+                    在文件树中定位
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void copyEntryPaths(tabMenu.path, "absolute");
+                      setTabMenu(null);
+                    }}
+                  >
+                    复制绝对路径
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void copyEntryPaths(tabMenu.path, "relative");
+                      setTabMenu(null);
+                    }}
+                  >
+                    复制仓库相对路径
+                  </button>
+                  <button
+                    type="button"
+                    disabled={rightPreviews.length === 0}
+                    onClick={() => {
+                      // 关闭所在栏里它右侧的预览标签；被关掉的有激活中的就地把
+                      // 激活落到本标签上
+                      if (inSplit) {
+                        setPreviewTabsSplit((prev) => prev.slice(0, paneIndex + 1));
+                        if (rightPreviews.includes(activePreviewSplitRef.current ?? "")) {
+                          setActivePreviewSplit(tabMenu.path);
+                        }
+                      } else {
+                        setPreviewTabs((prev) => prev.slice(0, paneIndex + 1));
+                        if (rightPreviews.includes(activePreviewRef.current ?? "")) {
+                          setActivePreview(tabMenu.path);
+                        }
+                      }
+                      setTabMenu(null);
+                    }}
+                  >
+                    关闭右侧预览标签{rightPreviews.length > 0 ? `（${rightPreviews.length}）` : ""}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={otherCount === 0}
+                    onClick={() => {
+                      // 两栏一起算「其他」，留下的只有本标签（与笔记标签的
+                      // 「关闭其他」同口径——不分栏）
+                      setPreviewTabs(keepInSplit ? [] : [tabMenu.path]);
+                      setPreviewTabsSplit(keepInSplit ? [tabMenu.path] : []);
+                      setActivePreview(keepInSplit ? null : tabMenu.path);
+                      setActivePreviewSplit(keepInSplit ? tabMenu.path : null);
+                      setTabMenu(null);
+                    }}
+                  >
+                    关闭其他预览标签{otherCount > 0 ? `（${otherCount}）` : ""}
                   </button>
                   <button
                     type="button"
@@ -9571,7 +9743,7 @@ export default function App() {
             }`}
             {...editorMainDropProps}
           >
-            <div className={`editor-pane-col${dropHint?.kind === "pane" && dropHint.side === "main" ? " is-drop-pane" : ""}`} {...paneDropProps("main")}>
+            <div ref={mainColRef} className={`editor-pane-col${dropHint?.kind === "pane" && dropHint.side === "main" ? " is-drop-pane" : ""}`} {...paneDropProps("main")}>
             {(leftTabs.length > 0 || previewTabs.length > 0) && (
             <div
               ref={mainTabbarRef}
@@ -9728,7 +9900,20 @@ export default function App() {
                 title="拖动调整左右分栏宽度"
                 role="separator"
                 aria-orientation="vertical"
-              />
+              >
+                {/* 0.39.12 用户反馈「对比两张表，移动左右两个滑杆时两边同步移动」：
+                    分界线中点的联动开关（默认开）。pointerdown 不外传，点按钮不
+                    会被当成拖分界线起步 */}
+                <button
+                  type="button"
+                  className={`pane-sync-toggle${splitSyncOn ? " is-on" : ""}`}
+                  title={splitSyncOn ? "同步滚动：开（点击关闭）" : "同步滚动：关（点击开启）"}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onClick={toggleSplitSync}
+                >
+                  ⇕
+                </button>
+              </div>
             )}
             {(rightTabs.length > 0 || previewTabsSplit.length > 0) && (
               <div ref={splitColRef} className={`editor-pane-col is-split${dropHint?.kind === "pane" && dropHint.side === "split" ? " is-drop-pane" : ""}`} style={{ flexBasis: `${splitPctLiveRef.current ?? splitPct}%` }} {...paneDropProps("split")}>

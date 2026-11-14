@@ -233,6 +233,8 @@ export default function SpreadsheetPreview({
   const popRef = useRef<HTMLDivElement | null>(null);
   /** 表格容器：筛选 chips 打开时用它找对应列头做锚点。 */
   const bodyWrapRef = useRef<HTMLDivElement | null>(null);
+  /** 筛选 chip 右键菜单（0.39.12 用户反馈「复制当前/全部筛选条件」）。 */
+  const [copyMenu, setCopyMenu] = useState<{ x: number; y: number; col: number } | null>(null);
 
 
   // 切 sheet / 换文件（同一实例被复用，如分屏栏）：收起面板、重置分页，
@@ -243,6 +245,7 @@ export default function SpreadsheetPreview({
       cacheKey && target ? filterCache.get(`${cacheKey}::${target.name}`) : undefined;
     setFilters(cached ? { ...cached } : {});
     setPop(null);
+    setCopyMenu(null);
   }, [sheetIndex, cacheKey, sheets]);
 
   // 换文件（cacheKey 变化）时回到第一个 sheet；分屏栏复用同一实例，不重置的话
@@ -282,6 +285,29 @@ export default function SpreadsheetPreview({
       window.removeEventListener("resize", onScroll);
     };
   }, [pop]);
+
+  // 右键复制菜单：点外/Esc 收起。Esc 用捕获阶段先于 FilePreview 的 window 监听
+  // 并 preventDefault——否则按 Esc 会在收菜单的同时把预览标签连带关掉
+  //（0.39.8「Esc 关弹窗连带关预览」同一条坑，新增浮层要自己拦住）
+  useEffect(() => {
+    if (!copyMenu) return;
+    const onDown = (event: MouseEvent) => {
+      if ((event.target as HTMLElement).closest?.(".context-menu")) return;
+      setCopyMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setCopyMenu(null);
+    };
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [copyMenu]);
 
   const rows = sheet?.rows ?? [];
   // 0.39.7 表头行识别：「合并大标题行 + 字段名行」文件里横幅行进 thead（不吸附、
@@ -441,6 +467,10 @@ export default function SpreadsheetPreview({
 
   const headerLabel = (col: number) => header[col] || `第 ${col + 1} 列（${columnName(col)}）`;
 
+  /** 一列筛选条件的人话文本（右键复制用，0.39.12）：`列名: 值1、值2`。 */
+  const filterConditionText = (col: number) =>
+    `${headerLabel(col)}: ${(filters[col] ?? []).map(displayValue).join("、")}`;
+
   return (
     <div
       className="file-preview-xlsx"
@@ -493,7 +523,23 @@ export default function SpreadsheetPreview({
                 const th = bodyWrapRef.current
                   ?.querySelector(`thead th[data-col="${col}"]`) as HTMLElement | null;
                 const btn = (th?.querySelector(".xlsx-filter-btn") ?? th) as HTMLElement | null;
-                openPop(col, btn ?? event.currentTarget);
+                // 0.39.12 用户反馈「点击上面的筛选条件标签，为什么弹窗会出现在左边」：
+                // 宽表横向滚动后列头滚出视口（rect 在屏幕外），openPop 的夹取只会把
+                // 弹窗钉在屏幕左缘——列头此刻不可见就改锚点击的 chip 本身（弹窗跟着
+                // 手边的东西走，不跟着看不见的列头走）
+                let anchor: HTMLElement = event.currentTarget;
+                if (btn) {
+                  const r = btn.getBoundingClientRect();
+                  if (r.width > 0 && r.right > 0 && r.left < window.innerWidth) anchor = btn;
+                }
+                openPop(col, anchor);
+              }}
+              onContextMenu={(event) => {
+                // 0.39.12 用户反馈：右键 chip 复制筛选条件（当前列 / 全部列）
+                event.preventDefault();
+                event.stopPropagation();
+                setPop(null);
+                setCopyMenu({ x: event.clientX, y: event.clientY, col });
               }}
             >
               {headerLabel(col)}:{" "}
@@ -686,6 +732,56 @@ export default function SpreadsheetPreview({
             onClose={() => setPop(null)}
           />
         </div>
+      )}
+      {copyMenu && (
+        <>
+          <div
+            className="menu-backdrop"
+            onClick={() => setCopyMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setCopyMenu(null);
+            }}
+          />
+          <div
+            className="context-menu"
+            style={{
+              // 右键点开：贴光标，简单夹进视口（菜单两行高，宽约 200px）
+              left: Math.max(8, Math.min(copyMenu.x, window.innerWidth - 216)),
+              top: Math.max(8, Math.min(copyMenu.y, window.innerHeight - 96)),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(filterConditionText(copyMenu.col)).then(() => {
+                  window.dispatchEvent(
+                    new CustomEvent("qn-notice", { detail: { message: "已复制当前筛选条件" } }),
+                  );
+                });
+                setCopyMenu(null);
+              }}
+            >
+              复制当前筛选条件
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const text = activeCols.map(filterConditionText).join("\n");
+                void navigator.clipboard.writeText(text).then(() => {
+                  window.dispatchEvent(
+                    new CustomEvent("qn-notice", {
+                      detail: { message: `已复制全部筛选条件（${activeCols.length} 列）` },
+                    }),
+                  );
+                });
+                setCopyMenu(null);
+              }}
+            >
+              复制所有筛选条件{activeCols.length > 1 ? `（${activeCols.length} 列）` : ""}
+            </button>
+          </div>
+        </>
       )}
     </div>
   );

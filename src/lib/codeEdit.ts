@@ -340,41 +340,73 @@ export function listMarkerOf(lineText: string): ListMarkerInfo | null {
  *   保持所见即所得）。
  *
  * 返回 `null` 表示此行没有可做的变换（非列表行删标记、已是目标类型且序号
- * 无需归一化等），调用方跳过。
+ * 无需归一化等），调用方跳过。`spans` 是**行内局部坐标**的手术式改动段
+ * （0.39.12）：调用方换算成文档坐标后逐段替换——绝不能整行替换，整行替换
+ * 会把 CM 的位置映射全部吸到替换起点，显式光标永远落不准（用户实测光标
+ * 跑到行首/「序号后第 1、2 字符中间」的根因）。
  */
 export function listToggleLine(
   lineText: string,
   kind: ListKind,
   mode: "add" | "remove",
   orderedMarker?: string,
-): { text: string; delta: number } | null {
+): {
+  text: string;
+  delta: number;
+  /** 新文本里内容的起点（光标落点/钳制下沿）。 */
+  contentStart: number;
+  /** 行内局部坐标的替换段（from==to=纯插入）。 */
+  spans: { from: number; to: number; insert: string }[];
+} | null {
   const item = listMarkerOf(lineText);
   if (mode === "remove") {
     if (!item) return null;
+    const indentEnd = item.indent.length;
+    const markerEnd = indentEnd + item.markerLen;
     let content = item.content;
+    const spans = [{ from: indentEnd, to: markerEnd, insert: "" }];
     if (item.kind === "bullet") {
       const box = TASK_BOX_RE.exec(content);
-      if (box) content = content.slice(box[0].length);
+      if (box) {
+        content = content.slice(box[0].length);
+        // 勾选框紧挨在标记段之后（TASK_BOX_RE 锚定内容开头）
+        spans.push({ from: markerEnd, to: markerEnd + box[0].length, insert: "" });
+      }
     }
     const text = item.indent + content;
-    return { text, delta: text.length - lineText.length };
+    return { text, delta: text.length - lineText.length, contentStart: indentEnd, spans };
   }
   const marker = orderedMarker ?? (kind === "bullet" ? "- " : "1. ");
   if (item) {
+    const indentEnd = item.indent.length;
     if (item.kind === kind) {
       // 同类型：有序列表带序号归一时要改写（如全 1. 归一成 1. 2. 3.）
       if (!(kind === "ordered" && orderedMarker)) return null;
       const text = `${item.indent}${orderedMarker}${item.content}`;
       if (text === lineText) return null;
-      return { text, delta: text.length - lineText.length };
+      return {
+        text,
+        delta: text.length - lineText.length,
+        contentStart: indentEnd + orderedMarker.length,
+        spans: [{ from: indentEnd, to: indentEnd + item.markerLen, insert: orderedMarker }],
+      };
     }
     const text = `${item.indent}${marker}${item.content}`;
-    return { text, delta: text.length - lineText.length };
+    return {
+      text,
+      delta: text.length - lineText.length,
+      contentStart: indentEnd + marker.length,
+      spans: [{ from: indentEnd, to: indentEnd + item.markerLen, insert: marker }],
+    };
   }
   const indent = /^[ \t]*/.exec(lineText)?.[0] ?? "";
-  const rest = lineText.slice(indent.length);
-  const text = `${indent}${marker}${rest}`;
-  return { text, delta: marker.length };
+  const text = `${indent}${marker}${lineText.slice(indent.length)}`;
+  return {
+    text,
+    delta: marker.length,
+    contentStart: indent.length + marker.length,
+    spans: [{ from: indent.length, to: indent.length, insert: marker }],
+  };
 }
 
 /**
@@ -410,11 +442,14 @@ export function toggleList(view: EditorView, kind: ListKind): boolean {
   const mode = allKind ? "remove" : "add";
 
   const changes: Array<{ from: number; to: number; insert: string }> = [];
+  /** 显式光标：**新文档坐标**（CM 对 spec.selection 原样生效不做映射）。 */
   let headAnchor: number | null = null;
   // 有序 add：序号按位置递增。起始值取选区内第一个有序项的源码序号（4. 开头
   // 仍从 4 数起）；已有项也推进计数（占号），这样「1. a / b / c」会归一成
   // 「1. a / 2. b / 3. c」而不是跳号。
   let seq: number | null = null;
+  /** 目标行之前所有改动行的净长度变化合计（把行内新坐标平移成新文档坐标）。 */
+  let deltaBefore = 0;
   for (const { line, text } of scope) {
     const item = listMarkerOf(text);
     let orderedMarker: string | undefined;
@@ -427,17 +462,31 @@ export function toggleList(view: EditorView, kind: ListKind): boolean {
     }
     const result = listToggleLine(text, kind, mode, orderedMarker);
     if (!result) continue;
-    changes.push({ from: line.from, to: line.to, insert: result.text });
-    if (line === target) {
-      const headCol = Math.min(Math.max(range.head - line.from, 0), text.length);
-      headAnchor = line.from + Math.min(Math.max(headCol + result.delta, 0), result.text.length);
+    // 手术式改动：只动标记段。整行替换会把 CM 的位置映射全部吸到替换起点，
+    // 光标怎么算都落不准（0.39.12 根因）
+    for (const span of result.spans) {
+      changes.push({ from: line.from + span.from, to: line.from + span.to, insert: span.insert });
     }
+    if (line.number === target.number) {
+      // 0.39.12 用户反馈两连：①空选区加/切标记后光标落到行首；②选中内容加
+      // 标记后光标落在「序号后第 1、2 字符中间」。根因有二：旧实现给
+      // spec.selection 传的是**旧文档坐标**（CM 按新坐标原样生效），再加整行
+      // 替换把自然映射也吸到替换起点。现在改动是手术式的、光标直接给新坐标：
+      // 有选区=内容起点（紧跟标记，用户口径「序号后」）；空选区=相对位置平移，
+      // 钳到内容起点（不落进标记里/标记前）。
+      const headCol = Math.max(range.head - line.from, 0);
+      const base = line.from + deltaBefore;
+      headAnchor = range.empty
+        ? base + Math.min(Math.max(headCol + result.delta, result.contentStart), result.text.length)
+        : base + result.contentStart;
+    }
+    deltaBefore += result.delta;
   }
   if (changes.length === 0) return false;
 
   view.dispatch({
     changes,
-    selection: { anchor: headAnchor ?? range.head },
+    selection: headAnchor === null ? undefined : { anchor: headAnchor },
     scrollIntoView: true,
   });
   view.focus();
@@ -563,23 +612,58 @@ export function editorShiftTab(view: EditorView): boolean {
 export function taskToggleLine(
   lineText: string,
   mode: "add" | "remove",
-): { text: string; delta: number } | null {
+): {
+  text: string;
+  delta: number;
+  /** 新文本里内容的起点（光标落点/钳制下沿）。 */
+  contentStart: number;
+  /** 行内局部坐标的替换段（from==to=纯插入），见 listToggleLine 的说明。 */
+  spans: { from: number; to: number; insert: string }[];
+} | null {
   const item = listMarkerOf(lineText);
   if (mode === "remove") {
     if (!item) return null;
     if (item.kind === "ordered") return null;
     const box = TASK_BOX_RE.exec(item.content);
     if (!box) return null; // 普通 bullet 不动（那是无序列表命令的领地）
+    const indentEnd = item.indent.length;
+    const markerEnd = indentEnd + item.markerLen;
     const text = item.indent + item.content.slice(box[0].length);
-    return { text, delta: text.length - lineText.length };
+    return {
+      text,
+      delta: text.length - lineText.length,
+      contentStart: indentEnd,
+      spans: [
+        { from: indentEnd, to: markerEnd, insert: "" },
+        { from: markerEnd, to: markerEnd + box[0].length, insert: "" },
+      ],
+    };
   }
-  const indent = item?.indent ?? "";
-  const body = item?.content ?? lineText.trim();
   // 已是任务行：无变换（调用方的 all-task 判定会走 remove）
   if (item && item.kind === "bullet" && TASK_BOX_RE.exec(item.content)) return null;
+  if (item) {
+    // 列表项换任务框：整段标记（含原序号/圆点+空白）换成 `- [ ] `
+    if (item.content.trim() === "") return null;
+    const indentEnd = item.indent.length;
+    const text = `${item.indent}- [ ] ${item.content}`;
+    return {
+      text,
+      delta: text.length - lineText.length,
+      contentStart: indentEnd + 6,
+      spans: [{ from: indentEnd, to: indentEnd + item.markerLen, insert: "- [ ] " }],
+    };
+  }
+  // 普通行：只在首个非空白字符前插 `- [ ] `（手术式，尾部空白原样保留）
+  const leading = /^[ \t]*/.exec(lineText)?.[0] ?? "";
+  const body = lineText.slice(leading.length);
   if (body.trim() === "") return null; // 空行不插标记（与列表命令同一取舍）
-  const text = `${indent}- [ ] ${body}`;
-  return { text, delta: text.length - lineText.length };
+  const text = `${leading}- [ ] ${body}`;
+  return {
+    text,
+    delta: 6,
+    contentStart: leading.length + 6,
+    spans: [{ from: leading.length, to: leading.length, insert: "- [ ] " }],
+  };
 }
 
 /** 切换任务列表（`- [ ] `）的编辑器入口：选区全部是任务行时移除，否则添加。 */
@@ -610,20 +694,29 @@ export function toggleTaskList(view: EditorView): boolean {
   const mode = scope.length > 0 && scope.every(({ text }) => isTaskLine(text)) ? "remove" : "add";
 
   const changes: Array<{ from: number; to: number; insert: string }> = [];
-  let headAnchor: number | null = null;
+  let headAnchor: number | null = null; // 新文档坐标（显式 selection 原样生效，不做映射）
+  let deltaBefore = 0; // 目标行之前改动行的净长度变化（同 toggleList）
   for (const { line, text } of scope) {
     const result = taskToggleLine(text, mode);
     if (!result) continue;
-    changes.push({ from: line.from, to: line.to, insert: result.text });
-    if (line === target) {
-      const headCol = Math.min(Math.max(range.head - line.from, 0), text.length);
-      headAnchor = line.from + Math.min(Math.max(headCol + result.delta, 0), result.text.length);
+    // 手术式改动 + 显式光标：与 toggleList 同一套 0.39.12 规则
+    for (const span of result.spans) {
+      changes.push({ from: line.from + span.from, to: line.from + span.to, insert: span.insert });
     }
+    if (line.number === target.number) {
+      // 光标规则同 toggleList（0.39.12：显式 selection 按新文档坐标给）
+      const headCol = Math.max(range.head - line.from, 0);
+      const base = line.from + deltaBefore;
+      headAnchor = range.empty
+        ? base + Math.min(Math.max(headCol + result.delta, result.contentStart), result.text.length)
+        : base + result.contentStart;
+    }
+    deltaBefore += result.delta;
   }
   if (changes.length === 0) return false;
   view.dispatch({
     changes,
-    selection: { anchor: headAnchor ?? range.head },
+    selection: headAnchor === null ? undefined : { anchor: headAnchor },
     scrollIntoView: true,
   });
   view.focus();
