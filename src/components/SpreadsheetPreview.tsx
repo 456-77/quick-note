@@ -5,16 +5,17 @@
  * 现在 Worker 返回二维显示字符串（lib/xlsxWorker.ts），这里自己渲染表格：
  * - 表头每列一个筛选按钮（Excel 式）：搜索值 + 多选 + 全选/清空/清除筛选；
  * - 多列筛选叠加，筛选后显示「N / M 行」，表头粘性置顶；
- * - 大表只渲染前 600 行（「显示更多」追加），筛选仍作用于全部已解析行；
+ * - 行虚拟化（0.39.9 用户反馈「预览表格内存占用大，拖分界线飙到 500MB」）：
+ *   2 万多个真实单元格的 DOM/样式/栅格是内存大头——只渲染视口内 ±缓冲区的
+ *   行，DOM 降一个数量级，分界线拖动时的重排/重绘成本也随之消失；
+ *   全量行直接可滚（不再有「显示更多」分页），筛选仍作用于全部已解析行；
  * - 解析侧 20000 行 × 80 列截断（0.39.3 由 5000 放大——用户实测表 4999 行就撞顶），
  *   超大表给明确提示，避免百万行表拖死预览。
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
 
-/** 每次渲染的行数（点「显示更多」翻倍追加；筛选作用于全部行）。 */
-const RENDER_STEP = 600;
 /** 单列筛选面板里最多列出的不同值（再多请用搜索缩小范围）。 */
 const MAX_FILTER_VALUES = 500;
 
@@ -217,7 +218,10 @@ export default function SpreadsheetPreview({
     const cached = cacheKey && first ? filterCache.get(`${cacheKey}::${first.name}`) : undefined;
     return cached ? { ...cached } : {};
   });
-  const [cap, setCap] = useState(RENDER_STEP);
+  /** 行虚拟化状态：滚动位置 + 视口高 + 实测行高（0.39.9 内存优化）。 */
+  const [scroll, setScroll] = useState({ top: 0, viewH: 600 });
+  const [rowH, setRowH] = useState(0); // 0 = 未实测，用估计值兜底
+  const scrollRafRef = useRef<number | undefined>(undefined);
   /** 筛选面板：列下标 + fixed 定位（相对视口）。 */
   const [pop, setPop] = useState<{
     col: number;
@@ -238,7 +242,6 @@ export default function SpreadsheetPreview({
     const cached =
       cacheKey && target ? filterCache.get(`${cacheKey}::${target.name}`) : undefined;
     setFilters(cached ? { ...cached } : {});
-    setCap(RENDER_STEP);
     setPop(null);
   }, [sheetIndex, cacheKey, sheets]);
 
@@ -355,13 +358,64 @@ export default function SpreadsheetPreview({
     );
   }, [body, filters]);
 
-  const visible = filtered.slice(0, cap);
   const activeCols = Object.keys(filters)
     .map(Number)
     .filter((col) => (filters[col]?.length ?? 0) > 0)
     .sort((a, b) => a - b);
   const popValues = useMemo(() => (pop ? distinctValues(body, pop.col) : []), [pop, body]);
   const popCounts = useMemo(() => (pop ? valueCounts(body, pop.col) : undefined), [pop, body]);
+
+  // ---- 行虚拟化：视口窗口计算（行高恒定 = nowrap 单行）----
+  const rowHEstimate = rowH || 27;
+  const viewH = scroll.viewH || 600;
+  const overscan = 12;
+  let vStart = Math.max(0, Math.floor(scroll.top / rowHEstimate) - overscan);
+  // 纵向合并原点在窗口上方的，把窗口上沿扩到原点（否则窗口边会出现空洞），
+  // 扩展上限 200 行防超大合并把窗口拖爆
+  for (const m of sheet?.merges ?? []) {
+    if (m.rs <= 1) continue;
+    const originData = m.r - (headerRow + 1);
+    const endData = originData + m.rs - 1;
+    if (endData >= vStart && originData < vStart) {
+      vStart = Math.max(0, Math.max(vStart - 200, originData));
+    }
+  }
+  const vEnd = Math.min(filtered.length, Math.ceil((scroll.top + viewH) / rowHEstimate) + overscan);
+  const rowsSlice = filtered.slice(vStart, vEnd);
+  const topPad = vStart * rowHEstimate;
+  const bottomPad = Math.max(0, (filtered.length - vEnd) * rowHEstimate);
+
+  // 实测行高（首帧用估计值，挂载后按真实 tr 修正；filtered 行数变化后复测）
+  useLayoutEffect(() => {
+    const tr = bodyWrapRef.current?.querySelector<HTMLTableRowElement>(
+      "tbody tr:not(.xlsx-vspacer)",
+    );
+    const h = tr?.offsetHeight ?? 0;
+    if (h > 10) setRowH((prev) => (Math.abs(prev - h) > 0.5 ? h : prev));
+  }, [sheet, filtered.length, rowHEstimate]);
+
+  // 视口高随分界线拖动/窗口缩放变化
+  useEffect(() => {
+    const el = bodyWrapRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      setScroll((s) => (s.viewH === el.clientHeight ? s : { ...s, viewH: el.clientHeight }));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [sheet]);
+
+  // 滚动：rAF 合帧更新窗口（高频 scroll 事件与拖拽同理）
+  const onBodyScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget;
+    if (scrollRafRef.current !== undefined) return;
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = undefined;
+      setScroll((s) =>
+        s.top === el.scrollTop && s.viewH === el.clientHeight ? s : { top: el.scrollTop, viewH: el.clientHeight },
+      );
+    });
+  };
 
   if (!sheet) return null;
 
@@ -491,7 +545,7 @@ export default function SpreadsheetPreview({
       {header.length === 0 ? (
         <div className="xlsx-empty">这个工作表是空的</div>
       ) : (
-        <div className="file-preview-sheet-body" ref={bodyWrapRef}>
+        <div className="file-preview-sheet-body" ref={bodyWrapRef} onScroll={onBodyScroll}>
           <table
             className={`xlsx-table${colWidths ? " is-fixed" : ""}`}
             style={
@@ -563,10 +617,17 @@ export default function SpreadsheetPreview({
               </tr>
             </thead>
             <tbody>
-              {visible.map((row, index) => {
-                const rowIdx = index + 1; // rows 里的 0 基行号（含表头）
+              {topPad > 0 && (
+                <tr className="xlsx-vspacer" style={{ height: `${topPad}px` }}>
+                  <td colSpan={header.length} style={{ border: 0, padding: 0 }} />
+                </tr>
+              )}
+              {rowsSlice.map((row, i) => {
+                // rows 里的 0 基绝对行号（含表头行）——mergeSpan/mergeCovered 都按
+                // 绝对行号索引；顺带修正了旧版 headerRow>0 时 index+1 的偏移隐患
+                const rowIdx = headerRow + 1 + vStart + i;
                 return (
-                  <tr key={index}>
+                  <tr key={rowIdx}>
                     {header.map((_label, col) => {
                       if (mergeCovered.has(`${rowIdx}:${col}`)) return null;
                       const span = mergeSpan(rowIdx, col);
@@ -584,17 +645,15 @@ export default function SpreadsheetPreview({
                   </tr>
                 );
               })}
+              {bottomPad > 0 && (
+                <tr className="xlsx-vspacer" style={{ height: `${bottomPad}px` }}>
+                  <td colSpan={header.length} style={{ border: 0, padding: 0 }} />
+                </tr>
+              )}
             </tbody>
           </table>
           {filtered.length === 0 && (
             <div className="xlsx-empty">没有符合筛选条件的行</div>
-          )}
-          {filtered.length > visible.length && (
-            <div className="xlsx-more">
-              <button type="button" onClick={() => setCap((value) => value + RENDER_STEP)}>
-                显示更多（已显示 {visible.length} / {filtered.length} 行）
-              </button>
-            </div>
           )}
         </div>
       )}

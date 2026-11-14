@@ -1818,6 +1818,12 @@ div.tree-item:focus-visible {
   max-width: calc(100% - 26px);
 }
 
+/* 0.39.9 行虚拟化：上下占位行只撑高度，不画边框不占内边距 */
+.xlsx-vspacer td {
+  border: 0 !important;
+  padding: 0 !important;
+}
+
 .xlsx-th-label {
   display: inline-block;
   max-width: 260px;
