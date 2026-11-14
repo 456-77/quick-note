@@ -1962,6 +1962,10 @@ div.tree-item:focus-visible {
   background: var(--surface-2);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  /* 0.39.12 用户反馈「滚动筛选条件，弹窗又消失」：值列表滚到头后滚轮会**链到
+     底下的表格**，触发表格滚动收起弹窗的守卫——contain 掐断链条（列表滚到
+     尽头就停，不外传） */
+  overscroll-behavior: contain;
 }
 
 .xlsx-filter-value {

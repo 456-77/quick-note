@@ -86,6 +86,36 @@ function ColumnFilter({
   const [chosen, setChosen] = useState<Set<string>>(
     () => new Set(applied ?? values),
   );
+  // 0.39.12 用户反馈「右键筛选条件行改成出现弹窗供选择，复制当前行或者复制
+  // 所有选中行」：值行右键自绘菜单（原来弹的是浏览器原生菜单）
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; value: string } | null>(null);
+  const rowMenuRef = useRef<HTMLDivElement | null>(null);
+  // 点外/Esc 收起。Esc 用捕获阶段拦在本面板自己的 Esc（关闭整个弹窗）之前：
+  // 菜单开着时 Esc 只收菜单
+  useEffect(() => {
+    if (!rowMenu) return;
+    const onDown = (event: MouseEvent) => {
+      if (rowMenuRef.current?.contains(event.target as Node)) return;
+      setRowMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setRowMenu(null);
+    };
+    window.addEventListener("mousedown", onDown, true);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousedown", onDown, true);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [rowMenu]);
+  const copyRows = (text: string, label: string) => {
+    void navigator.clipboard.writeText(text).then(() => {
+      window.dispatchEvent(new CustomEvent("qn-notice", { detail: { message: label } }));
+    });
+  };
   // 0.39.8 用户反馈「优化筛选，支持多值输入」：手头常有一串单号要一起筛，
   // 空格/逗号/顿号/分号（含全角）拆成多个词，值命中**任一**词即算匹配——
   // 粘一串值进来 → 列表收敛到这几个 → 回车（勾选 ∩ 搜索）直接应用。
@@ -168,7 +198,17 @@ function ColumnFilter({
       </div>
       <div className="xlsx-filter-values">
         {listed.map((value) => (
-          <label key={value || "\u0000"} className="xlsx-filter-value" title={displayValue(value)}>
+          <label
+            key={value || "\u0000"}
+            className="xlsx-filter-value"
+            title={displayValue(value)}
+            onContextMenu={(event) => {
+              // 0.39.12：右键值行弹自绘菜单（浏览器原生菜单被拦掉）
+              event.preventDefault();
+              event.stopPropagation();
+              setRowMenu({ x: event.clientX, y: event.clientY, value });
+            }}
+          >
             <input type="checkbox" checked={chosen.has(value)} onChange={() => toggle(value)} />
             <span className="xlsx-filter-value-text">{displayValue(value)}</span>
             {counts && (
@@ -185,6 +225,48 @@ function ColumnFilter({
           </div>
         )}
       </div>
+      {rowMenu && (
+        <>
+          <div
+            className="menu-backdrop"
+            onClick={() => setRowMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setRowMenu(null);
+            }}
+          />
+          <div
+            className="context-menu"
+            ref={rowMenuRef}
+            style={{
+              left: Math.max(8, Math.min(rowMenu.x, window.innerWidth - 216)),
+              top: Math.max(8, Math.min(rowMenu.y, window.innerHeight - 96)),
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                copyRows(rowMenu.value, "已复制当前行");
+                setRowMenu(null);
+              }}
+            >
+              复制当前行
+            </button>
+            <button
+              type="button"
+              disabled={chosen.size === 0}
+              onClick={() => {
+                // 选中行按值列表原序、每行一条（长值换行粘贴最可读）
+                const text = values.filter((value) => chosen.has(value)).join("\n");
+                copyRows(text, `已复制所有选中行（${chosen.size} 行）`);
+                setRowMenu(null);
+              }}
+            >
+              复制所有选中行{chosen.size > 0 ? `（${chosen.size} 行）` : ""}
+            </button>
+          </div>
+        </>
+      )}
       <div className="xlsx-filter-foot">
         <button type="button" className="xlsx-filter-clear" onClick={() => onApply(null)}>
           清除该列筛选

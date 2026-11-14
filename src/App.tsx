@@ -587,7 +587,10 @@ export default function App() {
   /** 开预览标签：已有同路径的标签就只激活它；标签栏常驻，点笔记随时切回。 */
   const openPreviewTab = useCallback((path: string) => {
     setPreviewTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
+    // 0.39.12：显示顺序（md+预览合并渲染）记一笔——新预览标签落整条标签栏最右
+    paneOrderTouch("main", path);
     setActivePreview(path);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   /** 关预览标签；关的是激活页就回编辑器。左右两栏各自判断归属。 */
   const closeSpecialTab = useCallback((path: string) => {
@@ -632,8 +635,12 @@ export default function App() {
       if (toSide === fromSide) {
         if (toSide === "main") setPreviewTabs((prev) => insert(prev));
         else setPreviewTabsSplit((prev) => insert(prev));
+        // 0.39.12：合并显示顺序同步重排（同栏插到 target 之前/挪到末尾）
+        paneOrderReorder(toSide, path, target ?? null);
         return;
       }
+      paneOrderMove(path, toSide);
+      if (target) paneOrderReorder(toSide, path, target);
       if (fromSide === "main") {
         // 源栏收尾（0.39.9 用户反馈「右侧分屏文件拖到左侧，右侧显示空白，不
         // 应该自动显示紧挨他的文件吗」）：被拖走的是激活预览时，先就近激活
@@ -2487,6 +2494,83 @@ export default function App() {
     () => orderedOpenTabs.filter((tab) => rightTabPaths.includes(tab.path)),
     [orderedOpenTabs, rightTabPaths],
   );
+  // 0.39.12 用户反馈「后面打开的标签头应该出现在右侧呀，现在却出现在预览文件
+  // 标签头的左边」：标签栏里 md 组恒渲染在预览组之前，新开的 md 标签落不到
+  // 整条标签栏的最右——改为 md+预览按「打开/移入顺序」合并渲染。paneOrder 只
+  // 管显示顺序：成员资格仍以 openTabs/previewTabs 为准，清单里多出的（已关）
+  // 自动被过滤、漏记的（历史路径/换键）自动补到末尾，自愈。
+  const paneTabOrderRef = useRef<{ main: string[]; split: string[] }>({ main: [], split: [] });
+  const paneOrderTouch = useCallback((side: "main" | "split", path: string) => {
+    const list = paneTabOrderRef.current[side];
+    if (!list.includes(path)) list.push(path);
+  }, []);
+  const paneOrderMove = useCallback((path: string, toSide: "main" | "split") => {
+    const from = paneTabOrderRef.current[toSide === "main" ? "split" : "main"];
+    const idx = from.indexOf(path);
+    if (idx >= 0) from.splice(idx, 1);
+    const to = paneTabOrderRef.current[toSide];
+    if (!to.includes(path)) to.push(path);
+  }, []);
+  /** 同栏内把 dragged 插到 target 之前（target 空/不在栏内=挪到末尾）。 */
+  const paneOrderReorder = useCallback(
+    (side: "main" | "split", dragged: string, target: string | null) => {
+      const list = paneTabOrderRef.current[side];
+      const from = list.indexOf(dragged);
+      if (from >= 0) list.splice(from, 1);
+      const idx = target ? list.indexOf(target) : -1;
+      if (idx >= 0) list.splice(idx, 0, dragged);
+      else list.push(dragged);
+    },
+    [],
+  );
+  /** 一栏的显示顺序：paneOrder 过滤出在栏成员，漏记的按旧顺序补尾。 */
+  const mergePaneItems = useCallback(
+    (
+      side: "main" | "split",
+      mdPaths: string[],
+      previewPaths: string[],
+    ): { path: string; kind: "note" | "preview" }[] => {
+      const mdSet = new Set(mdPaths);
+      const pvSet = new Set(previewPaths);
+      const items: { path: string; kind: "note" | "preview" }[] = [];
+      const seen = new Set<string>();
+      for (const p of paneTabOrderRef.current[side]) {
+        if (mdSet.has(p)) {
+          items.push({ path: p, kind: "note" });
+          seen.add(p);
+        } else if (pvSet.has(p)) {
+          items.push({ path: p, kind: "preview" });
+          seen.add(p);
+        }
+      }
+      for (const p of mdPaths) if (!seen.has(p)) items.push({ path: p, kind: "note" });
+      for (const p of previewPaths) if (!seen.has(p)) items.push({ path: p, kind: "preview" });
+      return items;
+    },
+    [],
+  );
+  /** 主栏/分屏栏的合并标签序列（固定 md 标签置顶，其余按打开/移入顺序）。 */
+  const mainPaneItems = useMemo(() => {
+    const items = mergePaneItems(
+      "main",
+      leftTabs.map((tab) => tab.path),
+      previewTabs,
+    );
+    const pinned = items.filter((item) => item.kind === "note" && pinnedSet.has(item.path));
+    return pinned.length === 0 ? items : [...pinned, ...items.filter((item) => !pinned.includes(item))];
+  }, [leftTabs, previewTabs, pinnedSet, mergePaneItems]);
+  const splitPaneItems = useMemo(() => {
+    const items = mergePaneItems(
+      "split",
+      rightTabs.map((tab) => tab.path),
+      previewTabsSplit,
+    );
+    const pinned = items.filter((item) => item.kind === "note" && pinnedSet.has(item.path));
+    return pinned.length === 0 ? items : [...pinned, ...items.filter((item) => !pinned.includes(item))];
+  }, [rightTabs, previewTabsSplit, pinnedSet, mergePaneItems]);
+  /** 合并渲染里 md 标签的 NoteContent 查找表。 */
+  const mainMdMap = useMemo(() => new Map(leftTabs.map((tab) => [tab.path, tab])), [leftTabs]);
+  const splitMdMap = useMemo(() => new Map(rightTabs.map((tab) => [tab.path, tab])), [rightTabs]);
   /** 释义自动补全的串行队列：接连添加的词读-改-写不交叠（0.30）。 */
   const vocabFillChain = useRef<Promise<void>>(Promise.resolve());
   /** 系统分享带入的预填文本（MainActivity 轮询派发到 __qnShareReceive）。 */
@@ -4037,6 +4121,7 @@ export default function App() {
       focusedPaneRef.current = "main";
       // 换仓库必须把所有标签与编辑器一起清掉：CodeMirror 的状态还挂着上一篇的话，
       // 旧内容继续显示，下一次输入还会试图写回旧仓库的路径
+      paneTabOrderRef.current = { main: [], split: [] };
       setOpenTabs([]);
       setActiveTab(null);
       stateStore.current.clear();
@@ -4573,13 +4658,6 @@ export default function App() {
   const openNote = useCallback(
     async (path: string) => {
       if (!vault) return;
-      // 打开笔记 = 离开特殊页（预览/语句库标签**保留**在标签栏，随时点得回来，
-      // 0.35.3 用户反馈「关闭后只能从左侧文件列表中选择打开，可以复用笔记的
-      // 标签页形式吗」）；收件箱面板同理——它盖住编辑区（display:none），不收起
-      // 的话用户在左侧树里点笔记毫无反应，看起来像"点不动"（0.20 用户反馈）。
-      setActivePreview(null);
-      setLibraryPageOpen(false);
-      setCaptureManagerOpen(false);
       // 0.32.2 分栏路由：标签唯一归属一栏——右栏的标签在右栏激活，左栏的在左栏
       // 激活；还没有标签的新文件落在**最后聚焦的窗格**（Obsidian 语义）。
       // 0.39.12 用户反馈「点击最近文件弹窗中的文件，文件打开位置不是鼠标聚焦的
@@ -4593,8 +4671,18 @@ export default function App() {
         : focusedPaneRef.current === "split" && splitOpen
           ? "split"
           : "main";
+      // 打开笔记 = 离开特殊页（预览/语句库标签**保留**在标签栏，随时点得回来，
+      // 0.35.3 用户反馈「关闭后只能从左侧文件列表中选择打开，可以复用笔记的
+      // 标签页形式吗」）；收件箱面板同理——它盖住编辑区（display:none），不收起
+      // 的话用户在左侧树里点笔记毫无反应，看起来像"点不动"（0.20 用户反馈）。
+      // 0.39.12 用户反馈「分屏时，一侧打开非预览文件，另外一侧会自动从预览文件
+      // 切换到别的文件」：让位只让**目标栏**的预览——旧代码无条件清左栏预览，
+      // 往右栏开 md 会把左栏正看着的 xlsx 预览切走
+      if (targetSide === "main") setActivePreview(null);
+      else setActivePreviewSplit(null);
+      setLibraryPageOpen(false);
+      setCaptureManagerOpen(false);
       // 0.36.1：右栏开笔记 = 该栏预览让位（预览标签保留在右栏标签组可点回）
-      if (targetSide === "split") setActivePreviewSplit(null);
       // 已是这一栏的激活标签且没有外部改动：什么都不做（重置会丢光标位置）
       if (targetSide === "main" && path === activeTabRef.current && !staleTabs.current.has(path)) return;
       if (targetSide === "split" && path === splitActiveRef.current && !staleTabs.current.has(path)) return;
@@ -4711,6 +4799,14 @@ export default function App() {
               : [...rightBase, note.path];
           rightTabsRef.current = nextRight;
           setRightTabPaths(nextRight);
+          // 0.39.12：合并显示顺序记一笔（新标签落整条标签栏最右；替换模式接管
+          // 被顶标签的坑位，不追加到末尾）
+          if (replaceCurrent && previousPath) {
+            const order = paneTabOrderRef.current.split;
+            const idx = order.indexOf(previousPath);
+            if (idx >= 0) order[idx] = note.path;
+            else paneOrderTouch("split", note.path);
+          } else paneOrderTouch("split", note.path);
           splitActiveRef.current = note.path;
           setSplitActiveTab(note.path);
           tabActivatedAt.current.set(note.path, Date.now());
@@ -4752,6 +4848,14 @@ export default function App() {
         setActiveTab(note.path);
         viewRef.current?.setState(newState);
         viewOwnerRef.current = note.path;
+        // 0.39.12：合并显示顺序记一笔（新标签落整条标签栏最右；替换模式接管
+        // 被顶标签的坑位）
+        if (replaceCurrent && previousPath) {
+          const order = paneTabOrderRef.current.main;
+          const idx = order.indexOf(previousPath);
+          if (idx >= 0) order[idx] = note.path;
+          else paneOrderTouch("main", note.path);
+        } else paneOrderTouch("main", note.path);
         tabActivatedAt.current.set(note.path, Date.now());
         // 恢复上次的阅读位置（0.31）：会话内存量优先，没有再回持久化值。
         // 新文档 setState 后高度图还是上一篇的实测值，scrollTop 可能被
@@ -4819,6 +4923,7 @@ export default function App() {
         setPreviewTabs((prev) => (prev.includes(path) ? prev.filter((p) => p !== path) : prev));
         setActivePreview((cur) => (cur === path ? null : cur));
         setPreviewTabsSplit((prev) => (prev.includes(path) ? prev : [...prev, path]));
+        paneOrderMove(path, "split");
         setActivePreviewSplit(path);
         focusedPaneRef.current = "split";
       } else {
@@ -4856,8 +4961,9 @@ export default function App() {
         );
         return;
       }
-      // 打开编辑类文件时离开预览/语句库页（预览标签保留在标签栏，可点回）
-      setActivePreview(null);
+      // 打开编辑类文件时离开预览/语句库页（预览标签保留在标签栏，可点回）——
+      // 预览让位在 openNote 里按**目标栏**做（0.39.12：无条件清左栏预览会把
+      // 另一侧正看着的预览切走）
       setLibraryPageOpen(false);
       setSelectedPath(path);
       await openNote(path);
@@ -4889,7 +4995,9 @@ export default function App() {
         routePreviewToPane(path, side);
         return;
       }
-      setActivePreview(null);
+      // 预览让位按落点栏（0.39.12 同 openNote：拖到右栏不能切走左栏的预览）
+      if (side === "main") setActivePreview(null);
+      else setActivePreviewSplit(null);
       setLibraryPageOpen(false);
       setCaptureManagerOpen(false);
       if (side === "split") {
@@ -5263,6 +5371,13 @@ export default function App() {
       setOpenTabs((prev) =>
         prev.map((tab) => (affected(tab.path) ? { ...tab, path: remap(tab.path) } : tab)),
       );
+      // 0.39.12：合并显示顺序跟着换键，否则改名的标签掉到清单末尾（自愈补尾）
+      for (const side of ["main", "split"] as const) {
+        const list = paneTabOrderRef.current[side];
+        for (let i = 0; i < list.length; i += 1) {
+          if (affected(list[i])) list[i] = remap(list[i]);
+        }
+      }
       // 固定标签跟着换键，否则固定状态指向不存在的旧路径
       setPinnedTabs((prev) => prev.map((p) => (affected(p) ? remap(p) : p)));
       // 收藏与最近列表跟着换键，否则指向不存在的旧路径
@@ -5863,6 +5978,8 @@ export default function App() {
         const remaining = rightNow.filter((p) => p !== path);
         rightTabsRef.current = remaining;
         setRightTabPaths(remaining);
+        // 0.39.12：合并显示顺序跟栏走（移回的标签落左栏末尾）
+        paneOrderMove(path, "main");
         if (splitActiveRef.current === path) {
           if (remaining.length === 0) {
             // 右栏收起：被移走的正是激活标签——与 closeRightPane 同一套收尾，
@@ -5880,22 +5997,32 @@ export default function App() {
         }
         return;
       }
-      // 左 → 右：左栏至少留一个标签
-      const leftCount = openTabsRef.current.filter((tab) => !rightNow.includes(tab.path)).length;
-      if (leftCount <= 1) {
-        setStatus("左栏只剩这一个标签了，先再开一个才能把它移去分屏");
-        return;
-      }
+      // 左 → 右：0.39.12 用户反馈「右键 md 文件标签头无法选择分屏操作，直接
+      // 拖动标签头进行分屏也没用」——旧的「左栏至少留一个标签」守卫把唯一的
+      // md 标签禁成死按钮（右键菜单置灰、拖过去 moveTabAcross 里 status 提示
+      // 后不动），而左栏搬空是合法状态（预览标签还在/欢迎层回归），删掉守卫
       const nextRight = [...rightNow, path];
       rightTabsRef.current = nextRight;
       setRightTabPaths(nextRight);
       setSplitActiveTab(path);
-      // 移走的若正是左栏激活：左栏激活切到相邻的左栏标签（顺序同 closeTab 的取法）
+      // 0.39.12：合并显示顺序跟栏走（分屏过去的标签落右栏末尾）
+      paneOrderMove(path, "split");
+      // 移走的若正是左栏激活：左栏激活切到相邻的左栏标签（顺序同 closeTab 的取法）；
+      // 左栏 md 标签搬空时按「关空」同款收尾——主编辑区悬空回欢迎层，防止已移到
+      // 右栏的笔记还在左栏渲染（同文件不得同现两栏）
       if (activeTabRef.current === path) {
         const leftTabs = orderedOpenTabs.filter(
           (tab) => tab.path !== path && !rightNow.includes(tab.path),
         );
         if (leftTabs.length > 0) activateTab(leftTabs[0].path);
+        else {
+          setActiveTab(null);
+          setDirty(false);
+          setInTable(false);
+          resourcesRef.current.notePath = null;
+          viewRef.current?.setState(emptyEditorState());
+          viewOwnerRef.current = null;
+        }
       }
     },
     [activateTab, orderedOpenTabs, closeSearchPanelIfOpen],
@@ -5929,6 +6056,8 @@ export default function App() {
 
   /** 把 dragged 移到 target 前面（仅同栏、两者都不固定时）。 */
   const reorderTab = useCallback((dragged: string, target: string) => {
+    // 0.39.12：合并显示顺序同步重排（target 的归属栏）
+    paneOrderReorder(rightTabsRef.current.includes(target) ? "split" : "main", dragged, target);
     setOpenTabs((prev) => {
       const from = prev.findIndex((tab) => tab.path === dragged);
       const to = prev.findIndex((tab) => tab.path === target);
@@ -5942,7 +6071,9 @@ export default function App() {
   }, []);
 
   /** 把 dragged 挪到清单末尾（栏级落点：该栏标签组的最末位）。 */
-  const reorderTabToEnd = useCallback((dragged: string) => {
+  const reorderTabToEnd = useCallback((dragged: string, side: "main" | "split") => {
+    // 0.39.12：合并显示顺序同步重排（side=落点栏）
+    paneOrderReorder(side, dragged, null);
     setOpenTabs((prev) => {
       const from = prev.findIndex((tab) => tab.path === dragged);
       if (from < 0 || from === prev.length - 1) return prev;
@@ -5956,9 +6087,9 @@ export default function App() {
   /** 跨栏落地的公共尾巴：换归属 → 排位 → 激活（Obsidian 语义：拖进来的即激活）。 */
   const dropTabCrossPane = useCallback(
     (dragged: string, target: string | null, toSide: "main" | "split") => {
-      moveTabAcross(dragged); // 守卫失败（左栏仅剩一个）会给 status 提示且不动
+      moveTabAcross(dragged);
       if (target) reorderTab(dragged, target);
-      else reorderTabToEnd(dragged);
+      else reorderTabToEnd(dragged, toSide);
       // 右→左要显式激活（moveTabAcross 只管右栏收尾）；左→右 moveTabAcross 已激活
       if (toSide === "main") activateTab(dragged);
     },
@@ -6070,7 +6201,7 @@ export default function App() {
         return;
       }
       if (drag.side === side) {
-        reorderTabToEnd(drag.path);
+        reorderTabToEnd(drag.path, side);
       } else {
         dropTabCrossPane(drag.path, null, side);
       }
@@ -6130,7 +6261,7 @@ export default function App() {
         return;
       }
       if (drag!.side === side) {
-        reorderTabToEnd(drag!.path);
+        reorderTabToEnd(drag!.path, side);
       } else {
         dropTabCrossPane(drag!.path, null, side);
       }
@@ -6197,7 +6328,7 @@ export default function App() {
         return;
       }
       if (drag.side === side) {
-        reorderTabToEnd(drag.path);
+        reorderTabToEnd(drag.path, side);
       } else {
         dropTabCrossPane(drag.path, null, side);
       }
@@ -6229,6 +6360,9 @@ export default function App() {
       setPreviewTabsSplit([]);
       setActivePreviewSplit(null);
     }
+    // 0.39.12：右栏显示顺序整体并入左栏末尾（保持相对顺序），右栏清单清空
+    for (const p of paneTabOrderRef.current.split) paneOrderTouch("main", p);
+    paneTabOrderRef.current.split = [];
     rightTabsRef.current = [];
     setRightTabPaths([]);
     splitActiveRef.current = null;
@@ -9150,22 +9284,10 @@ export default function App() {
                 </button>
                 <button
                   type="button"
-                  disabled={
-                    rightTabPaths.includes(tabMenu.path)
-                      ? // 右栏最后一个标签也允许移回：移过去右栏空了自然收起
-                        //（0.35.3 用户反馈「分屏到右侧的标签，移回到左侧功能失效」
-                        //——旧守卫把唯一标签禁成死按钮，点了毫无反应）
-                        false
-                      : openTabs.filter((tab) => !rightTabPaths.includes(tab.path)).length <= 1
-                  }
-                  title={
-                    (!rightTabPaths.includes(tabMenu.path) &&
-                      openTabs.filter((tab) => !rightTabPaths.includes(tab.path)).length <= 1)
-                      ? "原栏至少要留一个标签"
-                      : undefined
-                  }
                   onClick={() => {
-                    // 0.32.2 Obsidian 式分栏：「分屏」= 把标签移到另一栏
+                    // 0.32.2 Obsidian 式分栏：「分屏」= 把标签移到另一栏。
+                    // 0.39.12：唯一的 md 标签也允许移过去（左栏搬空=欢迎层），
+                    // 旧守卫把它禁成死按钮被用户反馈
                     moveTabAcross(tabMenu.path);
                     setTabMenu(null);
                   }}
@@ -9763,7 +9885,53 @@ export default function App() {
                 if (delta !== 0) el.scrollLeft += delta;
               }}
             >
-              {leftTabs.map((tab) => {
+              {/* 0.39.12：md 与预览标签按打开/移入顺序合并渲染（新开的标签永远
+                  落整条标签栏最右，不再被 md/预览分组拆开） */}
+              {mainPaneItems.map((item) => {
+                if (item.kind === "preview") {
+                  const path = item.path;
+                  const title = baseName(path);
+                  const isActive = activePreview === path;
+                  return (
+                    <div
+                      key={`special-${path}`}
+                      role="tab"
+                      aria-selected={isActive}
+                      tabIndex={0}
+                      className={`tab tab-special${isActive ? " is-active" : ""}`}
+                      title={path}
+                      onClick={() => {
+                        focusedPaneRef.current = "main";
+                        setActivePreview(path);
+                        setCaptureManagerOpen(false);
+                        setLibraryPageOpen(false);
+                      }}
+                      onContextMenu={(event) => {
+                        // 0.39.9 用户反馈「右键右侧分屏的标签头出现原生弹窗」：预览
+                        // 标签此前没有右键菜单——左栏笔记标签有、预览标签没有
+                        event.preventDefault();
+                        setTabMenu({ path, x: event.clientX, y: event.clientY, kind: "preview" });
+                      }}
+                      {...previewTabDragProps(path, "main")}
+                    >
+                      <span className="tab-title">{title}</span>
+                      <button
+                        type="button"
+                        className="tab-close"
+                        aria-label={`关闭 ${title}`}
+                        title="关闭标签页"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          closeSpecialTab(path);
+                        }}
+                      >
+                        <IconX size={11} />
+                      </button>
+                    </div>
+                  );
+                }
+                const tab = mainMdMap.get(item.path);
+                if (!tab) return null;
                 const isPinned = pinnedSet.has(tab.path);
                 // 0.39.9 用户反馈「选中预览文件时，标签栏为什么同时高亮 md 文档
                 // 和预览文件」：本栏预览激活时编辑器整体被盖住，md 标签让出
@@ -9814,49 +9982,6 @@ export default function App() {
                         <IconX size={11} />
                       </button>
                     )}
-                  </div>
-                );
-              })}
-              {/* 预览标签页（0.35.3）：不属于 openTabs 的特殊标签，常驻左栏标签组
-                  末尾；语句库管理走 Inbox 式整页，不再占标签外壳 */}
-              {previewTabs.map((path) => {
-                const title = baseName(path);
-                const isActive = activePreview === path;
-                return (
-                  <div
-                    key={`special-${path}`}
-                    role="tab"
-                    aria-selected={isActive}
-                    tabIndex={0}
-                    className={`tab tab-special${isActive ? " is-active" : ""}`}
-                    title={path}
-                    onClick={() => {
-                      focusedPaneRef.current = "main";
-                      setActivePreview(path);
-                      setCaptureManagerOpen(false);
-                      setLibraryPageOpen(false);
-                    }}
-                    onContextMenu={(event) => {
-                      // 0.39.9 用户反馈「右键右侧分屏的标签头出现原生弹窗」：预览
-                      // 标签此前没有右键菜单——左栏笔记标签有、预览标签没有
-                      event.preventDefault();
-                      setTabMenu({ path, x: event.clientX, y: event.clientY, kind: "preview" });
-                    }}
-                    {...previewTabDragProps(path, "main")}
-                  >
-                    <span className="tab-title">{title}</span>
-                    <button
-                      type="button"
-                      className="tab-close"
-                      aria-label={`关闭 ${title}`}
-                      title="关闭标签页"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        closeSpecialTab(path);
-                      }}
-                    >
-                      <IconX size={11} />
-                    </button>
                   </div>
                 );
               })}
@@ -9933,7 +10058,48 @@ export default function App() {
                     if (delta !== 0) el.scrollLeft += delta;
                   }}
                 >
-                  {rightTabs.map((tab) => {
+                  {/* 0.39.12：分屏栏同样 md+预览按打开/移入顺序合并渲染 */}
+                  {splitPaneItems.map((item) => {
+                    if (item.kind === "preview") {
+                      const path = item.path;
+                      const title = baseName(path);
+                      const isActive = activePreviewSplit === path;
+                      return (
+                        <div
+                          key={`special-split-${path}`}
+                          role="tab"
+                          aria-selected={isActive}
+                          tabIndex={0}
+                          className={`tab tab-special${isActive ? " is-active" : ""}`}
+                          title={path}
+                          onClick={() => {
+                            focusedPaneRef.current = "split";
+                            setActivePreviewSplit(path);
+                          }}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            setTabMenu({ path, x: event.clientX, y: event.clientY, kind: "preview" });
+                          }}
+                          {...previewTabDragProps(path, "split")}
+                        >
+                          <span className="tab-title">{title}</span>
+                          <button
+                            type="button"
+                            className="tab-close"
+                            aria-label={`关闭 ${title}`}
+                            title="关闭标签页"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              closeSpecialTab(path);
+                            }}
+                          >
+                            <IconX size={11} />
+                          </button>
+                        </div>
+                      );
+                    }
+                    const tab = splitMdMap.get(item.path);
+                    if (!tab) return null;
                     const isPinned = pinnedSet.has(tab.path);
                     // 同左栏：分屏预览激活时右栏 md 标签让出 is-active（0.39.9）
                     const isTabActive = tab.path === splitActiveTab && !activePreviewSplit;
@@ -9979,44 +10145,6 @@ export default function App() {
                             <IconX size={11} />
                           </button>
                         )}
-                      </div>
-                    );
-                  })}
-                  {/* 分屏栏的预览标签（0.36.1）：与左栏预览标签同款 ◇ 徽标 */}
-                  {previewTabsSplit.map((path) => {
-                    const title = baseName(path);
-                    const isActive = activePreviewSplit === path;
-                    return (
-                      <div
-                        key={`special-split-${path}`}
-                        role="tab"
-                        aria-selected={isActive}
-                        tabIndex={0}
-                        className={`tab tab-special${isActive ? " is-active" : ""}`}
-                        title={path}
-                        onClick={() => {
-                          focusedPaneRef.current = "split";
-                          setActivePreviewSplit(path);
-                        }}
-                        onContextMenu={(event) => {
-                          event.preventDefault();
-                          setTabMenu({ path, x: event.clientX, y: event.clientY, kind: "preview" });
-                        }}
-                        {...previewTabDragProps(path, "split")}
-                      >
-                        <span className="tab-title">{title}</span>
-                        <button
-                          type="button"
-                          className="tab-close"
-                          aria-label={`关闭 ${title}`}
-                          title="关闭标签页"
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            closeSpecialTab(path);
-                          }}
-                        >
-                          <IconX size={11} />
-                        </button>
                       </div>
                     );
                   })}
