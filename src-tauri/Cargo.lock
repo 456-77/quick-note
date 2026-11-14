@@ -3210,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "quick-note"
-version = "0.39.14"
+version = "0.39.15"
 dependencies = [
  "base64 0.22.1",
  "calamine",

@@ -469,11 +469,14 @@ export default function LibraryManagerDialog({
     }
     setBusy(true);
     try {
+      // 0.39.12：mode="add"（与现有标签取并集，语义同 [...row.tags, tag]）——
+      // 返回文案自带标签名（「已给 N 条语句添加标签（#xx）」），与批量/速记对齐；
+      // 旧 "set" 的返回「已更新 N 条语句的标签」不说加了什么
       const text = await onSetTags(
         row.kind,
         [{ name: row.name, project: row.project }],
-        [...row.tags, tag],
-        "set",
+        [tag],
+        "add",
       );
       setToast({ text, kind: "ok" });
     } catch (e) {

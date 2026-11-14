@@ -4681,6 +4681,50 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [splitDirty, revision, splitSaveNow]);
 
+  /**
+   * 左栏激活的文件被移去右栏（标签拖拽分屏/路由到分屏）后，左栏的接管者：
+   * 0.39.12 用户反馈（23:10）「拖动文件分屏，左侧默认打开的应该是紧挨源文件
+   * 左侧的文件呀」——旧逻辑激活左栏第一个标签（leftTabs[0]），与关标签的邻居
+   * 语义不一致。现在按合并显示序列激活紧挨其**左侧**的邻居（它自己就是第一个
+   * 时取右侧邻居）；邻居是预览标签就激活预览、左栏 md 激活就近归位（预览盖着
+   * 编辑器，md 高亮让位但归属仍要合法）。没有可激活的邻居=关空收尾（欢迎层）。
+   * 也修掉一条隐患：最近文件/树把左栏正激活的文件路由进右栏时，左栏 activeTab
+   * 还指着它——同文件会同现两栏。
+   */
+  const blankLeftEditor = useCallback(() => {
+    setActiveTab(null);
+    setDirty(false);
+    setInTable(false);
+    resourcesRef.current.notePath = null;
+    viewRef.current?.setState(emptyEditorState());
+    viewOwnerRef.current = null;
+  }, []);
+  const reassignLeftActiveAfterMove = useCallback(
+    (movedPath: string) => {
+      if (activeTabRef.current !== movedPath) return;
+      const order = mainPaneItems; // 渲染期快照 = 移动前的合并显示序
+      const idx = order.findIndex((item) => item.kind === "note" && item.path === movedPath);
+      const pickIdx = idx > 0 ? idx - 1 : idx === 0 && order.length > 1 ? 1 : -1;
+      if (pickIdx < 0) {
+        blankLeftEditor();
+        return;
+      }
+      const neighbor = order[pickIdx];
+      if (neighbor.kind === "note") {
+        activateTab(neighbor.path);
+        return;
+      }
+      // 邻居是预览标签：点亮它，md 激活另找归属
+      setActivePreview(neighbor.path);
+      const mdNeighbor = order.find(
+        (item, i) => i !== idx && item.kind === "note" && !rightTabsRef.current.includes(item.path),
+      );
+      if (mdNeighbor) activateTab(mdNeighbor.path);
+      else blankLeftEditor();
+    },
+    [mainPaneItems, activateTab, blankLeftEditor],
+  );
+
   const openNote = useCallback(
     async (path: string) => {
       if (!vault) return;
@@ -4706,6 +4750,9 @@ export default function App() {
       // 往右栏开 md 会把左栏正看着的 xlsx 预览切走
       if (targetSide === "main") setActivePreview(null);
       else setActivePreviewSplit(null);
+      // 0.39.12 23:10 反馈：左栏正激活的文件被路由进右栏（最近文件/树点击）时，
+      // 左栏激活紧挨其左侧的邻居——顺带防同文件同现两栏
+      if (targetSide === "split") reassignLeftActiveAfterMove(path);
       setLibraryPageOpen(false);
       setCaptureManagerOpen(false);
       // 0.36.1：右栏开笔记 = 该栏预览让位（预览标签保留在右栏标签组可点回）
@@ -4913,7 +4960,7 @@ export default function App() {
         setError(String(e));
       }
     },
-    [vault, saveNow, handleDocChanged, mode, activateTab, createSplitState],
+    [vault, saveNow, handleDocChanged, mode, activateTab, createSplitState, reassignLeftActiveAfterMove],
   );
 
   /**
@@ -6033,25 +6080,12 @@ export default function App() {
       setSplitActiveTab(path);
       // 0.39.12：合并显示顺序跟栏走（分屏过去的标签落右栏末尾）
       paneOrderMove(path, "split");
-      // 移走的若正是左栏激活：左栏激活切到相邻的左栏标签（顺序同 closeTab 的取法）；
-      // 左栏 md 标签搬空时按「关空」同款收尾——主编辑区悬空回欢迎层，防止已移到
+      // 移走的若正是左栏激活：左栏激活紧挨其左侧的邻居（23:10 反馈）；
+      // 左栏搬空时按「关空」同款收尾——主编辑区悬空回欢迎层，防止已移到
       // 右栏的笔记还在左栏渲染（同文件不得同现两栏）
-      if (activeTabRef.current === path) {
-        const leftTabs = orderedOpenTabs.filter(
-          (tab) => tab.path !== path && !rightNow.includes(tab.path),
-        );
-        if (leftTabs.length > 0) activateTab(leftTabs[0].path);
-        else {
-          setActiveTab(null);
-          setDirty(false);
-          setInTable(false);
-          resourcesRef.current.notePath = null;
-          viewRef.current?.setState(emptyEditorState());
-          viewOwnerRef.current = null;
-        }
-      }
+      reassignLeftActiveAfterMove(path);
     },
-    [activateTab, orderedOpenTabs, closeSearchPanelIfOpen],
+    [reassignLeftActiveAfterMove, closeSearchPanelIfOpen],
   );
   // 标签头拖动换位（0.35.3 用户需求；三轮反馈补「直接拖到分屏栏中」）：
   // HTML5 拖放，三层落点——

@@ -303,7 +303,9 @@ try {
     check(opened.ok, "右键标签弹菜单（找到 qn31对照 标签）", JSON.stringify(opened));
     const guard = await waitFor(ws, `(() => { const b = [...document.querySelectorAll('.context-menu button')].find((el) => (el.textContent ?? '').includes('分屏到右侧')); return b ? { text: b.textContent, disabled: b.disabled } : null; })()`, 5000);
     check(!!guard, "菜单含「分屏到右侧」（0.32.2 移动语义）", JSON.stringify(guard));
-    check(!!guard && guard.disabled, "左栏只剩这一个标签时置灰（左栏至少留一个）", JSON.stringify(guard));
+    // 0.39.13 用户反馈否决了「左栏至少留一个标签」守卫：唯一 md 标签也要能
+    // 分屏（左栏搬空=预览/欢迎层接管）——断言从「置灰」翻转为「可点」
+    check(!!guard && !guard.disabled, "唯一标签也能分屏（0.39.13 守卫已删）", JSON.stringify(guard));
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
     await sleep(300);
 
@@ -594,8 +596,11 @@ try {
     }
 
     // 3) 双项目 chips：往 DDL 库追加「测试项目B」段落（同表名），悬停出现切换 chips；
-    //    给当前笔记打 #测试项目B 标签 → 默认选中 B（笔记标签指定项目）
-    appendFileSync(join(vaultA, "数据库表DDL.md"), "\n## 测试项目B\n\n```sql\nCREATE TABLE ids_qn31_tab (\n  name varchar(10) COMMENT 'B项目版'\n);\n```\n");
+    //    给当前笔记打 #测试项目B 标签 → 默认选中 B（笔记标签指定项目）。
+    //    元数据行协议：@time 在围栏内语句上方（0.39.12 修正——此前 fixture 没带
+    //    @time，应用如实显示空时间，把「行上显示收录时间」「抽屉展示收录时间」
+    //    两条断言拖成了假失败）
+    appendFileSync(join(vaultA, "数据库表DDL.md"), "\n## 测试项目B\n\n```sql\n-- @time: 2026-01-01 10:00\nCREATE TABLE ids_qn31_tab (\n  name varchar(10) COMMENT 'B项目版'\n);\n```\n");
     await evaluate(ws, `(() => {
       const view = window.__qnView;
       view?.dispatch({ changes: { from: 0, to: 0, insert: "标签行 #测试项目B\\n" } });
@@ -704,7 +709,8 @@ try {
     }))`);
     check(rowInfo.every((r) => r.hasCheck && r.name.includes('ids_qn31_tab') && r.preview.includes('CREATE TABLE')), 'Inbox 同款行：勾选框 + 表名 + 语句预览', JSON.stringify(rowInfo));
     check(rowInfo.some((r) => r.tags.some((t) => t.includes('测试项目B'))), '行内显示标签 chips', JSON.stringify(rowInfo.map((r) => r.tags)));
-    check(rowInfo.every((r) => /^\d{2}:\d{2}$/.test(r.time)), '行上显示收录时间（@time 行，0.39 二轮）', JSON.stringify(rowInfo.map((r) => r.time)));
+    // 今天的条目显示 HH:MM；非今天显示 MM-DD HH:mm（fixture 的 @time 是 2026-01-01）
+    check(rowInfo.every((r) => /^\d{2}:\d{2}$/.test(r.time) || /^\d{2}-\d{2} \d{2}:\d{2}$/.test(r.time)), '行上显示收录时间（@time 行，0.39 二轮）', JSON.stringify(rowInfo.map((r) => r.time)));
     // 工具栏四件套对齐速记：筛选 / 标签 / 日期 / 排序（0.39 二轮）
     const toolBtns = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-toolbar .cm-tool-btn')].map((b) => b.textContent)`);
     check(['筛选', '标签', '日期', '排序'].every((label) => toolBtns.some((t) => t.includes(label))), '工具栏 筛选/标签/日期/排序 四件套（对齐速记）', toolBtns.join('|'));
@@ -775,13 +781,16 @@ try {
     check(removeTag && removed, '抽屉内 × 移除标签（0.39）', await evaluate(ws, `document.querySelector('.lib-page .cm-toast')?.textContent ?? ''`));
     await evaluate(ws, `document.querySelector('.lib-page .cm-drawer-head .cm-icon-btn')?.click()`);
     await sleep(250);
-    // 行上「标签」按钮 = Inbox 同款行内输入框（0.39 二轮）
-    const rowTagInput = await evaluate(ws, `(() => {
+    // 行上「标签」按钮 = Inbox 同款行内输入框（0.39 二轮）。点击后 React 提交
+    // 是异步 flush——同步 querySelector 查不到（0.39.12 排查实锤的假失败），
+    // 必须 waitFor
+    await evaluate(ws, `(() => {
       const row = [...document.querySelectorAll('.lib-page .cm-row')].find((r) => r.textContent.includes('测试项目B'));
       const btn = [...(row?.querySelectorAll('.cm-row-tool .cm-row-quick') ?? [])].find((b) => b.textContent.trim() === '标签');
       btn?.click();
-      return !!document.querySelector('.lib-page .cm-row-tag-input');
+      return true;
     })()`);
+    const rowTagInput = await waitFor(ws, `!!document.querySelector('.lib-page .cm-row-tag-input')`, 3000).catch(() => false);
     check(rowTagInput, '行上「标签」按钮出现行内输入框（对齐速记，0.39 二轮）');
     await evaluate(ws, `(() => { const i = document.querySelector('.lib-page .cm-row-tag-input'); i.focus(); const set = ${nativeSet}; set(i, "批测行内标签"); return true; })()`);
     await key(ws, { mod: 0, key: 'Enter' }, 'Enter', 13);
