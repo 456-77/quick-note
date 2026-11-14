@@ -10,8 +10,7 @@
  *   超大表给明确提示，避免百万行表拖死预览。
  */
 
-import { flushSync } from "react-dom";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
 
 /** 每次渲染的行数（点「显示更多」翻倍追加；筛选作用于全部行）。 */
@@ -230,44 +229,7 @@ export default function SpreadsheetPreview({
   const popRef = useRef<HTMLDivElement | null>(null);
   /** 表格容器：筛选 chips 打开时用它找对应列头做锚点。 */
   const bodyWrapRef = useRef<HTMLDivElement | null>(null);
-  const tableRef = useRef<HTMLTableElement | null>(null);
-  /**
-   * 钉死的列宽（0.39.9 用户反馈「筛选后水平位置偏移」）：null = auto 布局
-   * （空表/隐藏中）。宽度**直接取浏览器首帧自己算出的自然列宽**（读 DOM 后
-   * 立即回填 colgroup——量到的就是正在显示的宽度，回填不产生可见变化），
-   * 没有 canvas 测宽、没有分片、没有「渲染完再等一会才能操作」的死窗；
-   * 筛选/翻页前后列位钉死不动。
-   */
-  const [colWidths, setColWidthsState] = useState<number[] | null>(null);
-  const colWidthsRef = useRef<number[] | null>(null);
-  const setColWidths = (value: number[] | null) => {
-    colWidthsRef.current = value;
-    setColWidthsState(value);
-  };
-  useLayoutEffect(() => {
-    if (!sheet || header.length === 0) {
-      setColWidths(null);
-      return;
-    }
-    // 切 sheet 时旧 colgroup 还挂在 DOM 上——先同步清回 auto（layout effect
-    // 里 flushSync 合法），量到的才是新表的自然宽
-    if (colWidthsRef.current !== null) flushSync(() => setColWidths(null));
-    const table = tableRef.current;
-    if (!table || table.clientWidth === 0) return; // 隐藏中量不到，保持 auto
-    // 列头可能带 colSpan（0.39.5 合并表头）：把合并 th 的自然宽均分到各列，
-    // 被 rowSpan 盖住没有自己 th 的列由 origin 补齐，colgroup 才能与列对齐
-    const widths = new Array<number>(header.length).fill(0);
-    for (const th of Array.from(table.querySelectorAll<HTMLTableCellElement>("thead th[data-col]"))) {
-      const col = Number(th.dataset.col);
-      if (!(col >= 0) || col >= header.length) continue;
-      const span = Math.max(1, th.colSpan);
-      const share = Math.max(40, th.getBoundingClientRect().width) / span;
-      for (let k = 0; k < span && col + k < header.length; k += 1) widths[col + k] = share;
-    }
-    setColWidths(widths.some((w) => w > 0) ? widths : null);
-    // header 由 sheet 派生，随 sheet 一起变
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sheet]);
+
 
   // 切 sheet / 换文件（同一实例被复用，如分屏栏）：收起面板、重置分页，
   // 筛选从该 sheet 的缓存回填（没记录过 = 空）。
@@ -324,6 +286,48 @@ export default function SpreadsheetPreview({
   const headerRow = sheet?.headerRow ?? 0;
   const bannerRows = rows.slice(0, headerRow);
   const header = rows[headerRow] ?? [];
+
+  /**
+   * 钉死的列宽（0.39.9 用户反馈「筛选后水平位置偏移」）——**挂载前同步测好**，
+   * 表格第一帧就带 colgroup + fixed：0.39.9 初版是「先渲染 auto 表→读自然宽→
+   * 回填 fixed」，等于每次打开把 2 万多个单元格的样式重算做**两遍**
+   * （UpdateLayoutTree 2 秒，CDP Tracing 实锤；`.is-fixed td` 后代选择器一加
+   * 全表样式失效），这是「加载比旧版慢很多」的真因。现在测宽在「正在加载」
+   * 遮罩期间完成（canvas measureText，取样 ≤1500 行），表格只渲染一次。
+   * 列宽与筛选无关 → 筛选前后列位不动。
+   */
+  const colWidths = useMemo(() => {
+    if (!sheet || header.length === 0) return null;
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const family = getComputedStyle(document.body).fontFamily || "sans-serif";
+    if (ctx) ctx.font = `12.5px ${family}`; // 与 .xlsx-table th,td 的字号一致
+    // .xlsx-table th,td = padding 3px 9px + border 1px → 水平合计 20px
+    const padX = 20;
+    const cache = new Map<string, number>();
+    const widthOf = (text: string): number => {
+      const hit = cache.get(text);
+      if (hit !== undefined) return hit;
+      const w = ctx ? ctx.measureText(text).width : text.length * 6;
+      cache.set(text, w);
+      return w;
+    };
+    const widths = new Array<number>(header.length).fill(0);
+    for (let c = 0; c < header.length; c += 1) {
+      widths[c] = widthOf(header[c] ?? "") + 26; // 26 = ▾ 筛选按钮预算
+    }
+    const dataEnd = Math.min(sheet.rows.length, sheet.headerRow + 1 + 1500);
+    for (let r = sheet.headerRow + 1; r < dataEnd; r += 1) {
+      const row = sheet.rows[r];
+      for (let c = 0; c < header.length; c += 1) {
+        const w = widthOf(row[c] ?? "");
+        if (w > widths[c]) widths[c] = w;
+      }
+    }
+    return widths.map((w) => Math.min(480, Math.max(48, w + padX)));
+    // header 由 sheet 派生，随 sheet 一起变
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sheet]);
   const body = useMemo(() => rows.slice(headerRow + 1), [rows, headerRow]);
   // 合并单元格（0.39.5 用户反馈「表头合并了多个单元格，预览只占一格」）：
   // origins = 区间左上角 → 跨行/跨列数；covered = 被覆盖格 → 跳过不渲染。
@@ -489,7 +493,6 @@ export default function SpreadsheetPreview({
       ) : (
         <div className="file-preview-sheet-body" ref={bodyWrapRef}>
           <table
-            ref={tableRef}
             className={`xlsx-table${colWidths ? " is-fixed" : ""}`}
             style={
               colWidths

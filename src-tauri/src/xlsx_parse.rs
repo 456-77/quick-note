@@ -156,7 +156,7 @@ fn parse_xlsx_bytes(bytes: &[u8]) -> Result<Vec<ParsedSheetNative>, String> {
 
 /// 单元格 → 显示字符串。fmt_code 来自 styles.xml 的数字格式码（General 的
 /// 单元格通常没有显式样式 → None）。
-fn render_value(cell: Option<&Data>, fmt_code: Option<&str>) -> String {
+pub fn render_value(cell: Option<&Data>, fmt_code: Option<&str>) -> String {
     let Some(data) = cell else {
         return String::new();
     };
@@ -440,3 +440,4 @@ mod bench {
         assert!(ms > 0);
     }
 }
+
