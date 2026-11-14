@@ -2400,6 +2400,24 @@ export default function App() {
     return bestExtra > 40 ? best : null;
   }, []);
   const mainColRef = useRef<HTMLDivElement | null>(null);
+  // 0.39.12 用户反馈（21:04）「excel 预览文件外部修改时，不会更新内容」：预览
+  // 只在打开时读一次盘。监听到预览路径的文件变更事件后递增 reload 信号，让
+  // FilePreview 的加载 effect 重跑（重读磁盘，解析缓存键带内容哈希——内容没变
+  // 时命中缓存无感）。防抖：Excel/同步保存一次会触发一串 watcher 事件
+  const [previewReload, setPreviewReload] = useState<Record<string, number>>({});
+  const previewReloadTimersRef = useRef<Map<string, number>>(new Map());
+  const bumpPreviewReload = useCallback((path: string) => {
+    const timers = previewReloadTimersRef.current;
+    const existing = timers.get(path);
+    if (existing !== undefined) window.clearTimeout(existing);
+    timers.set(
+      path,
+      window.setTimeout(() => {
+        timers.delete(path);
+        setPreviewReload((prev) => ({ ...prev, [path]: (prev[path] ?? 0) + 1 }));
+      }, 700),
+    );
+  }, []);
   // 同步滚动：window 捕获阶段收所有 scroll（scroll 不冒泡但捕获下传），源在
   // 哪一栏就把另一栏的主滚动容器按比例带过去（纵向+横向）；被联动驱动的容器
   // 120ms 内不回传，防两栏互相追尾
@@ -3847,6 +3865,14 @@ export default function App() {
 
       syncRef.current?.handleVaultChange(paths);
 
+      // 预览标签的外部改动（0.39.12 反馈「excel 预览文件外部修改时，不会更新
+      // 内容」）：防抖后递增 reload 信号让 FilePreview 重读磁盘
+      for (const p of paths) {
+        if (previewTabsRef.current.includes(p) || previewTabsSplitRef.current.includes(p)) {
+          bumpPreviewReload(p);
+        }
+      }
+
       // 后台标签：只标记"文件被外部改过"，等它再次激活时与磁盘对账（openNote 的 stale 分支）
       for (const tab of openTabsRef.current) {
         if (tab.path !== activeTabRef.current && paths.includes(tab.path)) {
@@ -3948,7 +3974,7 @@ export default function App() {
       }
       setStatus("已跟随外部改动");
     },
-    [vault, scheduleRefresh, adoptFromDisk],
+    [vault, scheduleRefresh, adoptFromDisk, bumpPreviewReload],
   );
 
   useEffect(() => {
@@ -10008,6 +10034,7 @@ export default function App() {
                 vault={vault}
                 path={activePreview}
                 escClose={!overlayOpen}
+                reloadSignal={previewReload[activePreview] ?? 0}
                 onActivate={() => {
                   // 0.39.9：预览盖住编辑器，预览上的 mousedown 也算聚焦本栏
                   focusedPaneRef.current = "main";
@@ -10172,6 +10199,7 @@ export default function App() {
                     vault={vault}
                     path={activePreviewSplit}
                     escClose={!overlayOpen}
+                    reloadSignal={previewReload[activePreviewSplit] ?? 0}
                     onActivate={() => {
                       focusedPaneRef.current = "split";
                       if (outlineFollow !== "split") setOutlineFollow("split");

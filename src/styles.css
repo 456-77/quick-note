@@ -1968,6 +1968,35 @@ div.tree-item:focus-visible {
   overscroll-behavior: contain;
 }
 
+/* 计数口径分段钮（0.39.12 反馈「添加一个选项设置是全局还是继承」） */
+.xlsx-filter-scope {
+  display: inline-flex;
+  flex: none;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.xlsx-filter-scope button {
+  padding: 2px 7px;
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-faint);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.xlsx-filter-scope button + button {
+  border-left: 1px solid var(--border);
+}
+
+.xlsx-filter-scope button.is-on {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
 .xlsx-filter-value {
   display: flex;
   align-items: center;

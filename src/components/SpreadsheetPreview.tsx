@@ -13,7 +13,7 @@
  *   超大表给明确提示，避免百万行表拖死预览。
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
 
 /** 单列筛选面板里最多列出的不同值（再多请用搜索缩小范围）。 */
@@ -72,6 +72,8 @@ function ColumnFilter({
   applied,
   onApply,
   onClose,
+  scope,
+  onScopeChange,
 }: {
   title: string;
   values: string[];
@@ -81,6 +83,10 @@ function ColumnFilter({
   applied?: string[];
   onApply: (values: string[] | null) => void;
   onClose: () => void;
+  /** 计数口径（0.39.12 反馈「已经设置了一个筛选条件，面板里显示的数量是所有的，
+   * 而不是继承上一个搜索条件」）：inherit=只统计已过其他列筛选的行；global=全量。 */
+  scope: "inherit" | "global";
+  onScopeChange: (scope: "inherit" | "global") => void;
 }) {
   const [search, setSearch] = useState("");
   const [chosen, setChosen] = useState<Set<string>>(
@@ -194,6 +200,26 @@ function ColumnFilter({
         </button>
         <span className="xlsx-filter-count">
           已选 {chosen.size} / {values.length}
+        </span>
+        <span className="spacer" />
+        {/* 0.39.12 反馈：计数口径（继承=按已过其他列筛选的行统计，全局=全量） */}
+        <span className="xlsx-filter-scope" role="group" aria-label="计数口径">
+          <button
+            type="button"
+            className={scope === "inherit" ? "is-on" : ""}
+            title="值列表与行数只统计已通过其他列筛选的行（在当前结果里再筛）"
+            onClick={() => onScopeChange("inherit")}
+          >
+            继承
+          </button>
+          <button
+            type="button"
+            className={scope === "global" ? "is-on" : ""}
+            title="值列表与行数按全表统计（不看其他列的筛选）"
+            onClick={() => onScopeChange("global")}
+          >
+            全局
+          </button>
         </span>
       </div>
       <div className="xlsx-filter-values">
@@ -317,6 +343,24 @@ export default function SpreadsheetPreview({
   const bodyWrapRef = useRef<HTMLDivElement | null>(null);
   /** 筛选 chip 右键菜单（0.39.12 用户反馈「复制当前/全部筛选条件」）。 */
   const [copyMenu, setCopyMenu] = useState<{ x: number; y: number; col: number } | null>(null);
+  /** 筛选面板计数口径（0.39.12 反馈「面板里显示的数量是所有的，而不是继承上一个
+   *  搜索条件」+「添加一个选项设置是全局还是继承」）：默认继承=按已过其他列筛选
+   *  的行统计值列表与行数；选择持久化。 */
+  const [countScope, setCountScope] = useState<"inherit" | "global">(() => {
+    try {
+      return localStorage.getItem("quicknote.ui.filterCountScope") === "global" ? "global" : "inherit";
+    } catch {
+      return "inherit";
+    }
+  });
+  const changeCountScope = useCallback((scope: "inherit" | "global") => {
+    setCountScope(scope);
+    try {
+      localStorage.setItem("quicknote.ui.filterCountScope", scope);
+    } catch {
+      // 存不进只影响下次启动，本次会话照常生效
+    }
+  }, []);
 
 
   // 切 sheet / 换文件（同一实例被复用，如分屏栏）：收起面板、重置分页，
@@ -470,8 +514,27 @@ export default function SpreadsheetPreview({
     .map(Number)
     .filter((col) => (filters[col]?.length ?? 0) > 0)
     .sort((a, b) => a - b);
-  const popValues = useMemo(() => (pop ? distinctValues(body, pop.col) : []), [pop, body]);
-  const popCounts = useMemo(() => (pop ? valueCounts(body, pop.col) : undefined), [pop, body]);
+  // 继承口径的统计基数：已通过**其他列**筛选的行（不含本列自身——面板正在编辑
+  // 本列的勾选，基数得给出本列的完整分布）。没有其他筛选时与全量一致。
+  const popInheritBase = useMemo(() => {
+    if (!pop) return body;
+    const others = Object.entries(filters).filter(
+      ([col, values]) => values.length > 0 && Number(col) !== pop.col,
+    );
+    if (others.length === 0) return body;
+    return body.filter((row) =>
+      others.every(([col, values]) => values.includes(row[Number(col)] ?? "")),
+    );
+  }, [pop, body, filters]);
+  const countBase = countScope === "inherit" ? popInheritBase : body;
+  const popValues = useMemo(
+    () => (pop ? distinctValues(countBase, pop.col) : []),
+    [pop, countBase],
+  );
+  const popCounts = useMemo(
+    () => (pop ? valueCounts(countBase, pop.col) : undefined),
+    [pop, countBase],
+  );
 
   // ---- 行虚拟化：视口窗口计算（行高恒定 = nowrap 单行）----
   const rowHEstimate = rowH || 27;
@@ -812,6 +875,8 @@ export default function SpreadsheetPreview({
               setPop(null);
             }}
             onClose={() => setPop(null)}
+            scope={countScope}
+            onScopeChange={changeCountScope}
           />
         </div>
       )}

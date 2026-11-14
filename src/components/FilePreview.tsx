@@ -46,6 +46,10 @@ interface Props {
    *  「最后聚焦窗格」此前只能靠编辑器/标签栏的 mousedown 更新——左栏预览上
    *  点来点去焦点永远停在右栏，之后点文件树的文件全开进右栏。 */
   onActivate?: () => void;
+  /** 外部修改刷新信号（0.39.12 反馈「excel 预览文件外部修改时，不会更新内容」）：
+   *  App 监听到该路径的文件变更事件后递增；数值变化让加载 effect 重跑——重读
+   *  磁盘、哈希变化使解析缓存失配，内容没变时缓存命中、无感。 */
+  reloadSignal?: number;
 }
 
 /** PDF 手动缩放范围：下限防糊、上限防画布爆内存（3× A4 = 约 1800×2400 CSS px）。 */
@@ -169,7 +173,7 @@ function scheduleOrphanSweep(): void {
   }, IDLE_RELEASE_MS);
 }
 
-export default function FilePreview({ vault, path, onClose, embedded = false, escClose = true, onActivate }: Props) {
+export default function FilePreview({ vault, path, onClose, embedded = false, escClose = true, onActivate, reloadSignal = 0 }: Props) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const kind = fileKindOf(name);
   // 缩放记忆键（0.38.7）：切走再切回按此恢复缩放
@@ -1106,7 +1110,9 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
       releasePdf();
       releasePptx();
     };
-  }, [vault, path, kind]);
+    // reloadSignal（0.39.12）：外部修改时 App 递增，让本 effect 重跑重读磁盘——
+    // 解析缓存键带内容哈希，内容没变时命中缓存、无感
+  }, [vault, path, kind, reloadSignal]);
 
   // 预览整体关闭（卸载）才 terminate pdf worker；文件间切换仍复用同一实例。
   // 刻意放在主 effect 之后：卸载时 React 按定义顺序跑清理，先销毁加载任务、
