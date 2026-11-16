@@ -68,6 +68,10 @@ echo "=== 7c/18 文件名排序（主名优先，变体殿后） ==="
 node --experimental-strip-types --no-warnings scripts/verify-filesort.mjs
 
 echo
+echo "=== 7d/18 大纲围栏状态机（漏闭合围栏不能吞掉后续标题） ==="
+node --experimental-strip-types --no-warnings scripts/verify-outline.mjs
+
+echo
 echo "=== 8/18 附件命名与链接测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-attachments.mjs
 

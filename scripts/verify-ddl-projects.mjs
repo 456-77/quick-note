@@ -7,12 +7,16 @@ import {
   ddlSections,
   ddlProjectNames,
   entryTimeOf,
+  extractTableNames,
   parseDdlTables,
   parseTagList,
   mergeDdlIntoNote,
   nowStamp,
   setDdlEntryTags,
   tableCommentOf,
+  tableWordInText,
+  ddlEntryName,
+  baseTableName,
   removeDdlEntry,
   locateDdlEntry,
 } from "../src/lib/ddl.ts";
@@ -453,6 +457,54 @@ console.log("多标签断言全部通过");
     "Java 多标签生效", JSON.stringify(e3?.tags),
   );
   assert(e3?.time === "2026-11-12 23:00", "Java 多标签保留时间行");
+}
+
+// ---------------- schema 限定名（0.39.16 用户反馈） ----------------
+{
+  // 裸名 / schema.表名 / 反引号包两段 → 同一个库键（裸表名小写），显示名保留 schema
+  assert(baseTableName("lg_znxd.hsdt_hocr_subtask") === "hsdt_hocr_subtask", "裸 + schema 归一");
+  assert(baseTableName("`lg_znxd`.`tbl`") === "tbl", "反引号两段归一");
+  const lib = parseDdlTables(
+    "CREATE TABLE lg_znxd.hsdt_hocr_subtask (id int);\n" +
+      "CREATE TABLE `lg_znxd`.`other_tbl` (id int);\n",
+  );
+  assert(lib.get("hsdt_hocr_subtask")?.length === 1, "schema.表名 按裸名入库");
+  assert(lib.get("other_tbl")?.length === 1, "反引号 schema.表名 按裸名入库");
+  assert(lib.get("hsdt_hocr_subtask")[0].name === "lg_znxd.hsdt_hocr_subtask", "条目保留限定名显示");
+  assert(ddlEntryName("CREATE TABLE `lg_znxd`.`tbl` (id int);") === "lg_znxd.tbl", "显示名去包裹符");
+
+  // 同项目里先收裸名、再收 schema 限定名 = 同一张表，后者替换前者（不产生两行）
+  const both =
+    "```sql\nCREATE TABLE hsdt_hocr_subtask (a int);\n```\n\n" +
+    "```sql\nCREATE TABLE lg_znxd.hsdt_hocr_subtask (b bigint);\n```\n";
+  const bothLib = parseDdlTables(both);
+  assert(bothLib.get("hsdt_hocr_subtask")?.length === 1, "同项目同名表只留一条");
+  assert(bothLib.get("hsdt_hocr_subtask")[0].ddl.includes("b bigint"), "后收录的限定名版生效");
+  assert(extractTableNames("CREATE TABLE lg_znxd.tbl (id int);").join() === "tbl", "识别表名用裸名");
+
+  // 收录合并：库里是裸名，粘贴 schema 限定名 → 原地替换，不追加副本
+  const existingNote = "```sql\nCREATE TABLE tbl (old int);\n```\n";
+  const merged = mergeDdlIntoNote(existingNote, "CREATE TABLE lg_znxd.tbl (fresh int);");
+  assert((merged.match(/create\s+table/gi) ?? []).length === 1, "限定名收录替换同表旧语句");
+  assert(merged.includes("fresh") && !merged.includes("old int"), "旧语句体被替换");
+
+  // 定位/删除：面板显示全名或裸名都能命中
+  assert(locateDdlEntry(merged, "tbl") !== null, "裸名定位到限定名语句");
+  assert(locateDdlEntry(merged, "lg_znxd.tbl") !== null, "全名定位到限定名语句");
+  assert(removeDdlEntry(merged, "tbl") !== null, "裸名删除限定名语句");
+
+  // 悬浮查词：文本里写 schema.表名、库里键是裸名 → 按裸名命中
+  const tl = parseDdlTables("CREATE TABLE tbl (id int);");
+  assert(tableWordInText("请看 lg_znxd.tbl 这张表", tl) === "tbl", "schema.表名 悬停命中裸名键");
+
+  // 段落切割：漏闭合围栏之后的段落标题仍要识别（旧版把下一段的 ```sql 当闭合，
+  // 之后每段奇偶反相，一半项目标题丢失）。裸 ``` 之前的标题属于代码块
+  // （与 CommonMark/编辑器一致），之后的必须找回
+  const broken =
+    "# 库\n\n```sql\nCREATE TABLE a (x int);\n\n## 项目A\n\n```sql\nCREATE TABLE b (y int);\n```\n\n## 项目B\n";
+  const names = ddlProjectNames(broken);
+  assert(names.includes("项目B"), `漏闭合围栏后段落仍识别：${names.join(",")}`);
+  assert(!names.includes("项目A"), "裸闭合围栏之前的标题属于代码块（不当作段落）");
 }
 
 console.log("收录多标签断言全部通过");

@@ -70,7 +70,13 @@ check(
   "第二条语句不含下一条的内容",
 );
 check(extractTableNames(noteText).join(",") === "ids_check_scenario,ids_check_plan,ids_task", "表名按出现顺序去重");
-check(parseDdlTables("create table db.tbl_x (a int);").has("db.tbl_x"), "裸库名前缀整体收录");
+// 0.39.16 用户反馈「表名存在 xxx.表名 能正确识别吗」：库键归一到裸表名，
+// 完整限定名保留在 entry.name 里供显示（旧断言要求整体作为键，已翻转）
+const schemaLib = parseDdlTables("create table db.tbl_x (a int);");
+check(
+  schemaLib.has("tbl_x") && schemaLib.get("tbl_x")?.[0]?.name === "db.tbl_x",
+  "schema 前缀归一到裸表名（显示名保留限定名）",
+);
 check(parseDdlTables("create table `tbl_y` (a int);").has("tbl_y"), "反引号包裹的单名剥掉包裹符");
 
 // ---------------------------------------------------------------- 合并

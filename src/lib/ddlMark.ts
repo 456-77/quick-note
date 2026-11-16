@@ -50,7 +50,10 @@ function buildWordRegex(tables: Map<string, unknown>, classes: Map<string, unkno
     .map((name) => name.replace(ESCAPE_RE, "\\$&"));
   if (names.length === 0) return null;
   // 表名字符集两侧封边（lookbehind Chromium 88+/Node 16.4+ 都支持）
-  return new RegExp(`(?<![A-Za-z0-9_$#.])(?:${names.join("|")})(?![A-Za-z0-9_$#.])`, "gi");
+  // 0.39.16：库键已归一到裸表名，文本里常写 `schema.表名`——左侧不能把点当
+  // 边界（否则点后面的表名永远不着色）；右侧仍禁点（避免把 `foo.bar` 里的
+  // foo 当成表名标记）
+  return new RegExp(`(?<![A-Za-z0-9_$#])(?:${names.join("|")})(?![A-Za-z0-9_$#.])`, "gi");
 }
 
 export function ddlKnownMarks(): Extension {

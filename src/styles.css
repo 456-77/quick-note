@@ -199,6 +199,14 @@ body,
   margin: 0;
 }
 
+/* 0.39.16 用户反馈「手机端打开预览文件时，会发生闪屏」：qn-bg-on 下 body 是
+   透明的（背景图在 #qn-bg-layer），Android WebView 挂载大块预览图层时若某一帧
+   还没画上内容，透出来的是原生窗口底色（浅色/白）——整屏闪白。给 html 垫一个
+   不透明主题底（背景图图层在 body 内、z0，仍在它上面），闪的也只会是主题色。 */
+html {
+  background: var(--bg);
+}
+
 body {
   background: var(--bg);
   color: var(--text);
@@ -8827,6 +8835,14 @@ button.cm-tag:hover {
   font-family: var(--mono);
   font-size: 11.5px;
   color: var(--text-faint);
+}
+
+/* 0.39.16 用户反馈「语句库中的内容无法编辑」：编辑弹层复用收录弹窗壳
+   （.quick-capture/.ddl-textarea），只把语句框拉高——编辑时最常见的就是长
+   DDL，46vh 仍可纵向拉伸（.ddl-textarea 自带 resize:vertical） */
+.lib-edit-dialog .lib-edit-textarea {
+  min-height: 320px;
+  max-height: 60vh;
 }
 
 .lib-page .cm-row-meta .cm-tag {

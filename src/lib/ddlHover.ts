@@ -16,7 +16,7 @@ import type { Extension } from "@codemirror/state";
 import { livePreviewContext } from "./paths.ts";
 import { getSettings } from "./settings.ts";
 import { buildDdlTipDom, revealDdlLine, type DdlTipOptions, type TipLang } from "./ddlTip.ts";
-import { tableWordInText, type DdlEntry } from "./ddl.ts";
+import { baseTableName, tableWordInText, type DdlEntry } from "./ddl.ts";
 
 /** 表名词法字符：字母数字下划线 $ # 与库名前缀的点。 */
 function isWordChar(ch: string | undefined): boolean {
@@ -120,8 +120,9 @@ export function ddlHover(): Extension {
       while (to < text.length && isWordChar(text[to])) to += 1;
       if (from === to) return null;
       const raw = text.slice(from, to);
-      // 先查 DDL 库（小写键），再查 Java 实体库（原名→大小写不敏感兜底）
-      const sqlEntries = tables?.get(raw.toLowerCase());
+      // 先查 DDL 库（裸表名小写键；0.39.16 起 `schema.表名` 退到裸名再查一次），
+      // 再查 Java 实体库（原名→大小写不敏感兜底）
+      const sqlEntries = tables?.get(raw.toLowerCase()) ?? tables?.get(baseTableName(raw));
       const javaEntries = sqlEntries ? undefined : javaEntriesFor(classes, raw);
       const entries = sqlEntries ?? javaEntries;
       if (!entries || entries.length === 0) return null;

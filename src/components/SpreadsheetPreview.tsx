@@ -343,6 +343,14 @@ export default function SpreadsheetPreview({
   const bodyWrapRef = useRef<HTMLDivElement | null>(null);
   /** 筛选 chip 右键菜单（0.39.12 用户反馈「复制当前/全部筛选条件」）。 */
   const [copyMenu, setCopyMenu] = useState<{ x: number; y: number; col: number } | null>(null);
+  /** 数据格右键菜单（0.39.16 用户反馈「右键数据框时，弹出弹窗，可以选择复制
+      当前数据框内容」）：复制单元格 / 复制整行（TSV，可直接粘回 Excel）。 */
+  const [cellMenu, setCellMenu] = useState<{
+    x: number;
+    y: number;
+    text: string;
+    rowText: string;
+  } | null>(null);
   /** 筛选面板计数口径（0.39.12 反馈「面板里显示的数量是所有的，而不是继承上一个
    *  搜索条件」+「添加一个选项设置是全局还是继承」）：默认继承=按已过其他列筛选
    *  的行统计值列表与行数；选择持久化。 */
@@ -416,16 +424,20 @@ export default function SpreadsheetPreview({
   // 并 preventDefault——否则按 Esc 会在收菜单的同时把预览标签连带关掉
   //（0.39.8「Esc 关弹窗连带关预览」同一条坑，新增浮层要自己拦住）
   useEffect(() => {
-    if (!copyMenu) return;
+    if (!copyMenu && !cellMenu) return;
+    const close = () => {
+      setCopyMenu(null);
+      setCellMenu(null);
+    };
     const onDown = (event: MouseEvent) => {
       if ((event.target as HTMLElement).closest?.(".context-menu")) return;
-      setCopyMenu(null);
+      close();
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       event.stopPropagation();
-      setCopyMenu(null);
+      close();
     };
     window.addEventListener("mousedown", onDown, true);
     window.addEventListener("keydown", onKey, true);
@@ -433,7 +445,7 @@ export default function SpreadsheetPreview({
       window.removeEventListener("mousedown", onDown, true);
       window.removeEventListener("keydown", onKey, true);
     };
-  }, [copyMenu]);
+  }, [copyMenu, cellMenu]);
 
   const rows = sheet?.rows ?? [];
   // 0.39.7 表头行识别：「合并大标题行 + 字段名行」文件里横幅行进 thead（不吸附、
@@ -828,6 +840,20 @@ export default function SpreadsheetPreview({
                           colSpan={span && span.cs > 1 ? span.cs : undefined}
                           rowSpan={span && span.rs > 1 ? span.rs : undefined}
                           title={row[col] ?? ""}
+                          onContextMenu={(event) => {
+                            // 0.39.16 用户反馈「右键数据框时，弹出弹窗，可以选择
+                            // 复制当前数据框内容」——拦掉浏览器原生菜单，弹自绘
+                            // 复制菜单（单元格 / 整行 TSV）
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setCopyMenu(null);
+                            setCellMenu({
+                              x: event.clientX,
+                              y: event.clientY,
+                              text: row[col] ?? "",
+                              rowText: row.join("\t"),
+                            });
+                          }}
                         >
                           {row[col] ?? ""}
                         </td>
@@ -926,6 +952,59 @@ export default function SpreadsheetPreview({
               }}
             >
               复制所有筛选条件{activeCols.length > 1 ? `（${activeCols.length} 列）` : ""}
+            </button>
+          </div>
+        </>
+      )}
+      {cellMenu && (
+        <>
+          <div
+            className="menu-backdrop"
+            onClick={() => setCellMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setCellMenu(null);
+            }}
+          />
+          <div
+            className="context-menu"
+            style={{
+              left: Math.max(8, Math.min(cellMenu.x, window.innerWidth - 236)),
+              top: Math.max(8, Math.min(cellMenu.y, window.innerHeight - 132)),
+            }}
+          >
+            <button
+              type="button"
+              title={cellMenu.text ? cellMenu.text.slice(0, 120) : "（空单元格）"}
+              onClick={() => {
+                void navigator.clipboard.writeText(cellMenu.text).then(() => {
+                  window.dispatchEvent(
+                    new CustomEvent("qn-notice", {
+                      detail: {
+                        message: cellMenu.text ? "已复制当前单元格内容" : "当前单元格为空，已复制空内容",
+                      },
+                    }),
+                  );
+                });
+                setCellMenu(null);
+              }}
+            >
+              复制当前单元格
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void navigator.clipboard.writeText(cellMenu.rowText).then(() => {
+                  window.dispatchEvent(
+                    new CustomEvent("qn-notice", {
+                      detail: { message: "已复制整行（制表符分隔，可直接粘进 Excel）" },
+                    }),
+                  );
+                });
+                setCellMenu(null);
+              }}
+            >
+              复制整行（制表符）
             </button>
           </div>
         </>

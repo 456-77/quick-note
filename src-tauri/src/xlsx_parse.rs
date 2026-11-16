@@ -18,7 +18,7 @@ use std::fs;
 use std::io::Cursor;
 
 use calamine::{Data, Dimensions, ExcelDateTime, Reader, Xlsx};
-use chrono::{Datelike, NaiveDateTime, NaiveTime, Timelike};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 use serde::Serialize;
 
 use crate::vault::{resolve_existing, sha256_hex, vault_root};
@@ -209,10 +209,21 @@ fn render_datetime(dt: &ExcelDateTime, fmt_code: Option<&str>) -> String {
         return String::new();
     };
     if let Some(code) = fmt_code {
-        let first_section = code.split(';').next().unwrap_or(code);
-        if let Some(s) = render_date_code(first_section, ndt) {
-            return s;
+        let first_section = code.split(';').next().unwrap_or(code).trim();
+        // 0.39.16 用户反馈「时间并没有正确显示」（预览里整列显示 General）：
+        // calamine 的 CellStyle 对无样式的单元格填 "General"，一旦 DateTime 值
+        // 走到这里，旧逻辑把格式码当日期格式逐字符**原样输出**，界面就出现
+        // "General"。General = 没有格式，按下面的 ISO 回退走。
+        if !first_section.is_empty() && !first_section.eq_ignore_ascii_case("general") {
+            if let Some(s) = render_date_code(first_section, ndt) {
+                return s;
+            }
         }
+    }
+    // 纯时间：Excel 序列值 <1，calamine 的 1899-12-31 基准日 + 非零时间。
+    // 旧回退会显示 "1899-12-31 02:00:00"（用户要的是 "02:00:00"）
+    if ndt.date() == NaiveDate::from_ymd_opt(1899, 12, 31).unwrap() && ndt.time() != NaiveTime::MIN {
+        return ndt.format("%H:%M:%S").to_string();
     }
     if ndt.time() == NaiveTime::MIN {
         return ndt.format("%Y-%m-%d").to_string();
@@ -293,6 +304,10 @@ fn render_date_code(code: &str, dt: NaiveDateTime) -> Option<String> {
             i += 2;
         } else if chars[i] == '[' {
             return None;
+        } else if chars[i].is_ascii_alphabetic() {
+            // 未识别的英文 token（典型："General"、区域设置的格式串）——整体
+            // 放弃走 ISO 回退，绝不能把格式码本身当日期文本输出（0.39.16）
+            return None;
         } else {
             out.push(chars[i]);
             i += 1;
@@ -366,6 +381,28 @@ mod tests {
         assert_eq!(render_date_code("m/d h:mm AM/PM", dt).unwrap(), "1/21 14:05 PM");
         // 不认识的格式（耗时 [h]:mm）放弃 → None
         assert_eq!(render_date_code("[h]:mm", dt), None);
+    }
+
+    #[test]
+    fn date_codes_general_and_time_only() {
+        use calamine::ExcelDateTimeType;
+        let dt = NaiveDateTime::parse_from_str("2025-01-21 14:05:09", "%Y-%m-%d %H:%M:%S").unwrap();
+        // 0.39.16：General 不是日期格式码，不能把 "General" 当字面量输出
+        assert_eq!(render_date_code("General", dt), None);
+        assert_eq!(render_date_code("general", dt), None);
+
+        // 纯时间（Excel 序列 2:00:00 → 基准日 1899-12-31）：格式码是 General
+        // 或缺失时只出时间（旧逻辑输出 "General" / "1899-12-31 02:00:00"）
+        let two_pm = ExcelDateTime::new(0.083_333_333_333_333_33, ExcelDateTimeType::DateTime, false);
+        assert_eq!(render_datetime(&two_pm, Some("General")), "02:00:00");
+        assert_eq!(render_datetime(&two_pm, None), "02:00:00");
+        assert_eq!(render_datetime(&two_pm, Some("h:mm:ss")), "2:00:00");
+
+        // 带日期的值 + General → ISO 全量（而不是 "General"）
+        let stamped = ExcelDateTime::new(45_700.5, ExcelDateTimeType::DateTime, false);
+        let out = render_datetime(&stamped, Some("General"));
+        assert!(out.contains('-') && out.contains(':'), "got {out}");
+        assert_ne!(out, "General");
     }
 
     #[test]

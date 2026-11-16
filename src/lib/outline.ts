@@ -18,24 +18,43 @@ export interface OutlineEntry {
   line: number;
 }
 
+/**
+ * 这一行是否是 `fence` 的闭合围栏。CommonMark 口径：闭合围栏只能是**同一种
+ * 标记**、长度不小于开栏、且后面除了空白什么都不许有（不能带语言标签）。
+ *
+ * 0.39.16 用户反馈「md 文件内容过多时，目录会识别不完整吗」（实测 25k 字、
+ * 20 个 `##` 的库笔记只列出 1 个标题）：这份笔记有一段漏了闭合围栏，随后的
+ * ` ```sql ` 开栏行被旧状态机当成闭合 → 之后每一段代码与标题的围栏状态全部
+ * 反相，标题全被当成代码跳过。按 CommonMark 只认裸闭合后，与编辑器 lezer
+ * 的解析一致（只丢真正落在未闭合围栏里的那一个标题）。
+ */
+function isClosingFence(trimmed: string, fence: { marker: string; len: number }): boolean {
+  let count = 0;
+  while (trimmed[count] === fence.marker) count += 1;
+  if (count < fence.len) return false;
+  return trimmed.slice(count).trim() === "";
+}
+
 /** 提取一篇笔记的大纲。文本按行传入（保留行内的 `\r`，由这里 trim 掉）。 */
 export function outlineOf(lines: string[]): OutlineEntry[] {
   const entries: OutlineEntry[] = [];
-  let fence: string | null = null;
+  let fence: { marker: string; len: number } | null = null;
 
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index].replace(/\r$/, "");
     const trimmed = line.trim();
 
-    // 围栏状态机：``` 与 ~~~ 各自闭合（与 markdown 一致），行内还有别的字符也算开栏
-    const fenceMatch = /^(`{3,}|~{3,})/.exec(trimmed);
-    if (fenceMatch) {
-      const marker = fenceMatch[1][0];
-      if (fence === null) fence = marker;
-      else if (fence === marker) fence = null;
+    if (fence !== null) {
+      if (isClosingFence(trimmed, fence)) fence = null;
       continue;
     }
-    if (fence !== null) continue;
+
+    // 开栏围栏：``` 或 ~~~（后面可以带语言标签）
+    const fenceMatch = /^(`{3,}|~{3,})/.exec(trimmed);
+    if (fenceMatch) {
+      fence = { marker: fenceMatch[1][0], len: fenceMatch[1].length };
+      continue;
+    }
 
     // ATX：#{1,6} 后必须有空格或行尾
     const atx = /^(#{1,6})(\s+(.*))?$/.exec(trimmed);

@@ -62,6 +62,15 @@ const eq = (a, b, label) => check(a === b, label, `got=${JSON.stringify(a)} want
   const bash = `#!/bin/bash\ncd /tmp\nrm -rf build\necho done\n`;
   eq(detectLanguage(bash, true), "bash", "识别：bash");
 
+  // 0.39.16 用户反馈原文（两行：cd + bash 管道重定向）——旧规则只得 2 分不包围栏
+  const shellTwoLines = `cd /apps/sysadm/hfins/zllg-hfins-ids\nbash run.sh 2>&1 | sed -E 's/([Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd])=[^ ]*/\\1=***/g' | tee /tmp/ids253_run_20261116.log`;
+  eq(detectLanguage(shellTwoLines, true), "bash", "识别：两行 shell（cd + bash 管道）");
+  eq(
+    detectLanguage(`bash deploy.sh 2>&1 | tee out.log`, false),
+    "bash",
+    "识别：单行 shell 重定向（bash + 2>&1 达阈值）",
+  );
+
   const sql = `SELECT id, name FROM users WHERE age > 18 ORDER BY name;\n`;
   eq(detectLanguage(sql, true), "sql", "识别：sql");
 

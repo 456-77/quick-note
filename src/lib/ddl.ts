@@ -33,12 +33,54 @@
  * 不碰 DOM、不碰 Tauri，Node 里直接断言（verify-all 的一节）。
  */
 
-const CREATE_RE =
-  /create\s+table\s+(?:if\s+not\s+exists\s+)?[`"[]?([A-Za-z_][A-Za-z0-9_$#.]*)[`"\]]?/gi;
+/**
+ * 表名标识符（单段）：反引号 / 双引号 / 方括号包裹或裸名。
+ *
+ * 0.39.16 用户反馈「ddl 中，表名存在 xxx.表名，这种情况能够正确识别表名吗」：
+ * 旧写法只吃「一个名字」，`CREATE TABLE lg_znxd.tbl` 与 `` `db`.`tbl` `` 只能
+ * 捕获到第一段（后者甚至只剩 db），语句库键、悬浮命中、收录替换三者口径全歪。
+ * 现在捕获完整的限定名（可多段），键统一归一到**裸表名**（最后一段）。
+ */
+const IDENT = "(?:`[^`]+`|\"[^\"]+\"|\\[[^\\]]+\\]|[A-Za-z_][A-Za-z0-9_$#]*)";
+const QUALIFIED_NAME = `${IDENT}(?:\\s*\\.\\s*${IDENT})*`;
+const CREATE_HEAD = `create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?(${QUALIFIED_NAME})`;
+const CREATE_RE = new RegExp(CREATE_HEAD, "gi");
+/** 非全局版（表名反查显示名用；CREATE_RE 带 g 有 lastIndex 状态）。 */
+const CREATE_ONE = new RegExp(CREATE_HEAD, "i");
+
+/** 限定名 → 各段（去包裹符、trim；空段丢弃）。 */
+function splitDdlName(raw: string): string[] {
+  return raw
+    .split(".")
+    .map((part) =>
+      part
+        .trim()
+        .replace(/^`+|`+$/g, "")
+        .replace(/^"+|"+$/g, "")
+        .replace(/^\[+|\]+$/g, ""),
+    )
+    .filter((part) => part.length > 0);
+}
+
+/** 限定名 → 显示名（去包裹符、保留 schema 段与原大小写）。 */
+export function cleanTableName(raw: string): string {
+  return splitDdlName(raw).join(".");
+}
+
+/**
+ * 限定名 → 库键（裸表名小写，schema 前缀丢弃）：`lg_znxd.tbl`/`` `db`.`tbl` ``
+ * 与 `tbl` 指向同一个库键——悬浮、着色、收录替换、管理面板同口径。
+ */
+export function baseTableName(raw: string): string {
+  const parts = splitDdlName(raw);
+  return (parts[parts.length - 1] ?? "").toLowerCase();
+}
 
 /** 库里的一条语句：project "" = 未分组（老笔记兼容）。 */
 export interface DdlEntry {
   project: string;
+  /** 语句里的完整显示名（可能带 schema 前缀，0.39.16）；老调用方不看这个字段。 */
+  name?: string;
   /** 生效的标签集（声明的 `@tags` 行；没有该行时=段落名；都没有=[]）。 */
   tags: string[];
   /** 收录时间（`@time` 行，"YYYY-MM-DD HH:mm"；老语句没有=undefined）。 */
@@ -70,13 +112,24 @@ const SECTION_RE = /^#{2,6}[ \t]+(.+?)[ \t]*$/;
 export function ddlSections(text: string): DdlSection[] {
   const sections: DdlSection[] = [{ project: "", from: 0, to: text.length }];
   let pos = 0;
-  let inFence = false;
+  // 0.39.16：闭合围栏只认裸标记（同 outline.ts / CommonMark）——旧版任何
+  // ```` ```sql ```` 行都算切换，漏一个闭合就会让之后每段的段落标题状态反相、
+  // 语句归到错误项目里。
+  let fence: { marker: string; len: number } | null = null;
   for (;;) {
     const nl = text.indexOf("\n", pos);
     const lineEnd = nl < 0 ? text.length : text[nl - 1] === "\r" ? nl - 1 : nl;
     const line = text.slice(pos, lineEnd);
-    if (/^[ \t]*```/.test(line)) inFence = !inFence;
-    const head = inFence ? null : SECTION_RE.exec(line);
+    const trimmed = line.trim();
+    if (fence !== null) {
+      let count = 0;
+      while (trimmed[count] === fence.marker) count += 1;
+      if (count >= fence.len && trimmed.slice(count).trim() === "") fence = null;
+    } else {
+      const open = /^(`{3,}|~{3,})/.exec(trimmed);
+      if (open) fence = { marker: open[1][0], len: open[1].length };
+    }
+    const head = fence !== null ? null : SECTION_RE.exec(line);
     if (head) {
       const prev = sections[sections.length - 1];
       prev.to = pos;
@@ -370,19 +423,26 @@ export function parseDdlTables(text: string): DdlLibrary {
   CREATE_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = CREATE_RE.exec(text)) !== null) {
-    const table = match[1];
+    // 0.39.16：match[1] 是完整限定名（可带 schema），键归一到裸表名小写
+    const table = baseTableName(match[1]);
     const rest = text.slice(match.index);
     const { cut, advance } = statementSpan(rest, match[0].length);
     const ddl = stripFenceLines(rest.slice(0, cut));
     if (table && ddl) {
-      const key = table.toLowerCase();
+      const key = table;
       const project = sectionProjectAt(sections, match.index);
       // 0.39：显式 `@tags` 行覆盖段落名；没有该行的老笔记回落到 `## 项目`；
       // `@time` 行带出收录时间
       const meta = metaBlockAbove(text, match.index);
       const tags = meta?.hasTags ? meta.tags : project ? [project] : [];
       const entries = (out.get(key) ?? []).filter((entry) => entry.project !== project);
-      entries.push({ project, tags, time: meta?.time ?? undefined, ddl });
+      entries.push({
+        project,
+        tags,
+        time: meta?.time ?? undefined,
+        ddl,
+        name: cleanTableName(match[1]),
+      });
       out.set(key, entries);
     }
     // 消费掉语句体再继续扫（advance ≥ 匹配头部长度，游标永远向前）
@@ -451,7 +511,7 @@ export function nextStatementBoundary(text: string, from: number): number {
 }
 
 /** 去掉首尾整行的围栏标记（``` / ```sql）：悬浮预览只展示语句本身。 */
-function stripFenceLines(text: string): string {
+export function stripFenceLines(text: string): string {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   while (lines.length > 0 && /^\s*```/.test(lines[0])) lines.shift();
   while (lines.length > 0 && /^\s*```/.test(lines[lines.length - 1])) lines.pop();
@@ -478,7 +538,9 @@ export function extractTableNames(text: string): string[] {
   CREATE_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = CREATE_RE.exec(text)) !== null) {
-    const table = match[1].toLowerCase();
+    // 限定名（schema.表名）归一到裸表名——收录弹窗的「识别到 N 张表」、
+    // 同项目内的替换判定与库键同口径（0.39.16）
+    const table = baseTableName(match[1]);
     if (!seen.has(table)) {
       seen.add(table);
       order.push(table);
@@ -487,14 +549,15 @@ export function extractTableNames(text: string): string[] {
   return order;
 }
 
-/** 表名（CREATE 里的裸名/反引号名）→ 匹配该表 CREATE 起点的正则。 */
+/** 表名（裸名/限定名/带包裹符）→ 匹配该表 CREATE 起点的正则（schema 可选）。 */
 function tableAt(table: string, flags: string): RegExp {
-  const escaped = table.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  // 开侧包裹符（` " [ 可选）与闭侧包裹符（` " ] 可选）——与 CREATE_RE 同一套
-  const open = '[`"[]?';
-  const close = '[`"\\]]?';
+  const base = baseTableName(table).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const wrapped = `(?:\`${base}\`|"${base}"|\\[${base}\\]|${base})`;
+  // schema 前缀任意段（每段可独立包裹）——`db.tbl` / `` `db`.`tbl` `` /
+  // `cat.db.tbl` 都能匹配到裸名 tbl
+  const schema = `(?:${IDENT}\\s*\\.\\s*)*`;
   return new RegExp(
-    `create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?${open}${escaped}${close}`,
+    `create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?${schema}${wrapped}`,
     flags,
   );
 }
@@ -588,13 +651,9 @@ export function ddlNoteIntro(): string {
 
 // -------------------------------------------------------- 管理面板配套（0.35.1）
 
-/** 非全局版 CREATE 头匹配（表名反查显示名用；CREATE_RE 带 g 有 lastIndex 状态）。 */
-const CREATE_ONE =
-  /create\s+table\s+(?:if\s+not\s+exists\s+)?[`"[]?([A-Za-z_][A-Za-z0-9_$#.]*)[`"\]]?/i;
-
-/** 从语句文本里反查表名（面板显示用；库 Map 的键是小写名）。 */
+/** 从语句文本里反查表名（面板显示用；显示完整限定名，库 Map 的键是裸名小写）。 */
 export function ddlEntryName(ddl: string): string {
-  return CREATE_ONE.exec(ddl)?.[1] ?? "";
+  return cleanTableName(CREATE_ONE.exec(ddl)?.[1] ?? "");
 }
 
 /**
@@ -711,7 +770,15 @@ export function tableCommentOf(ddl: string): string | null {
  * 复合文本，逐词试库；找不到返回 null。 */
 export function tableWordInText(text: string, tables: DdlLibrary): string | null {
   for (const token of text.toLowerCase().split(/[^a-z0-9_$.]+/)) {
-    if (token && tables.has(token)) return token;
+    if (!token) continue;
+    if (tables.has(token)) return token;
+    // 0.39.16：文本里是 `schema.表名`、库里键是裸表名（或反过来）——按最后
+    // 一段再查一次；返回库键（弹窗标题与保存目标都按它）
+    const dot = token.lastIndexOf(".");
+    if (dot >= 0) {
+      const base = token.slice(dot + 1);
+      if (base && tables.has(base)) return base;
+    }
   }
   return null;
 }

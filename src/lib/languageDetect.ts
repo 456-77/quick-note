@@ -134,6 +134,14 @@ const RULES: LangRule[] = [
   { lang: "bash", weight: 4, re: /^#!\s*\/bin\/[a-z]+/gm },
   { lang: "bash", weight: 2, re: /^\s*(sudo|apt(-get)?|yum|dnf|brew|npm|yarn|pnpm|pip|pip3|git|docker|kubectl|curl|wget|systemctl|chmod|chown|mkdir|grep|sed|awk|tar|unzip|make|cmake|node|python3?|deno|bun)\b/gm, cap: 6 },
   { lang: "bash", weight: 2, re: /^\s*(cd|ls|cp|mv|rm|cat|touch|head|tail|find|ps|kill|echo|export|source|alias)\b/gm, cap: 6 },
+  // 0.39.16 用户反馈「粘贴这两行代码时，为什么不自动打成代码块」：`cd /path`
+  // + `bash run.sh 2>&1 | sed … | tee …` 旧规则只命中行首 `cd`（2 分），低于
+  // 多行阈值 4——补 shell 解释器/管道工具/重定向三类特征（行首命令表也补了
+  // bash/sh/tee 等）。管道权重压到 1.5：Markdown 表格行 `| sed | … |` 也会
+  // 命中，两行粘贴时不能只靠它越过阈值。
+  { lang: "bash", weight: 2, re: /^\s*(bash|sh|zsh|fish|tee|xargs|nohup|ssh|scp|rsync)\b/gm, cap: 4 },
+  { lang: "bash", weight: 1.5, re: /\|\s*(sed|awk|grep|egrep|tee|sort|uniq|head|tail|cut|tr|wc|xargs|jq|less)\b/g, cap: 3 },
+  { lang: "bash", weight: 2, re: /(?:^|\s)\d?>&\d/g, cap: 4 },
   { lang: "bash", weight: 1.5, re: /\$\{?\w+}?/g },
   { lang: "bash", weight: 1.5, re: /&&|\|\|/g, cap: 3 },
   { lang: "bash", weight: 2, re: /^\s*\$\s+\w+/gm },

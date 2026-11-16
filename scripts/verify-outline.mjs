@@ -1,0 +1,99 @@
+// 大纲（目录）提取的围栏状态机断言（0.39.16 用户反馈「md 文件中内容过多时，
+// 目录会识别不完整吗」）。
+//
+// 真实故障笔记：25k 字、20 个 `## 项目` 的库笔记只列出 1 个标题。档案里有一
+// 段漏了闭合围栏，旧状态机把下一段的 ` ```sql ` 开栏行当成闭合 → 之后每段
+// 的围栏状态全部反相，标题都被当代码跳过。这里按 CommonMark 口径锁住行为：
+// 闭合围栏只能是同一种标记、长度不小于开栏、后面除空白无内容。
+import assert from "node:assert/strict";
+import { outlineOf } from "../src/lib/outline.ts";
+
+const lines = (...parts) => parts.join("\n").split("\n");
+const heads = (src) => outlineOf(src).map((entry) => entry.text);
+
+// 1) 普通 ATX 标题（含无文字标题），行号是 0 基
+{
+  const out = outlineOf(lines("# 顶层", "", "正文", "## 二级", "### 三级", "####### 七个井号不算"));
+  assert.deepEqual(
+    out.map((entry) => [entry.level, entry.text, entry.line]),
+    [
+      [1, "顶层", 0],
+      [2, "二级", 3],
+      [3, "三级", 4],
+    ],
+  );
+}
+
+// 2) 正常闭合的围栏里 `# 注释` 不算标题；闭合后标题照常识别
+{
+  const src = lines(
+    "# 文档",
+    "```sql",
+    "# 这是 SQL 注释，不是标题",
+    "CREATE TABLE t (id int);",
+    "```",
+    "## 下一节",
+  );
+  assert.deepEqual(heads(src), ["文档", "下一节"]);
+}
+
+// 3) 回归：漏了闭合的围栏 + 下一段的 ```sql 开栏 —— 带语言标签的行**不能**
+//    闭合围栏（旧 bug 的触发形状）。裸 ``` 才是闭合；它之前的标题属于代码块，
+//    之后的标题正常识别（与编辑器 lezer 的解析一致）
+{
+  const src = lines(
+    "# 文档",
+    "```sql",
+    "CREATE TABLE a (id int);",
+    "## 被吞掉的标题",
+    "```sql",
+    "CREATE TABLE b (id int);",
+    "```",
+    "## 恢复的标题",
+    "```sql",
+    "CREATE TABLE c (id int);",
+    "```",
+    "## 最后的标题",
+  );
+  assert.deepEqual(heads(src), ["文档", "恢复的标题", "最后的标题"]);
+}
+
+// 4) 闭合围栏比开栏长合法；不同标记的围栏不能互相闭合
+{
+  const src = lines(
+    "# 文档",
+    "```",
+    "代码 # 注释",
+    "`````",
+    "~~~",
+    "代码里的 ``` 不是闭合（标记不同）",
+    "~~~",
+    "## 结尾",
+  );
+  assert.deepEqual(heads(src), ["文档", "结尾"]);
+}
+
+// 5) 闭合围栏后面带文字不算闭合（CommonMark：只能有空白）
+{
+  const src = lines("# 文档", "```", "代码", "``` trailing", "## 还在代码里", "```", "## 出来");
+  assert.deepEqual(heads(src), ["文档", "出来"]);
+}
+
+// 6) 用户真实笔记的重复形状：多段「标题 + ```sql + 语句 + ```」——每段标题都要在
+{
+  const src = ["# 数据库表 DDL"];
+  for (let i = 0; i < 20; i += 1) {
+    src.push(`## 项目${i}`, "```sql", `CREATE TABLE t${i} (id int);`, "```");
+  }
+  const got = heads(src);
+  assert.equal(got.length, 21);
+  assert.equal(got[0], "数据库表 DDL");
+  assert.equal(got[20], "项目19");
+}
+
+// 7) Setext 标题不受围栏修复影响
+{
+  assert.deepEqual(heads(lines("一级标题", "===", "", "普通文字", "---")), ["一级标题", "普通文字"]);
+}
+
+console.log("大纲围栏状态机断言全部通过 ✓");

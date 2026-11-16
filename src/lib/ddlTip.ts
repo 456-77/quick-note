@@ -146,14 +146,19 @@ export function buildDdlTipDom(
     head.append(message, saveBtn);
   }
 
-  // ---- 多项目切换下拉（>1 条才渲染，0.39.8 用户反馈「多个项目存在同名 ddl
-  // 或者实体时，在这里添加一个下拉框供选择」）--------------------------------
+  // ---- 项目切换下拉（0.39.8，0.39.16 改为常驻）---------------------------------
   // 0.35.0 的项目 chips 行占一整行且不够直观，改为标题行内嵌原生 select：
-  // color-scheme: dark 下弹层走深色；切换只重铺体部，不重建弹窗
-  if (entries.length > 1) {
+  // color-scheme: dark 下弹层走深色；切换只重铺体部，不重建弹窗。
+  // 0.39.16 用户再次反馈「这里加一个下拉选择框」——截图里那一格是空的（该表
+  // 库里只有一条，旧逻辑 `entries.length > 1` 才渲染）。改为**常驻**：单条时
+  // 显示它所在的项目/未分组，让「这里能切换」可被发现；多条时可切换。
+  {
     const select = document.createElement("select");
     select.className = "qn-ddl-tip-project-select";
-    select.title = "同名语句存在于多个项目，选择要查看的项目";
+    select.title =
+      entries.length > 1
+        ? "同名语句存在于多个项目，选择要查看的项目"
+        : `当前项目：${entries[current].project || "未分组"}`;
     select.addEventListener("mousedown", (event) => event.stopPropagation());
     entries.forEach((entry, index) => {
       const option = document.createElement("option");

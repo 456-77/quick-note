@@ -137,6 +137,7 @@ export default function LibraryManagerDialog({
   javaPath,
   onJump,
   onDelete,
+  onEdit,
   onSetTags,
   onBatchDelete,
   onOpenNote,
@@ -152,6 +153,11 @@ export default function LibraryManagerDialog({
   onJump: (kind: LibraryKind, name: string, project: string) => void;
   /** 落盘由父组件做；抛错显示在面板里。project = 语句所在段落（定位键）。 */
   onDelete: (kind: LibraryKind, name: string, project: string) => Promise<string>;
+  /**
+   * 编辑语句本体（0.39.16 用户反馈「语句库中的内容无法编辑」）：按（旧显示名,
+   * 所在段落）定位整段替换，返回结果文案。
+   */
+  onEdit: (kind: LibraryKind, name: string, project: string, draft: string) => Promise<string>;
   /**
    * 设置/添加标签：items 是（名, 所在段落）对；mode="set" 整组覆盖，
    * "add" 与现有标签取并集。一次读盘批量改一次写盘。
@@ -189,6 +195,11 @@ export default function LibraryManagerDialog({
   const [bulkConfirm, setBulkConfirm] = useState(false);
   /** 两步确认删除（行菜单 / 抽屉共用）。 */
   const [confirmKey, setConfirmKey] = useState<string | null>(null);
+  /** 编辑语句弹层（0.39.16）：行菜单/抽屉打开，右键那种「只能看不能改」的痛点。 */
+  const [editRow, setEditRow] = useState<LibraryRow | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [editMessage, setEditMessage] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<Toast>(null);
   const lastCheckedRef = useRef<string | null>(null);
@@ -206,6 +217,11 @@ export default function LibraryManagerDialog({
   // qn-library-esc 并检查 preventDefault，见 App 的全局 Esc）
   useEffect(() => {
     const onEsc = (event: Event) => {
+      if (editRow) {
+        event.preventDefault();
+        if (!editBusy) setEditRow(null);
+        return;
+      }
       if (drawerKey) {
         event.preventDefault();
         setDrawerKey(null);
@@ -219,7 +235,7 @@ export default function LibraryManagerDialog({
     };
     window.addEventListener("qn-library-esc", onEsc);
     return () => window.removeEventListener("qn-library-esc", onEsc);
-  }, [drawerKey, popover, rowMenu]);
+  }, [drawerKey, editRow, editBusy, popover, rowMenu]);
 
   const includeJava = javaPath.trim() !== "";
   // 实体库关闭（javaPath 空）时锁在数据表分段
@@ -550,6 +566,40 @@ export default function LibraryManagerDialog({
       setBusy(false);
       setConfirmKey(null);
       setRowMenu(null);
+    }
+  };
+
+  /** 打开编辑弹层：草稿=语句本体（不带围栏）。 */
+  const openEdit = (row: LibraryRow) => {
+    setEditRow(row);
+    setEditDraft(row.ddl);
+    setEditMessage(null);
+    setRowMenu(null);
+  };
+
+  const closeEdit = () => {
+    if (editBusy) return;
+    setEditRow(null);
+    setEditMessage(null);
+  };
+
+  const saveEdit = async () => {
+    if (!editRow || editBusy) return;
+    if (!editDraft.trim()) {
+      setEditMessage({ text: "语句不能为空", kind: "error" });
+      return;
+    }
+    setEditBusy(true);
+    setEditMessage(null);
+    try {
+      const text = await onEdit(editRow.kind, editRow.name, editRow.project, editDraft);
+      setToast({ text, kind: "ok" });
+      setEditRow(null);
+      if (drawerKey === rowIdOf(editRow)) setDrawerKey(null);
+    } catch (e) {
+      setEditMessage({ text: e instanceof Error ? e.message : String(e), kind: "error" });
+    } finally {
+      setEditBusy(false);
     }
   };
 
@@ -1197,6 +1247,16 @@ export default function LibraryManagerDialog({
                             className="cm-pop-item"
                             onClick={() => {
                               setRowMenu(null);
+                              openEdit(row);
+                            }}
+                          >
+                            编辑{row.kind === "ddl" ? "语句" : "源码"}
+                          </button>
+                          <button
+                            type="button"
+                            className="cm-pop-item"
+                            onClick={() => {
+                              setRowMenu(null);
                               void copyStatement(row);
                             }}
                           >
@@ -1328,12 +1388,11 @@ export default function LibraryManagerDialog({
               </div>
             </div>
             <div className="cm-drawer-foot">
-              <button
-                type="button"
-                className="cm-btn"
-                onClick={() => onJump(drawerRow.kind, drawerRow.name, drawerRow.project)}
-              >
+              <button type="button" className="cm-btn" onClick={() => onJump(drawerRow.kind, drawerRow.name, drawerRow.project)}>
                 定位
+              </button>
+              <button type="button" className="cm-btn" onClick={() => openEdit(drawerRow)}>
+                编辑
               </button>
               <button type="button" className="cm-btn" onClick={() => void copyStatement(drawerRow)}>
                 复制
@@ -1350,6 +1409,77 @@ export default function LibraryManagerDialog({
               </button>
             </div>
           </aside>
+        </>
+      )}
+
+      {/* -------------------------------------------------------- 编辑语句 */}
+      {/* 0.39.16 用户反馈「语句库中的内容无法编辑」：行菜单/详情抽屉都能打开，
+          直接改语句本体，保存按（旧显示名, 段落）定位整段替换（App 侧落盘）。 */}
+      {editRow && (
+        <>
+          <div className="menu-backdrop" onClick={closeEdit} />
+          <div
+            className="quick-capture ddl-dialog lib-edit-dialog"
+            role="dialog"
+            aria-label="编辑语句"
+          >
+            <div className="quick-capture-head">
+              <span className="quick-capture-title">
+                编辑{editRow.kind === "ddl" ? "建表语句" : "实体源码"} · {editRow.name}
+              </span>
+              <span className="spacer" />
+              <button
+                type="button"
+                className="quick-capture-esc"
+                title="关闭 (Esc)"
+                onClick={closeEdit}
+              >
+                <kbd>Esc</kbd> 关闭
+              </button>
+            </div>
+            <textarea
+              autoFocus
+              className="ddl-textarea lib-edit-textarea"
+              value={editDraft}
+              spellCheck={false}
+              onChange={(event) => setEditDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  closeEdit();
+                }
+                if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+                  event.preventDefault();
+                  void saveEdit();
+                }
+              }}
+            />
+            <div className="quick-capture-help">
+              <span>修改语句本体后保存；表名/类名也可以改（按新名重建库条目）。</span>
+              <span className="spacer" />
+              <span>
+                {editRow.kind === "ddl" ? ddlPath : javaPath} ·{" "}
+                {editRow.project || "未分组"}
+              </span>
+            </div>
+            <div className="quick-capture-foot">
+              {editMessage && (
+                <span className={`add-word-message is-${editMessage.kind}`}>{editMessage.text}</span>
+              )}
+              <span className="spacer" />
+              <button type="button" className="btn" disabled={editBusy} onClick={closeEdit}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={editBusy}
+                onClick={() => void saveEdit()}
+              >
+                {editBusy ? "保存中…" : "保存"}
+              </button>
+            </div>
+          </div>
         </>
       )}
     </div>

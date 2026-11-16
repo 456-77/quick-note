@@ -96,7 +96,7 @@ import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
-import { collectLibraryTags, ddlNoteIntro, ddlProjectNames, extractTableNames, locateDdlEntry, mergeDdlIntoNote, nowStamp, parseDdlTables, removeDdlEntry, setDdlEntryTags } from "./lib/ddl";
+import { collectLibraryTags, ddlNoteIntro, ddlProjectNames, extractTableNames, locateDdlEntry, mergeDdlIntoNote, nowStamp, parseDdlTables, removeDdlEntry, setDdlEntryTags, stripFenceLines } from "./lib/ddl";
 import {
   extractClassNames,
   javaNoteIntro,
@@ -586,6 +586,10 @@ export default function App() {
   const [libraryPageOpen, setLibraryPageOpen] = useState(false);
   /** 开预览标签：已有同路径的标签就只激活它；标签栏常驻，点笔记随时切回。 */
   const openPreviewTab = useCallback((path: string) => {
+    // 0.39.16 用户反馈「手机端打开预览文件时，会发生闪屏」：从编辑器/抽屉点开
+    // 预览时焦点（输入法）还挂着，编辑器宿主 display:none 与键盘收起（insets
+    // 变化）挤在同一帧会让整屏闪一下。先交还焦点让键盘先收，再装预览。
+    if (isMobile()) (document.activeElement as HTMLElement | null)?.blur?.();
     setPreviewTabs((prev) => (prev.includes(path) ? prev : [...prev, path]));
     // 0.39.12：显示顺序（md+预览合并渲染）记一笔——新预览标签落整条标签栏最右
     paneOrderTouch("main", path);
@@ -3311,6 +3315,43 @@ export default function App() {
     [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
 
+  /**
+   * 面板「编辑」（0.39.16 用户反馈「语句库中的内容无法编辑」）：按（显示名,
+   * 所在段落）定位语句体，整段替换成编辑后的文本——元数据行（@tags/@time）
+   * 与围栏保持原位，只换语句本身。与删除/标签同一条落盘纪律：读盘-改-写盘-
+   * 重载悬浮库 + 库笔记缓冲同步（防自动保存把旧缓冲写回）。
+   *
+   * 表名/类名允许改（定位键是旧名）：改完后库键按新文本重算，面板刷新即可。
+   */
+  const editLibraryEntry = useCallback(
+    async (kind: LibraryKind, name: string, project: string, draft: string) => {
+      const dir = vaultRef.current;
+      if (!dir) throw new Error("打开仓库后才能编辑语句");
+      const path = libraryPathOf(kind);
+      const note = await readNoteOptional(dir, path);
+      if (!note) throw new Error(`库笔记「${path}」不存在`);
+      // 编辑框里可能带围栏（用户整段粘贴回来）：剥掉首尾围栏行，只取语句本体
+      const body = stripFenceLines(draft);
+      if (!body.trim()) throw new Error("语句不能为空");
+      const hit =
+        kind === "ddl"
+          ? locateDdlEntry(note.content, name, project)
+          : locateClassEntry(note.content, name, project);
+      if (!hit) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
+      // 按库笔记自己的换行符落盘（CRLF 文件里别混进裸 \n）
+      const eol = note.content.includes("\r\n") ? "\r\n" : "\n";
+      const nextBody = body.replace(/\r\n?/g, "\n").replace(/\n/g, eol);
+      const next = note.content.slice(0, hit.from) + nextBody + note.content.slice(hit.to);
+      if (next === note.content) return "语句没有变化";
+      await writeNote(dir, path, next, note.hasBom);
+      syncLibraryNoteBuffers(path, note.content, next);
+      await loadDdlLibrary(dir);
+      void refresh(dir);
+      return `已保存「${name}」的修改`;
+    },
+    [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
+  );
+
   /** 批量条目（0.39 语句库标签）：定位/删除按（名, 所在段落）对。 */
   type LibraryItemRef = { name: string; project: string };
 
@@ -4971,6 +5012,8 @@ export default function App() {
    */
   const routePreviewToPane = useCallback(
     (path: string, side: "main" | "split") => {
+      // 0.39.16 移动端闪屏同 openPreviewTab：先让输入法/焦点退场再切预览页
+      if (isMobile()) (document.activeElement as HTMLElement | null)?.blur?.();
       // 预览与收件箱面板互斥：面板开着时打开附件，把面板收起来让预览可见
       setCaptureManagerOpen(false);
       // 切到预览页同样收起文件内搜索面板（0.23 用户反馈：换页面不残留）
@@ -10427,6 +10470,7 @@ export default function App() {
               onClose={() => setLibraryPageOpen(false)}
               onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
               onDelete={deleteLibraryEntry}
+              onEdit={editLibraryEntry}
               onSetTags={setLibraryTags}
               onBatchDelete={batchDeleteLibraryEntries}
               onRefresh={() => {
