@@ -5,7 +5,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import CalendarPanel from "./components/CalendarPanel";
 import CommandPalette, { type PaletteAction } from "./components/CommandPalette";
-import FilePreview from "./components/FilePreview";
+import FilePreview, { type PdfToc } from "./components/FilePreview";
 import FileTree, { topLevelDirs, TREE_DRAG_MIME } from "./components/FileTree";
 import HeadingLevelDialog from "./components/HeadingLevelDialog";
 import ImageCropDialog from "./components/ImageCropDialog";
@@ -14,7 +14,7 @@ import QuickCaptureDialog from "./components/QuickCaptureDialog";
 import RecentFilesDialog from "./components/RecentFilesDialog";
 import QuickTodoDialog from "./components/QuickTodoDialog";
 import AddWordDialog from "./components/AddWordDialog";
-import DdlDialog, { rememberDdlProject } from "./components/DdlDialog";
+import DdlDialog from "./components/DdlDialog";
 import LibraryManagerDialog, { type LibraryKind } from "./components/LibraryManagerDialog";
 import JsonFormatDialog from "./components/JsonFormatDialog";
 import SplitPane from "./components/SplitPane";
@@ -96,7 +96,7 @@ import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
-import { collectLibraryTags, ddlNoteIntro, ddlProjectNames, extractTableNames, locateDdlEntry, mergeDdlIntoNote, nowStamp, parseDdlTables, removeDdlEntry, setDdlEntryTags, stripFenceLines } from "./lib/ddl";
+import { collectLibraryTags, ddlNoteIntro, extractTableNames, locateDdlEntry, mergeDdlIntoNote, nowStamp, parseDdlTables, removeDdlEntry, setDdlEntryTags, stripFenceLines } from "./lib/ddl";
 import {
   extractClassNames,
   javaNoteIntro,
@@ -2284,9 +2284,14 @@ export default function App() {
   /** 手动添加单词弹窗（0.26）：string = 打开并预填（可为空串），null = 关闭。 */
   const [addWordDialog, setAddWordDialog] = useState<string | null>(null);
   /** 建表语句收录弹窗（0.31；默认键 0.32.1 起 Ctrl+Alt+J，可改绑）。 */
+  const [pdfToc, setPdfToc] = useState<PdfToc | null>(null);
+  // 预览切换/关闭即清目录（FilePreview 加载完新 PDF 会重新上报）
+  useEffect(() => {
+    setPdfToc(null);
+  }, [activePreview, activePreviewSplit]);
   const [ddlDialogOpen, setDdlDialogOpen] = useState(false);
-  /** DDL 库笔记里出现过的项目名（收录弹窗的项目下拉候选；loadDdlLibrary 维护）。 */
-  const [ddlProjects, setDdlProjects] = useState<string[]>([]);
+  /** 收录弹窗的标签候选（两库出现过的全部标签；loadDdlLibrary 维护。0.39.17 起收录不再问项目）。 */
+  const [ddlTagOptions, setDdlTagOptions] = useState<string[]>([]);
   // JSON 格式转换面板（0.34.13 用户反馈）：打开时带入编辑器选区，转换完成后写回
   const [jsonPanelOpen, setJsonPanelOpen] = useState(false);
   const [jsonSeed, setJsonSeed] = useState("");
@@ -2324,6 +2329,12 @@ export default function App() {
   const [splitViewEpoch, setSplitViewEpoch] = useState(0);
   /** 目录面板跟随「最后聚焦的窗格」（0.31）：编辑器 / 分屏窗格。 */
   const [outlineFollow, setOutlineFollow] = useState<"editor" | "split">("editor");
+  /** 当前跟随窗格的预览正是这份 PDF 目录的来源时才在目录面板显示（md 大纲让位）。
+      0.39.17 用户反馈「有些 pdf 文件是有目录的，可以显示在右侧目录面板中」。 */
+  const outlinePdfToc =
+    pdfToc && pdfToc.path === (outlineFollow === "split" ? activePreviewSplit : activePreview)
+      ? pdfToc
+      : null;
   /** 分屏窗格有未保存内容（自动保存的驱动源，与主编辑器的 dirty 同构）。 */
   const [splitDirty, setSplitDirty] = useState(false);
   const splitDirtyRef = useRef(false);
@@ -3109,13 +3120,9 @@ export default function App() {
         splitCtxRef.current.ddlTables = tables;
         splitCtxRef.current.javaClasses = classes;
       }
-      setDdlProjects(
-        // 0.39 多标签：收录弹窗的候选 = 段落名 ∪ 语句标签（标签也能直接作为新分组）
-        [...new Set([
-          ...ddlProjectNames(ddlNote?.content ?? ""),
-          ...collectLibraryTags(tables),
-          ...collectLibraryTags(classes),
-        ])].filter(Boolean),
+      setDdlTagOptions(
+        // 0.39.17 用户反馈「去掉项目」：收录弹窗只问标签，候选=两库出现过的全部标签
+        [...new Set([...collectLibraryTags(tables), ...collectLibraryTags(classes)])].filter(Boolean),
       );
     } catch {
       resourcesRef.current.ddlTables = new Map();
@@ -3223,7 +3230,8 @@ export default function App() {
       await loadDdlLibrary(dir);
       void refresh(dir);
       const names = extractTableNames(ddlText);
-      return `已保存 ${names.length} 张表${project ? `（项目 ${project}）` : ""} → ${path}`;
+      // 0.39.17：项目不再是 UI 概念，成功文案不再带（项目 X）
+      return `已保存 ${names.length} 张表 → ${path}`;
     },
     [loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
@@ -3244,7 +3252,7 @@ export default function App() {
       await loadDdlLibrary(dir);
       void refresh(dir);
       const names = extractClassNames(ddlText);
-      return `已保存 ${names.length} 个类${project ? `（项目 ${project}）` : ""} → ${path}`;
+      return `已保存 ${names.length} 个类 → ${path}`;
     },
     [loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
@@ -3265,9 +3273,6 @@ export default function App() {
       if (messages.length === 0) {
         throw new Error("没有识别到 CREATE TABLE 语句或 Java 类定义");
       }
-      // 0.38 用户反馈「设置项目默认是上一次使用的」：收录成功即记住，下次打开
-      // 收录弹窗项目框预填（收录弹窗与悬浮卡保存共用这条通道）
-      rememberDdlProject(project);
       return messages.join("；");
     },
     [saveDdlStatements, saveJavaStatements],
@@ -3378,16 +3383,30 @@ export default function App() {
       if (!note) throw new Error(`库笔记「${path}」不存在`);
       let text = note.content;
       let changed = 0;
+      /** 定位不到的条目（库笔记被手动改动/段落重复等）与「本来就有这些标签」分开报，
+       *  否则找不到也会谎报「已经有这些标签了」（0.39.17 用户反馈的误导来源）。 */
+      let missing = 0;
       for (const item of items) {
         const next =
           kind === "ddl"
             ? setDdlEntryTags(text, item.name, item.project, tags, { mode })
             : setClassEntryTags(text, item.name, item.project, tags, { mode });
-        if (!next || next.text === text) continue;
+        if (!next) {
+          missing += 1;
+          continue;
+        }
+        if (next.text === text) continue;
         text = next.text;
         changed += 1;
       }
       if (changed === 0) {
+        if (missing > 0) {
+          throw new Error(
+            items.length === 1
+              ? "没在库笔记里找到这条语句（可能已被手动改动）"
+              : `有 ${missing} 条语句没在库笔记里找到（可能已被手动改动）`,
+          );
+        }
         throw new Error(
           mode === "add"
             ? items.length === 1
@@ -8612,10 +8631,12 @@ export default function App() {
       {ddlDialogOpen && (
         <DdlDialog
           ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
-          projects={ddlProjects}
+          tagSuggestions={ddlTagOptions}
           onClose={() => setDdlDialogOpen(false)}
-          onSubmit={async (ddlText, project) => {
-            const message = await saveLibraryStatements(ddlText, project);
+          onSubmit={async (ddlText, tags) => {
+            // 0.39.17 用户反馈「去掉项目」：收录不再问项目段落，语句统一落未分组区，
+            // 语义归属全部走 @tags 行
+            const message = await saveLibraryStatements(ddlText, "", tags);
             setStatus(message);
             return message;
           }}
@@ -10104,6 +10125,8 @@ export default function App() {
               }}
             />
 
+            {/* 0.39.17 手机端不接外部修改刷新：watcher 一串事件+同步回写会把
+                预览整页重载一遍（闪一下+滚动/筛选状态重置），手机上没必要 */}
             {activePreview && vault && (
               <FilePreview
                 key={activePreview}
@@ -10111,7 +10134,8 @@ export default function App() {
                 vault={vault}
                 path={activePreview}
                 escClose={!overlayOpen}
-                reloadSignal={previewReload[activePreview] ?? 0}
+                reloadSignal={isMobile() ? undefined : (previewReload[activePreview] ?? 0)}
+                onPdfToc={setPdfToc}
                 onActivate={() => {
                   // 0.39.9：预览盖住编辑器，预览上的 mousedown 也算聚焦本栏
                   focusedPaneRef.current = "main";
@@ -10276,7 +10300,8 @@ export default function App() {
                     vault={vault}
                     path={activePreviewSplit}
                     escClose={!overlayOpen}
-                    reloadSignal={previewReload[activePreviewSplit] ?? 0}
+                    reloadSignal={isMobile() ? undefined : (previewReload[activePreviewSplit] ?? 0)}
+                    onPdfToc={setPdfToc}
                     onActivate={() => {
                       focusedPaneRef.current = "split";
                       if (outlineFollow !== "split") setOutlineFollow("split");
@@ -10604,9 +10629,20 @@ export default function App() {
                 return { text: state.sliceDoc(0, state.doc.length), lineBreak: state.lineBreak };
               }}
               revision={revision}
+              // PDF 书签目录（0.39.17）：预览的 PDF 有书签时用 pdfToc 接管目录
+              // 面板（点条目跳页），md 大纲让位；无书签/非 PDF 预览维持空态
+              pdfToc={outlinePdfToc}
               // 预览 pdf/docx 等文件时编辑器还装着上一篇 md，大纲继续显示它会误导
               // （0.20 用户反馈"预览 pdf 时右侧目录还显示 md 的目录"），清空让空态接管
-              activeKey={activePreview || libraryPageOpen ? null : outlineFollow === "split" ? splitActiveTab : activeTab}
+              activeKey={
+                outlinePdfToc
+                  ? outlinePdfToc.path
+                  : activePreview || libraryPageOpen
+                    ? null
+                    : outlineFollow === "split"
+                      ? splitActiveTab
+                      : activeTab
+              }
               cursorLine={outlineFollow === "split" ? splitCursorLine : cursorLine}
               onJump={(line) => {
                 // 分屏模式下点击标题：在**分屏编辑器内**定位（0.32——此前只读时代

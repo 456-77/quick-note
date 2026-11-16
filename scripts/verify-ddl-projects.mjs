@@ -24,6 +24,7 @@ import {
   parseClassLibrary,
   mergeClassesIntoNote,
   extractClassNames,
+  locateClassEntry,
   removeClassEntry,
   setClassEntryTags,
 } from "../src/lib/javaEntity.ts";
@@ -436,15 +437,15 @@ console.log("多标签断言全部通过");
     "标签行在前时间行在后", lines.join(" | "),
   );
 
-  // 单值 → 不写 @tags 行（段落名回落同义，少一行噪音）
+  // 单值也写 @tags 行（0.39.17 起收录没有项目段落，单标签不再回落段落名）
   const m2 = mergeDdlIntoNote("", "CREATE TABLE `t2` (x int);", "海亮", {
     time: "2026-11-12 23:00",
     tags: ["海亮"],
   });
   const sec2 = ddlSections(m2).find((s) => s.project === "海亮");
-  assert(sec2 && !m2.slice(sec2.from, sec2.to).includes("@tags"), "单值不写标签行", m2);
+  assert(sec2 && m2.slice(sec2.from, sec2.to).includes("-- @tags: 海亮"), "单值也写标签行（0.39.17）", m2);
   const e2 = parseDdlTables(m2).get("t2")?.[0];
-  assert(JSON.stringify(e2?.tags) === JSON.stringify(["海亮"]), "单值回落段落名为标签");
+  assert(JSON.stringify(e2?.tags) === JSON.stringify(["海亮"]), "单值标签解析回读");
 
   // Java 实体同构
   const m3 = mergeClassesIntoNote("", "public class Foo { int x; }", "海亮", {
@@ -505,6 +506,99 @@ console.log("多标签断言全部通过");
   const names = ddlProjectNames(broken);
   assert(names.includes("项目B"), `漏闭合围栏后段落仍识别：${names.join(",")}`);
   assert(!names.includes("项目A"), "裸闭合围栏之前的标题属于代码块（不当作段落）");
+}
+
+// ---------------- 0.39.17：前缀同名 + 重复项目段落 ----------------
+{
+  // 1) 名字前缀不能串表：`ids_task_itf` 有 @tags，`ids_task` 没有——
+  //    给 ids_task 加标签必须落到 ids_task 自己头上，不能命中 ids_task_itf
+  //    后被判「已经有这些标签了」（0.39.17 用户实锤症状）。
+  const prefixNote = [
+    "# 库",
+    "",
+    "```sql",
+    "CREATE TABLE `ids_task` (id int);",
+    "```",
+    "",
+    "```sql",
+    "-- @tags: 海亮",
+    "CREATE TABLE `ids_task_itf` (id int);",
+    "```",
+    "",
+  ].join("\n");
+  const hit = locateDdlEntry(prefixNote, "ids_task", "");
+  assert(hit && prefixNote.slice(hit.from, hit.from + 24).includes("`ids_task`"), "前缀同名不串表（定位）");
+  const tagged = setDdlEntryTags(prefixNote, "ids_task", "", ["海亮"], { mode: "add" });
+  assert(tagged && tagged.text !== prefixNote, "给前缀同名表加标签必须真的写入");
+  assert(
+    tagged.text.indexOf("-- @tags: 海亮") < tagged.text.indexOf("CREATE TABLE `ids_task` ("),
+    "标签落在目标语句上方",
+  );
+  assert(
+    tagged.text.includes("CREATE TABLE `ids_task_itf` (id int);"),
+    "不得改写/删除前缀同名表",
+  );
+  assert(
+    parseDdlTables(tagged.text).get("ids_task")?.[0]?.tags.includes("海亮"),
+    "加标签后解析回读正确",
+  );
+
+  // 2) 重复的项目段落：同名 `## 海亮` 出现两次，语句在后一段——
+  //    定位/加标签/删除/收录替换都必须能找到（旧实现只看第一段）。
+  const dup = [
+    "# 库",
+    "",
+    "## 海亮",
+    "",
+    "```sql",
+    "CREATE TABLE first_t (id int);",
+    "```",
+    "",
+    "## 海亮",
+    "",
+    "```sql",
+    "CREATE TABLE late_t (id int);",
+    "```",
+    "",
+  ].join("\n");
+  const lateHit = locateDdlEntry(dup, "late_t", "海亮");
+  assert(lateHit !== null, "重复项目段落里的语句可定位");
+  assert(dup.slice(lateHit.from, lateHit.from + 20).includes("late_t"), "定位到正确语句");
+  const lateTagged = setDdlEntryTags(dup, "late_t", "海亮", ["运维"], { mode: "add" });
+  assert(lateTagged && lateTagged.text !== dup, "重复段落里的语句可加标签");
+  const lateRemoved = removeDdlEntry(dup, "late_t", "海亮");
+  assert(lateRemoved && !lateRemoved.text.includes("late_t"), "重复段落里的语句可删除");
+  const mergedLate = mergeDdlIntoNote(dup, "CREATE TABLE late_t (fresh int);", "海亮");
+  assert((mergedLate.match(/create\s+table\s+`?late_t/gi) ?? []).length === 1, "重复段落里收录替换不追加副本");
+  assert(mergedLate.includes("fresh"), "替换的是后一段落里的语句");
+
+  // 新语句追加到最后一个同名段落（不在第一段中间插队）
+  const mergedNew = mergeDdlIntoNote(dup, "CREATE TABLE brand_new (id int);", "海亮");
+  const lastHead = mergedNew.lastIndexOf("## 海亮");
+  const newAt = mergedNew.search(/CREATE TABLE `?brand_new/i);
+  assert(newAt > lastHead, "新语句追加到最后一个同名段落");
+
+  // 3) Java 实体同构：重复 `## 项目` 段落里的类可定位/加标签
+  const javaDup = [
+    "# Java",
+    "",
+    "## 海亮",
+    "",
+    "```java",
+    "public class First { int a; }",
+    "```",
+    "",
+    "## 海亮",
+    "",
+    "```java",
+    "public class Late { int b; }",
+    "```",
+    "",
+  ].join("\n");
+  const lateClass = locateClassEntry(javaDup, "Late", "海亮");
+  assert(lateClass !== null, "重复段落里的类可定位");
+  const classTagged = setClassEntryTags(javaDup, "Late", "海亮", ["运维"], { mode: "add" });
+  assert(classTagged && classTagged.text !== javaDup, "重复段落里的类可加标签");
 }
 
 console.log("收录多标签断言全部通过");

@@ -31,6 +31,7 @@ import { extOf, fileKindOf } from "../lib/fileTypes";
 import { isMobile } from "../lib/platform";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
 import SpreadsheetPreview from "./SpreadsheetPreview";
+import PreviewScrollbar from "./PreviewScrollbar";
 import { IconMinus, IconPlus, IconX } from "./icons";
 
 interface Props {
@@ -50,6 +51,9 @@ interface Props {
    *  App 监听到该路径的文件变更事件后递增；数值变化让加载 effect 重跑——重读
    *  磁盘、哈希变化使解析缓存失配，内容没变时缓存命中、无感。 */
   reloadSignal?: number;
+  /** PDF 书签目录上报（0.39.17 用户反馈「pdf 有目录的，显示在右侧目录面板」）：
+   *  加载完成后把目录与跳页闭包交给 App（App 清空时机=预览切换）。 */
+  onPdfToc?: (toc: PdfToc | null) => void;
 }
 
 /** PDF 手动缩放范围：下限防糊、上限防画布爆内存（3× A4 = 约 1800×2400 CSS px）。 */
@@ -66,6 +70,20 @@ const KIND_LABEL: Record<string, string> = {
   html: "HTML 页面",
   image: "图片",
 };
+
+/** PDF 书签（outline）目录的一项。page 为 0 基页码，-1 = 目标解析失败（只显示标题）。 */
+export interface PdfTocEntry {
+  title: string;
+  page: number;
+  depth: number;
+}
+
+/** 一份 PDF 的目录：path 用于 App 侧对齐「当前在看哪一栏的预览」，jump 跳页。 */
+export interface PdfToc {
+  path: string;
+  entries: PdfTocEntry[];
+  jump: (page: number) => void;
+}
 
 /**
  * 0.38.7 用户反馈「预览文件切换回来后，原来的缩放状态会重置」：切走即卸载、
@@ -173,7 +191,7 @@ function scheduleOrphanSweep(): void {
   }, IDLE_RELEASE_MS);
 }
 
-export default function FilePreview({ vault, path, onClose, embedded = false, escClose = true, onActivate, reloadSignal = 0 }: Props) {
+export default function FilePreview({ vault, path, onClose, embedded = false, escClose = true, onActivate, reloadSignal = 0, onPdfToc }: Props) {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const kind = fileKindOf(name);
   // 缩放记忆键（0.38.7）：切走再切回按此恢复缩放
@@ -188,6 +206,8 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
       尺寸光栅再降采样，窄面板下文字糊（用户反馈「mermaid 导出文件全屏清晰、
       响应式布局下模糊」）；内联矢量随容器重排，任何宽度都锐利。 */
   const [svgMarkup, setSvgMarkup] = useState<string | null>(null);
+  /** 桌面 HTML 缩放倍率的显示值（0.39.17 浮动菜单百分比；实际值在 htmlZoomRef）。 */
+  const [htmlZoomNow, setHtmlZoomNow] = useState(1);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const docxHostRef = useRef<HTMLDivElement | null>(null);
   const pdfHostRef = useRef<HTMLDivElement | null>(null);
@@ -275,10 +295,14 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     };
   }, [mobile]);
 
-  // -------------------------------------------------- HTML 预览移动端适配（0.38.3）
+  // -------------------------------------------------- HTML 预览适配（0.38.3 移动端引入；0.39.17 桌面同款）
   // 按 zoom 重建 iframe 布局：缩放走 CSS zoom（内容随 zoom 重排，文字始终锐利
   // ——transform:scale 是位图拉伸，正文会糊）。宽度恒铺满 body 视口，高度=内容
-  // 自然高——iframe 内部永不出现滚动条，平移全部由 body 的原生滚动承担。
+  // 自然高——iframe 内部**永不出现滚动条**，平移全部由 body 的原生滚动承担。
+  // 0.39.17 用户反馈「html 也要实现类似缩放；为什么有两个滚轮」：桌面此前是
+  // iframe 100%×100% 内部滚动（iframe 内一条 + body 因 padding 溢出又一条），
+  // 现在桌面与移动端同一架构：量内容自然尺寸 → JS 写 iframe 宽高，body 独享滚动，
+  // 缩放=CSS zoom + 中心锚定。
   const applyHtmlLayout = useCallback(() => {
     const frame = htmlFrameRef.current;
     const body = bodyRef.current;
@@ -291,12 +315,39 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     frame.style.height = `${size.h}px`;
   }, []);
 
+  /** 桌面 HTML 缩放（0.39.17）：CSS zoom + 中心锚定，倍率记进预览缩放记忆。 */
+  const changeHtmlZoom = useCallback(
+    (next: number) => {
+      const frame = htmlFrameRef.current;
+      const body = bodyRef.current;
+      if (!frame) return;
+      const prev = htmlZoomRef.current;
+      const clamped = Math.min(3, Math.max(0.4, Math.round(next * 20) / 20));
+      if (clamped === prev) return;
+      const anchorLeft = body ? body.scrollLeft + body.clientWidth / 2 : 0;
+      const anchorTop = body ? body.scrollTop + body.clientHeight / 2 : 0;
+      htmlZoomRef.current = clamped;
+      zoomMemoOf(zoomKey).zoom = clamped;
+      setHtmlZoomNow(clamped);
+      applyHtmlLayout();
+      if (body) {
+        const ratio = clamped / prev;
+        body.scrollLeft = Math.max(0, anchorLeft * ratio - body.clientWidth / 2);
+        body.scrollTop = Math.max(0, anchorTop * ratio - body.clientHeight / 2);
+      }
+    },
+    [applyHtmlLayout, zoomKey],
+  );
+
   /** 量内容自然尺寸（sandbox 带 allow-same-origin 才可读；脚本仍被禁）。
-      仅移动端调用生效——桌面 iframe 维持 100%/内部滚动，不改写尺寸。 */
+      0.39.17 起桌面也走这套（body 独享滚动 + JS 布局），不再只限移动端。
+      顺带在 iframe **文档内**挂 wheel 转发：iframe 是独立文档，父层的 wheel
+      监听收不到它内部的事件——同源才能从父侧把滚轮转给 body（Ctrl=缩放，
+      普通滚轮=body 滚动），iframe 内部不滚动也就没有了第二条滚动条。 */
   const measureHtml = useCallback(() => {
-    if (!mobile) return;
-    const doc = htmlFrameRef.current?.contentDocument;
-    if (!doc?.documentElement) return;
+    const frame = htmlFrameRef.current;
+    const doc = frame?.contentDocument;
+    if (!frame || !doc?.documentElement) return;
     const w = Math.max(
       doc.documentElement.scrollWidth,
       doc.body?.scrollWidth ?? 0,
@@ -309,10 +360,21 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     );
     htmlContentSizeRef.current = { w, h };
     applyHtmlLayout();
+    doc.documentElement.addEventListener("wheel", (event: WheelEvent) => {
+      const body = bodyRef.current;
+      if (event.ctrlKey && event.deltaY !== 0) {
+        event.preventDefault();
+        changeHtmlZoom(htmlZoomRef.current + (event.deltaY < 0 ? 0.1 : -0.1));
+        return;
+      }
+      if (!body) return;
+      const line = event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? body.clientHeight : 1;
+      body.scrollTop += event.deltaY * line;
+      body.scrollLeft += event.deltaX * (event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? body.clientWidth : 1);
+    }, { passive: false });
     // 字体/图片晚于 load 到位会改变高度，补一次迟到的复测（组件卸载后 ref
     // 为空，回调体自然早退）
     window.setTimeout(() => {
-      if (!mobile) return;
       const doc2 = htmlFrameRef.current?.contentDocument;
       if (!doc2?.documentElement || !htmlContentSizeRef.current) return;
       const w2 = Math.max(doc2.documentElement.scrollWidth, doc2.body?.scrollWidth ?? 0, 1);
@@ -322,7 +384,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
         applyHtmlLayout();
       }
     }, 400);
-  }, [applyHtmlLayout, mobile]);
+  }, [applyHtmlLayout, changeHtmlZoom]);
 
   // ---------------------------------------------------------------- 图片预览：拖动 + 滚轮缩放
   // 按住左键拖动移动、滚轮缩放（以指针为锚）、双击重置。与 mermaid 灯箱同一套手感。
@@ -506,24 +568,28 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     pdfZoomApplyRef.current?.(clamped === "fit" ? undefined : clamped);
   }, []);
 
-  // Ctrl + 滚轮缩放 PDF（0.28 用户反馈）。只拦 Ctrl+wheel：普通滚轮留给
-  // 纵向翻页；listener 必须非 passive，否则 preventDefault 无效、页面会缩放。
-  // 绑在组件根（冒泡覆盖画布/文本层一切子元素），不绑 pdfHost——嵌入化后
-  // host 的命中层会随布局形态漂（0.35.3）。
+  // Ctrl + 滚轮缩放 PDF / HTML（0.28 用户反馈；0.39.17 HTML 同款）。只拦
+  // Ctrl+wheel：普通滚轮留给纵向翻页；listener 必须非 passive，否则
+  // preventDefault 无效、页面会缩放。绑在组件根（冒泡覆盖画布/文本层一切
+  // 子元素），不绑 pdfHost——嵌入化后 host 的命中层会随布局形态漂（0.35.3）。
   useEffect(() => {
-    if (kind !== "pdf") return;
+    if (kind !== "pdf" && kind !== "html") return;
     const host = rootRef.current;
     if (!host) return;
     const onWheel = (event: WheelEvent) => {
       if (!event.ctrlKey || event.deltaY === 0) return;
       event.preventDefault();
-      const current = pdfZoomRef.current === "fit" ? scaleRef.current : pdfZoomRef.current;
       const step = event.deltaY < 0 ? 0.1 : -0.1;
-      changePdfZoom(current + step);
+      if (kind === "pdf") {
+        const current = pdfZoomRef.current === "fit" ? scaleRef.current : pdfZoomRef.current;
+        changePdfZoom(current + step);
+      } else {
+        changeHtmlZoom(htmlZoomRef.current + step);
+      }
     };
     host.addEventListener("wheel", onWheel, { passive: false });
     return () => host.removeEventListener("wheel", onWheel);
-  }, [kind, changePdfZoom]);
+  }, [kind, changePdfZoom, changeHtmlZoom]);
 
   // PDF 双指捏合缩放（0.38 用户反馈「预览 pdf 无手动滑动进行放大或者缩小」）：
   // 以两指张合比例累计目标倍率，手势结束时一次性 changePdfZoom——捏合过程中
@@ -643,16 +709,30 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     };
   }, []);
 
+  // reloadSignal 重读的「静默化」（0.39.17）：同一文件的重跑不再清空内容 +
+  // 闪「正在加载」——手机端用户实锤「不断刷新、正在加载一闪而过」（App 已在
+  // 手机端不传 reloadSignal；这里再兜一层：桌面端 watcher 对同一文件的多串
+  // 事件重读时，缓存命中（同一引用）React 直接跳过渲染，一帧都不闪；
+  // 内容真变了才原地换内容）。只有 spreadsheet 走静默通道——pdf/docx/html
+  // 的重渲本来就要重建宿主内容。
+  const lastLoadKeyRef = useRef<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
+    const loadKey = `${vault}::${path}`;
+    const silentReload =
+      kind === "spreadsheet" && lastLoadKeyRef.current === loadKey && reloadSignal !== 0;
+    lastLoadKeyRef.current = loadKey;
+    if (!silentReload) {
+      setLoading(true);
+      setSheets(null);
+    }
     setError(null);
     setHtml(null);
-    setSheets(null);
     setImageUrl(null);
     setSvgMarkup(null);
     // 0.38.7 缩放记忆：切回时恢复上次缩放（load 后 measure→apply 落地）
     htmlZoomRef.current = zoomMemoOf(zoomKey).zoom ?? 1;
+    setHtmlZoomNow(htmlZoomRef.current);
     htmlContentSizeRef.current = null;
     htmlPinchRef.current = 0;
     docxZoomRef.current = 1;
@@ -975,13 +1055,25 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
             // 页面不变大——正是用户反馈的现象）；改由外层横向滚动。
             hostNow.classList.toggle("is-manual", explicit !== undefined);
             if (Math.abs(next - scaleRef.current) / scaleRef.current < 0.02) return;
+            const prevScale = scaleRef.current;
             scaleRef.current = next;
             const width = Math.round(base.width * next);
+            // 中心锚定（0.39.17 用户反馈「ctrl+滚轮缩放时紧挨左侧，不应该居中缩
+            // 放吗」）：缩放前后**视口中心**对应的内容点不动——旧左对齐锚会让
+            // 内容越缩越往右跑。页间距不随缩放，锚点有亚像素级漂移，可忽略。
+            const bodyNow = bodyRef.current;
+            const anchorLeft = bodyNow ? bodyNow.scrollLeft + bodyNow.clientWidth / 2 : 0;
+            const anchorTop = bodyNow ? bodyNow.scrollTop + bodyNow.clientHeight / 2 : 0;
             // 0.38.10 用户反馈「放大缩小还是很卡顿」：占位宽度**立即**改（旧画布
             // 拉伸显示=即时视觉反馈，零重渲），重建渲染延迟 350ms——连续捏合/
             // 连点只在停顿后按最终倍率重渲一次，长任务不再糊满手势全程
             for (const slot of Array.from(hostNow.children) as HTMLElement[]) {
               slot.style.width = `${width}px`;
+            }
+            if (bodyNow && prevScale > 0) {
+              const ratio = next / prevScale;
+              bodyNow.scrollLeft = Math.max(0, anchorLeft * ratio - bodyNow.clientWidth / 2);
+              bodyNow.scrollTop = Math.max(0, anchorTop * ratio - bodyNow.clientHeight / 2);
             }
             if (zoomRenderTimer.current !== undefined) window.clearTimeout(zoomRenderTimer.current);
             zoomRenderTimer.current = window.setTimeout(() => {
@@ -1012,6 +1104,55 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
             applyScale();
           };
           pdfZoomApplyRef.current = applyScale;
+
+          // PDF 书签目录 → 右侧目录面板（0.39.17 用户反馈「有些 pdf 文件是有目录
+          // 的，可以显示在右侧目录面板中」）：getOutline 拿书签树，dest 引用转页码
+          // （命名目的地要先 getDestination 解引用）；异步铺平后上报给 App，
+          // jump 闭包滚动本预览的 body 到目标页占位（占位高度在，懒渲染会跟着补）
+          if (onPdfToc) {
+            void (async () => {
+              try {
+                const outline = await doc.getOutline();
+                if (cancelled) return;
+                const entries: PdfTocEntry[] = [];
+                const walk = async (
+                  items: Awaited<ReturnType<typeof doc.getOutline>> | undefined,
+                  depth: number,
+                ) => {
+                  for (const item of items ?? []) {
+                    let page = -1;
+                    try {
+                      const dest =
+                        typeof item.dest === "string"
+                          ? await doc.getDestination(item.dest)
+                          : item.dest;
+                      if (dest && dest.length > 0) page = await doc.getPageIndex(dest[0]);
+                    } catch {
+                      // 目的地解析失败：只展示标题，不可跳转
+                    }
+                    entries.push({ title: item.title ?? "", page, depth });
+                    if (item.items && item.items.length > 0) await walk(item.items, depth + 1);
+                  }
+                };
+                await walk(outline ?? undefined, 0);
+                if (cancelled || entries.length === 0 || entries.every((e) => e.page < 0)) return;
+                onPdfToc({
+                  path,
+                  entries,
+                  jump: (page: number) => {
+                    const body = bodyRef.current;
+                    const slot = pdfHostRef.current?.children[page] as HTMLElement | undefined;
+                    if (!body || !slot) return;
+                    const delta = slot.getBoundingClientRect().top - body.getBoundingClientRect().top;
+                    body.scrollTo({ top: Math.max(0, body.scrollTop + delta - 8), behavior: "smooth" });
+                  },
+                });
+              } catch {
+                // 没有书签/解析失败的 pdf 静默无目录
+              }
+            })();
+          }
+
           setLoading(false);
           return;
         }
@@ -1134,10 +1275,12 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
 
   // 0.36.1 用户反馈「预览标题条与标签栏重复，白白浪费空间」：桌面嵌入态下
   // 标签栏已显示同名 ◇ 标签（含关闭钮），标题条纯冗余——隐藏。
-  // 0.38.5 用户反馈：移动端**所有 kind 一律无标题浮条**（PDF 也不显示——缩放
-  // 靠捏合、关闭靠系统返回手势），浮条与常驻药丸二选一，用户要药丸（底条
-  // [N] 标签页是快速切换入口）；桌面非嵌入态（独立预览窗）保留标题条。
-  const showBar = !embedded || (kind === "pdf" && !mobile);
+  // 0.38.5 用户反馈：移动端**所有 kind 一律无标题浮条**（缩放靠捏合、关闭靠
+  // 系统返回手势），浮条与常驻药丸二选一；桌面非嵌入态（独立预览窗）保留标题条。
+  // 0.39.17 用户反馈「左上角有点多余了吧；放大缩小/百分比/适应按钮换成竖向
+  // 排列的菜单浮动在右上角，默认隐藏、光标聚焦时才显示」：嵌入态 PDF 的标题
+  // 条（连缩放钮）整条撤掉，缩放控件改右上角竖排浮动条（见渲染区）。
+  const showBar = !embedded;
 
   return (
     <div
@@ -1315,6 +1458,88 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
           <SpreadsheetPreview sheets={sheets} cacheKey={`${vault}::${path}`} />
         )}
       </div>
+      {/* 0.39.17 用户反馈「滚轮不要占用空间，悬浮在空隙上」：原生滚动条隐藏，
+          自绘悬浮 thumb 贴右缘（PreviewScrollbar）。xlsx 的滚动在
+          SpreadsheetPreview 内部容器，由它自己渲染。 */}
+      {embedded && !mobile && <PreviewScrollbar targetRef={bodyRef} />}
+      {/* 0.39.17 用户反馈「缩放按钮换成竖向排列的菜单浮动在右上角，默认隐藏、
+          光标聚焦时才显示」：桌面嵌入态的缩放控件从标题条（已撤）挪到这里，
+          0.39.17 二轮反馈「html 也要类似缩放」——HTML 与 PDF 共用同一浮条。
+          显示规则：光标悬停菜单自身即显，离开即隐；键盘聚焦到按钮也显。
+          移动端不渲染——缩放走捏合。 */}
+      {(kind === "pdf" || kind === "html") && !error && embedded && !mobile && (
+        <div className="pdf-float-tools" role="group" aria-label="预览缩放">
+          {kind === "pdf" ? (
+            <>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="缩小"
+                title={canZoomOut ? "缩小（Ctrl+滚轮）" : "已是最小"}
+                disabled={!canZoomOut}
+                onClick={() => changePdfZoom(pdfScaleNow - 0.2)}
+              >
+                <IconMinus size={14} />
+              </button>
+              <span className="pdf-float-zoom-value" title="当前缩放（Ctrl+滚轮可调）">
+                {Math.round(pdfScaleNow * 100)}%
+              </span>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="放大"
+                title={canZoomIn ? "放大（Ctrl+滚轮）" : "已是最大"}
+                disabled={!canZoomIn}
+                onClick={() => changePdfZoom(pdfScaleNow + 0.2)}
+              >
+                <IconPlus size={14} />
+              </button>
+              <button
+                type="button"
+                className={`pdf-float-fit${pdfZoom === "fit" ? " is-on" : ""}`}
+                title="适应宽度"
+                onClick={() => changePdfZoom("fit")}
+              >
+                适应
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="缩小"
+                title={htmlZoomNow > 0.4 + 0.001 ? "缩小（Ctrl+滚轮）" : "已是最小"}
+                disabled={htmlZoomNow <= 0.4 + 0.001}
+                onClick={() => changeHtmlZoom(htmlZoomNow - 0.2)}
+              >
+                <IconMinus size={14} />
+              </button>
+              <span className="pdf-float-zoom-value" title="当前缩放（Ctrl+滚轮可调）">
+                {Math.round(htmlZoomNow * 100)}%
+              </span>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="放大"
+                title={htmlZoomNow < 3 - 0.001 ? "放大（Ctrl+滚轮）" : "已是最大"}
+                disabled={htmlZoomNow >= 3 - 0.001}
+                onClick={() => changeHtmlZoom(htmlZoomNow + 0.2)}
+              >
+                <IconPlus size={14} />
+              </button>
+              <button
+                type="button"
+                className={`pdf-float-fit${Math.abs(htmlZoomNow - 1) < 0.001 ? " is-on" : ""}`}
+                title="重置 100%"
+                onClick={() => changeHtmlZoom(1)}
+              >
+                适应
+              </button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

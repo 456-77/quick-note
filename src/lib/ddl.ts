@@ -163,6 +163,17 @@ export function ddlProjectNames(text: string): string[] {
   return names;
 }
 
+/**
+ * 目标项目的**全部**段落（0.39.17 用户反馈「这个 ddl 为什么无法定位」）：
+ * `## 海亮`/`## 中远` 这类项目标题会重复出现（手写、多次收录、旧版本追加都会），
+ * 而旧实现用 `find(...)` 只取第一个同名段落——语句若在后面的重复段落里，
+ * 定位/改标签/删除/收录替换全部找不到。所有按项目取段落的入口统一走这里，
+ * 需要「最后一次出现」时取数组末尾。
+ */
+export function matchingSections(sections: DdlSection[], project: string): DdlSection[] {
+  return sections.filter((section) => section.project === project && section.to > section.from);
+}
+
 // -------------------------------------------------------- 多标签 + 收录时间（0.39）
 
 /**
@@ -557,9 +568,32 @@ function tableAt(table: string, flags: string): RegExp {
   // `cat.db.tbl` 都能匹配到裸名 tbl
   const schema = `(?:${IDENT}\\s*\\.\\s*)*`;
   return new RegExp(
-    `create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?${schema}${wrapped}`,
+    // 0.39.17 用户反馈「明明已经有标签了却显示无标签」的根因收口：名字后面
+    // 必须是边界——旧正则的包裹符可选，`ids_task` 会匹配到 `` `ids_task_itf` ``
+    // 的前缀，改标签/定位/删除都落到**另一张表**上（那张表恰好有 @tags 时，
+    // 面板回「这条语句已经有这些标签了」，可当前行仍然无标签）。
+    `create\\s+table\\s+(?:if\\s+not\\s+exists\\s+)?${schema}${wrapped}(?![A-Za-z0-9_$#.])`,
     flags,
   );
+}
+
+/** 在给定段落集合里找某张表**最后一次**出现的 CREATE 头（跨重复段落取绝对位置最大）。 */
+function lastTableMatch(
+  text: string,
+  sections: DdlSection[],
+  table: string,
+): { at: number; headLen: number } | null {
+  let best: { at: number; headLen: number } | null = null;
+  for (const section of sections) {
+    const span = text.slice(section.from, section.to);
+    const re = tableAt(table, "gi");
+    let last: RegExpExecArray | null = null;
+    for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
+    if (!last) continue;
+    const at = section.from + last.index;
+    if (!best || at > best.at) best = { at, headLen: last[0].length };
+  }
+  return best;
 }
 
 /**
@@ -590,34 +624,34 @@ export function mergeDdlIntoNote(
 
   let text = existing;
   const replaced = new Set<string>();
-  const target = ddlSections(text).find((section) => section.project === project);
-  if (target) {
-    const span = text.slice(target.from, target.to);
+  // 0.39.17：同名项目段落可能重复（用户库笔记里 `## 海亮`/`## 中远` 各有十几段）——
+  // 替换要跨**全部**目标段落找最后一次出现，不能只看第一个段落
+  const targets = matchingSections(ddlSections(text), project);
+  if (targets.length > 0) {
     const hits: Array<{ at: number; headLen: number; ddl: string }> = [];
     for (const [table, ddl] of batch) {
-      const at = tableAt(table, "gi").exec(span);
-      if (at) {
-        hits.push({ at: at.index, headLen: at[0].length, ddl });
+      const hit = lastTableMatch(text, targets, table);
+      if (hit) {
+        hits.push({ at: hit.at, headLen: hit.headLen, ddl });
         replaced.add(table);
       }
     }
     // 从后往前替换：前面的位置不受后面替换影响
     hits.sort((a, b) => b.at - a.at);
     for (const hit of hits) {
-      const abs = target.from + hit.at;
-      const { advance } = statementSpan(text.slice(abs), hit.headLen);
-      text = text.slice(0, abs) + hit.ddl + text.slice(abs + advance);
+      const { advance } = statementSpan(text.slice(hit.at), hit.headLen);
+      text = text.slice(0, hit.at) + hit.ddl + text.slice(hit.at + advance);
     }
   }
 
   const pending = [...batch].filter(([table]) => !replaced.has(table)).map(([, ddl]) => ddl);
   if (pending.length === 0) return text;
   // 0.39：新追加的语句带 @time 收录时间行（每条一行，替换旧语句不带——保留原时间）。
-  // 0.39.8 收录弹窗支持一次输多个标签：显式 @tags 行只在**多于一个值**时写——
-  // 单值与「段落名回落」语义相同，少一行噪音；标签行在前、时间行在后，与
+  // 0.39.8 收录弹窗支持一次输多个标签；0.39.17 起收录不再有项目段落，**单个
+  // 标签也要写** @tags 行（没有段落名可回落了）。标签行在前、时间行在后，与
   // applyStatementTags 的块内次序一致
   const metaHead = [
-    opts.tags && opts.tags.length > 1 ? tagsLineText("sql", opts.tags) : null,
+    opts.tags && opts.tags.length > 0 ? tagsLineText("sql", opts.tags) : null,
     opts.time ? timeLineText("sql", opts.time) : null,
   ]
     .filter(Boolean)
@@ -625,7 +659,10 @@ export function mergeDdlIntoNote(
   const block = pending
     .map((ddl) => (metaHead ? `${metaHead}\n${ddl}` : ddl))
     .join("\n\n");
-  const targetNow = ddlSections(text).find((section) => section.project === project);
+  // 追加到**最后一个**同名段落末尾（0.39.17；旧实现追加进第一个，和新内容
+  // 分散在重复段落里，用户翻笔记找不到）
+  const sectionsNow = matchingSections(ddlSections(text), project);
+  const targetNow = sectionsNow.length > 0 ? sectionsNow[sectionsNow.length - 1] : null;
   if (targetNow) {
     // 插到目标段落末尾：段落边界收干净空白，新语句用 ```sql 围栏块垫进去
     const insert = `\n\n\`\`\`sql\n${block}\n\`\`\`\n`;
@@ -657,10 +694,11 @@ export function ddlEntryName(ddl: string): string {
 }
 
 /**
- * 在库笔记里定位某项目下某张表的语句（面板「定位/删除」用）。
+ * 在库笔记里定位某项目下某张表的语句（面板「定位/删除/改标签」用）。
  *
- * 定位口径与收录替换一致：在目标项目段落内找**最后一次**出现的 CREATE 头
- * （解析与合并都以最后一次出现为准），再按同一套 statementSpan 切出语句体。
+ * 定位口径与收录替换一致：在**全部同名项目段落**里找**最后一次**出现的
+ * CREATE 头（0.39.17：`## 海亮` 这类标题会重复出现，旧实现只看第一个段落，
+ * 后面的语句定位/删除全部报「找不到」），再按同一套 statementSpan 切出语句体。
  * 返回 span（字符区间）与 line（0 基行号，openNoteAt 的行参数口径）；
  * 段落/表都不存在返回 null。
  */
@@ -669,16 +707,10 @@ export function locateDdlEntry(
   table: string,
   project = "",
 ): { from: number; to: number; line: number } | null {
-  const section = ddlSections(text).find((sec) => sec.project === project);
-  if (!section || section.to <= section.from) return null;
-  const span = text.slice(section.from, section.to);
-  const re = tableAt(table, "gi");
-  let last: RegExpExecArray | null = null;
-  for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
-  if (!last) return null;
-  const abs = section.from + last.index;
-  const { cut } = statementSpan(text.slice(abs), last[0].length);
-  return { from: abs, to: abs + cut, line: newlineCount(text, abs) };
+  const hit = lastTableMatch(text, matchingSections(ddlSections(text), project), table);
+  if (!hit) return null;
+  const { cut } = statementSpan(text.slice(hit.at), hit.headLen);
+  return { from: hit.at, to: hit.at + cut, line: newlineCount(text, hit.at) };
 }
 
 /**

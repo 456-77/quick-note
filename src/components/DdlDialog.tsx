@@ -4,10 +4,10 @@
  * 自动识别表名/类名，确认后合并进仓库内对应的库笔记（DDL 笔记 / Java 实体笔记，
  * 路径见 设置 → 编辑）。
  *
- * 0.34.13 多项目（用户反馈「同时开发多个项目，存在表名复用的情况，考虑添加
- * ddl 语句时，添加项目的填入」）：新增项目输入框——语句归入该项目段落
- * （`## 项目名`），已有同名表/类只在该项目段落内替换；下拉候选来自库笔记里
- * 出现过的项目名，也可以直接输入新项目名；留空 = 未分组（默认）。
+ * 0.39.17 用户反馈「这里也修改下，去掉项目」：收录不再问项目段落（`## 项目`），
+ * 只问标签——语句统一落未分组区，语义归属全部由语句上方的 `@tags` 行表达
+ * （单个标签也写，因为没有段落名可回落）。标签候选 = 两库出现过的全部标签，
+ * 也可以直接输入新标签；留空 = 无标签。
  *
  * 保存由父组件做（读盘-合并-写盘-重载悬浮库一条线都在 App 侧，按粘贴内容自动
  * 路由到 DDL 库 / 实体库），弹窗只管输入与识别反馈。Enter 不提交（多行文本），
@@ -19,23 +19,26 @@ import { extractTableNames } from "../lib/ddl";
 import { extractClassNames } from "../lib/javaEntity";
 import ComboInput from "./ComboInput";
 
-/** 上一次收录用的项目（0.38 用户反馈「设置项目默认是上一次使用的」）。 */
-export const DDL_LAST_PROJECT_KEY = "quicknote.ddl.lastProject";
+/**
+ * 上一次收录用的标签串（0.38「设置项目默认是上一次使用的」沿用；键名保留旧值，
+ * 0.39.17 起语义从「项目」改为「标签串」——用户此前输入的项目名大多就是标签）。
+ */
+export const DDL_LAST_TAGS_KEY = "quicknote.ddl.lastProject";
 
-/** 读取上次使用的项目名（没有/读不到返回空串=未分组）。 */
-export function lastDdlProject(): string {
+/** 读取上次收录用的标签串（没有/读不到返回空串）。 */
+export function lastDdlTags(): string {
   try {
-    return localStorage.getItem(DDL_LAST_PROJECT_KEY) ?? "";
+    return localStorage.getItem(DDL_LAST_TAGS_KEY) ?? "";
   } catch {
     return "";
   }
 }
 
-/** 记住这次用的项目（收录成功后由 App 侧调用）。 */
-export function rememberDdlProject(project: string): void {
+/** 记住这次收录用的标签串（收录成功后由弹窗自己调用）。 */
+export function rememberDdlTags(tags: string): void {
   try {
-    if (project) localStorage.setItem(DDL_LAST_PROJECT_KEY, project);
-    else localStorage.removeItem(DDL_LAST_PROJECT_KEY);
+    if (tags) localStorage.setItem(DDL_LAST_TAGS_KEY, tags);
+    else localStorage.removeItem(DDL_LAST_TAGS_KEY);
   } catch {
     // 尽力而为
   }
@@ -45,24 +48,23 @@ export default function DdlDialog({
   onSubmit,
   onClose,
   ddlPath,
-  projects = [],
+  tagSuggestions = [],
 }: {
-  /** 落盘由父组件做。返回结果文案；抛错显示在弹窗里。project = 归属项目段落名
-   *  （输入的第一个词），tags = 输入的全部词（>1 时写显式 @tags 行）。 */
-  onSubmit: (ddlText: string, project: string, tags: string[]) => Promise<string>;
+  /** 落盘由父组件做。返回结果文案；抛错显示在弹窗里。tags = 输入的全部标签词。 */
+  onSubmit: (ddlText: string, tags: string[]) => Promise<string>;
   onClose: () => void;
   /** DDL 笔记路径（提示文案里显示，让用户知道语句存去了哪）。 */
   ddlPath: string;
-  /** 库里出现过的项目名（去重含「默认」）；下拉候选。 */
-  projects?: string[];
+  /** 两库出现过的标签（去重）；下拉候选。 */
+  tagSuggestions?: string[];
 }) {
-  // 0.38 用户反馈「设置项目默认是上一次使用的」：初始值读上次收录用的项目
   const [draft, setDraft] = useState("");
-  const [project, setProject] = useState(() => lastDdlProject());
+  // 0.38 用户反馈「设置项目默认是上一次使用的」：初始值读上次收录用的标签串
+  const [tags, setTags] = useState(() => lastDdlTags());
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
-  const projectRef = useRef<HTMLInputElement | null>(null);
+  const tagsRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     areaRef.current?.focus();
@@ -76,17 +78,14 @@ export default function DdlDialog({
     setBusy(true);
     setMessage(null);
     try {
-      // 0.39.8 用户反馈「ddl 弹窗中的标签输入框，支持同时输入多个标签」：
-      // 空格/逗号/顿号/分号（含全角）拆词——第一个词是归属项目段落（## 项目名），
-      // 全部词一起写进语句的 @tags 行（多于一个值才写，单值与段落名回落同义）。
-      // 「海亮 中远」= 归入海亮段落、标签含海亮与中远。
-      const parts = project
+      // 空格/逗号/顿号/分号（含全角）拆词，全部作为标签写入语句的 @tags 行
+      //（0.39.17 起单个标签也写——没有段落名可回落了）
+      const parts = tags
         .split(/[\s,，、;；]+/)
         .map((part) => part.trim())
         .filter(Boolean);
-      const first = parts[0] ?? "";
-      const tags = parts.length > 1 ? [...new Set(parts)] : [];
-      const text = await onSubmit(draft, first, tags);
+      const text = await onSubmit(draft, [...new Set(parts)]);
+      rememberDdlTags(parts.join(" "));
       setMessage({ text, kind: "ok" });
       setDraft("");
       areaRef.current?.focus();
@@ -136,19 +135,18 @@ export default function DdlDialog({
           }}
         />
         <div className="ddl-project-row">
-          <label>项目 / 标签</label>
-          {/* 0.38 用户反馈「下拉框风格要对齐软件」：原生 datalist 是浏览器控件
-              （深色主题里泛白突兀），换 ComboInput 自定义候选列表。
-              0.39 起项目段落名同时是语句的默认标签；多项目复用同一语句可在
-              管理面板（Ctrl+Alt+K）里追加多个标签。 */}
+          <label>标签</label>
+          {/* 0.38 用户反馈「下拉框风格要对齐软件」：ComboInput 自绘候选列表。
+              0.39.17 用户反馈「去掉项目」：这一行只收标签（@tags 行），候选来自
+              两库出现过的标签；多项目复用同一语句在管理面板里追加更多标签。 */}
           <ComboInput
-            inputRef={projectRef}
-            ariaLabel="所属项目"
-            value={project}
-            onChange={setProject}
-            suggestions={projects.filter((name) => name !== "")}
-            placeholder="项目名，空格分隔可加多个标签 · 留空 = 未分组"
-            title="第一个词 = 归属项目段落（## 项目名）；空格/逗号分隔可一次写多个标签（@tags 行）。例：海亮 中远 → 归入海亮段落、标签为海亮+中远"
+            inputRef={tagsRef}
+            ariaLabel="语句标签"
+            value={tags}
+            onChange={setTags}
+            suggestions={tagSuggestions.filter((name) => name !== "")}
+            placeholder="标签名，空格/逗号分隔可加多个 · 留空 = 无标签"
+            title="空格/逗号分隔可一次写多个标签（@tags 行）。例：海亮 中远 → 标签为海亮+中远"
           />
         </div>
         <div className="quick-capture-help">
@@ -159,7 +157,7 @@ export default function DdlDialog({
           </span>
           <span className="spacer" />
           <span>
-            {targetHint ? `保存到 ${targetHint} · 同名同项目内替换` : "等待可识别的内容…"}
+            {targetHint ? `保存到 ${targetHint} · 同名表/类替换` : "等待可识别的内容…"}
           </span>
         </div>
         <div className="quick-capture-foot">

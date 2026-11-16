@@ -15,6 +15,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
+import { isMobile } from "../lib/platform";
+import PreviewScrollbar from "./PreviewScrollbar";
 
 /** 单列筛选面板里最多列出的不同值（再多请用搜索缩小范围）。 */
 const MAX_FILTER_VALUES = 500;
@@ -748,7 +750,8 @@ export default function SpreadsheetPreview({
       {header.length === 0 ? (
         <div className="xlsx-empty">这个工作表是空的</div>
       ) : (
-        <div className="file-preview-sheet-body" ref={bodyWrapRef} onScroll={onBodyScroll}>
+        <div className="file-preview-sheet-wrap">
+          <div className="file-preview-sheet-body" ref={bodyWrapRef} onScroll={onBodyScroll}>
           <table
             className={`xlsx-table${colWidths ? " is-fixed" : ""}`}
             style={
@@ -872,6 +875,10 @@ export default function SpreadsheetPreview({
           {filtered.length === 0 && (
             <div className="xlsx-empty">没有符合筛选条件的行</div>
           )}
+          </div>
+          {/* 0.39.17 用户反馈「滚轮不要占用空间，悬浮在空隙上」：xlsx 主滚动
+              容器的悬浮滚动条（原生条隐藏，见 styles.css） */}
+          <PreviewScrollbar targetRef={bodyWrapRef} visible={!isMobile()} />
         </div>
       )}
       {pop && (

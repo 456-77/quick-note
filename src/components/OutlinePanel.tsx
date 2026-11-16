@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { outlineInlineSpans, outlineOf, type OutlineEntry } from "../lib/outline";
+import type { PdfToc } from "./FilePreview";
 
 /** 文档源：全文 + 换行符（行号口径与编辑器一致）。null = 没有可显示的文档。 */
 export interface OutlineDoc {
@@ -30,9 +31,12 @@ interface Props {
   onJump: (line: number) => void;
   /** 光标所在行（0 基）：用于高亮"当前位置"所在的标题；-1 = 无光标（分屏查看）。 */
   cursorLine: number;
+  /** PDF 书签目录（0.39.17）：预览的 PDF 有书签时接管面板（点条目跳页），
+   *  md 大纲让位；null/无书签 = 走 md 大纲/空态。 */
+  pdfToc?: PdfToc | null;
 }
 
-export default function OutlinePanel({ getDoc, revision, activeKey, onJump, cursorLine }: Props) {
+export default function OutlinePanel({ getDoc, revision, activeKey, onJump, cursorLine, pdfToc }: Props) {
   const entries = useMemo<OutlineEntry[]>(() => {
     const doc = getDoc();
     if (!doc || !activeKey) return [];
@@ -61,8 +65,39 @@ export default function OutlinePanel({ getDoc, revision, activeKey, onJump, curs
     item?.scrollIntoView({ block: "nearest" });
   }, [activeIndex]);
 
-  if (!activeKey) {
+  if (!activeKey && !pdfToc) {
     return <div className="outline"><div className="outline-empty">没有打开的笔记</div></div>;
+  }
+  // PDF 书签模式（0.39.17）：点击条目滚到对应页；page=-1 的条目只展示不可点
+  if (pdfToc) {
+    if (pdfToc.entries.length === 0) {
+      return (
+        <div className="outline">
+          <div className="outline-empty">这份 PDF 没有书签目录。</div>
+        </div>
+      );
+    }
+    return (
+      <div className="outline">
+        <div className="outline-list outline-pdf-list">
+          {pdfToc.entries.map((entry, index) => (
+            <button
+              type="button"
+              key={`${entry.page}-${index}`}
+              className={`outline-item${entry.page < 0 ? " is-disabled" : ""}`}
+              style={{ paddingLeft: 8 + entry.depth * 12 }}
+              title={entry.page >= 0 ? `跳到第 ${entry.page + 1} 页` : "无法解析目标页"}
+              onClick={() => {
+                if (entry.page >= 0) pdfToc.jump(entry.page);
+              }}
+            >
+              <span className="outline-text">{entry.title || "（无标题）"}</span>
+              {entry.page >= 0 && <span className="outline-page">{entry.page + 1}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
   }
   if (entries.length === 0) {
     return (

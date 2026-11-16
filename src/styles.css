@@ -1495,10 +1495,16 @@ div.tree-item:focus-visible {
 }
 
 /* 手动缩放（0.28）：去掉 max-width 钳制，页面按倍率真正变大，超宽交给
-   .file-preview-body 横向滚动；左对齐，避免居中溢出的左半边滚不到。 */
+   .file-preview-body 横向滚动。
+   0.39.17 用户反馈「缩放还是紧挨左侧，我需要的是中心缩放」：保持列居中，
+   容器宽度改 max-content + auto 边距——窄于视口时整列**水平居中**；宽于视口
+   时容器=内容宽（不会出现 flex 居中那种左半边滚不到的双侧溢出），配合
+   applyScale 的视口中心锚定，缩放中心不动。 */
 .file-preview-pdf.is-manual {
-  align-items: flex-start;
+  align-items: center;
   max-width: none;
+  width: max-content;
+  margin-inline: auto;
 }
 
 .file-preview-pdf.is-manual .file-preview-pdf-page {
@@ -4062,6 +4068,35 @@ html.qn-alt-held .cm-line {
 .outline-text {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* PDF 书签目录（0.39.17）：条目 = 标题 + 右侧页码；解析不出目标页的条目
+   置灰不可点（仅展示）。flex 只在 pdf 列表内生效，md 大纲不受影响 */
+.outline-pdf-list .outline-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.outline-pdf-list .outline-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.outline-page {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.outline-item.is-disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.outline-item.is-disabled:hover {
+  color: var(--text-dim);
+  background: transparent;
 }
 
 /* ---------------------------------------------------------------- 侧栏收起 */
@@ -12205,13 +12240,22 @@ html.qn-mobile .vocab-status {
   white-space: nowrap;
 }
 
-/* 多项目切换下拉（0.39.8，替代 0.34.13 的标题行下 chips 行——用户反馈「多个
-   项目存在同名 ddl 或者实体时，在这里添加一个下拉框供选择」）：同一表名/类名
-   在多个 `## 项目` 段落里各有一条语句时出现在标题行内；默认选中笔记标签匹配
-   的项目。color-scheme: dark（见 :root 主题块）让原生弹层走深色 */
-.qn-ddl-tip-project-select {
+/* 语句切换下拉（0.39.8 引入；0.39.17 用户反馈「下拉框风格要对齐软件」——原生
+   select 的弹层在深色主题里泛白突兀，改自绘：按钮 + 绝对定位列表，观感对齐
+   ComboInput 的 .combo-list）。文案显示语句的**标签**（无标签显示「无标签」），
+   同名多份且标签相同时选项补（段落名）区分；单条语句渲染成静态 chip。 */
+.qn-ddl-tip-project {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+}
+
+.qn-ddl-tip-project-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   max-width: 150px;
-  padding: 2px 6px;
+  padding: 2px 8px;
   font: inherit;
   font-size: 11.5px;
   font-weight: 400;
@@ -12222,13 +12266,84 @@ html.qn-mobile .vocab-status {
   cursor: pointer;
 }
 
-.qn-ddl-tip-project-select:hover {
+.qn-ddl-tip-project-btn:hover {
   border-color: var(--accent);
 }
 
-.qn-ddl-tip-project-select:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: 0;
+.qn-ddl-tip-project-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qn-ddl-tip-project-caret {
+  flex: none;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.qn-ddl-tip-project-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 60;
+  min-width: 130px;
+  max-width: 240px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-2);
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.qn-ddl-tip-project-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qn-ddl-tip-project-item:hover {
+  background: var(--hover);
+}
+
+.qn-ddl-tip-project-item.is-on {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+/* 单条语句的静态标签 chip：与下拉按钮同一观感，但没有开合交互 */
+.qn-ddl-tip-tagchip {
+  flex: none;
+  max-width: 150px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
 }
 
 /* 编辑态（0.34.5）：textarea 聚焦/组词中的弹窗——ddlHover 的隐藏通道见类即退避；
@@ -12522,8 +12637,8 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-/* 收录弹窗的项目行（0.34.13 多项目）：语句归入该项目段落，datalist 给出库里
-   已有的项目名候选，也可以直接输入新项目名；留空 = 未分组 */
+/* 收录弹窗的标签行（0.34.13 引入时是项目行；0.39.17 用户反馈「去掉项目」——
+   只收标签，语句统一落未分组区，@tags 行表达归属；候选来自两库出现过的标签） */
 .ddl-project-row {
   display: flex;
   align-items: center;
@@ -12640,10 +12755,126 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
 /* 文件预览的标签页形态（0.35.3 用户反馈「预览文件可以复用笔记的标签页形式吗」）：
    不再是 absolute 全屏浮层，占据左栏标签栏之下的内容区 */
 .file-preview.is-embedded {
-  position: static;
+  /* 0.39.17：static→relative——对 flex 布局等价，但给右上角浮动缩放条等
+     绝对定位子元素一个「预览自身」的锚点（此前它们锚到更外层的 pane） */
+  position: relative;
   flex: 1;
   min-height: 0;
   z-index: auto;
+}
+
+/* PDF 右上角竖排缩放菜单（0.39.17 用户反馈「放大缩小/百分比/适应按钮换成
+   竖向排列的菜单浮动在右上角」；二轮反馈「默认隐藏，鼠标聚焦到菜单时才显示」
+   ——只在光标悬停菜单自身时出现，不再跟随整个预览的 hover）：嵌入态 PDF
+   专用（独立预览窗仍走标题条，移动端缩放走捏合不渲染）。 */
+.pdf-float-tools {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 8;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 5px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-2);
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.pdf-float-tools:hover,
+.pdf-float-tools:focus-within {
+  opacity: 1;
+}
+
+.pdf-float-zoom-value {
+  font-size: 11px;
+  color: var(--text-dim);
+  min-width: 34px;
+  text-align: center;
+}
+
+.pdf-float-fit {
+  font: inherit;
+  font-size: 11px;
+  color: var(--text-dim);
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.pdf-float-fit:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.pdf-float-fit.is-on {
+  color: var(--accent);
+}
+
+/* 预览滚动条悬浮化（0.39.17 用户反馈「滚轮不要占用空间，悬浮在空隙上」）：
+   原生 webkit 条恒占布局位，会把预览内容挤掉一条 9-15px 的空槽——隐藏原生条，
+   自绘悬浮 thumb（components/PreviewScrollbar.tsx）贴容器右缘，悬停加深、可
+   拖拽。桌面限定：移动端滚动条本就全局隐藏（无 thumb，靠触摸平移）。 */
+html:not(.qn-mobile) .file-preview-body,
+html:not(.qn-mobile) .file-preview-sheet-body {
+  scrollbar-width: none;
+}
+
+html:not(.qn-mobile) .file-preview-body::-webkit-scrollbar,
+html:not(.qn-mobile) .file-preview-sheet-body::-webkit-scrollbar {
+  display: none;
+}
+
+.preview-scrollbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 12px;
+  z-index: 9;
+  pointer-events: none;
+}
+
+.preview-scrollbar-thumb {
+  position: absolute;
+  right: 2px;
+  width: 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--text) 26%, transparent);
+  opacity: 0.45;
+  pointer-events: auto;
+  cursor: grab;
+  transition: opacity 0.15s ease;
+}
+
+.preview-scrollbar-thumb:hover,
+.preview-scrollbar-thumb:active {
+  opacity: 0.9;
+  background: color-mix(in srgb, var(--text) 42%, transparent);
+}
+
+.preview-scrollbar-thumb:active {
+  cursor: grabbing;
+}
+
+/* Excel 的 sheet-body 包一层定位容器：悬浮滚动条贴表格区右缘（不算工具栏） */
+.file-preview-sheet-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+}
+
+.file-preview-sheet-wrap .file-preview-sheet-body {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* 特殊标签页的标签外观：名称前缀菱形徽标，区别于普通笔记标签 */

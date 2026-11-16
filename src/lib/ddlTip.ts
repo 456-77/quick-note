@@ -38,13 +38,13 @@ export interface DdlTipOptions {
   defaultProject?: string;
 }
 
-/** 条目显示名（0.39 多标签）：标签用「·」连起来，无标签显示「默认」。 */
+/** 条目显示名（0.39 多标签）：标签用「·」连起来，无标签显示「无标签」。 */
 export function entryLabel(entry: DdlEntry): string {
-  return entry.tags.length > 0 ? entry.tags.join(" · ") : "默认";
+  return entry.tags.length > 0 ? entry.tags.join(" · ") : "无标签";
 }
 
 /**
- * 悬浮弹窗 DOM：标题行（表名 + 多项目下拉 + [消息 + 保存钮]）+ 可编辑文本域，
+ * 悬浮弹窗 DOM：标题行（表名 + 标签切换下拉 + [消息 + 保存钮]）+ 可编辑文本域，
  * 否则着色只读体。
  */
 export function buildDdlTipDom(
@@ -146,36 +146,105 @@ export function buildDdlTipDom(
     head.append(message, saveBtn);
   }
 
-  // ---- 项目切换下拉（0.39.8，0.39.16 改为常驻）---------------------------------
-  // 0.35.0 的项目 chips 行占一整行且不够直观，改为标题行内嵌原生 select：
-  // color-scheme: dark 下弹层走深色；切换只重铺体部，不重建弹窗。
-  // 0.39.16 用户再次反馈「这里加一个下拉选择框」——截图里那一格是空的（该表
-  // 库里只有一条，旧逻辑 `entries.length > 1` 才渲染）。改为**常驻**：单条时
-  // 显示它所在的项目/未分组，让「这里能切换」可被发现；多条时可切换。
+  // ---- 语句切换下拉（0.39.8 引入；0.39.16 常驻；0.39.17 改自绘下拉 + 标签文案）--
+  // 0.39.16 前是原生 <select>（原生弹层在深色主题里泛白突兀，用户反馈「下拉框
+  // 风格要对齐软件」）；0.39.17 同时把文案从物理段落名改成**标签**（语句有
+  // `@tags: 海亮` 却显示「未分组」与「标签取代分组」相悖）。自绘形态对齐
+  // ComboInput 的 .combo-list 观感：按钮开合、点外/Esc 收起、选项点选只重铺
+  // 体部不重建弹窗。单条语句时渲染成静态标签 chip（没有可切换的东西）。
   {
-    const select = document.createElement("select");
-    select.className = "qn-ddl-tip-project-select";
-    select.title =
-      entries.length > 1
-        ? "同名语句存在于多个项目，选择要查看的项目"
-        : `当前项目：${entries[current].project || "未分组"}`;
-    select.addEventListener("mousedown", (event) => event.stopPropagation());
-    entries.forEach((entry, index) => {
-      const option = document.createElement("option");
-      option.value = String(index);
-      option.textContent = entry.project || "未分组";
-      option.title = entryLabel(entry);
-      select.appendChild(option);
-    });
-    select.value = String(current);
-    select.addEventListener("change", () => {
-      const next = Number(select.value);
-      if (next === current) return;
-      current = next;
-      render();
-    });
-    // 位置=用户截图里框的空位：↑↓ 命中按钮之后、消息与保存钮之前
-    head.insertBefore(select, message);
+    const labels = entries.map((entry) => entryLabel(entry));
+    const duplicated = new Set(
+      labels.filter((label, index) => labels.indexOf(label) !== index),
+    );
+    /** 选项文案：标签优先；同名多份且标签相同时补段落名区分。 */
+    const optionText = (index: number) => {
+      const entry = entries[index];
+      return duplicated.has(labels[index])
+        ? `${labels[index]}（${entry.project || "未分组"}）`
+        : labels[index];
+    };
+    if (entries.length > 1) {
+      const wrap = document.createElement("span");
+      wrap.className = "qn-ddl-tip-project";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "qn-ddl-tip-project-btn";
+      btn.title = "同名表存在多份，点击按标签选择要查看的语句";
+      const btnText = document.createElement("span");
+      btnText.className = "qn-ddl-tip-project-label";
+      btnText.textContent = optionText(current);
+      const caret = document.createElement("span");
+      caret.className = "qn-ddl-tip-project-caret";
+      caret.textContent = "▾";
+      btn.append(btnText, caret);
+      const list = document.createElement("div");
+      list.className = "qn-ddl-tip-project-list";
+      list.style.display = "none";
+      const items = entries.map((entry, index) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = `qn-ddl-tip-project-item${index === current ? " is-on" : ""}`;
+        item.textContent = optionText(index);
+        item.title = `标签：${entryLabel(entry)}；所在段落：${entry.project || "未分组"}`;
+        // mousedown 捕获阶段不外传：CM 收卡走鼠标位置判定，点弹窗内元素必须先按住
+        item.addEventListener("mousedown", (event) => event.stopPropagation());
+        item.addEventListener("click", (event) => {
+          event.stopPropagation();
+          pick(index);
+        });
+        list.appendChild(item);
+        return item;
+      });
+      const close = () => {
+        if (list.style.display === "none") return;
+        list.style.display = "none";
+        document.removeEventListener("mousedown", onOutside, true);
+        document.removeEventListener("keydown", onKey, true);
+      };
+      const onOutside = (event: MouseEvent) => {
+        if (event.target instanceof Node && wrap.contains(event.target)) return;
+        close();
+      };
+      const onKey = (event: KeyboardEvent) => {
+        if (event.key !== "Escape") return;
+        // Esc 只收下拉，不吃掉（搜索框清空/关卡等后续通道还要用）
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+      };
+      const open = () => {
+        list.style.display = "";
+        document.addEventListener("mousedown", onOutside, true);
+        document.addEventListener("keydown", onKey, true);
+      };
+      const pick = (index: number) => {
+        close();
+        if (index === current) return;
+        current = index;
+        btnText.textContent = optionText(current);
+        items.forEach((item, i) => item.classList.toggle("is-on", i === current));
+        render();
+      };
+      // mousedown 不外传（同上：防 CM 收卡）；click 开合
+      btn.addEventListener("mousedown", (event) => event.stopPropagation());
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (list.style.display === "none") open();
+        else close();
+      });
+      wrap.append(btn, list);
+      // 位置=用户截图里框的空位：↑↓ 命中按钮之后、消息与保存钮之前。
+      // 只读形态（saver 未注入）没有 message/saveBtn 在 head 里——
+      // insertBefore 的参照节点必须是 head 的子节点，否则 NotFoundError
+      head.insertBefore(wrap, message.isConnected ? message : null);
+    } else {
+      const chip = document.createElement("span");
+      chip.className = "qn-ddl-tip-tagchip";
+      chip.textContent = labels[current];
+      chip.title = `标签：${entryLabel(entries[current])}；所在段落：${entries[current].project || "未分组"}`;
+      head.insertBefore(chip, message.isConnected ? message : null);
+    }
   }
 
   // ---- 体部 -----------------------------------------------------------------

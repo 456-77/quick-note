@@ -25,6 +25,7 @@ import {
   applyStatementTags,
   ddlSections,
   dropEmptyFence,
+  matchingSections,
   metaBlockAbove,
   sectionProjectAt,
   tagsLineText,
@@ -182,6 +183,29 @@ function classAt(name: string, flags: string): RegExp {
  * 项目不存在就在文末新建 `## 项目` 段落；未分组无段落时追加文末。
  * `opts.time` 给**新追加**的类写 `@time` 收录时间行（替换旧类不动原元数据块）。
  */
+/**
+ * 在给定段落集合里找某个类**最后一次**声明（0.39.17：同名项目段落可能重复，
+ * 跨段落取绝对位置最大，与 DDL 的 lastTableMatch 同口径）。
+ */
+function lastClassMatch(
+  text: string,
+  sections: { from: number; to: number }[],
+  name: string,
+): { at: number } | null {
+  let best: { at: number } | null = null;
+  for (const section of sections) {
+    const span = text.slice(section.from, section.to);
+    const re = classAt(name, "gm");
+    re.lastIndex = 0;
+    let last: RegExpExecArray | null = null;
+    for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
+    if (!last) continue;
+    const at = section.from + last.index;
+    if (!best || at > best.at) best = { at };
+  }
+  return best;
+}
+
 export function mergeClassesIntoNote(
   existing: string,
   incoming: string,
@@ -197,23 +221,16 @@ export function mergeClassesIntoNote(
 
   let text = existing;
   const replaced = new Set<string>();
-  const sections = ddlSections(text);
-  const target = sections.find((section) => section.project === project);
-  if (target) {
-    const span = text.slice(target.from, target.to);
-    const linesOffset = target.from;
+  // 0.39.17：同名项目段落可能重复——替换跨全部目标段落找最后一次声明
+  const targets = matchingSections(ddlSections(text), project);
+  if (targets.length > 0) {
     const hits: Array<{ at: number; ddl: string; replaceEnd: number }> = [];
     for (const [name, ddl] of batch) {
-      // 逐行找声明行（声明必须顶行首——与解析侧同一口径）
-      const re = classAt(name, "gm");
-      re.lastIndex = 0;
-      const at = re.exec(span);
-      if (at) {
-        const abs = linesOffset + at.index;
-        const { cut } = classSpan(text.slice(abs));
-        hits.push({ at: abs, ddl, replaceEnd: abs + cut });
-        replaced.add(name);
-      }
+      const hit = lastClassMatch(text, targets, name);
+      if (!hit) continue;
+      const { cut } = classSpan(text.slice(hit.at));
+      hits.push({ at: hit.at, ddl, replaceEnd: hit.at + cut });
+      replaced.add(name);
     }
     hits.sort((a, b) => b.at - a.at);
     for (const hit of hits) {
@@ -224,10 +241,10 @@ export function mergeClassesIntoNote(
   const pending = [...batch].filter(([name]) => !replaced.has(name)).map(([, ddl]) => ddl);
   if (pending.length === 0) return text;
   // 0.39：新追加的类带 @time 收录时间行（每类一行；替换旧类保留原时间）。
-  // 0.39.8 收录弹窗多标签：@tags 行只在多于一个值时写（单值=段落名回落同义），
-  // 标签行在前、时间行在后（与 ddl.ts applyStatementTags 次序一致）
+  // 0.39.8 收录弹窗多标签；0.39.17 起没有项目段落，单个标签也要写 @tags 行
+  //（标签行在前、时间行在后，与 ddl.ts applyStatementTags 次序一致）
   const metaHead = [
-    opts.tags && opts.tags.length > 1 ? tagsLineText("java", opts.tags) : null,
+    opts.tags && opts.tags.length > 0 ? tagsLineText("java", opts.tags) : null,
     opts.time ? timeLineText("java", opts.time) : null,
   ]
     .filter(Boolean)
@@ -235,7 +252,8 @@ export function mergeClassesIntoNote(
   const block = pending
     .map((ddl) => (metaHead ? `${metaHead}\n${ddl}` : ddl))
     .join("\n\n");
-  const targetNow = ddlSections(text).find((section) => section.project === project);
+  const sectionsNow = matchingSections(ddlSections(text), project);
+  const targetNow = sectionsNow.length > 0 ? sectionsNow[sectionsNow.length - 1] : null;
   if (targetNow) {
     const insert = `\n\n\`\`\`java\n${block}\n\`\`\`\n`;
     const head = text.slice(0, targetNow.to).replace(/\s*$/, "\n");
@@ -268,16 +286,10 @@ export function locateClassEntry(
   name: string,
   project = "",
 ): { from: number; to: number; line: number } | null {
-  const section = ddlSections(text).find((sec) => sec.project === project);
-  if (!section || section.to <= section.from) return null;
-  const span = text.slice(section.from, section.to);
-  const re = classAt(name, "gm");
-  let last: RegExpExecArray | null = null;
-  for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
-  if (!last) return null;
-  const abs = section.from + last.index;
-  const { cut } = classSpan(text.slice(abs));
-  return { from: abs, to: abs + cut, line: newlineCount(text, abs) };
+  const hit = lastClassMatch(text, matchingSections(ddlSections(text), project), name);
+  if (!hit) return null;
+  const { cut } = classSpan(text.slice(hit.at));
+  return { from: hit.at, to: hit.at + cut, line: newlineCount(text, hit.at) };
 }
 
 /**

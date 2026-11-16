@@ -3,7 +3,7 @@
  * 面板」）：整页结构完全照搬 CaptureManager（Inbox）——cm-root 页头（标题/
  * 副标题/统计/搜索/刷新/⋯/关闭）、cm-seg 分段（数据表 / Java 实体）、
  * cm-toolbar（筛选/标签/日期/排序 + active chips + 计数，勾选后原位切批量栏）、
- * cm-list 行（勾选框 + 名字/预览 + 时间/分组/标签/COMMENT meta + 行尾
+ * cm-list 行（勾选框 + 名字/预览 + 时间/标签/COMMENT meta + 行尾
  * 「定位/标签/⋯」）、cm-empty 空态、cm-hints 快捷提示、cm-drawer 详情抽屉
  * （备注 + 标签 chips + SQL/Java 关键字高亮语句）。
  *
@@ -34,7 +34,7 @@ import {
 import type { ClassLibrary } from "../lib/javaEntity";
 import { tokenizeJava } from "../lib/javaEntity";
 import { normalizeTagName } from "../lib/tags";
-import { IconCalendar, IconFilter, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
+import { IconCalendar, IconListTree, IconRefresh, IconTag, IconX } from "./icons";
 
 export type LibraryKind = "ddl" | "java";
 
@@ -177,12 +177,10 @@ export default function LibraryManagerDialog({
   const [query, setQuery] = useState("");
   const [libFilter, setLibFilter] = useState<LibraryKind>("ddl");
   const [tagSel, setTagSel] = useState<Set<string>>(new Set());
-  /** 分组筛选（多选，OR 语义；空集=全部分组）。 */
-  const [groupSel, setGroupSel] = useState<Set<string>>(new Set());
   const [dateRange, setDateRange] = useState<DateRange>("any");
   const [sort, setSort] = useState<SortKey>("newest");
   const [tagSearch, setTagSearch] = useState("");
-  const [popover, setPopover] = useState<"group" | "tags" | "date" | "sort" | "more" | null>(null);
+  const [popover, setPopover] = useState<"tags" | "date" | "sort" | "more" | null>(null);
   const [rowMenu, setRowMenu] = useState<string | null>(null);
   /** 行上「标签」按钮的行内输入框（Inbox 同款；一次只有一行在加）。 */
   const [tagEditKey, setTagEditKey] = useState<string | null>(null);
@@ -293,22 +291,10 @@ export default function LibraryManagerDialog({
     return { tags, untagged };
   }, [scoped]);
 
-  /** 分组聚合（段落名；「筛选」弹层用）。 */
-  const groupCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const row of scoped) counts.set(row.project, (counts.get(row.project) ?? 0) + 1);
-    return [...counts.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) =>
-        a.name === "" ? -1 : b.name === "" ? 1 : a.name.localeCompare(b.name, "zh"),
-      );
-  }, [scoped]);
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const now = Date.now();
     return scoped.filter((row) => {
-      if (groupSel.size > 0 && !groupSel.has(row.project)) return false;
       if (tagSel.size > 0) {
         const hit = [...tagSel].some((tag) =>
           tag === NO_TAG ? row.tags.length === 0 : row.tags.includes(tag),
@@ -328,7 +314,7 @@ export default function LibraryManagerDialog({
       const hay = `${row.name}\n${row.tags.join(" ")}\n${row.project}\n${row.comment ?? ""}\n${firstLine(row.ddl)}`;
       return hay.toLowerCase().includes(q);
     });
-  }, [scoped, query, tagSel, groupSel, dateRange, today, yesterday]);
+  }, [scoped, query, tagSel, dateRange, today, yesterday]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -389,7 +375,6 @@ export default function LibraryManagerDialog({
   };
   const resetFilters = () => {
     setTagSel(new Set());
-    setGroupSel(new Set());
     setDateRange("any");
     setConfirmKey(null);
     clearSel();
@@ -408,17 +393,6 @@ export default function LibraryManagerDialog({
       const next = new Set(prev);
       if (next.has(tag)) next.delete(tag);
       else next.add(tag);
-      return next;
-    });
-    setConfirmKey(null);
-    clearSel();
-  };
-
-  const toggleGroupFilter = (name: string) => {
-    setGroupSel((prev) => {
-      const next = new Set(prev);
-      if (next.has(name)) next.delete(name);
-      else next.add(name);
       return next;
     });
     setConfirmKey(null);
@@ -634,20 +608,6 @@ export default function LibraryManagerDialog({
   };
 
   const activeChips: { label: string; clear: () => void }[] = [];
-  for (const name of groupSel) {
-    activeChips.push({
-      label: `分组：${name || "未分组"}`,
-      clear: () => {
-        setGroupSel((prev) => {
-          const next = new Set(prev);
-          next.delete(name);
-          return next;
-        });
-        setConfirmKey(null);
-        clearSel();
-      },
-    });
-  }
   for (const tag of tagSel) {
     activeChips.push({
       label: tag === NO_TAG ? "无标签" : `#${tag}`,
@@ -865,45 +825,6 @@ export default function LibraryManagerDialog({
           </>
         ) : (
           <>
-            {/* 「筛选」= 按分组（库笔记 ## 段落），Inbox 的来源筛选同款 */}
-            <div className="cm-tool">
-              <button
-                type="button"
-                className={`cm-tool-btn${groupSel.size > 0 ? " is-on" : ""}`}
-                onClick={() => setPopover(popover === "group" ? null : "group")}
-              >
-                <IconFilter size={12} /> 筛选
-              </button>
-              {popover === "group" && (
-                <div className="cm-pop">
-                  <div className="cm-pop-title">按分组筛选</div>
-                  <div className="cm-pop-list">
-                    {groupCounts.map((group) => (
-                      <label key={group.name || "\u0000"} className="cm-pop-row">
-                        <input
-                          type="checkbox"
-                          checked={groupSel.has(group.name)}
-                          onChange={() => toggleGroupFilter(group.name)}
-                        />
-                        <span className="cm-pop-row-name">{group.name || "未分组"}</span>
-                        <span className="cm-spacer" />
-                        <span className="cm-pop-row-count">{group.count}</span>
-                      </label>
-                    ))}
-                    {groupCounts.length === 0 && <div className="cm-pop-empty">还没有分组</div>}
-                  </div>
-                  {groupSel.size > 0 && (
-                    <button
-                      type="button"
-                      className="cm-pop-clear"
-                      onClick={() => setGroupSel(new Set())}
-                    >
-                      清除分组筛选
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
             <div className="cm-tool">
               <button
                 type="button"
@@ -1113,16 +1034,15 @@ export default function LibraryManagerDialog({
                         {firstLine(row.ddl)}
                       </div>
                       <div className="cm-row-meta">
+                        {/* 0.39.17 用户反馈「这里分组啥意思，不是已经用标签替代了吗」：
+                            行 meta 不再展示内部段落名，只留收录时间 + 标签 + COMMENT
+                            （段落仍在数据里，定位/保存按它走，只是不占用户视线） */}
                         {row.time && (
-                          <>
-                            <span className="cm-row-time">{fmtRowTime(row.time, today)}</span>
-                            <span className="cm-meta-dot">·</span>
-                          </>
+                          <span className="cm-row-time">{fmtRowTime(row.time, today)}</span>
                         )}
-                        <span className="cm-row-state">
-                          {row.project ? `分组 · ${row.project}` : "未分组"}
-                        </span>
-                        {row.tags.length > 0 && <span className="cm-meta-dot">·</span>}
+                        {row.time && (row.tags.length > 0 || row.comment) && (
+                          <span className="cm-meta-dot">·</span>
+                        )}
                         {row.tags.map((tag) => (
                           <button
                             key={tag}
@@ -1137,13 +1057,11 @@ export default function LibraryManagerDialog({
                             #{tag}
                           </button>
                         ))}
+                        {row.tags.length > 0 && row.comment && <span className="cm-meta-dot">·</span>}
                         {row.comment && (
-                          <>
-                            <span className="cm-meta-dot">·</span>
-                            <span className="cm-row-src" title={row.comment}>
-                              {row.comment}
-                            </span>
-                          </>
+                          <span className="cm-row-src" title={row.comment}>
+                            {row.comment}
+                          </span>
                         )}
                       </div>
                     </div>
@@ -1320,10 +1238,6 @@ export default function LibraryManagerDialog({
                   {drawerRow.kind === "ddl" ? ddlPath : javaPath}
                 </div>
               </div>
-              <div className="cm-field">
-                <div className="cm-field-label">分组</div>
-                <div className="cm-field-value">{drawerRow.project || "未分组"}</div>
-              </div>
               {drawerRow.time && (
                 <div className="cm-field">
                   <div className="cm-field-label">收录时间</div>
@@ -1458,8 +1372,7 @@ export default function LibraryManagerDialog({
               <span>修改语句本体后保存；表名/类名也可以改（按新名重建库条目）。</span>
               <span className="spacer" />
               <span>
-                {editRow.kind === "ddl" ? ddlPath : javaPath} ·{" "}
-                {editRow.project || "未分组"}
+                {editRow.kind === "ddl" ? ddlPath : javaPath}
               </span>
             </div>
             <div className="quick-capture-foot">

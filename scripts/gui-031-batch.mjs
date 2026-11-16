@@ -520,9 +520,11 @@ try {
     }
   }
 
-  // ============================================== 6b. 多项目语句库（0.34.13：收录带项目 + Java 实体 + 弹窗项目切换）
+  // ============================================== 6b. 语句库（0.34.13：收录带标签 + Java 实体 + 悬浮语句切换）
   {
-    // 1) 收录弹窗带项目：粘贴 Java 类 + 项目「测试项目A」→ 自动路由进实体库落盘
+    // 1) 收录弹窗带标签：粘贴 Java 类 + 标签「测试项目A」→ 自动路由进实体库落盘
+    //    （0.39.17 用户反馈「去掉项目」：收录只问标签，语句统一落未分组区，
+    //    单个标签也写显式 @tags 行——没有段落名可回落了）
     await key(ws, { mod: CTRL_ALT, key: "j" }, "KeyJ", 74);
     let dlg2 = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
     for (let i = 0; i < 3 && !dlg2; i += 1) {
@@ -530,6 +532,8 @@ try {
       dlg2 = await waitFor(ws, `!!document.querySelector('.ddl-textarea')`, 2500);
     }
     check(dlg2, "收录弹窗再次弹出（6b）");
+    const dialogLabels = await evaluate(ws, `[...document.querySelectorAll('.ddl-project-row label')].map((el) => el.textContent)`);
+    check(dialogLabels.some((t) => t === "标签") && !dialogLabels.some((t) => t.includes("项目")), "收录弹窗只问标签（0.39.17 去掉项目）", dialogLabels.join("|"));
     await evaluate(ws, `(() => {
       const set = ${nativeSet};
       set(document.querySelector('.ddl-textarea'), "public class Qn31User {\\n  private Long id; // 主键\\n}");
@@ -548,11 +552,11 @@ try {
       javaOk = existsSync(javaFile);
       if (javaOk) {
         javaText = readFileSync(javaFile, "utf8");
-        javaOk = javaText.includes("## 测试项目A") && javaText.includes("public class Qn31User");
+        javaOk = javaText.includes("-- @tags: 测试项目A") && javaText.includes("public class Qn31User");
       }
       if (!javaOk) await sleep(300);
     }
-    check(javaOk, "Java实体.md 落盘且带 ## 测试项目A 段落", javaText.slice(0, 80));
+    check(javaOk, "Java实体.md 落盘且带 -- @tags: 测试项目A（未分组区，0.39.17）", javaText.slice(0, 120));
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
     await sleep(300);
 
@@ -631,14 +635,15 @@ try {
       // hoverTime 350ms：最后一次移动后弹窗要再等一个悬停周期才出现——必须
       // waitFor，否则检查跑在弹窗出现之前（门禁首跑踩中，永远差半拍）
       const tipUp = await waitFor(ws, `!!document.querySelector('.qn-ddl-tip')`, 4000);
-      // 0.39.8：多项目切换从标题行下的 chips 行改为标题行内嵌下拉 select
-      chipsOk = !!tipUp && await evaluate(ws, `document.querySelectorAll('.qn-ddl-tip-project-select option').length >= 2`);
+      // 0.39.8：多项目切换从标题行下的 chips 行改为标题行内嵌下拉；
+      // 0.39.17：原生 select 改自绘下拉（.qn-ddl-tip-project-btn/.qn-ddl-tip-project-item）
+      chipsOk = !!tipUp && await evaluate(ws, `!!document.querySelector('.qn-ddl-tip-project-btn') && document.querySelectorAll('.qn-ddl-tip-project-item').length >= 2`);
       if (!chipsOk && i >= 12) {
         // 诊断：磁盘上的库文件 vs 页面里弹窗的实态（门禁排查用，不影响判定）
         const ddlOnDisk = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
         const diag = await evaluate(ws, `({
           tip: !!document.querySelector('.qn-ddl-tip'),
-          options: document.querySelectorAll('.qn-ddl-tip-project-select option').length,
+          options: document.querySelectorAll('.qn-ddl-tip-project-item').length,
           head: document.querySelector('.qn-ddl-tip-head')?.textContent ?? '',
           value: (document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? '').slice(0, 60),
         })`);
@@ -651,28 +656,31 @@ try {
         await sleep(300);
       }
     }
-    check(chipsOk, "同表名双项目时悬浮标题行出现项目切换下拉（0.39.8）");
+    check(chipsOk, "同表名双份时悬浮标题行出现语句切换下拉（0.39.8/0.39.17 自绘）");
     if (chipsOk) {
       const chipInfo = await evaluate(ws, `({
-        labels: [...document.querySelectorAll('.qn-ddl-tip-project-select option')].map((c) => c.textContent),
-        selected: document.querySelector('.qn-ddl-tip-project-select')?.selectedOptions?.[0]?.textContent ?? '',
+        labels: [...document.querySelectorAll('.qn-ddl-tip-project-item')].map((c) => c.textContent),
+        selected: document.querySelector('.qn-ddl-tip-project-label')?.textContent ?? '',
         value: document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? '',
       })`);
       // 默认选中：笔记刚打了 #测试项目B 标签 → 应落在 B（若标签索引还没扫到则退回第一条，这里两者都提示）
-      check(chipInfo.labels.length >= 2, "下拉选项含两个项目", chipInfo.labels.join("|"));
-      const bIndex = chipInfo.labels.findIndex((l) => l === "测试项目B");
+      check(chipInfo.labels.length >= 2, "下拉选项含两份语句", chipInfo.labels.join("|"));
+      const bIndex = chipInfo.labels.findIndex((l) => l.includes("测试项目B"));
       if (bIndex >= 0) {
-        // 原生 select 用赋值 + change 事件切换（合成点击打不开弹层）
+        // 自绘下拉：点按钮开列表 → 点选项切换（合成 click 直达监听器）
         await evaluate(ws, `(() => {
-          const select = document.querySelector('.qn-ddl-tip-project-select');
-          if (!select) return false;
-          select.value = String(${bIndex});
-          select.dispatchEvent(new Event('change', { bubbles: true }));
+          document.querySelector('.qn-ddl-tip-project-btn')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
           return true;
+        })()`);
+        await sleep(150);
+        await evaluate(ws, `(() => {
+          const items = [...document.querySelectorAll('.qn-ddl-tip-project-item')];
+          items[${bIndex}]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+          return items.length;
         })()`);
         await sleep(300);
         const switched = await evaluate(ws, `document.querySelector('.qn-ddl-tip .qn-ddl-tip-input')?.value ?? ''`);
-        check(switched.includes("B项目版"), "切换下拉切到对应项目的语句", switched.slice(0, 50));
+        check(switched.includes("B项目版"), "切换下拉切到对应标签的语句", switched.slice(0, 50));
       }
       await mouse(ws, "mouseMoved", 6, 6);
       await waitFor(ws, `!document.querySelector('.qn-ddl-tip')`, 3000);
@@ -711,15 +719,12 @@ try {
     check(rowInfo.some((r) => r.tags.some((t) => t.includes('测试项目B'))), '行内显示标签 chips', JSON.stringify(rowInfo.map((r) => r.tags)));
     // 今天的条目显示 HH:MM；非今天显示 MM-DD HH:mm（fixture 的 @time 是 2026-01-01）
     check(rowInfo.every((r) => /^\d{2}:\d{2}$/.test(r.time) || /^\d{2}-\d{2} \d{2}:\d{2}$/.test(r.time)), '行上显示收录时间（@time 行，0.39 二轮）', JSON.stringify(rowInfo.map((r) => r.time)));
-    // 工具栏四件套对齐速记：筛选 / 标签 / 日期 / 排序（0.39 二轮）
+    // 工具栏对齐速记：标签 / 日期 / 排序（0.39 二轮）；
+    // 0.39.17 用户反馈「这里分组啥意思，不是已经用标签替代了吗」——
+    // 纯分组筛选按钮移除，工具栏不应再出现「筛选」
     const toolBtns = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-toolbar .cm-tool-btn')].map((b) => b.textContent)`);
-    check(['筛选', '标签', '日期', '排序'].every((label) => toolBtns.some((t) => t.includes(label))), '工具栏 筛选/标签/日期/排序 四件套（对齐速记）', toolBtns.join('|'));
-    const groupPopUp = await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-toolbar .cm-tool-btn')].find((b) => b.textContent.includes('筛选'))?.click(); return true; })()`);
-    await sleep(200);
-    const groupPopRows = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-pop .cm-pop-row')].map((r) => r.textContent)`);
-    check(groupPopUp && groupPopRows.some((t) => t.includes('未分组')), '「筛选」弹层按分组列出（含未分组）', groupPopRows.join('|'));
-    await evaluate(ws, `document.querySelector('.cm-pop-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
-    await sleep(150);
+    check(['标签', '日期', '排序'].every((label) => toolBtns.some((t) => t.includes(label))), '工具栏 标签/日期/排序（筛选已移除）', toolBtns.join('|'));
+    check(!toolBtns.some((t) => t.includes('筛选')), '不再提供按分组筛选（0.39.17）', toolBtns.join('|'));
     // Java 实体分段
     await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('Java 实体'))?.click(); return true; })()`);
     await sleep(300);
@@ -759,7 +764,8 @@ try {
       code: document.querySelector('.lib-page .lib-drawer-code')?.textContent ?? '',
       tags: [...document.querySelectorAll('.lib-page .cm-drawer .cm-tag')].map((el) => el.textContent),
     })`);
-    check(drawerInfo.title.includes('ids_qn31_tab') && drawerInfo.fields.some((f) => f.includes('标签')) && drawerInfo.code.includes('CREATE TABLE'), '抽屉展示库 / 分组 / 标签 / 语句（0.39）', JSON.stringify(drawerInfo.fields));
+    check(drawerInfo.title.includes('ids_qn31_tab') && drawerInfo.fields.some((f) => f.includes('标签')) && drawerInfo.code.includes('CREATE TABLE'), '抽屉展示库 / 标签 / 语句（0.39）', JSON.stringify(drawerInfo.fields));
+    check(!drawerInfo.fields.some((f) => f.includes('分组')), '抽屉不再展示内部分组（0.39.17 标签替代）', JSON.stringify(drawerInfo.fields));
     check(drawerInfo.fields.some((f) => f.includes('收录时间')), '抽屉展示收录时间（0.39 二轮）', JSON.stringify(drawerInfo.fields));
     const hlOk = await evaluate(ws, `(() => {
       const code = document.querySelector('.lib-page .lib-drawer-code');
