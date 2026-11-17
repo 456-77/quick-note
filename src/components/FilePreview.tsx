@@ -372,6 +372,33 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
       body.scrollTop += event.deltaY * line;
       body.scrollLeft += event.deltaX * (event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? body.clientWidth : 1);
     }, { passive: false });
+    // 0.39.18 用户反馈「聚焦到 html 文件时，最近文件/语句库/速记管理/快速笔记
+    // 弹窗失效」：iframe 是独立文档，父窗口的全局快捷键分发器收不到它内部的
+    // keydown——克隆一份转发到父 window（分发器不检查 isTrusted/target）。
+    // iframe 文档里的表单控件（导出页面可能带 input）自己不转发，避免打断输入。
+    doc.documentElement.addEventListener("keydown", (event: KeyboardEvent) => {
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      if (target?.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']")) {
+        return;
+      }
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: event.key,
+          code: event.code,
+          location: event.location,
+          ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+          metaKey: event.metaKey,
+          repeat: event.repeat,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    // 点在 iframe 内容上时父层收不到 mousedown：补一次聚焦上报（窗格跟踪/目录
+    // 跟随与「预览上的 mousedown 上报聚焦」同口径）
+    doc.documentElement.addEventListener("mousedown", () => onActivate?.());
     // 字体/图片晚于 load 到位会改变高度，补一次迟到的复测（组件卸载后 ref
     // 为空，回调体自然早退）
     window.setTimeout(() => {
@@ -384,7 +411,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
         applyHtmlLayout();
       }
     }, 400);
-  }, [applyHtmlLayout, changeHtmlZoom]);
+  }, [applyHtmlLayout, changeHtmlZoom, onActivate]);
 
   // ---------------------------------------------------------------- 图片预览：拖动 + 滚轮缩放
   // 按住左键拖动移动、滚轮缩放（以指针为锚）、双击重置。与 mermaid 灯箱同一套手感。
@@ -1339,7 +1366,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
       )}
 
       <div
-        className={`file-preview-body${mobile ? " is-mobile-body" : ""}${showBar ? "" : " is-barless"}`}
+        className={`file-preview-body${mobile ? " is-mobile-body" : ""}${showBar ? "" : " is-barless"}${kind === "spreadsheet" ? " is-sheet" : ""}`}
         ref={bodyRef}
         onClick={() => {
           // 移动端点击内容区切药丸/底条显隐（0.38.7）；桌面不参与

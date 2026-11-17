@@ -12817,10 +12817,11 @@ html.qn-style-bluetopaz .editor-host .qn-ddl-known .cm-lp-code {
   color: var(--accent);
 }
 
-/* 预览滚动条悬浮化（0.39.17 用户反馈「滚轮不要占用空间，悬浮在空隙上」）：
-   原生 webkit 条恒占布局位，会把预览内容挤掉一条 9-15px 的空槽——隐藏原生条，
-   自绘悬浮 thumb（components/PreviewScrollbar.tsx）贴容器右缘，悬停加深、可
-   拖拽。桌面限定：移动端滚动条本就全局隐藏（无 thumb，靠触摸平移）。 */
+/* 预览滚动条悬浮化（0.39.17 用户反馈「滚轮不要占用空间，悬浮在空隙上」；
+   0.39.18 反馈「放大后上下左右没有滑杆 / 颜色太淡看不清」——补横向 thumb、
+   提高对比度：中性灰 + 白色描边，深色底与白色表格/PDF 上都清晰）：自绘横纵
+   两条悬浮 thumb 贴容器右/下缘，不占布局位，悬停加深、可拖拽。桌面限定
+   （移动端滚动条本就全局隐藏，靠触摸平移）。 */
 html:not(.qn-mobile) .file-preview-body,
 html:not(.qn-mobile) .file-preview-sheet-body {
   scrollbar-width: none;
@@ -12833,34 +12834,53 @@ html:not(.qn-mobile) .file-preview-sheet-body::-webkit-scrollbar {
 
 .preview-scrollbar {
   position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 12px;
+  inset: 0;
   z-index: 9;
   pointer-events: none;
 }
 
 .preview-scrollbar-thumb {
   position: absolute;
-  right: 2px;
-  width: 7px;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--text) 26%, transparent);
-  opacity: 0.45;
+  border-radius: 5px;
+  background: rgba(128, 134, 152, 0.66);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.32),
+    0 1px 3px rgba(0, 0, 0, 0.35);
   pointer-events: auto;
   cursor: grab;
-  transition: opacity 0.15s ease;
+  transition: background 0.12s ease;
+}
+
+.preview-scrollbar-thumb.is-v {
+  right: 2px;
+  width: 8px;
+}
+
+.preview-scrollbar-thumb.is-h {
+  bottom: 2px;
+  height: 8px;
 }
 
 .preview-scrollbar-thumb:hover,
 .preview-scrollbar-thumb:active {
-  opacity: 0.9;
-  background: color-mix(in srgb, var(--text) 42%, transparent);
+  background: rgba(105, 112, 132, 0.9);
 }
 
 .preview-scrollbar-thumb:active {
   cursor: grabbing;
+}
+
+/* Excel 表格贴边全幅（0.39.18 用户反馈「excel 为什么左右和上下会有黑色间隙，
+   可以去掉吗」）：body 的 14px 内边距 + sheet-body 的 8px 内边距/圆角在深色
+   主题下就是表格四周的黑色间隙——表格预览清零贴边；工具栏保持原样，滚动条
+   仍是悬浮 thumb（不占位）。 */
+html:not(.qn-mobile) .file-preview-body.is-sheet {
+  padding: 0;
+}
+
+html:not(.qn-mobile) .file-preview-body.is-sheet .file-preview-sheet-body {
+  padding: 0;
+  border-radius: 0;
 }
 
 /* Excel 的 sheet-body 包一层定位容器：悬浮滚动条贴表格区右缘（不算工具栏） */
