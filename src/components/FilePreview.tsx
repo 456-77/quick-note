@@ -26,12 +26,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { readBinary, readNote } from "../lib/api";
+import { readBinary, readNote, screenshotOcr } from "../lib/api";
 import { extOf, fileKindOf } from "../lib/fileTypes";
 import { isMobile } from "../lib/platform";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
 import SpreadsheetPreview from "./SpreadsheetPreview";
 import PreviewScrollbar from "./PreviewScrollbar";
+import { cropImageRegionBase64, selectionToRegion, SELECTION_MIN_DRAG, type PixelRegion } from "../lib/imageOcr";
 import { IconMinus, IconPlus, IconX } from "./icons";
 
 interface Props {
@@ -201,7 +202,138 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
   /** docx 的 HTML 结果；xlsx 走结构化行数据（0.39 列筛选）；PDF 走懒渲染画布，图片走 asset URL。 */
   const [html, setHtml] = useState<string | null>(null);
   const [sheets, setSheets] = useState<ParsedSheet[] | null>(null);
+  /** 编辑队列（0.39.19）：每次保存都是「读盘 → 改 zip → 原子写」的读改写，
+   *  两次编辑并发落盘会互相覆盖——串成一条链，后一次一定在前一次写完之后读盘。 */
+  const sheetEditQueueRef = useRef<Promise<void>>(Promise.resolve());
+  /** 当前预览的「仓库::路径」快照：保存期间切换文件时丢弃过期的回写。
+   *  渲染期同步更新——effect 要等提交后，切文件瞬间的在途保存会误判成同一文件。 */
+  const sheetEditScopeRef = useRef(`${vault}\u0000${path}`);
+  const sheetEditScopeNow = `${vault}\u0000${path}`;
+  if (sheetEditScopeRef.current !== sheetEditScopeNow) {
+    sheetEditScopeRef.current = sheetEditScopeNow;
+  }
+
   const [imageUrl, setImageUrl] = useState<string | null>(null);
+  /** 图片预览的 OCR（0.39.19 用户反馈「不是全部识别而是识别框定的范围内的
+   *  内容」）：frameMode=框选态（十字光标拖一个框）；frameRect=拖动中的选框
+   *  （视口坐标）；imageOcr.text=识别结果（可能是空结果的提示文案）。 */
+  const [imageOcr, setImageOcr] = useState<{ busy: boolean; text: string | null } | null>(null);
+  const [frameMode, setFrameMode] = useState(false);
+  const frameModeRef = useRef(false);
+  const frameStartRef = useRef<{ x: number; y: number } | null>(null);
+  const [frameRect, setFrameRect] = useState<{
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } | null>(null);
+  /** 图片预览的 OCR（0.39.19）：`region` 传 null = 整图；框选时传视口选框换算
+   *  出的自然像素区域。取图片字节走 screenshot_ocr（WinRT，桌面命令，移动端
+   *  按钮不渲染）。结果存 imageOcr.text，面板在图片预览 body 里。 */
+  const runImageOcr = useCallback(async (region?: PixelRegion | null) => {
+    if (!imageUrl || (imageOcr?.busy ?? false)) return;
+    setImageOcr({ busy: true, text: null });
+    try {
+      const base64 = await cropImageRegionBase64(imageUrl, region ?? null);
+      const text = await screenshotOcr(base64);
+      setImageOcr({
+        busy: false,
+        text: text.trim()
+          ? text
+          : "没有识别出文字（框内可能没有文本，或系统缺少 OCR 语言包）",
+      });
+    } catch (error) {
+      setImageOcr({
+        busy: false,
+        text: `识别失败：${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }, [imageUrl, imageOcr?.busy]);
+
+  // 框选态的窗口级拖动/收尾（0.39.19 用户反馈「不是全部识别而是识别框定的
+  // 范围内的内容」）：mousemove 更新选框，mouseup 把视口选框换算成图片自然
+  // 像素区域送 OCR；Esc 先退框选（拦在 FilePreview 的 window Esc 之前）
+  useEffect(() => {
+    frameModeRef.current = frameMode;
+    if (!frameMode) return;
+    const onMove = (event: MouseEvent) => {
+      const start = frameStartRef.current;
+      if (!start) return;
+      setFrameRect({
+        x: Math.min(start.x, event.clientX),
+        y: Math.min(start.y, event.clientY),
+        w: Math.abs(event.clientX - start.x),
+        h: Math.abs(event.clientY - start.y),
+      });
+    };
+    const onUp = (event: MouseEvent) => {
+      const start = frameStartRef.current;
+      frameStartRef.current = null;
+      setFrameRect(null);
+      setFrameMode(false);
+      if (!start) return;
+      const drag = Math.hypot(event.clientX - start.x, event.clientY - start.y);
+      const img = imageHostRef.current?.querySelector("img");
+      const region =
+        img && drag >= SELECTION_MIN_DRAG
+          ? selectionToRegion(img, start.x, start.y, event.clientX, event.clientY)
+          : null;
+      void runImageOcr(region);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        frameStartRef.current = null;
+        setFrameRect(null);
+        setFrameMode(false);
+      }
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    window.addEventListener("keydown", onKey, true);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("keydown", onKey, true);
+    };
+  }, [frameMode, runImageOcr]);
+
+  const handleSheetEdit = useCallback(
+    (sheetName: string, rowIndex: number, col: number, value: string): Promise<void> => {
+      const scope = `${vault}\u0000${path}`;
+      const run = async () => {
+        const target = sheets?.find((sheet) => sheet.name === sheetName);
+        if (!target) throw new Error("找不到目标工作表");
+        // calamine 的解析窗口起点可能不是 A1：渲染层相对下标 → 绝对坐标
+        const absRow = (target.startRow ?? 0) + rowIndex;
+        const absCol = (target.startCol ?? 0) + col;
+        const { editXlsxCell } = await import("../lib/xlsxWorkerHost");
+        const result = await editXlsxCell(vault, path, sheetName, absRow, absCol, value);
+        if (sheetEditScopeRef.current !== scope) return;
+        // Rust 侧已用同一套解析链校验过并给出显示值——原地更新这一格即可；
+        // watcher 的 reloadSignal 之后会静默重读，把表头识别/合并等顺带对齐
+        setSheets((prev) =>
+          (prev ?? []).map((sheet) =>
+            sheet.name !== sheetName
+              ? sheet
+              : {
+                  ...sheet,
+                  rows: sheet.rows.map((line, r) =>
+                    r !== rowIndex
+                      ? line
+                      : line.map((cell, c) => (c === col ? result.display : cell)),
+                  ),
+                },
+          ),
+        );
+      };
+      const next = sheetEditQueueRef.current.then(run, run);
+      sheetEditQueueRef.current = next.catch(() => {});
+      return next;
+    },
+    [vault, path, sheets],
+  );
   /** 0.38.3 SVG 预览改 DOM 内联（消毒后）：`<img>` 展示 svg 时浏览器按固有
       尺寸光栅再降采样，窄面板下文字糊（用户反馈「mermaid 导出文件全屏清晰、
       响应式布局下模糊」）；内联矢量随容器重排，任何宽度都锐利。 */
@@ -440,6 +572,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     if (zoomMemo.imgScale !== undefined) apply();
 
     const onWheel = (event: WheelEvent) => {
+      if (frameModeRef.current) return; // 框选态不缩放（按下是框选起点）
       event.preventDefault();
       const hostRect = host.getBoundingClientRect();
       const next = Math.min(8, Math.max(0.1, scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15)));
@@ -461,6 +594,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     let lastX = 0;
     let lastY = 0;
     const onDown = (event: MouseEvent) => {
+      if (frameModeRef.current) return; // 框选态不平移
       if (event.button !== 0) return;
       dragging = true;
       moved = false;
@@ -756,6 +890,10 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     setError(null);
     setHtml(null);
     setImageUrl(null);
+    setImageOcr(null);
+    setFrameMode(false);
+    frameStartRef.current = null;
+    setFrameRect(null);
     setSvgMarkup(null);
     // 0.38.7 缩放记忆：切回时恢复上次缩放（load 后 measure→apply 落地）
     htmlZoomRef.current = zoomMemoOf(zoomKey).zoom ?? 1;
@@ -1476,13 +1614,94 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
           />
         )}
         {kind === "image" && !svgMarkup && imageUrl && (
-          <div className="file-preview-image file-preview-image-pannable" ref={imageHostRef}>
+          <div
+            className={`file-preview-image file-preview-image-pannable${frameMode ? " is-framing" : ""}`}
+            ref={imageHostRef}
+            onMouseDown={(event) => {
+              // 框选态：按下是选框起点（img 自身的拖动/缩放已被 frameModeRef 拦掉）
+              if (!frameMode || event.button !== 0) return;
+              if ((event.target as HTMLElement).closest(".file-preview-ocr-btn, .file-preview-ocr")) return;
+              event.preventDefault();
+              frameStartRef.current = { x: event.clientX, y: event.clientY };
+            }}
+          >
             <img src={imageUrl} alt={name} draggable={false} />
+            {/* 0.39.19 用户反馈「预览图片的时候，添加识别文本功能」+ 二轮澄清
+                「不是全部识别而是识别框定的范围内的内容」：桌面在图片预览里给
+                「框选识别」钮（十字光标拖一个框，轻点=整图），结果面板可复制。
+                识别走 screenshot_ocr（WinRT，桌面命令），移动端不出。 */}
+            {!mobile && (
+              <>
+                <button
+                  type="button"
+                  className={`file-preview-ocr-btn${frameMode ? " is-framing" : ""}${
+                    imageOcr?.busy ? " is-busy" : ""
+                  }`}
+                  title="框选图中区域识别文字（轻点=整图）"
+                  onClick={() => {
+                    setImageOcr(null);
+                    setFrameMode((value) => !value);
+                  }}
+                >
+                  {frameMode
+                    ? "框选中…（Esc 取消）"
+                    : imageOcr?.busy
+                      ? "识别中…"
+                      : "框选识别"}
+                </button>
+                {frameMode && (
+                  <div className="file-preview-frame-hint">
+                    拖动框选要识别的区域（轻点=整图识别） · Esc 取消
+                  </div>
+                )}
+                {frameRect && (
+                  <div
+                    className="file-preview-frame"
+                    style={{ left: frameRect.x, top: frameRect.y, width: frameRect.w, height: frameRect.h }}
+                  />
+                )}
+                {imageOcr?.text != null && (
+                  <div className="file-preview-ocr">
+                    <div className="file-preview-ocr-head">
+                      <span className="file-preview-ocr-title">识别结果</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(imageOcr.text ?? "").then(() => {
+                            window.dispatchEvent(
+                              new CustomEvent("qn-notice", { detail: { message: "已复制识别文本" } }),
+                            );
+                          });
+                        }}
+                      >
+                        复制
+                      </button>
+                      <button type="button" onClick={() => setImageOcr(null)}>
+                        关闭
+                      </button>
+                    </div>
+                    <textarea
+                      className="file-preview-ocr-text"
+                      readOnly
+                      value={imageOcr.text}
+                      rows={Math.min(8, Math.max(3, (imageOcr.text.match(/\n/g)?.length ?? 0) + 1))}
+                    />
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
         {kind === "spreadsheet" && sheets && sheets.length > 0 && (
           /* 0.39.8 筛选状态跨切换留存：以「仓库::路径」为键记进会话级缓存 */
-          <SpreadsheetPreview sheets={sheets} cacheKey={`${vault}::${path}`} />
+          <SpreadsheetPreview
+            sheets={sheets}
+            cacheKey={`${vault}::${path}`}
+            /* 0.39.19 单元格编辑：只对 zip+XML 的新式工作簿开放（.xls 是二进制
+               OLE，外科手术式写入不适用）；写盘失败会以 toast 呈现 */
+            editable={/\.(xlsx|xlsm)$/i.test(path)}
+            onEditCell={handleSheetEdit}
+          />
         )}
       </div>
       {/* 0.39.17 用户反馈「滚轮不要占用空间，悬浮在空隙上」：原生滚动条隐藏，

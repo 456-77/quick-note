@@ -1,6 +1,6 @@
 [package]
 name = "quick-note"
-version = "0.39.18"
+version = "0.39.19"
 description = "Quick Note - 轻量 Markdown 笔记软件"
 authors = ["you"]
 edition = "2021"
@@ -35,6 +35,10 @@ notify = "8"
 base64 = "0.22"
 calamine = { version = "0.38.0", features = ["dates"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "alloc"] }
+# xlsx 单元格编辑（0.39.19）：外科手术式改 sheet XML 后重打 zip。zip 9.5 已由
+# calamine 引入依赖树，**只开它用的同一组 deflate 特性**（默认特性会拖进
+# aes/bzip2/zstd/xz/lzma 等一堆新依赖，编译体积与安卓交叉编译风险都白白增加）。
+zip = { version = "9.5", default-features = false, features = ["deflate"] }
 # 同步用的 HTTP 客户端。阻塞式（不需要 async 运行时）。
 
 # ---- 桌面专属依赖 --------------------------------------------------------

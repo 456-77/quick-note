@@ -19,6 +19,30 @@ import type { ParsedSheet } from "./xlsxWorker.ts";
 
 export type { ParsedSheet };
 
+/** Rust `edit_xlsx_cell` 的返回（0.39.19）：新哈希 + 编辑后的显示值。 */
+export interface XlsxEditResult {
+  sha256: string;
+  size: number;
+  display: string;
+}
+
+/**
+ * 编辑 xlsx 单元格（0.39.19 用户反馈「对于 excel 文件，添加功能：可以编辑
+ * 单元格内容」）。row/col 是**绝对** 0 基坐标（ParsedSheet.startRow/startCol
+ * + 渲染层相对下标）；value 传用户输入原文，类型（数字/日期/布尔/公式/文本）
+ * 由 Rust 按单元格现有数字格式判定，前端不重复一套规则。
+ */
+export function editXlsxCell(
+  vault: string,
+  path: string,
+  sheet: string,
+  row: number,
+  col: number,
+  value: string,
+): Promise<XlsxEditResult> {
+  return invoke<XlsxEditResult>("edit_xlsx_cell", { vault, path, sheet, row, col, value });
+}
+
 /** Rust 侧 parse_xlsx 的返回（merges 是**原始**区间，前端 clampMerges 统一裁剪）。 */
 interface NativeXlsxResult {
   sha256: string;
@@ -30,6 +54,9 @@ interface NativeXlsxResult {
     totalCols: number;
     truncated: boolean;
     merges: { s: { r: number; c: number }; e: { r: number; c: number } }[];
+    /** rows[0] 对应的绝对行列（0.39.19 单元格编辑按绝对坐标写 `<c>`）。 */
+    startRow: number;
+    startCol: number;
   }[];
 }
 
@@ -57,6 +84,8 @@ export async function parseXlsxNative(vault: string, path: string): Promise<Pars
       truncated: s.truncated,
       merges: clampMerges(s.merges, 0, Math.max(0, s.rows.length - 1), 0, colEnd),
       headerRow: detectHeaderRow(s.rows),
+      startRow: s.startRow,
+      startCol: s.startCol,
     };
   });
   parseCache.set(key, sheets);

@@ -22,7 +22,7 @@
  */
 
 import { parseDdlTables, tableCommentOf, tokenizeSql, type DdlEntry } from "./ddl.ts";
-import { parseClassLibrary, tokenizeJava } from "./javaEntity.ts";
+import { parseClassLibrary, classCommentOf, tokenizeJava } from "./javaEntity.ts";
 
 export type TipLang = "sql" | "java";
 
@@ -82,13 +82,15 @@ export function buildDdlTipDom(
   head.appendChild(title);
 
   // 0.38 用户反馈「表通常会有 comment 说明表的作用，考虑在标题处添加」：
-  // 表级 COMMENT 解析出来跟在表名后面（超长省略，悬停看全文）；Java 实体没有
-  // 这一协议，不渲染。项目切换后 comment 跟随当前条目重算（syncComment 在
-  // current 声明后才调）
+  // 表级 COMMENT 解析出来跟在表名后面（超长省略，悬停看全文）。0.39.19 用户
+  // 反馈「Java 实体的 @ApiModel 其实就是实体的名称，类似于 ddl 的 comment，
+  // 也显示在左上角」：java 分支取类级 @ApiModel 的值，同一处渲染。项目切换
+  // 后 comment 跟随当前条目重算（syncComment 在 current 声明后才调）
   const comment = document.createElement("span");
   comment.className = "qn-ddl-tip-comment";
   const syncComment = () => {
-    const text = lang === "sql" ? tableCommentOf(entries[current].ddl) : null;
+    const text =
+      lang === "sql" ? tableCommentOf(entries[current].ddl) : classCommentOf(entries[current].ddl);
     comment.textContent = text ?? "";
     comment.title = text ?? "";
     comment.style.display = text ? "" : "none";
@@ -388,6 +390,21 @@ export function buildDdlTipDom(
     if (dom.dataset.detached || !dom.parentElement || dom.parentElement === document.body) return;
     const focused = document.activeElement;
     const rect = dom.getBoundingClientRect();
+    // 0.39.19 用户反馈「还未点击内容先滑动内容，再点击内容会跳回最开始的位置」：
+    // reparent（搬到 body）会把内部滚动位置清零——搬前后各恢复一次双层滚动
+    // （focus 重打还可能滚向光标处，rAF 再兜一次）
+    const keep = {
+      top: input.scrollTop,
+      left: input.scrollLeft,
+      hlTop: hl.scrollTop,
+      hlLeft: hl.scrollLeft,
+    };
+    const restoreScroll = () => {
+      input.scrollTop = keep.top;
+      input.scrollLeft = keep.left;
+      hl.scrollTop = keep.hlTop;
+      hl.scrollLeft = keep.hlLeft;
+    };
     dom.dataset.detached = "1";
     // 交互过的浮层：用户点过弹窗内部（哪怕没进 textarea）——「点外收」之外的
     // 清理通道（新卡开出前的残留清理）对它退避，见 ddlHover.closeIdleDetachedTips
@@ -400,6 +417,7 @@ export function buildDdlTipDom(
     // 高度一并钉死，点击前后弹窗尺寸位置完全一致
     dom.style.height = `${Math.round(rect.height)}px`;
     document.body.appendChild(dom);
+    restoreScroll();
     // 0.37.1 用户反馈「点击弹窗编辑后弹窗被截断（超出屏幕底）」：原 top 贴近
     // 屏幕底时出屏，按脱管后的真实尺寸夹回视口（尺寸钉死后通常已不动，兜底）
     const grown = dom.getBoundingClientRect();
@@ -412,7 +430,9 @@ export function buildDdlTipDom(
     // 焦点补偿：脱管前焦点在弹窗内（textarea/search）就重打回去
     if (focused === input || focused === search) {
       (focused as HTMLElement).focus();
+      restoreScroll();
     }
+    requestAnimationFrame(restoreScroll);
   };
 
   // 弹窗内任何点击先脱管（0.38.1：点按钮/chips/搜索框打字时弹窗被 CM 收走的

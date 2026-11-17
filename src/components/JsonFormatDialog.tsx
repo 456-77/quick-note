@@ -12,6 +12,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { beautifyJson, fromJsonString, minifyJson, toJsonString } from "../lib/formatJson";
+import { DialogPinButton, useDialogDrag, useDialogPinned } from "./DialogDragPin";
 
 export default function JsonFormatDialog({
   initialText,
@@ -29,6 +30,11 @@ export default function JsonFormatDialog({
   const [error, setError] = useState<string | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const outputRef = useRef<HTMLTextAreaElement | null>(null);
+  // 头部拖拽移动（0.39.19 用户反馈）
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const dialogDrag = useDialogDrag(dialogRef);
+  // 固定后弹窗常驻：不渲染遮罩（点背后的应用照常可操作），点外也不关闭
+  const [pinned, setPinned] = useDialogPinned();
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -78,11 +84,12 @@ export default function JsonFormatDialog({
 
   return (
     <>
-      <div className="menu-backdrop" onClick={onClose} />
-      <div className="jsonfmt" role="dialog" aria-label="文本格式转换">
-        <div className="jsonfmt-head">
+      {!pinned && <div className="menu-backdrop" onClick={onClose} />}
+      <div ref={dialogRef} className="jsonfmt" role="dialog" aria-label="文本格式转换">
+        <div className="jsonfmt-head" {...dialogDrag}>
           <span className="jsonfmt-title">JSON 格式转换</span>
           <span className="spacer" />
+          <DialogPinButton pinned={pinned} onToggle={() => setPinned((value) => !value)} />
           <button type="button" className="quick-capture-esc" title="关闭 (Esc)" onClick={onClose}>
             <kbd>Esc</kbd> 关闭
           </button>

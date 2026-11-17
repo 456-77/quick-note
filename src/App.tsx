@@ -883,7 +883,8 @@ export default function App() {
     };
   }, [appWindow]);
 
-  // 窗口置顶（悬浮钉住）：持久化在 localStorage，启动时恢复。
+  // 窗口置顶（悬浮钉住）：持久化在 localStorage，启动时恢复。与弹窗的 📌
+  // 无关——0.39.19 起 📌 只固定弹窗本身（应用内常驻），不再联动窗口置顶。
   const [alwaysOnTop, setAlwaysOnTop] = useState(() => localStorage.getItem("quicknote.alwaysOnTop") === "1");
   useEffect(() => {
     localStorage.setItem("quicknote.alwaysOnTop", alwaysOnTop ? "1" : "0");
@@ -2718,6 +2719,61 @@ export default function App() {
     }
   }, [activeTab, activePreview, splitActiveTab, activePreviewSplit]);
 
+  /**
+   * 速记归档/速记写入后的同步联动（0.24 用户反馈：归档写到的仓库里开着自动
+   * 同步的，立即各跑一轮——当前仓库走常驻引擎的完整轮（冲突由既有横幅接手），
+   * 其他仓库走 per-vault 临时轮（跨仓库归档此前要等"下次打开它"才同步），临时轮
+   * 撞出的冲突直接提醒用户打开仓库裁决。仓库开关是异步判定的（可能要读
+   * per-vault 状态文件），整个联动挂到后台跑，不阻塞归档本身。
+   * 0.39.19 用户反馈「添加速记后想要进行同步，必须要打开速记仓库，很麻烦」：
+   * 写完速记也走这条联动——收件仓库开着同步就自动跑一轮，有冲突提醒打开
+   * 速记仓库处理。
+   */
+  const handleArchiveSync = useCallback(
+    (involved: string[]) => {
+      const sync = syncRef.current;
+      if (!sync) return;
+      void (async () => {
+        for (const target of [...new Set(involved)].filter(Boolean)) {
+          let enabled = false;
+          try {
+            enabled = await sync.enabledForVault(target);
+          } catch {
+            enabled = false;
+          }
+          if (!enabled) continue;
+          if (vault && target === vault) {
+            sync.syncNow();
+            continue;
+          }
+          const name = target.replace(/^.*[\\/]/, "");
+          await sync
+            .syncVaultOnce(target, (paths) => {
+              setError(`同步「${name}」发现 ${paths.length} 个冲突文件：请打开该仓库手动处理`);
+            })
+            .then(
+              () => setStatus(`已自动同步仓库：${name}`),
+              (e) => setError(`归档后同步「${name}」失败：${e}`),
+            );
+        }
+      })();
+    },
+    [vault],
+  );
+
+  /** 速记写入后的自动同步（0.39.19）：速记常一口气连记几条，防抖合并成
+   *  一轮（3s 尾随），避免每条各跑一次全量同步。 */
+  const captureSyncTimerRef = useRef<number | undefined>(undefined);
+  const scheduleCaptureSync = useCallback(
+    (target: string) => {
+      window.clearTimeout(captureSyncTimerRef.current);
+      captureSyncTimerRef.current = window.setTimeout(() => {
+        handleArchiveSync([target]);
+      }, 3000);
+    },
+    [handleArchiveSync],
+  );
+
   const submitQuickCapture = useCallback(
     async (
       text: string,
@@ -2780,13 +2836,16 @@ export default function App() {
         // 速记管理面板开着时立即重扫（面板监听这个事件）
         window.dispatchEvent(new CustomEvent("qn-capture-written"));
         notice(`已记到 ${name}（${vaultDisplayName(inboxVault)}）`);
+        // 收件仓库开着同步就自动跑一轮（0.39.19 用户反馈「每次添加速记后想要
+        // 进行同步，必须要打开速记仓库，很麻烦」）；防抖合并连续速记
+        scheduleCaptureSync(inboxVault);
         return true;
       } catch (e) {
         notice(`快速笔记写入失败：${e}`, "error");
         return false;
       }
     },
-    [notice, vault],
+    [notice, vault, scheduleCaptureSync],
   );
 
   /**
@@ -7449,45 +7508,6 @@ export default function App() {
       notice(`加入单词本失败：${e instanceof Error ? e.message : String(e)}`, "error");
     }
   }, [notice, autoFillVocabMeaning]);
-
-  /**
-   * 速记归档后的同步联动（0.24 用户反馈）：归档写到的仓库里开着自动同步的，
-   * 立即各跑一轮——当前仓库走常驻引擎的完整轮（冲突由既有横幅接手），其他
-   * 仓库走 per-vault 临时轮（跨仓库归档此前要等"下次打开它"才同步），临时轮
-   * 撞出的冲突直接提醒用户打开仓库裁决。仓库开关是异步判定的（可能要读
-   * per-vault 状态文件），整个联动挂到后台跑，不阻塞归档本身。
-   */
-  const handleArchiveSync = useCallback(
-    (involved: string[]) => {
-      const sync = syncRef.current;
-      if (!sync) return;
-      void (async () => {
-        for (const target of [...new Set(involved)].filter(Boolean)) {
-          let enabled = false;
-          try {
-            enabled = await sync.enabledForVault(target);
-          } catch {
-            enabled = false;
-          }
-          if (!enabled) continue;
-          if (vault && target === vault) {
-            sync.syncNow();
-            continue;
-          }
-          const name = target.replace(/^.*[\\/]/, "");
-          await sync
-            .syncVaultOnce(target, (paths) => {
-              setError(`同步「${name}」发现 ${paths.length} 个冲突文件：请打开该仓库手动处理`);
-            })
-            .then(
-              () => setStatus(`已自动同步仓库：${name}`),
-              (e) => setError(`归档后同步「${name}」失败：${e}`),
-            );
-        }
-      })();
-    },
-    [vault],
-  );
 
   /** 光标跳到当前笔记的最后一行并滚到可视区（长笔记不用滚轮翻到底）。 */
   const gotoDocEnd = useCallback(() => {

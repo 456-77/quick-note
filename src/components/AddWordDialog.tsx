@@ -13,6 +13,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { DialogPinButton, useDialogDrag, useDialogPinned } from "./DialogDragPin";
 import { vocabLookup } from "../lib/api";
 
 /** 输入停顿多久后自动查释义。 */
@@ -92,13 +93,20 @@ export default function AddWordDialog({
     }
   };
 
+  // 头部拖拽移动（0.39.19 用户反馈）
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const dialogDrag = useDialogDrag(dialogRef);
+  // 固定后弹窗常驻：不渲染遮罩（点背后的应用照常可操作），点外也不关闭
+  const [pinned, setPinned] = useDialogPinned();
+
   return (
     <>
-      <div className="menu-backdrop" onClick={onClose} />
-      <div className="quick-capture add-word-dialog" role="dialog" aria-label="添加单词">
-        <div className="quick-capture-head">
+      {!pinned && <div className="menu-backdrop" onClick={onClose} />}
+      <div ref={dialogRef} className="quick-capture add-word-dialog" role="dialog" aria-label="添加单词">
+        <div className="quick-capture-head" {...dialogDrag}>
           <span className="quick-capture-title">查词 / 添加单词</span>
           <span className="spacer" />
+          <DialogPinButton pinned={pinned} onToggle={() => setPinned((value) => !value)} />
           <button type="button" className="quick-capture-esc" title="关闭 (Esc)" onClick={onClose}>
             <kbd>Esc</kbd> 关闭
           </button>

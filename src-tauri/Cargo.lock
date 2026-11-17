@@ -3210,7 +3210,7 @@ dependencies = [
 
 [[package]]
 name = "quick-note"
-version = "0.39.18"
+version = "0.39.19"
 dependencies = [
  "base64 0.22.1",
  "calamine",
@@ -3233,6 +3233,7 @@ dependencies = [
  "webview2-com",
  "windows",
  "windows-core",
+ "zip 9.5.1",
 ]
 
 [[package]]

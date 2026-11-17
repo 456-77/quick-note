@@ -426,6 +426,10 @@ export function toggleList(view: EditorView, kind: ListKind): boolean {
   }
 
   const target = state.doc.lineAt(range.head);
+  // 0.39.19：选区跨多行时加/去序号光标原地不动（显式 selection 不给，交给
+  // CM 自然映射）；单行/空选区仍按 0.39.12 的规则定位
+  const multiLine = fromLine.number !== toLine.number;
+  const keepCursor = () => !(multiLine && !range.empty);
   const targets: { line: ReturnType<typeof state.doc.line>; text: string }[] = [];
   for (let number = fromLine.number; number <= toLine.number; number += 1) {
     const line = state.doc.line(number);
@@ -467,13 +471,15 @@ export function toggleList(view: EditorView, kind: ListKind): boolean {
     for (const span of result.spans) {
       changes.push({ from: line.from + span.from, to: line.from + span.to, insert: span.insert });
     }
-    if (line.number === target.number) {
-      // 0.39.12 用户反馈两连：①空选区加/切标记后光标落到行首；②选中内容加
-      // 标记后光标落在「序号后第 1、2 字符中间」。根因有二：旧实现给
-      // spec.selection 传的是**旧文档坐标**（CM 按新坐标原样生效），再加整行
-      // 替换把自然映射也吸到替换起点。现在改动是手术式的、光标直接给新坐标：
-      // 有选区=内容起点（紧跟标记，用户口径「序号后」）；空选区=相对位置平移，
-      // 钳到内容起点（不落进标记里/标记前）。
+    if (line.number === target.number && keepCursor()) {
+      // 光标规则（0.39.12 + 0.39.19）：
+      // - **多行选区：光标原地不动**（0.39.19 用户反馈「选中多行文字…设置
+      //   无需序号…正常应该是不移动光标」）——不给显式 selection，选区随
+      //   内容自然平移，加/去序号都一样；
+      // - 空选区添加：光标紧跟标记（0.39.12：不落到行首标记前）；
+      // - 单行非空选区添加：光标落内容起点（0.39.12：不再卡在「序号后第 1、2
+      //   字符中间」）；
+      // - 其余（空选区/单行去序号）：CM 自然映射，原文本位置不动。
       const headCol = Math.max(range.head - line.from, 0);
       const base = line.from + deltaBefore;
       headAnchor = range.empty
@@ -692,6 +698,9 @@ export function toggleTaskList(view: EditorView): boolean {
     return item?.kind === "bullet" && TASK_BOX_RE.exec(item.content) !== null;
   };
   const mode = scope.length > 0 && scope.every(({ text }) => isTaskLine(text)) ? "remove" : "add";
+  // 0.39.19：多行选区加/去复选框光标原地不动（同 toggleList 的新规则）
+  const taskMultiLine = fromLine.number !== toLine.number;
+  const taskKeepCursor = () => !(taskMultiLine && !range.empty);
 
   const changes: Array<{ from: number; to: number; insert: string }> = [];
   let headAnchor: number | null = null; // 新文档坐标（显式 selection 原样生效，不做映射）
@@ -703,8 +712,9 @@ export function toggleTaskList(view: EditorView): boolean {
     for (const span of result.spans) {
       changes.push({ from: line.from + span.from, to: line.from + span.to, insert: span.insert });
     }
-    if (line.number === target.number) {
-      // 光标规则同 toggleList（0.39.12：显式 selection 按新文档坐标给）
+    if (line.number === target.number && taskKeepCursor()) {
+      // 光标规则同 toggleList（0.39.12 显式 selection 按新文档坐标给；
+      // 0.39.19 多行选区不移动）
       const headCol = Math.max(range.head - line.from, 0);
       const base = line.from + deltaBefore;
       headAnchor = range.empty

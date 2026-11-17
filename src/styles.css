@@ -1864,6 +1864,61 @@ div.tree-item:focus-visible {
   background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
+/* 0.39.19 单元格编辑（用户反馈「对于 excel 文件，添加功能：可以编辑单元格
+   内容」）：选中格描边、编辑态把输入框撑满格子。表格是固定浅色底（Excel
+   观感），输入框固定白底黑字，刻意不跟主题变量走。 */
+.xlsx-table td.is-selected {
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+/* 选中格用 is-selected 描边表达，焦点环不要再叠一层 */
+.xlsx-table td:focus {
+  outline: none;
+}
+
+.xlsx-table td.is-editing,
+.xlsx-table th.is-editing {
+  padding: 0;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  background: #fff;
+}
+
+.xlsx-cell-input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 25px;
+  padding: 1px 7px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #111;
+  background: #fff;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+}
+
+.xlsx-table th .xlsx-cell-input {
+  display: inline-block;
+  width: calc(100% - 28px);
+  vertical-align: bottom;
+}
+
+html.qn-mobile .xlsx-table td,
+html.qn-mobile .xlsx-table th {
+  /* 双击编辑在触屏上会被识别成双击缩放：manipulation 保留滚动/捏合，
+     去掉 double-tap zoom */
+  touch-action: manipulation;
+}
+
+html.qn-mobile .xlsx-cell-input {
+  /* 小于 16px 的输入框在移动 WebView 聚焦时会被自动放大页面 */
+  font-size: 16px;
+}
+
 .xlsx-empty {
   padding: 22px;
   text-align: center;
@@ -2098,6 +2153,128 @@ html.qn-mobile .xlsx-toolbar {
   height: 100%;
   min-height: 240px;
   padding: 8px;
+  /* 0.39.19 图片预览的「识别文本」浮动钮/结果面板以本元素定位 */
+  position: relative;
+}
+
+/* 0.39.19 用户反馈「不是全部识别而是识别框定的范围内的内容」：框选态十字
+   光标 + 视口坐标的选框（fixed：选框坐标直接来自 clientX/Y） */
+.file-preview-image.is-framing {
+  cursor: crosshair;
+}
+
+.file-preview-frame {
+  position: fixed;
+  z-index: 6;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  /* 选框外圈压暗，框内保持原样看得清 */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.32);
+  pointer-events: none;
+}
+
+.file-preview-frame-hint {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  padding: 4px 12px;
+  border-radius: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+  font-size: 12px;
+  color: var(--text-dim);
+  pointer-events: none;
+}
+
+/* 0.39.19 用户反馈「预览图片的时候，添加识别文本功能」：右上角浮动识别钮 +
+   底部结果面板（桌面限定渲染；WinRT OCR 是桌面命令） */
+.file-preview-ocr-btn {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 2;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-2);
+  cursor: pointer;
+}
+
+.file-preview-ocr-btn.is-framing {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.file-preview-ocr-btn:hover {
+  color: var(--text);
+}
+
+.file-preview-ocr-btn.is-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.file-preview-ocr {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  max-height: 55%;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-2);
+}
+
+.file-preview-ocr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.file-preview-ocr-title {
+  flex: 1;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.file-preview-ocr-head button {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 3px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.file-preview-ocr-head button:hover {
+  color: var(--text);
+}
+
+.file-preview-ocr-text {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
 }
 
 .file-preview-image img {
@@ -2420,6 +2597,35 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
 .editor-host .cm-lp-codeblock-first {
   border-radius: 8px 8px 0 0;
 }
+
+/* 0.39.19 代码块括号彩虹嵌套（用户反馈「嵌套时显示不同颜色，成对的颜色要
+   相同」）：livePreview 按 bracketRainbowMarks 的深度挂 qn-bracket-1..6，
+   6 色循环、成对同色。浅色/深色各一套可读色板；!important 压过语言高亮给
+   标点的颜色（装饰 span 与高亮 span 的嵌套方向由 CM 决定，不赌）。 */
+:root {
+  --qn-bracket-1: #b3541e;
+  --qn-bracket-2: #1f6fb2;
+  --qn-bracket-3: #2e7d4f;
+  --qn-bracket-4: #8e44ad;
+  --qn-bracket-5: #b7791f;
+  --qn-bracket-6: #0e8f8f;
+}
+
+[data-theme="dark"] {
+  --qn-bracket-1: #e06c75;
+  --qn-bracket-2: #61afef;
+  --qn-bracket-3: #98c379;
+  --qn-bracket-4: #c678dd;
+  --qn-bracket-5: #e5c07b;
+  --qn-bracket-6: #56b6c2;
+}
+
+.cm-editor .qn-bracket-1 { color: var(--qn-bracket-1) !important; }
+.cm-editor .qn-bracket-2 { color: var(--qn-bracket-2) !important; }
+.cm-editor .qn-bracket-3 { color: var(--qn-bracket-3) !important; }
+.cm-editor .qn-bracket-4 { color: var(--qn-bracket-4) !important; }
+.cm-editor .qn-bracket-5 { color: var(--qn-bracket-5) !important; }
+.cm-editor .qn-bracket-6 { color: var(--qn-bracket-6) !important; }
 
 .editor-host .cm-lp-codeblock-last {
   border-radius: 0 0 8px 8px;
@@ -6614,6 +6820,90 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   background: rgba(255, 255, 255, 0.14);
 }
 
+/* 0.39.19 框选识别（用户反馈「不是全部识别而是识别框定的范围内的内容」）：
+   框选态十字光标；选框 fixed 定位（坐标直接来自 clientX/Y），框外压暗 */
+.qn-lightbox.is-framing,
+.qn-lightbox.is-framing img {
+  cursor: crosshair;
+}
+
+.qn-lightbox.is-framing .qn-lightbox-btn.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.qn-lightbox-frame {
+  position: fixed;
+  z-index: 1;
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.32);
+  pointer-events: none;
+}
+
+/* 0.39.19 图片灯箱「识别文本」（用户反馈「预览图片的时候，添加识别文本
+   功能」）：结果面板贴底部悬浮，识别中按钮置灰 */
+.qn-lightbox-btn.is-busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.qn-lightbox-ocr {
+  position: absolute;
+  left: 50%;
+  bottom: 44px;
+  transform: translateX(-50%);
+  width: min(720px, calc(100vw - 48px));
+  max-height: min(46vh, 420px);
+  display: flex;
+  flex-direction: column;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(30, 30, 32, 0.94);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
+  z-index: 1;
+}
+
+.qn-lightbox-ocr-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.qn-lightbox-ocr-title {
+  flex: 1;
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.qn-lightbox-ocr-head button {
+  border: 0;
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #e8e8ea;
+  background: rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+}
+
+.qn-lightbox-ocr-head button:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+
+.qn-lightbox-ocr-text {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(0, 0, 0, 0.35);
+  color: #e8e8ea;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
 .qn-lightbox-hint {
   position: absolute;
   bottom: 14px;
@@ -7232,6 +7522,42 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
 
 .quick-capture-esc kbd {
   font-size: 10px;
+}
+
+/* 0.39.19 弹窗拖拽 + 置顶（用户反馈「速记，ddl，单词，json转换弹窗添加支持
+   拖动，同时添加一个固定按钮，可以显示在屏幕最上面，离开笔记软件也一直
+   显示」）：头部当拖拽把手（指针样式），📌 与标题栏「窗口置顶」同一开关 */
+html:not(.qn-mobile) .quick-capture-head,
+html:not(.qn-mobile) .jsonfmt-head {
+  cursor: grab;
+  user-select: none;
+}
+
+html:not(.qn-mobile) .quick-capture-head:active,
+html:not(.qn-mobile) .jsonfmt-head:active {
+  cursor: grabbing;
+}
+
+.quick-capture-pin {
+  flex: none;
+  padding: 2px 5px;
+  font-size: 12px;
+  line-height: 1.2;
+  color: var(--text-faint);
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.quick-capture-pin:hover {
+  color: var(--text);
+}
+
+.quick-capture-pin.is-on {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 
 .quick-capture textarea {

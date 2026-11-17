@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { extractTableNames } from "../lib/ddl";
 import { extractClassNames } from "../lib/javaEntity";
 import ComboInput from "./ComboInput";
+import { DialogPinButton, useDialogDrag, useDialogPinned } from "./DialogDragPin";
 
 /**
  * 上一次收录用的标签串（0.38「设置项目默认是上一次使用的」沿用；键名保留旧值，
@@ -103,13 +104,20 @@ export default function DdlDialog({
     .filter(Boolean)
     .join(" / ");
 
+  // 头部拖拽移动（0.39.19 用户反馈）
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const dialogDrag = useDialogDrag(dialogRef);
+  // 固定后弹窗常驻：不渲染遮罩（点背后的应用照常可操作），点外也不关闭
+  const [pinned, setPinned] = useDialogPinned();
+
   return (
     <>
-      <div className="menu-backdrop" onClick={onClose} />
-      <div className="quick-capture ddl-dialog" role="dialog" aria-label="收录建表语句">
-        <div className="quick-capture-head">
+      {!pinned && <div className="menu-backdrop" onClick={onClose} />}
+      <div ref={dialogRef} className="quick-capture ddl-dialog" role="dialog" aria-label="收录建表语句">
+        <div className="quick-capture-head" {...dialogDrag}>
           <span className="quick-capture-title">收录语句（DDL / Java 实体）</span>
           <span className="spacer" />
+          <DialogPinButton pinned={pinned} onToggle={() => setPinned((value) => !value)} />
           <button type="button" className="quick-capture-esc" title="关闭 (Esc)" onClick={onClose}>
             <kbd>Esc</kbd> 关闭
           </button>

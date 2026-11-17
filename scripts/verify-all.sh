@@ -72,6 +72,10 @@ echo "=== 7d/18 大纲围栏状态机（漏闭合围栏不能吞掉后续标题�
 node --experimental-strip-types --no-warnings scripts/verify-outline.mjs
 
 echo
+echo "=== 7e/18 代码块括号彩虹嵌套（成对同色/深度循环/字符串跳过） ==="
+node --experimental-strip-types --no-warnings scripts/verify-bracket-rainbow.mjs
+
+echo
 echo "=== 8/18 附件命名与链接测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-attachments.mjs
 

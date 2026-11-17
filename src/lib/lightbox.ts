@@ -17,6 +17,13 @@
  */
 
 import { isMobile } from "./platform.ts";
+import { screenshotOcr } from "./api.ts";
+import {
+  cropImageRegionBase64,
+  SELECTION_MIN_DRAG,
+  selectionToRegion,
+  type PixelRegion,
+} from "./imageOcr.ts";
 
 let open: { destroy: () => void } | null = null;
 
@@ -118,6 +125,7 @@ export function openLightbox(src: string, alt: string): void {
 
   // -------------------------------------------------- 桌面交互（滚轮/拖动/双击）
   const onWheel = (event: WheelEvent) => {
+    if (framing) return; // 框选态不缩放
     event.preventDefault();
     zoomAt(event.deltaY < 0 ? 1.15 : 1 / 1.15, event.clientX, event.clientY);
   };
@@ -126,6 +134,7 @@ export function openLightbox(src: string, alt: string): void {
   let lastX = 0;
   let lastY = 0;
   const onDown = (event: MouseEvent) => {
+    if (framing) return; // 框选态不平移（按下是框选起点）
     if (event.button !== 0) return;
     dragging = true;
     lastX = event.clientX;
@@ -149,9 +158,16 @@ export function openLightbox(src: string, alt: string): void {
     else actual();
   };
   const onKey = (event: KeyboardEvent) => {
-    if (event.key === "Escape") destroy();
+    if (event.key !== "Escape") return;
+    if (framing) {
+      // 框选态先退框选，再按一次才关灯箱
+      exitFraming();
+      return;
+    }
+    destroy();
   };
   const onBackdrop = (event: MouseEvent) => {
+    if (framing) return; // 框选态点背景（含选框起点）不关闭
     if (event.target === root) destroy();
   };
 
@@ -264,10 +280,150 @@ export function openLightbox(src: string, alt: string): void {
     root.addEventListener("touchend", onTouchEnd);
   }
 
+  // -------------------------------------------------- OCR 框选识别（0.39.19）
+  // 用户反馈「预览图片的时候，添加识别文本功能」+ 二轮澄清「不是全部识别而是
+  // 识别框定的范围内的内容」：点「识别」进入框选态（十字光标），在图上拖一个
+  // 框，松手只把框内像素送 OCR；拖动极小（<6px）视为轻点 → 整图识别。
+  // screenshot_ocr 是桌面命令（WinRT），移动端不出按钮。
+  let ocrBusy = false;
+  let ocrPanel: HTMLDivElement | null = null;
+  let ocrBtn: HTMLButtonElement | null = null;
+  const closeOcrPanel = () => {
+    ocrPanel?.remove();
+    ocrPanel = null;
+  };
+  const showOcrPanel = (text: string) => {
+    closeOcrPanel();
+    const panel = document.createElement("div");
+    panel.className = "qn-lightbox-ocr";
+    const head = document.createElement("div");
+    head.className = "qn-lightbox-ocr-head";
+    const title = document.createElement("span");
+    title.className = "qn-lightbox-ocr-title";
+    title.textContent = "识别结果";
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.textContent = "复制";
+    copy.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void navigator.clipboard.writeText(text).then(() => {
+        copy.textContent = "已复制";
+        window.setTimeout(() => {
+          copy.textContent = "复制";
+        }, 1200);
+      });
+    });
+    const close = document.createElement("button");
+    close.type = "button";
+    close.textContent = "关闭";
+    close.addEventListener("click", (event) => {
+      event.stopPropagation();
+      closeOcrPanel();
+    });
+    head.append(title, copy, close);
+    const area = document.createElement("textarea");
+    area.className = "qn-lightbox-ocr-text";
+    area.readOnly = true;
+    area.value = text;
+    // 面板内的按下不触发灯箱的拖动/关闭链路
+    panel.addEventListener("mousedown", (event) => event.stopPropagation());
+    panel.append(head, area);
+    root.appendChild(panel);
+    ocrPanel = panel;
+  };
+
+  const startOcr = async (region: PixelRegion | null) => {
+    if (ocrBusy) return;
+    ocrBusy = true;
+    ocrBtn?.classList.add("is-busy");
+    try {
+      const base64 = await cropImageRegionBase64(src, region);
+      const text = await screenshotOcr(base64);
+      showOcrPanel(
+        text.trim()
+          ? text
+          : "没有识别出文字（框内可能没有文本，或系统缺少 OCR 语言包）",
+      );
+    } catch (error) {
+      showOcrPanel(`识别失败：${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      ocrBusy = false;
+      ocrBtn?.classList.remove("is-busy");
+    }
+  };
+
+  // 框选态：十字光标 + 提示文案；图上拖一个框，松手只识别框内
+  let framing = false;
+  let selFrom: { x: number; y: number } | null = null;
+  let selEl: HTMLDivElement | null = null;
+  const desktopHint = "滚轮缩放 · 拖动平移 · 双击 100%/适应 · Esc 关闭";
+  const exitFraming = () => {
+    framing = false;
+    selFrom = null;
+    selEl?.remove();
+    selEl = null;
+    root.classList.remove("is-framing");
+    ocrBtn?.classList.remove("is-on");
+    hint.textContent = desktopHint;
+  };
+  const toggleFraming = () => {
+    if (framing) {
+      exitFraming();
+      return;
+    }
+    if (ocrBusy) return;
+    closeOcrPanel();
+    framing = true;
+    root.classList.add("is-framing");
+    ocrBtn?.classList.add("is-on");
+    hint.textContent = "拖动框选要识别的区域（轻点=整图识别） · Esc 取消";
+  };
+  const onFrameDown = (event: MouseEvent) => {
+    if (!framing || event.button !== 0) return;
+    // 工具条/结果面板上的按下不是框选
+    if ((event.target as HTMLElement).closest(".qn-lightbox-bar, .qn-lightbox-ocr")) return;
+    event.preventDefault();
+    event.stopPropagation();
+    selFrom = { x: event.clientX, y: event.clientY };
+    selEl = document.createElement("div");
+    selEl.className = "qn-lightbox-frame";
+    root.appendChild(selEl);
+    const onMove = (ev: MouseEvent) => {
+      if (!selFrom || !selEl) return;
+      selEl.style.left = `${Math.min(selFrom.x, ev.clientX)}px`;
+      selEl.style.top = `${Math.min(selFrom.y, ev.clientY)}px`;
+      selEl.style.width = `${Math.abs(ev.clientX - selFrom.x)}px`;
+      selEl.style.height = `${Math.abs(ev.clientY - selFrom.y)}px`;
+    };
+    const onUp = (ev: MouseEvent) => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      const from = selFrom;
+      selFrom = null;
+      selEl?.remove();
+      selEl = null;
+      if (!from) return;
+      const drag = Math.hypot(ev.clientX - from.x, ev.clientY - from.y);
+      // 轻点=整图；拖出框=只识别框内
+      const region =
+        drag < SELECTION_MIN_DRAG
+          ? null
+          : selectionToRegion(img, from.x, from.y, ev.clientX, ev.clientY);
+      exitFraming();
+      void startOcr(region);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+  root.addEventListener("mousedown", onFrameDown);
+
   mkBtn("＋", "放大", () => zoomAt(1.25, window.innerWidth / 2, window.innerHeight / 2));
   mkBtn("－", "缩小", () => zoomAt(1 / 1.25, window.innerWidth / 2, window.innerHeight / 2));
   mkBtn("1:1", "原始尺寸", actual);
   mkBtn("适应", mobile ? "适应宽度" : "适应窗口", fit);
+  if (!mobile) {
+    ocrBtn = mkBtn("识别", "框选图中区域识别文字（轻点=整图）", toggleFraming);
+  }
   mkBtn("✕", "关闭 (Esc)", destroy);
 
   document.body.appendChild(root);

@@ -51,6 +51,10 @@ pub struct ParsedSheetNative {
     pub total_cols: usize,
     pub truncated: bool,
     pub merges: Vec<RawMerge>,
+    /// rows[0] 对应的绝对行/列（0.39.19 单元格编辑用：calamine 的 Range 起点
+    /// 可能不是 A1，编辑命令要按绝对坐标定位 `<c r="B2">`）。
+    pub start_row: usize,
+    pub start_col: usize,
 }
 
 #[derive(Serialize)]
@@ -81,8 +85,8 @@ fn parse_xlsx_sync(vault: &str, path: &str) -> Result<XlsxParseResult, String> {
     })
 }
 
-/// 解析核心（字节流 → 各 sheet 的显示行）。测试与磁盘命令共用。
-fn parse_xlsx_bytes(bytes: &[u8]) -> Result<Vec<ParsedSheetNative>, String> {
+/// 解析核心（字节流 → 各 sheet 的显示行）。测试、磁盘命令与编辑校验共用。
+pub(crate) fn parse_xlsx_bytes(bytes: &[u8]) -> Result<Vec<ParsedSheetNative>, String> {
     let mut workbook =
         Xlsx::new(Cursor::new(bytes)).map_err(|e| format!("表格解析失败: {e}"))?;
     // 日期换算：ExcelDateTime 自带 1900/1904 纪元标记，as_datetime 内部处理
@@ -103,6 +107,8 @@ fn parse_xlsx_bytes(bytes: &[u8]) -> Result<Vec<ParsedSheetNative>, String> {
                     total_cols: 0,
                     truncated: false,
                     merges: Vec::new(),
+                    start_row: 0,
+                    start_col: 0,
                 });
                 continue;
             }
@@ -149,6 +155,8 @@ fn parse_xlsx_bytes(bytes: &[u8]) -> Result<Vec<ParsedSheetNative>, String> {
             total_cols,
             truncated,
             merges,
+            start_row: dim_start.0 as usize,
+            start_col: dim_start.1 as usize,
         });
     }
     Ok(sheets)

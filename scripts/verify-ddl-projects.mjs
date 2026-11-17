@@ -157,6 +157,49 @@ const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); proces
   assert(/## 新项目\s*\n+\s*```java\s*\npublic interface Repo/.test(merged2), "文末新建实体段落");
 }
 
+// ---------------- 0.39.19 类级注解保留 + @ApiModel 实体注释 ----------------
+{
+  const { classCommentOf } = await import("../src/lib/javaEntity.ts");
+  const annotated = [
+    "## 海亮",
+    "```java",
+    "// @tags: A",
+    '@ApiModel("检查场景")',
+    "@VersionAudit",
+    "@Table(",
+    '        name = "ids_check_scenario"',
+    ")",
+    "public class CheckScenario extends AuditDomain {",
+    "  private Long id;",
+    "}",
+    "```",
+  ].join("\n");
+  const lib = parseClassLibrary(annotated);
+  const entry = lib.get("CheckScenario")?.[0];
+  assert(entry && entry.ddl.startsWith('@ApiModel("检查场景")'), "解析含类级注解块", entry?.ddl?.slice(0, 40));
+  assert(entry.ddl.includes('name = "ids_check_scenario"'), "跨行注解完整保留");
+  assert(entry.tags.join(",") === "A", "元数据行仍在注解块之上", JSON.stringify(entry.tags));
+  assert(classCommentOf(entry.ddl) === "检查场景", "@ApiModel 提取为实体注释");
+  assert(classCommentOf("public class Foo {}") === null, "没有 ApiModel 返回 null");
+
+  // 收录替换：旧条目带注解 → 新源码（也带注解）整块替换，元数据行不丢
+  const replaced = mergeClassesIntoNote(
+    annotated,
+    '@ApiModel("检查场景V2")\n@VersionAudit\npublic class CheckScenario extends AuditDomain { private Long id; }',
+    "海亮",
+  );
+  const re = parseClassLibrary(replaced).get("CheckScenario")[0];
+  assert(re.ddl.startsWith('@ApiModel("检查场景V2")'), "替换整块带上新注解", re.ddl.slice(0, 40));
+  assert(!replaced.includes('name = "ids_check_scenario"'), "旧跨行注解被替换掉");
+  assert(re.tags.join(",") === "A", "替换后元数据行仍在", JSON.stringify(re.tags));
+
+  // 定位跨度含注解；删除连带注解
+  const loc = locateClassEntry(annotated, "CheckScenario", "海亮");
+  assert(loc && annotated.slice(loc.from, loc.to).startsWith("@ApiModel"), "定位跨度含注解块");
+  const rm = removeClassEntry(annotated, "CheckScenario", "海亮");
+  assert(rm && !rm.text.includes("CheckScenario") && !rm.text.includes("@ApiModel"), "删除连带注解");
+}
+
 // ---------------- 管理面板：locate / remove（0.35.1） ----------------
 {
   const { locateDdlEntry, removeDdlEntry, ddlEntryName, dropEmptyFence } = await import("../src/lib/ddl.ts");

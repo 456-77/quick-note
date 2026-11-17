@@ -18,6 +18,7 @@ import { toBase64 } from "../lib/paste";
 import { normalizeTagName } from "../lib/tags";
 import { IconX } from "./icons";
 import ComboInput from "./ComboInput";
+import { DialogPinButton, useDialogDrag, useDialogPinned } from "./DialogDragPin";
 
 /** 随速记附带的图片：文件名/类型用于落盘命名，base64 用于写附件。 */
 export interface CaptureImage {
@@ -158,13 +159,20 @@ export default function QuickCaptureDialog({
     ).padStart(2, "0")}`,
   );
 
+  // 头部拖拽移动（0.39.19 用户反馈）
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const dialogDrag = useDialogDrag(dialogRef);
+  // 固定后弹窗常驻：不再渲染遮罩（点背后的应用照常可操作），点外也不关闭
+  const [pinned, setPinned] = useDialogPinned();
+
   return (
     <>
-      <div className="menu-backdrop" onClick={onClose} />
-      <div className="quick-capture" role="dialog" aria-label="快速笔记">
-        <div className="quick-capture-head">
+      {!pinned && <div className="menu-backdrop" onClick={onClose} />}
+      <div ref={dialogRef} className="quick-capture" role="dialog" aria-label="快速笔记">
+        <div className="quick-capture-head" {...dialogDrag}>
           <span className="quick-capture-title">快速笔记</span>
           <span className="spacer" />
+          <DialogPinButton pinned={pinned} onToggle={() => setPinned((value) => !value)} />
           <button type="button" className="quick-capture-esc" title="关闭 (Esc)" onClick={onClose}>
             <kbd>Esc</kbd> 关闭
           </button>

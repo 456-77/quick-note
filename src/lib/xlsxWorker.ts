@@ -41,6 +41,13 @@ export interface ParsedSheet {
    * 的那一行。普通表恒为 0，行为不变。
    */
   headerRow: number;
+  /**
+   * rows[0] / 每行第 0 格对应的**绝对**行列（0.39.19 单元格编辑）：
+   * SheetJS/calamine 的解析窗口起点不一定是 A1（表可能从 B2 开始），
+   * 编辑命令写 `<c r="B2">` 必须用绝对坐标。
+   */
+  startRow: number;
+  startCol: number;
 }
 
 self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
@@ -57,7 +64,7 @@ self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
     const sheets: ParsedSheet[] = workbook.SheetNames.map((name) => {
       const ws = workbook.Sheets[name];
       const ref = ws?.["!ref"];
-      if (!ws || !ref) return { name, rows: [], totalRows: 0, truncated: false, merges: [], headerRow: 0 };
+      if (!ws || !ref) return { name, rows: [], totalRows: 0, truncated: false, merges: [], headerRow: 0, startRow: 0, startCol: 0 };
       const range = XLSX.utils.decode_range(ref);
       const rowCount = range.e.r - range.s.r + 1;
       const colCount = range.e.c - range.s.c + 1;
@@ -92,6 +99,8 @@ self.onmessage = (event: MessageEvent<{ id: number; base64: string }>) => {
         truncated: rowCount > MAX_ROWS || colCount > MAX_COLS,
         merges,
         headerRow: detectHeaderRow(rows),
+        startRow: range.s.r,
+        startCol: range.s.c,
       };
     });
     self.postMessage({ id, sheets });

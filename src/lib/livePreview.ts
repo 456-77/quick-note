@@ -41,6 +41,7 @@ import {
 } from "./table.ts";
 import { renderEmbeddedNote } from "./embed.ts";
 import { openLightbox } from "./lightbox.ts";
+import { bracketRainbowMarks } from "./bracketRainbow.ts";
 import { isMobile } from "./platform.ts";
 import { getSettings } from "./settings.ts";
 import { bindingFor, comboOf, isCapturing, isHotkeyEnabled } from "./hotkeys.ts";
@@ -3226,6 +3227,30 @@ export function buildLivePreviewDecorations(
               const line = doc.lineAt(closing.from);
               if (line.from === closing.from && line.to === closing.to) {
                 marks.push(Decoration.line({ class: "cm-lp-fence" }).range(line.from));
+              }
+            }
+          }
+          // 括号彩虹嵌套（0.39.19 用户反馈「代码块中的{}或者[]…多重嵌套…改成
+          // 嵌套时显示不同颜色，成对的颜色要相同」）：按深度给 {} [] () 上
+          // 6 色循环档。log 块的 [线程]/[级别] 括号有自己的语义色，不掺和；
+          // mermaid 块在前面的分支已经 return。
+          if (variant !== "log") {
+            let codeTextNode: SyntaxNode | null = null;
+            for (let child = node.node.firstChild; child; child = child.nextSibling) {
+              if (child.name === "CodeText") {
+                codeTextNode = child;
+                break;
+              }
+            }
+            if (codeTextNode) {
+              const codeText = doc.sliceString(codeTextNode.from, codeTextNode.to);
+              for (const mark of bracketRainbowMarks(codeText)) {
+                marks.push(
+                  Decoration.mark({ class: `qn-bracket-${mark.level}` }).range(
+                    codeTextNode.from + mark.from,
+                    codeTextNode.from + mark.to,
+                  ),
+                );
               }
             }
           }

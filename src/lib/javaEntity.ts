@@ -66,14 +66,18 @@ export function parseClassLibrary(text: string): ClassLibrary {
   while ((match = CLASS_RE.exec(text)) !== null) {
     const name = match[1];
     // 声明起点回退到「这一行的行首」（修饰符之前的缩进不收进源码）
-    const lineStart = text.lastIndexOf("\n", match.index) + 1;
+    const declStart = text.lastIndexOf("\n", match.index) + 1;
+    // 0.39.19 用户反馈「这些注解要保留」：类声明上方的连续注解块
+    // （@ApiModel/@Table 等，含跨行）一并收进源码
+    const lineStart = annotationBlockStart(text, declStart);
     const rest = text.slice(lineStart);
-    const { cut, advance } = classSpan(rest);
+    const { cut, advance } = classSpan(rest, declStart - lineStart);
     const code = stripFenceLines(rest.slice(0, cut));
     if (name && code) {
       const key = name;
       const project = sectionProjectAt(sections, lineStart);
       // 0.39 多标签 + 收录时间：类声明上方的 `// @tags:` / `// @time:` 元数据块
+      // （0.39.19 起注解收进源码，元数据块在注解块之上）
       const meta = metaBlockAbove(text, lineStart);
       const tags = meta?.hasTags ? meta.tags : project ? [project] : [];
       const entries = (out.get(key) ?? []).filter((entry) => entry.project !== project);
@@ -87,11 +91,13 @@ export function parseClassLibrary(text: string): ClassLibrary {
 }
 
 /**
- * 一个类定义的取值范围（相对文本起点）：配对 `}`、下一个类声明/围栏行、
- * 8000 字符三者取最早；`advance` 带回游标推进量（≥ 头部长度）。
+ * 类定义的取值范围（相对文本起点）：配对 `}`、下一个类声明/围栏行、
+ * 兜底长度三者取最早；`advance` 带回游标推进量（≥ 头部长度）。
+ * `declAt` = 类声明行起点在 text 里的下标（0.39.19 起调用方可能从注解块
+ * 开始切——硬边界搜索必须跳过声明行自己，否则会把类体拦腰截断）。
  */
-function classSpan(text: string): { cut: number; advance: number } {
-  const boundary = nextClassBoundary(text);
+function classSpan(text: string, declAt = 0): { cut: number; advance: number } {
+  const boundary = nextClassBoundary(text, declAt);
   let depth = 0;
   let seenOpen = false;
   let inStr: '"' | "'" | null = null;
@@ -138,12 +144,59 @@ function classSpan(text: string): { cut: number; advance: number } {
   return { cut, advance: Math.max(cut, 1) };
 }
 
-/** 下一个硬边界（类声明行首、``` 围栏行首或 `@tags`/`@time` 元数据行）的绝对下标；找不到 -1。 */
-function nextClassBoundary(text: string): number {
+/** 下一个硬边界（类声明行首、``` 围栏行首或 `@tags`/`@time` 元数据行）的绝对下标；找不到 -1。
+ *  `declAt` = 当前类声明行起点（含）：边界搜索跳过它自己（0.39.19 起切片可能
+ *  从注解块开始，声明行不再位于切片 0 处）。 */
+function nextClassBoundary(text: string, declAt = 0): number {
   const re = /^[ \t]*(?:(?:public|protected|private|static|final|abstract|sealed)\s+)*(?:class|interface|enum|record)\b|^[ \t]*```|^[ \t]*(?:--|\/\/)[ \t]*@(?:tags|time)\b/gm;
-  re.lastIndex = 1; // 跳过自己这个声明的行首（从第 1 个字符起找）
-  const at = re.exec(text);
-  return at ? at.index : -1;
+  let at: RegExpExecArray | null;
+  while ((at = re.exec(text)) !== null) {
+    if (at.index > declAt) return at.index;
+  }
+  return -1;
+}
+
+/**
+ * 类声明上方**连续注解块**的起点（0.39.19 用户反馈「对于 Java 实体，这些
+ * 注解要保留」——收录/解析此前从修饰符行开始，`@ApiModel`/`@Table` 这类
+ * 类级注解整块丢失）。规则：自声明行**向上**走，`@` 开头的行计入注解段；
+ * 自身括号入不敷出（`@Table(` 跨行时，向上先遇到 `)` / 参数行）或下方已并入
+ * 的块还有未闭合括号时，本行也算续行；空行/注释行/普通代码断开。
+ * 元数据行（`// @tags:`/`// @time:`）是库协议，不属于注解，遇到即停。
+ */
+function annotationBlockStart(text: string, declStart: number): number {
+  const WINDOW = 80;
+  let blockStart = declStart;
+  // 已并入注解块的各行括号净值：负 = 还有开括号在更上方（块没到头）
+  let balanceBelow = 0;
+  let end = declStart - 1; // 上一行的行尾（\n 下标）
+  for (let walked = 0; end >= 0 && walked < WINDOW; walked += 1) {
+    const lineStart = text.lastIndexOf("\n", end - 1) + 1;
+    const line = text.slice(lineStart, end); // 不含行尾 \n
+    const trimmed = line.trim();
+    if (trimmed === "") break;
+    if (/^(?:\/\/|--)\s*@(?:tags|time)\b/.test(trimmed)) break;
+    let net = 0;
+    for (const ch of line) {
+      if (ch === "(") net += 1;
+      else if (ch === ")") net -= 1;
+    }
+    if (!trimmed.startsWith("@") && balanceBelow >= 0 && net >= 0) break;
+    blockStart = lineStart;
+    balanceBelow += net;
+    end = lineStart - 1;
+  }
+  return blockStart;
+}
+
+/**
+ * 实体类级 `@ApiModel("…")` 的值（0.39.19 用户反馈「这里的 apimodel 其实就
+ * 是实体的名称，这个类似于 ddl 的 comment」）。没有该注解返回 null。
+ */
+export function classCommentOf(code: string): string | null {
+  const match = /@[Aa]pi[Mm]odel\s*\(\s*(?:value\s*=\s*)?"((?:\\.|[^"\\])*)"/.exec(code);
+  if (!match) return null;
+  return match[1].replace(/\\"/g, '"').replace(/\\n/g, "\n");
 }
 
 /** 去掉首尾整行的围栏标记（``` / ```java）：悬浮预览只展示类源码本身。 */
@@ -228,8 +281,10 @@ export function mergeClassesIntoNote(
     for (const [name, ddl] of batch) {
       const hit = lastClassMatch(text, targets, name);
       if (!hit) continue;
-      const { cut } = classSpan(text.slice(hit.at));
-      hits.push({ at: hit.at, ddl, replaceEnd: hit.at + cut });
+      // 0.39.19 注解保留：替换跨度从注解块起点开始（旧条目带注解整块换新）
+      const start = annotationBlockStart(text, hit.at);
+      const { cut } = classSpan(text.slice(start), hit.at - start);
+      hits.push({ at: start, ddl, replaceEnd: start + cut });
       replaced.add(name);
     }
     hits.sort((a, b) => b.at - a.at);
@@ -288,8 +343,10 @@ export function locateClassEntry(
 ): { from: number; to: number; line: number } | null {
   const hit = lastClassMatch(text, matchingSections(ddlSections(text), project), name);
   if (!hit) return null;
-  const { cut } = classSpan(text.slice(hit.at));
-  return { from: hit.at, to: hit.at + cut, line: newlineCount(text, hit.at) };
+  // 0.39.19 注解保留：定位/删除/改标签的跨度都从注解块起点起算
+  const start = annotationBlockStart(text, hit.at);
+  const { cut } = classSpan(text.slice(start), hit.at - start);
+  return { from: start, to: start + cut, line: newlineCount(text, start) };
 }
 
 /**

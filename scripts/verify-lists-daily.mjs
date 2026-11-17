@@ -123,7 +123,7 @@ eq(
 eq(listToggleLine("普通", "bullet", "remove"), null, "非列表行删标记不动作");
 
 console.log("\n任务列表切换（0.39.12 复选框快捷键配套断言）\n");
-import { taskToggleLine, toggleBulletList, toggleTaskList } from "../src/lib/codeEdit.ts";
+import { taskToggleLine, toggleBulletList, toggleNumberList, toggleTaskList } from "../src/lib/codeEdit.ts";
 import { EditorState } from "@codemirror/state";
 eq(
   taskToggleLine("买礼物", "add"),
@@ -188,6 +188,41 @@ check(toggleTaskList(v) && docOf(v) === "- [ ] 甲\n- [ ] 乙", "选区两行各
 // ⑦复选框：选区再按一次=整批摘除
 v = fakeView("- [ ] 甲\n- [ ] 乙", 0, 14);
 check(toggleTaskList(v) && docOf(v) === "甲\n乙", "已全是任务行再按=整批摘除", `doc=${docOf(v)}`);
+// ⑧0.39.19 用户反馈：多行选中后「去序号」，光标应原地不动（随内容自然左移，
+// 不再跳到第一行序号后的位置）
+v = fakeView("- 甲\n- 乙\n- 丙", 1, 10);
+check(
+  toggleBulletList(v) && docOf(v) === "甲\n乙\n丙" && cursorAt(v) === 4,
+  "多行去无序：光标原地（丙 的文本位置）",
+  `doc=${docOf(v)} cursor=${cursorAt(v)}`,
+);
+v = fakeView("1. 甲\n2. 乙", 3, 8);
+check(
+  toggleNumberList(v) && docOf(v) === "甲\n乙" && cursorAt(v) === 2,
+  "多行去有序：光标原地（乙 的文本位置）",
+  `doc=${docOf(v)} cursor=${cursorAt(v)}`,
+);
+// ⑨空选区去序号同样不跳：光标在行尾就停在内容尾
+v = fakeView("- 正文", 4);
+check(
+  toggleBulletList(v) && docOf(v) === "正文" && cursorAt(v) === 2,
+  "空选区去无序：光标随文本左移",
+  `doc=${docOf(v)} cursor=${cursorAt(v)}`,
+);
+// ⑩0.39.19 用户追加：**多行选中添加**序号/复选框，光标也原地不动（选区随
+// 内容平移，不跳到第一行序号后）
+v = fakeView("甲\n乙\n丙", 0, 4);
+check(
+  toggleBulletList(v) && docOf(v) === "- 甲\n- 乙\n- 丙" && cursorAt(v) === 8,
+  "多行加无序：光标原地（丙 的文本位置）",
+  `doc=${docOf(v)} cursor=${cursorAt(v)}`,
+);
+v = fakeView("甲\n乙", 0, 3);
+check(
+  toggleTaskList(v) && docOf(v) === "- [ ] 甲\n- [ ] 乙" && cursorAt(v) === 15,
+  "多行加复选框：光标原地（文末）",
+  `doc=${docOf(v)} cursor=${cursorAt(v)}`,
+);
 
 console.log("\n日记改名（日期前缀保护 / 改日期）\n");
 // 契约（与 verify-daily.mjs 一致）：输入不带 .md 就不补 .md
