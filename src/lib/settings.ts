@@ -174,6 +174,20 @@ export interface Settings {
    */
   javaEntityFilePath: string;
   /**
+   * AI 识图的模型供应商（0.39.23 用户反馈「逐步添加 ai 功能，现在先添加 ai 识别
+   * 功能」）：OpenAI 兼容的 chat/completions 接口。Base URL 例：
+   * `https://open.bigmodel.cn/api/paas/v4`；模型填支持图片输入的型号。
+   */
+  aiBaseUrl: string;
+  aiApiKey: string;
+  aiModel: string;
+  /**
+   * 最近文件是否包含其他仓库（0.39.23 用户反馈「最近的文件为什么会显示别的仓库
+   * 文件」）：默认只显示当前仓库；开启后「最近打开」模式下追加其他仓库的条目
+   * （带仓库名标识，回车会切换到那个仓库打开）。
+   */
+  recentsShowOtherVaults: boolean;
+  /**
    * 收录时遇到同名表/类的默认动作（0.39.21 用户反馈「虽然同名，但是内容不同呀」）：
    * - `append`（默认）：**新增一份**——同名不同内容都保留，悬浮卡下拉可切换查看；
    * - `replace`：替换原条目（旧行为）。
@@ -262,6 +276,10 @@ export const DEFAULTS: Settings = {
   ddlFilePath: "数据库表DDL.md",
   javaEntityFilePath: "Java实体.md",
   ddlCaptureMode: "append",
+  recentsShowOtherVaults: false,
+  aiBaseUrl: "",
+  aiApiKey: "",
+  aiModel: "",
   mobileFontScale: 1,
   updateChannel: "stable",
 };

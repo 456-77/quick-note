@@ -27,6 +27,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { readBinary, readNote, screenshotOcr } from "../lib/api";
+import { aiConfigured, aiRecognizeImage } from "../lib/aiVision";
 import { extOf, fileKindOf } from "../lib/fileTypes";
 import { isMobile } from "../lib/platform";
 import type { ParsedSheet } from "../lib/xlsxWorkerHost";
@@ -217,9 +218,11 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
   /** 图片预览的 OCR（0.39.19 用户反馈「不是全部识别而是识别框定的范围内的
    *  内容」）：frameMode=框选态（十字光标拖一个框）；frameRect=拖动中的选框
    *  （视口坐标）；imageOcr.text=识别结果（可能是空结果的提示文案）。 */
-  const [imageOcr, setImageOcr] = useState<{ busy: boolean; text: string | null } | null>(null);
+  const [imageOcr, setImageOcr] = useState<{ busy: boolean; text: string | null; kind: "ocr" | "ai" } | null>(null);
   const [frameMode, setFrameMode] = useState(false);
   const frameModeRef = useRef(false);
+  /** 框选/识别的通道（0.39.23：AI 识别与普通识别共用同一套框选交互）。 */
+  const frameKindRef = useRef<"ocr" | "ai">("ocr");
   const frameStartRef = useRef<{ x: number; y: number } | null>(null);
   const [frameRect, setFrameRect] = useState<{
     x: number;
@@ -230,21 +233,28 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
   /** 图片预览的 OCR（0.39.19）：`region` 传 null = 整图；框选时传视口选框换算
    *  出的自然像素区域。取图片字节走 screenshot_ocr（WinRT，桌面命令，移动端
    *  按钮不渲染）。结果存 imageOcr.text，面板在图片预览 body 里。 */
-  const runImageOcr = useCallback(async (region?: PixelRegion | null) => {
+  const runImageOcr = useCallback(async (region?: PixelRegion | null, kind: "ocr" | "ai" = "ocr") => {
     if (!imageUrl || (imageOcr?.busy ?? false)) return;
-    setImageOcr({ busy: true, text: null });
+    setImageOcr({ busy: true, text: null, kind });
     try {
       const base64 = await cropImageRegionBase64(imageUrl, region ?? null);
-      const text = await screenshotOcr(base64);
+      const text =
+        kind === "ai"
+          ? await aiRecognizeImage(base64)
+          : await screenshotOcr(base64);
       setImageOcr({
         busy: false,
+        kind,
         text: text.trim()
           ? text
-          : "没有识别出文字（框内可能没有文本，或系统缺少 OCR 语言包）",
+          : kind === "ai"
+            ? "AI 没有返回内容"
+            : "没有识别出文字（框内可能没有文本，或系统缺少 OCR 语言包）",
       });
     } catch (error) {
       setImageOcr({
         busy: false,
+        kind,
         text: `识别失败：${error instanceof Error ? error.message : String(error)}`,
       });
     }
@@ -278,7 +288,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
         img && drag >= SELECTION_MIN_DRAG
           ? selectionToRegion(img, start.x, start.y, event.clientX, event.clientY)
           : null;
-      void runImageOcr(region);
+      void runImageOcr(region, frameKindRef.current);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -1667,20 +1677,55 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
               <>
                 <button
                   type="button"
-                  className={`file-preview-ocr-btn${frameMode ? " is-framing" : ""}${
-                    imageOcr?.busy ? " is-busy" : ""
+                  className={`file-preview-ocr-btn${frameMode && frameKindRef.current === "ocr" ? " is-framing" : ""}${
+                    imageOcr?.busy && imageOcr.kind === "ocr" ? " is-busy" : ""
                   }`}
                   title="框选图中区域识别文字（轻点=整图）"
                   onClick={() => {
-                    setImageOcr(null);
-                    setFrameMode((value) => !value);
+                    if (frameMode && frameKindRef.current === "ocr") {
+                      setFrameMode(false); // 同通道再点 = 取消框选
+                      return;
+                    }
+                    if (!frameMode) setImageOcr(null);
+                    frameKindRef.current = "ocr";
+                    setFrameMode(true); // 若正在 AI 框选则切回普通识别通道
                   }}
                 >
-                  {frameMode
+                  {frameMode && frameKindRef.current === "ocr"
                     ? "框选中…（Esc 取消）"
-                    : imageOcr?.busy
+                    : imageOcr?.busy && imageOcr.kind === "ocr"
                       ? "识别中…"
                       : "框选识别"}
+                </button>
+                <button
+                  type="button"
+                  className={`file-preview-ocr-btn file-preview-ai-btn${frameMode && frameKindRef.current === "ai" ? " is-framing" : ""}${
+                    imageOcr?.busy && imageOcr.kind === "ai" ? " is-busy" : ""
+                  }`}
+                  title="框选区域交给 AI 模型识别（轻点=整图）；先在 设置 → AI 配置供应商"
+                  onClick={() => {
+                    if (!aiConfigured()) {
+                      setImageOcr({
+                        busy: false,
+                        kind: "ai",
+                        text: "先在 设置 → AI 里配置模型供应商（Base URL / API Key / 模型名）",
+                      });
+                      return;
+                    }
+                    if (frameMode && frameKindRef.current === "ai") {
+                      setFrameMode(false); // 同通道再点 = 取消框选
+                      return;
+                    }
+                    if (!frameMode) setImageOcr(null);
+                    frameKindRef.current = "ai";
+                    setFrameMode(true); // 若在普通框选中则切到 AI 通道
+                  }}
+                >
+                  {frameMode && frameKindRef.current === "ai"
+                    ? "框选中…（Esc 取消）"
+                    : imageOcr?.busy && imageOcr.kind === "ai"
+                      ? "AI 识别中…"
+                      : "AI 识别"}
                 </button>
                 {frameMode && (
                   <div className="file-preview-frame-hint">
@@ -1696,7 +1741,9 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
                 {imageOcr?.text != null && (
                   <div className="file-preview-ocr">
                     <div className="file-preview-ocr-head">
-                      <span className="file-preview-ocr-title">识别结果</span>
+                      <span className="file-preview-ocr-title">
+                        {imageOcr.kind === "ai" ? "AI 识别结果" : "识别结果"}
+                      </span>
                       <button
                         type="button"
                         onClick={() => {

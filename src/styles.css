@@ -2191,6 +2191,11 @@ html.qn-mobile .xlsx-toolbar {
 
 /* 0.39.19 用户反馈「预览图片的时候，添加识别文本功能」：右上角浮动识别钮 +
    底部结果面板（桌面限定渲染；WinRT OCR 是桌面命令） */
+/* 0.39.23 AI 识别按钮：与「框选识别」并排（普通识别在右，AI 在它左边） */
+.file-preview-ocr-btn.file-preview-ai-btn {
+  right: 118px;
+}
+
 .file-preview-ocr-btn {
   position: absolute;
   top: 10px;
@@ -12505,6 +12510,20 @@ html.qn-mobile .vocab-status {
 
 .recent-item.is-open .recent-name {
   color: var(--accent);
+}
+
+/* 0.39.23 最近文件里的「其他仓库」徽标（只在设置开启跨仓库时出现） */
+.recent-vault {
+  flex: none;
+  padding: 0.5px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: color-mix(in srgb, var(--accent) 80%, var(--text-dim));
+  font-size: 10.5px;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .recent-name {

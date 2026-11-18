@@ -18,6 +18,7 @@
 
 import { isMobile } from "./platform.ts";
 import { screenshotOcr } from "./api.ts";
+import { aiConfigured, aiRecognizeImage } from "./aiVision.ts";
 import {
   cropImageRegionBase64,
   SELECTION_MIN_DRAG,
@@ -302,11 +303,14 @@ export function openLightbox(src: string, alt: string): void {
   let ocrBusy = false;
   let ocrPanel: HTMLDivElement | null = null;
   let ocrBtn: HTMLButtonElement | null = null;
+  let aiBtn: HTMLButtonElement | null = null;
+  /** 框选态的目标：普通 OCR 还是 AI 识别（0.39.23）。 */
+  let frameKind: "ocr" | "ai" = "ocr";
   const closeOcrPanel = () => {
     ocrPanel?.remove();
     ocrPanel = null;
   };
-  const showOcrPanel = (text: string) => {
+  const showOcrPanel = (text: string, titleText = "识别结果") => {
     closeOcrPanel();
     const panel = document.createElement("div");
     panel.className = "qn-lightbox-ocr";
@@ -314,7 +318,7 @@ export function openLightbox(src: string, alt: string): void {
     head.className = "qn-lightbox-ocr-head";
     const title = document.createElement("span");
     title.className = "qn-lightbox-ocr-title";
-    title.textContent = "识别结果";
+    title.textContent = titleText;
     const copy = document.createElement("button");
     copy.type = "button";
     copy.textContent = "复制";
@@ -346,23 +350,29 @@ export function openLightbox(src: string, alt: string): void {
     ocrPanel = panel;
   };
 
-  const startOcr = async (region: PixelRegion | null) => {
+  const startOcr = async (region: PixelRegion | null, kind: "ocr" | "ai" = "ocr") => {
     if (ocrBusy) return;
     ocrBusy = true;
-    ocrBtn?.classList.add("is-busy");
+    const activeBtn = kind === "ai" ? aiBtn : ocrBtn;
+    activeBtn?.classList.add("is-busy");
     try {
       const base64 = await cropImageRegionBase64(src, region);
-      const text = await screenshotOcr(base64);
-      showOcrPanel(
-        text.trim()
-          ? text
-          : "没有识别出文字（框内可能没有文本，或系统缺少 OCR 语言包）",
-      );
+      if (kind === "ai") {
+        const text = await aiRecognizeImage(base64);
+        showOcrPanel(text.trim() ? text : "AI 没有返回内容", "AI 识别结果");
+      } else {
+        const text = await screenshotOcr(base64);
+        showOcrPanel(
+          text.trim()
+            ? text
+            : "没有识别出文字（框内可能没有文本，或系统缺少 OCR 语言包）",
+        );
+      }
     } catch (error) {
       showOcrPanel(`识别失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
       ocrBusy = false;
-      ocrBtn?.classList.remove("is-busy");
+      activeBtn?.classList.remove("is-busy");
     }
   };
 
@@ -378,19 +388,29 @@ export function openLightbox(src: string, alt: string): void {
     selEl = null;
     root.classList.remove("is-framing");
     ocrBtn?.classList.remove("is-on");
+    aiBtn?.classList.remove("is-on");
     hint.textContent = desktopHint;
   };
-  const toggleFraming = () => {
-    if (framing) {
+  const toggleFraming = (kind: "ocr" | "ai" = "ocr") => {
+    if (framing && frameKind === kind) {
       exitFraming();
       return;
     }
     if (ocrBusy) return;
+    if (kind === "ai" && !aiConfigured()) {
+      showOcrPanel("先在 设置 → AI 里配置模型供应商（Base URL / API Key / 模型名）", "AI 识别");
+      return;
+    }
+    if (framing) exitFraming();
     closeOcrPanel();
+    frameKind = kind;
     framing = true;
     root.classList.add("is-framing");
-    ocrBtn?.classList.add("is-on");
-    hint.textContent = "拖动框选要识别的区域（轻点=整图识别） · Esc 取消";
+    (kind === "ai" ? aiBtn : ocrBtn)?.classList.add("is-on");
+    hint.textContent =
+      kind === "ai"
+        ? "拖动框选要交给 AI 识别的区域（轻点=整图） · Esc 取消"
+        : "拖动框选要识别的区域（轻点=整图识别） · Esc 取消";
   };
   const onFrameDown = (event: MouseEvent) => {
     if (!framing || event.button !== 0) return;
@@ -423,8 +443,9 @@ export function openLightbox(src: string, alt: string): void {
         drag < SELECTION_MIN_DRAG
           ? null
           : selectionToRegion(img, from.x, from.y, ev.clientX, ev.clientY);
+      const kind = frameKind;
       exitFraming();
-      void startOcr(region);
+      void startOcr(region, kind);
     };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -436,7 +457,10 @@ export function openLightbox(src: string, alt: string): void {
   mkBtn("1:1", "原始尺寸", actual);
   mkBtn("适应", mobile ? "适应宽度" : "适应窗口", fit);
   if (!mobile) {
-    ocrBtn = mkBtn("识别", "框选图中区域识别文字（轻点=整图）", toggleFraming);
+    ocrBtn = mkBtn("识别", "框选图中区域识别文字（轻点=整图）", () => toggleFraming("ocr"));
+    // 0.39.23 用户需求「对于预览图片添加一个 ai 识别选项，类似于普通识别，
+    // 也是框选内容进行识别」
+    aiBtn = mkBtn("AI 识别", "框选区域交给 AI 模型识别（轻点=整图）", () => toggleFraming("ai"));
   }
   mkBtn("✕", "关闭 (Esc)", destroy);
 

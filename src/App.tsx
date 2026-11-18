@@ -495,15 +495,49 @@ export default function App() {
   const [favorites, setFavorites] = useState<string[]>([]);
   /** 置顶的收藏（按仓库分桶，同收藏；收藏视图里排在最前）。 */
   const [pinnedFavorites, setPinnedFavorites] = useState<string[]>([]);
-  /** 最近打开的笔记（本机 localStorage，新的在前）。 */
-  const [recents, setRecents] = useState<string[]>(() => {
+  /** 最近打开的笔记（本机 localStorage，新的在前）。0.39.23 起每条带**仓库标注**
+      （用户反馈「最近的文件会显示别的仓库文件」——此前是裸路径平表，别的仓库里
+      打开过的相对路径混进来就串台）。旧格式（string[]）读入时按当前仓库兼容。 */
+  const [recentOpens, setRecentOpens] = useState<Array<{ vault: string; path: string }>>(() => {
     try {
       const raw = localStorage.getItem("quicknote.recents");
-      return raw ? (JSON.parse(raw) as string[]) : [];
+      if (!raw) return [];
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((item): { vault: string; path: string } | null => {
+          if (typeof item === "string") return { vault: "", path: item };
+          if (item && typeof item === "object") {
+            const rec = item as { vault?: unknown; path?: unknown };
+            if (typeof rec.path === "string") {
+              return { vault: typeof rec.vault === "string" ? rec.vault : "", path: rec.path };
+            }
+          }
+          return null;
+        })
+        .filter((item): item is { vault: string; path: string } => item !== null);
     } catch {
       return [];
     }
   });
+  /** 当前仓库的最近打开路径（左栏「最近」视图与旧消费方用；跨仓库条目不带进来）。 */
+  const recents = useMemo(
+    () =>
+      recentOpens
+        .filter((item) => item.vault === "" || item.vault === vault)
+        .map((item) => item.path),
+    [recentOpens, vault],
+  );
+
+  /** 写回近期记录（带仓库标注）。 */
+  const persistRecentOpens = useCallback((list: Array<{ vault: string; path: string }>) => {
+    try {
+      localStorage.setItem("quicknote.recents", JSON.stringify(list));
+    } catch {
+      // 存不进去只影响下次启动的列表
+    }
+  }, []);
+
   /** 最近打开的仓库（本机 localStorage，新的在前）。顶栏仓库下拉的候选。 */
   const [vaultRecents, setVaultRecents] = useState<string[]>(() => {
     try {
@@ -1037,8 +1071,14 @@ export default function App() {
   }, [favorites, existingNotePaths]);
 
   const recordRecent = useCallback((path: string) => {
-    setRecents((prev) => {
-      const next = [path, ...prev.filter((p) => p !== path)].slice(0, 15);
+    // 0.39.23：带仓库标注——openNoteInVault 会先 switchVault 再打开，vaultRef
+    // 已是目标仓库，标注天然正确（此前裸路径平表正是串台根因）
+    const owner = vaultRef.current ?? "";
+    setRecentOpens((prev) => {
+      const next = [
+        { vault: owner, path },
+        ...prev.filter((item) => !(item.path === path && (item.vault === owner || item.vault === ""))),
+      ].slice(0, 30);
       try {
         localStorage.setItem("quicknote.recents", JSON.stringify(next));
       } catch {
@@ -5592,13 +5632,9 @@ export default function App() {
         persistFavorites(next);
         return next;
       });
-      setRecents((prev) => {
-        const next = prev.map((p) => (affected(p) ? remap(p) : p));
-        try {
-          localStorage.setItem("quicknote.recents", JSON.stringify(next));
-        } catch {
-          // 忽略：与 recordRecent 同一容错
-        }
+      setRecentOpens((prev) => {
+        const next = prev.map((item) => (affected(item.path) ? { ...item, path: remap(item.path) } : item));
+        persistRecentOpens(next);
         return next;
       });
       if (affectedOpen && openPath) {
@@ -5855,15 +5891,11 @@ export default function App() {
       setPinnedTabs((prev) =>
         prev.filter((p) => p !== target.path && !p.startsWith(`${target.path}/`)),
       );
-      setRecents((prev) => {
+      setRecentOpens((prev) => {
         const next = prev.filter(
-          (p) => p !== target.path && !p.startsWith(`${target.path}/`),
+          (item) => item.path !== target.path && !item.path.startsWith(`${target.path}/`),
         );
-        try {
-          localStorage.setItem("quicknote.recents", JSON.stringify(next));
-        } catch {
-          // 忽略
-        }
+        persistRecentOpens(next);
         return next;
       });
       setStatus(
@@ -8624,10 +8656,13 @@ export default function App() {
       {/* 最近文件弹窗（0.27：类 IDEA，搜索 + 一级目录筛选） */}
       {recentFilesOpen && (
         <RecentFilesDialog
-          recents={recents}
+          recents={recentOpens}
+          currentVault={vault ?? ""}
+          showOtherVaults={settings.recentsShowOtherVaults}
           entries={entries}
           activePath={current?.path ?? null}
           onOpen={(path) => void openEntry(path)}
+          onOpenInVault={(target, path) => void openNoteInVault(target, path)}
           onClose={() => setRecentFilesOpen(false)}
         />
       )}

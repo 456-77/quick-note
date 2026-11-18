@@ -23,16 +23,26 @@ const DIR_CHIP_LIMIT = 6;
 
 export default function RecentFilesDialog({
   recents,
+  currentVault,
+  showOtherVaults,
   entries,
   activePath,
   onOpen,
+  onOpenInVault,
   onClose,
 }: {
-  recents: string[];
+  /** 最近的打开记录（0.39.23 带仓库标注：其他仓库的相对路径混进来会串台）。 */
+  recents: Array<{ vault: string; path: string }>;
+  /** 当前仓库绝对路径（判断哪些记录属于别的仓库）。 */
+  currentVault: string;
+  /** 设置项：最近文件是否包含其他仓库（默认只在当前仓库内）。 */
+  showOtherVaults: boolean;
   /** 文件索引（「已编辑」用 mtime 排序；不含目录）。 */
   entries: EntryMeta[];
   activePath: string | null;
   onOpen: (path: string) => void;
+  /** 打开其他仓库里的文件（切仓库 + 定位）。 */
+  onOpenInVault: (vault: string, path: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -58,13 +68,29 @@ export default function RecentFilesDialog({
         .map((entry) => entry.path),
     [entries],
   );
-  const source = mode === "edited" ? edited : recents;
+  /** 「最近打开」来源：当前仓库的 + （可选）其他仓库的，都带仓库标注。 */
+  const openedItems = useMemo(() => {
+    const own: Array<{ vault: string; path: string; other: boolean }> = [];
+    const strangers: Array<{ vault: string; path: string; other: boolean }> = [];
+    for (const item of recents) {
+      const ownVault = item.vault === "" || item.vault === currentVault;
+      if (ownVault) own.push({ ...item, other: false });
+      else if (showOtherVaults) strangers.push({ ...item, other: true });
+    }
+    return [...own, ...strangers];
+  }, [recents, currentVault, showOtherVaults]);
+
+  const source =
+    mode === "edited"
+      ? edited.map((path) => ({ vault: currentVault, path, other: false }))
+      : openedItems;
 
   /** 目录 chip 候选：当前来源里按条数聚合的一级目录（搜索词也参与）。 */
   const dirChips = useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     const counts = new Map<string, number>();
-    for (const path of source) {
+    for (const item of source) {
+      const path = item.path;
       if (tokens.length > 0 && !tokens.every((t) => path.toLowerCase().includes(t))) continue;
       const d = dirOf(path);
       if (!d) continue;
@@ -79,8 +105,10 @@ export default function RecentFilesDialog({
   const items = useMemo(() => {
     const tokens = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     let list = source;
-    if (dir) list = list.filter((path) => dirOf(path) === dir);
-    if (tokens.length > 0) list = list.filter((path) => tokens.every((t) => path.toLowerCase().includes(t)));
+    if (dir) list = list.filter((item) => dirOf(item.path) === dir);
+    if (tokens.length > 0) {
+      list = list.filter((item) => tokens.every((t) => item.path.toLowerCase().includes(t)));
+    }
     return list.slice(0, LIST_LIMIT);
   }, [source, query, dir]);
 
@@ -99,11 +127,15 @@ export default function RecentFilesDialog({
   }, [cursor]);
 
   const openAt = (index: number) => {
-    const path = items[index];
-    if (!path) return;
-    onOpen(path);
+    const item = items[index];
+    if (!item) return;
+    if (item.other) onOpenInVault(item.vault, item.path);
+    else onOpen(item.path);
     onClose();
   };
+
+  /** 其他仓库条目的仓库名（显示在行首小徽标）。 */
+  const vaultNameOf = (vaultPath: string) => vaultPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? vaultPath;
 
   return (
     <div
@@ -197,21 +229,25 @@ export default function RecentFilesDialog({
               {mode === "edited" ? "还没有编辑过的文件" : "没有匹配的最近文件"}
             </div>
           ) : (
-            items.map((path, index) => {
+            items.map((item, index) => {
+              const path = item.path;
               const slash = path.lastIndexOf("/");
               const name = slash >= 0 ? path.slice(slash + 1) : path;
               const folder = slash >= 0 ? path.slice(0, slash) : "";
               return (
                 <button
-                  key={path}
+                  key={`${item.vault}::${path}`}
                   type="button"
                   className={`recent-item${index === cursor ? " is-active" : ""}${
-                    path === activePath ? " is-open" : ""
+                    !item.other && path === activePath ? " is-open" : ""
                   }`}
                   onMouseEnter={() => setCursor(index)}
                   onClick={() => openAt(index)}
-                  title={path}
+                  title={item.other ? `${vaultNameOf(item.vault)} / ${path}` : path}
                 >
+                  {item.other && (
+                    <span className="recent-vault">{vaultNameOf(item.vault)}</span>
+                  )}
                   <span className="recent-name">{name}</span>
                   <span className="recent-dir">{folder}</span>
                 </button>

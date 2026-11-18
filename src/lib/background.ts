@@ -116,7 +116,20 @@ function syncBgLayerHeight(): void {
 
 function scheduleBgLayerSync(): void {
   window.setTimeout(() => {
-    if (!document.documentElement.classList.contains("qn-ime-open")) syncBgLayerHeight();
+    if (document.documentElement.classList.contains("qn-ime-open")) return;
+    syncBgLayerHeight();
+    // 0.39.23：窗口尺寸变了要重烘焙（容差 8px，防抖动反复烘焙）
+    const bg = lastApplied;
+    if (!bg) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (
+      Math.abs(bakedSize.w - window.innerWidth) > 8 ||
+      Math.abs(bakedSize.h - window.innerHeight) > 8 ||
+      bakedSize.dpr !== dpr
+    ) {
+      const layer = document.getElementById(LAYER_ID);
+      if (layer) void bakeBackground(layer, bg.settings, bg.absolute);
+    }
   }, 150);
 }
 
@@ -126,6 +139,165 @@ function ensureBgLayerSync(): void {
   bgSyncWired = true;
   window.addEventListener("resize", scheduleBgLayerSync);
   window.visualViewport?.addEventListener("resize", scheduleBgLayerSync);
+}
+
+/** 烘焙代际：设置/窗口变化会重烘焙，旧任务落地前先比对。 */
+let bakeToken = 0;
+
+/** 已烘焙的背景尺寸（窗口 resize 时判断是否需要重烘焙，容差 8px）。 */
+let bakedSize = { w: 0, h: 0, dpr: 0 };
+
+/** 最近一次应用的背景（resize 重烘焙用）。 */
+let lastApplied: { settings: BgSettings; absolute: string } | null = null;
+
+/**
+ * 加载背景图。**走 fetch blob → createImageBitmap**，不用 `<img src>`：
+ * asset 协议在页面里是跨源的，直接用 <img> 画进 canvas 会把画布标记为 tainted，
+ * 之后 getImageData（锐化卷积）抛 SecurityError（批测实锤 0.39.23 首版）。
+ * 同 imageOcr.cropImageRegionBase64 的经验。
+ */
+async function loadImage(src: string): Promise<ImageBitmap> {
+  const response = await fetch(src);
+  if (!response.ok) throw new Error(`背景图加载失败（HTTP ${response.status}）`);
+  const blob = await response.blob();
+  return await createImageBitmap(blob);
+}
+
+/**
+ * 0.39.23 用户反馈「设置页面响应很慢……关闭背景图片后响应速度就很快了」：
+ * 背景层此前用 CSS filter（blur + brightness + contrast + **SVG
+ * feConvolveMatrix 卷积锐化**）实时作用在整块全屏 fixed 层上——任何界面交互
+ * （打开设置、切子菜单、滚动）触发的重绘都会让 Chromium 重跑一遍全屏滤镜，
+ * 卷积尤其贵，整个 UI 发钝。
+ *
+ * 改为**一次性烘焙**：图片加载后按 cover/contain + 位置 + 用户缩放 + 模糊/
+ * 亮度/对比度/锐化画进离屏 canvas（锐化按原 3×3 核手写卷积，edgeMode=duplicate），
+ * 之后背景层只挂这张位图、**不挂任何 filter**，交互与背景参数彻底解耦。
+ * 设置变化/窗口尺寸变化才重烘焙一次。
+ */
+async function bakeBackground(layer: HTMLElement, bg: BgSettings, absolute: string): Promise<void> {
+  const token = (bakeToken += 1);
+  const blur = clamp(bg.bgBlur, 0, 50);
+  const pad = blur > 0 ? Math.ceil(blur * 2) : 0; // 与原负 margin 扩边一致
+  const scale = clamp(bg.bgScale, 10, 400) / 100;
+  const posX = clamp(bg.bgPosX, 0, 100);
+  const posY = clamp(bg.bgPosY, 0, 100);
+  const vw = Math.max(1, window.innerWidth);
+  const vh = Math.max(1, window.innerHeight);
+  const W = vw + pad * 2;
+  const H = vh + pad * 2;
+  // 分辨率上限：背景本来就被半透明表面盖着，2560 足够，防 4K 屏内存/卷积耗时
+  const dpr = Math.min(window.devicePixelRatio || 1, 2560 / Math.max(W, H), 1.5);
+  const cw = Math.max(1, Math.round(W * dpr));
+  const ch = Math.max(1, Math.round(H * dpr));
+
+  let img: ImageBitmap;
+  try {
+    img = await loadImage(convertFileSrc(absolute));
+  } catch {
+    // 图加载失败：回落到旧的 CSS 滤镜方案（功能优先于性能）
+    if (token === bakeToken) applyCssFallback(layer, bg, absolute);
+    return;
+  }
+  if (token !== bakeToken) return;
+
+  const canvas = document.createElement("canvas");
+  canvas.width = cw;
+  canvas.height = ch;
+  canvas.className = "qn-bg-canvas";
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.setTransform(cw / W, 0, 0, ch / H, 0, 0);
+
+  // cover / contain
+  const srcW = Math.max(1, img.width);
+  const srcH = Math.max(1, img.height);
+  const fit = bg.bgFit === "cover" ? Math.max(W / srcW, H / srcH) : Math.min(W / srcW, H / srcH);
+  const bw = srcW * fit;
+  const bh = srcH * fit;
+  // background-position X%：容器剩余空间按百分比分
+  let x = (W - bw) * (posX / 100);
+  let y = (H - bh) * (posY / 100);
+  // 用户缩放：原实现是 transform:scale(k) + transformOrigin 在位置焦点（层内
+  // vw/vh 坐标，扩边后加 pad）——画布坐标里做同样的仿射
+  if (scale !== 1) {
+    const ox = pad + vw * (posX / 100);
+    const oy = pad + vh * (posY / 100);
+    x = ox + (x - ox) * scale;
+    y = oy + (y - oy) * scale;
+  }
+  const dw = bw * scale;
+  const dh = bh * scale;
+
+  const parts = [
+    blur > 0 ? `blur(${blur}px)` : "",
+    `brightness(${clamp(bg.bgBrightness, 10, 200)}%)`,
+    `contrast(${clamp(bg.bgContrast, 10, 200)}%)`,
+  ].filter(Boolean);
+  ctx.filter = parts.length > 0 ? parts.join(" ") : "none";
+  ctx.drawImage(img, x, y, dw, dh);
+  ctx.filter = "none";
+
+  // 锐化：与 sharpenFilterRef 的 3×3 核一致（中心 1+4a、四邻 -a、边界复制）
+  const amount = clamp(bg.bgSharpen ?? 0, 0, 100) / 100;
+  if (amount > 0) {
+    const a = amount * 0.65;
+    const center = 1 + 4 * a;
+    const data = ctx.getImageData(0, 0, cw, ch);
+    const src = new Uint8ClampedArray(data.data);
+    const out = data.data;
+    for (let py = 0; py < ch; py += 1) {
+      const up = py > 0 ? py - 1 : 0;
+      const down = py < ch - 1 ? py + 1 : ch - 1;
+      for (let px = 0; px < cw; px += 1) {
+        const left = px > 0 ? px - 1 : 0;
+        const right = px < cw - 1 ? px + 1 : cw - 1;
+        const i = (py * cw + px) * 4;
+        for (let c = 0; c < 3; c += 1) {
+          const v =
+            src[(up * cw + px) * 4 + c] * -a +
+            src[(down * cw + px) * 4 + c] * -a +
+            src[(py * cw + left) * 4 + c] * -a +
+            src[(py * cw + right) * 4 + c] * -a +
+            src[i + c] * center;
+          out[i + c] = v;
+        }
+      }
+    }
+    ctx.putImageData(data, 0, 0);
+  }
+  if (token !== bakeToken) return;
+
+  Object.assign(canvas.style, {
+    position: "absolute",
+    left: `${-pad}px`,
+    top: `${-pad}px`,
+    width: `${W}px`,
+    height: `${H}px`,
+  } as Partial<CSSStyleDeclaration>);
+  // 只挂位图、不挂 filter —— 交互不再重跑全屏滤镜
+  layer.replaceChildren(canvas);
+  layer.style.backgroundImage = "none";
+  layer.style.filter = "";
+  layer.style.transform = "";
+  layer.style.margin = "";
+  layer.style.height = "";
+  bakedSize = { w: vw, h: vh, dpr: window.devicePixelRatio || 1 };
+}
+
+/** 背景图加载失败时的兜底：保留原来的 CSS 滤镜链路（视觉一致，性能退档）。 */
+function applyCssFallback(layer: HTMLElement, bg: BgSettings, absolute: string): void {
+  layer.replaceChildren();
+  const blur = clamp(bg.bgBlur, 0, 50);
+  const scale = clamp(bg.bgScale, 10, 400) / 100;
+  layer.style.backgroundImage = `url("${convertFileSrc(absolute)}")`;
+  layer.style.backgroundPosition = `${bg.bgPosX}% ${bg.bgPosY}%`;
+  layer.style.backgroundSize = bg.bgFit === "cover" ? "cover" : "contain";
+  layer.style.backgroundRepeat = "no-repeat";
+  layer.style.filter = bgFilterCss(bg);
+  layer.style.transform = scale !== 1 ? `scale(${scale})` : "";
+  layer.style.transformOrigin = `${bg.bgPosX}% ${bg.bgPosY}%`;
+  layer.style.margin = blur > 0 ? `${-Math.ceil(blur * 2)}px` : "";
 }
 
 /** 把一张背景参数快照铺到 DOM 上。参数改变、仓库切换后都要重新调用。 */
@@ -139,6 +311,7 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
     bg.bgEnabled && (rotating || bg.bgImagePath.trim().length > 0) && !!vaultPath;
 
   if (!enabled) {
+    lastApplied = null;
     document.getElementById(LAYER_ID)?.remove();
     root.classList.remove(ROOT_CLASS);
     for (const name of VEIL_VARS) root.style.removeProperty(name);
@@ -161,26 +334,11 @@ export function applyBackground(bg: BgSettings, vaultPath: string | null): void 
   const absolute = rotating
     ? bg.bgImageAbsPath.trim()
     : `${vaultPath!.replace(/[\\/]+$/, "")}/${bg.bgImagePath.trim().replace(/\\/g, "/")}`;
-  const blur = clamp(bg.bgBlur, 0, 50);
-  const scale = clamp(bg.bgScale, 10, 400) / 100;
-  layer.style.backgroundImage = `url("${convertFileSrc(absolute)}")`;
-  layer.style.backgroundPosition = `${bg.bgPosX}% ${bg.bgPosY}%`;
-  // 0.38.7 自定义裁剪（custom）：完整显示基底，缩放/位置滑杆自由裁——
-  // bgScale 走 transform（锚点=位置焦点，下方既有逻辑），尺寸用 contain 铺底
-  layer.style.backgroundSize = bg.bgFit === "cover" ? "cover" : "contain";
-  layer.style.backgroundRepeat = "no-repeat";
+  // 0.39.23：几何 + 滤镜一次性烘焙到位图（见 bakeBackground 注释），
+  // 层本身只挂不透明度，不再带 filter/transform/负 margin
   layer.style.opacity = String(clamp(bg.bgOpacity, 0, 1));
-  // filter 只放合法的 filter 函数。0.26 及之前把 scale() 塞进了 filter——它不是
-  // filter 函数，整条声明被浏览器判无效丢弃，模糊/亮度/对比度跟着全部失效
-  // （0.27 用户反馈"调节不明显"的根因）。0.28 追加锐化：低分辨率背景图被
-  // cover 放大后靠它找回边缘（用户 850×478 的图铺 1920 宽窗口）。
-  layer.style.filter = bgFilterCss(bg);
-  // 缩放走 transform，锚点跟随位置滑杆：放大后拖位置才有可感的平移。
-  layer.style.transform = scale !== 1 ? `scale(${scale})` : "";
-  layer.style.transformOrigin = `${bg.bgPosX}% ${bg.bgPosY}%`;
-  // 模糊会把边缘糊成透明（fixed 层从视口外取不到像素）：把层往外扩一圈，
-  // inset:0 + 负 margin 会把盒子撑出视口，糊边就落在视口外。
-  layer.style.margin = blur > 0 ? `${-Math.ceil(blur * 2)}px` : "";
+  lastApplied = { settings: bg, absolute };
+  void bakeBackground(layer, bg, absolute);
 
   // 界面浓度（bgSurface）：表面半透明底的浓度。CSS 里的基础值（编辑器 80%、
   // 顶栏 82%、侧栏 66%、面板卡 76%）按滑杆等比缩放——80 就是 0.28 及以前的

@@ -43,13 +43,14 @@ import {
   IconSparkles,
 } from "./icons";
 
-type SectionId = "general" | "appearance" | "daily" | "sync" | "storage" | "shortcuts" | "about";
+type SectionId = "general" | "appearance" | "daily" | "sync" | "ai" | "storage" | "shortcuts" | "about";
 
 const SECTIONS: { id: SectionId; label: string; icon: ReactNode }[] = [
   { id: "general", label: "通用", icon: <IconSettings size={14} /> },
   { id: "appearance", label: "外观", icon: <IconSparkles size={14} /> },
   { id: "daily", label: "日记与附件", icon: <IconCalendarPlus size={14} /> },
   { id: "sync", label: "云同步", icon: <IconRefresh size={14} /> },
+  { id: "ai", label: "AI", icon: <IconSparkles size={14} /> },
   { id: "storage", label: "存储", icon: <IconLibrary size={14} /> },
   { id: "shortcuts", label: "快捷键", icon: <IconListTree size={14} /> },
   { id: "about", label: "关于", icon: <span className="settings-nav-logo">i</span> },
@@ -1252,6 +1253,18 @@ export default function SettingsDialog({
             />
           </Row>
           <Row
+            label="最近文件包含其他仓库"
+            desc="「最近文件」弹窗是否列出在其他仓库里打开过的文件。"
+            tip="0.39.23 用户反馈「最近的文件为什么会显示别的仓库文件」：默认只显示当前仓库；开启后跨仓库条目会带仓库名徽标，回车自动切换到那个仓库打开。"
+            keywords="最近文件 其他仓库 跨仓库 recent"
+          >
+            <input
+              type="checkbox"
+              checked={settings.recentsShowOtherVaults}
+              onChange={(event) => saveWithFlash({ recentsShowOtherVaults: event.target.checked })}
+            />
+          </Row>
+          <Row
             label="内容结果展示上限"
             desc="全局搜索的内容结果一次显示的文件数，滚到底部自动追加下一批。"
             keywords="搜索 数量 上限 分页 滚动"
@@ -2293,6 +2306,50 @@ export default function SettingsDialog({
             >
               {portalBusy ? "签发票据中…" : "打开网页端"}
             </button>
+          </Row>
+        </section>
+
+        <section className="settings-sec" data-sec="ai" style={{ display: searching || active === "ai" ? undefined : "none" }}>
+          <Group>AI 模型供应商（本机设置，不会写进仓库）</Group>
+          <p className="settings-hint">
+            填 OpenAI 兼容的接口（chat/completions）。Base URL 例：
+            <code>https://open.bigmodel.cn/api/paas/v4</code>——图片预览/灯箱里的
+            「AI 识别」会用这里的配置框选识图（0.39.23 用户需求）。
+          </p>
+          <Row
+            label="Base URL"
+            desc="模型服务地址（含版本路径即可，不必带 /chat/completions）。"
+            keywords="AI base url 接口 供应商"
+          >
+            <input
+              type="text"
+              className="settings-text"
+              value={settings.aiBaseUrl}
+              placeholder="https://open.bigmodel.cn/api/paas/v4"
+              onChange={(event) => saveWithFlash({ aiBaseUrl: event.target.value })}
+            />
+          </Row>
+          <Row label="API Key" desc="密钥只存本机。" keywords="AI key 密钥 token">
+            <input
+              type="password"
+              className="settings-text"
+              value={settings.aiApiKey}
+              placeholder="粘贴 API Key"
+              onChange={(event) => saveWithFlash({ aiApiKey: event.target.value })}
+            />
+          </Row>
+          <Row
+            label="模型"
+            desc="支持图片输入的多模态模型名（如 glm-4v-flash、gpt-4o-mini 等）。"
+            keywords="AI model 模型 多模态 vision"
+          >
+            <input
+              type="text"
+              className="settings-text"
+              value={settings.aiModel}
+              placeholder="glm-4v-flash"
+              onChange={(event) => saveWithFlash({ aiModel: event.target.value })}
+            />
           </Row>
         </section>
 
