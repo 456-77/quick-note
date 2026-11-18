@@ -383,6 +383,8 @@ export default function SpreadsheetPreview({
     row: number;
     col: number;
     value: string;
+    /** 进入编辑时的原值（跳过未改动提交用；value 随输入实时变，不能当基准） */
+    original: string;
     saving: boolean;
   } | null>(null);
   const editInputRef = useRef<HTMLInputElement | null>(null);
@@ -428,10 +430,12 @@ export default function SpreadsheetPreview({
       editCancelledRef.current = false;
       editTokenRef.current += 1;
       setSel({ row: rowIndex, col });
+      const original = current.rows[rowIndex]?.[col] ?? "";
       setEdit({
         row: rowIndex,
         col,
-        value: current.rows[rowIndex]?.[col] ?? "",
+        value: original,
+        original,
         saving: false,
       });
     },
@@ -499,10 +503,11 @@ export default function SpreadsheetPreview({
   }, [editingCellKey]);
 
   /** 编辑框键盘：Enter 下移 / Tab 右移（Shift 反向）；保存成功后把选中格移到
-   *  相邻单元格，失败则留在原格（输入不丢）。Esc 取消且 stopPropagation。
-   *  **必须 stopPropagation**：输入框在 td 里，Enter 继续冒泡会命中 td 的
-   *  onKeyDown（又开一次编辑），把刚提交的编辑框重开成旧值——0.39.19 冒烟
-   *  实锤（保存成功但输入框不关、显示旧值）。 */
+   *  相邻单元格**并直接进入编辑态**（0.39.20 用户反馈「回车以及tab后要能够直接
+   *  编辑，而不是得双击后编辑」），失败则留在原格（输入不丢）。Esc 取消且
+   *  stopPropagation。**必须 stopPropagation**：输入框在 td 里，Enter 继续冒泡
+   *  会命中 td 的 onKeyDown（又开一次编辑），把刚提交的编辑框重开成旧值——
+   *  0.39.19 冒烟实锤（保存成功但输入框不关、显示旧值）。 */
   const handleEditorKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     // 中文输入法组词中的 Enter 是「选词/上屏」，不能当提交（否则上屏即保存并跳格）
     if (event.nativeEvent.isComposing || event.keyCode === 229) return;
@@ -513,13 +518,19 @@ export default function SpreadsheetPreview({
       const dRow = event.key === "Enter" ? (event.shiftKey ? -1 : 1) : 0;
       const dCol = event.key === "Tab" ? (event.shiftKey ? -1 : 1) : 0;
       const text = event.currentTarget.value;
-      void commitEdit(text).then((ok) => {
+      // 值没改（Tab/Enter 穿格）不写盘：省一次原子写 + 云端版本号不做无谓推进。
+      // 基准是**进入编辑时的原值**（original），不能比 edit.value——受控输入里
+      // 它随打字实时变，永远等于 text，比了等于永远跳过提交
+      const after = current && text === current.original
+        ? Promise.resolve(true)
+        : commitEdit(text);
+      void after.then((ok) => {
         if (!ok || !current) return;
         // 表头格没有「选中态」：Enter 落到首条数据；Tab 只提交不移动
         if (current.row === headerRow) {
-          if (dRow > 0) moveSelection(current.row, current.col, 1, 0);
+          if (dRow > 0) moveSelection(current.row, current.col, 1, 0, { thenEdit: true });
         } else {
-          moveSelection(current.row, current.col, dRow, dCol);
+          moveSelection(current.row, current.col, dRow, dCol, { thenEdit: true });
         }
       });
     } else if (event.key === "Escape") {
@@ -545,7 +556,13 @@ export default function SpreadsheetPreview({
           setEdit((prev) => (prev ? { ...prev, value: event.target.value } : prev))
         }
         onKeyDown={handleEditorKey}
-        onBlur={(event) => void commitEdit(event.currentTarget.value)}
+        onBlur={(event) => {
+          // 值没改不提交：Tab/Enter 穿格走 thenEdit 换格时，旧输入框卸载的 blur
+          // 不能再把同一份原值写一遍（落盘去重+省一次 IPC）
+          const value = event.currentTarget.value;
+          if (value === edit?.original) return;
+          void commitEdit(value);
+        }}
         onClick={(event) => event.stopPropagation()}
         onDoubleClick={(event) => event.stopPropagation()}
         onMouseDown={(event) => event.stopPropagation()}
@@ -770,12 +787,16 @@ export default function SpreadsheetPreview({
    * 切换到同列下面的单元格」）。行号用 sheet.rows 的下标；有筛选时在**可见行**
    * 里移动（被筛掉的行不该被 Tab 经过）。Tab 越过最后一列 → 下一行第一列；
    * Shift+Tab 反向；Enter/Shift+Enter 上下移。
+   * 0.39.20 用户反馈「表格中回车以及tab后要能够直接编辑，而不是得双击后编辑」：
+   * opts.thenEdit 落点直接进编辑态（编辑链免双击；虚拟化窗口外的落点由滚动
+   * 重渲后自动带出编辑框）。
    */
   function moveSelection(
     fromRow: number,
     fromCol: number,
     dRow: number,
     dCol: number,
+    opts: { thenEdit?: boolean } = {},
   ) {
     if (!sheet || header.length === 0 || filtered.length === 0) return;
     const dataIndex = fromRow - headerRow - 1;
@@ -806,7 +827,17 @@ export default function SpreadsheetPreview({
     if (targetData < 0) return;
     const rowIdx = headerRow + 1 + targetData;
     setSel({ row: rowIdx, col: targetCol });
-    pendingFocusRef.current = { row: rowIdx, col: targetCol };
+    // thenEdit 落点直接进编辑：**不能**再排 td 聚焦——pendingFocus 的 effect 会
+    // 把焦点从刚挂载的编辑输入框抢走，触发 blur 提交把编辑框秒关（0.39.20 批测
+    // 实锤）。对齐交给编辑框挂载 effect 的 focus({preventScroll})，粗对齐靠上面的
+    // scrollRowIntoView。落点被夹取回**原格**（末行 Enter / 筛选只剩一行）时不进
+    // 编辑——原格重开编辑器会让单元格停在编辑态、显示值不更新，体验是「Enter
+    // 关不掉」；此时走普通选中聚焦收尾
+    if (opts.thenEdit && (rowIdx !== fromRow || targetCol !== fromCol)) {
+      beginEdit(rowIdx, targetCol);
+    } else {
+      pendingFocusRef.current = { row: rowIdx, col: targetCol };
+    }
     scrollRowIntoView(targetPos);
   }
 
@@ -1056,11 +1087,11 @@ export default function SpreadsheetPreview({
             className="xlsx-toolbar-note"
             title={
               canEdit
-                ? "双击单元格编辑；编辑时 Enter 保存并下移 / Tab 保存并右移（Shift 反向），Esc 取消；选中格上 Enter/Tab 也可移动。点击表头右侧的 ▾ 筛选此列"
+                ? "双击单元格编辑；Enter/Tab 落点直接进编辑（Shift 反向），Esc 取消；选中格上 Enter 编辑当前格、Tab 右移并编辑。点击表头右侧的 ▾ 筛选此列"
                 : "点击表头右侧的 ▾ 筛选此列"
             }
           >
-            {canEdit ? "双击编辑 · Enter 下移 / Tab 右移 · 点表头 ▾ 筛选" : "点表头 ▾ 筛选"}
+            {canEdit ? "双击编辑 · Enter/Tab 直接编辑 · 点表头 ▾ 筛选" : "点表头 ▾ 筛选"}
           </span>
         )}
       </div>
@@ -1222,14 +1253,22 @@ export default function SpreadsheetPreview({
                                   // 编辑框的按键自己处理（且已 stopPropagation）；
                                   // 这里再防一层，避免任何输入控件的事件漏上来
                                   if ((event.target as HTMLElement).tagName === "INPUT") return;
-                                  // 0.39.19：选中格上 Enter 下移 / Tab 右移（Excel 口径），
-                                  // F2（或双击）才进编辑
+                                  // 0.39.19：选中格上 Enter 下移 / Tab 右移（Excel 口径）；
+                                  // 0.39.20 用户反馈「回车以及tab后要能够直接编辑，而不是
+                                  // 得双击后编辑」——落点直接进编辑态（Enter 在原格开编辑，
+                                  // Tab 移到右侧格开编辑；Shift 反向），F2（或双击）不变
                                   if (event.key === "Enter") {
                                     event.preventDefault();
-                                    moveSelection(rowIdx, col, event.shiftKey ? -1 : 1, 0);
+                                    if (event.shiftKey) {
+                                      moveSelection(rowIdx, col, -1, 0, { thenEdit: true });
+                                    } else {
+                                      beginEdit(rowIdx, col);
+                                    }
                                   } else if (event.key === "Tab") {
                                     event.preventDefault();
-                                    moveSelection(rowIdx, col, 0, event.shiftKey ? -1 : 1);
+                                    moveSelection(rowIdx, col, 0, event.shiftKey ? -1 : 1, {
+                                      thenEdit: true,
+                                    });
                                   } else if (event.key === "F2") {
                                     event.preventDefault();
                                     beginEdit(rowIdx, col);

@@ -258,6 +258,18 @@ console.log("\n冲突决策（判断错了就是丢改动或覆盖别人）\n");
     }) === "keep-local",
     "双边都改过 → 本地胜（保留本地并回推）",
   );
+  // 0.39.20：云端还停在本设备上次推的那份（remote == known）、本地又改了——
+  // 不是双边改动，继续推。此前这条路径落进 keep-local 被冲突扣住（推送不推进
+  // 游标，下一轮会拉回自己的上一推），批量轮/多窗口下第二条速记起永远推不出去
+  check(
+    decideRecord({
+      remoteDeleted: false,
+      remoteHash: H("old"),
+      knownHash: H("old"),
+      local: { exists: true, hash: H("local") },
+    }) === "push-local",
+    "云端=自己上次推的版本、本地又改了 → 继续推（不是冲突）",
+  );
   check(
     decideRecord({
       remoteDeleted: false,

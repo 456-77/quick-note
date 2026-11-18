@@ -276,6 +276,12 @@ export default function LibraryManagerDialog({
   }, [tables, classes, includeJava]);
 
   const scoped = useMemo(() => rows.filter((row) => row.kind === activeLib), [rows, activeLib]);
+  // 0.39.20 搜索跨库：占位符承诺「搜索表名 / 类名 / 标签」，但此前 query 只在当前
+  // 分段（scoped）里筛——在「数据表」分段搜类名永远零结果（用户实锤「只能搜索当前
+  // 选定的数据表内的表名」）。有查询词时扩大到两库，清空回到分段浏览；标签/日期
+  // 筛选继续在结果集上生效。
+  const searching = query.trim() !== "";
+  const searchBase = useMemo(() => (searching ? rows : scoped), [rows, scoped, searching]);
 
   /** 标签聚合（筛选弹层用；多标签行在每个标签下各计一次）。 */
   const tagCounts = useMemo(() => {
@@ -294,7 +300,7 @@ export default function LibraryManagerDialog({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const now = Date.now();
-    return scoped.filter((row) => {
+    return searchBase.filter((row) => {
       if (tagSel.size > 0) {
         const hit = [...tagSel].some((tag) =>
           tag === NO_TAG ? row.tags.length === 0 : row.tags.includes(tag),
@@ -314,7 +320,7 @@ export default function LibraryManagerDialog({
       const hay = `${row.name}\n${row.tags.join(" ")}\n${row.project}\n${row.comment ?? ""}\n${firstLine(row.ddl)}`;
       return hay.toLowerCase().includes(q);
     });
-  }, [scoped, query, tagSel, dateRange, today, yesterday]);
+  }, [searchBase, query, tagSel, dateRange, today, yesterday]);
 
   const sorted = useMemo(() => {
     const list = [...filtered];
@@ -955,7 +961,7 @@ export default function LibraryManagerDialog({
             ))}
             <span className="cm-spacer" />
             <span className="cm-scan-meta">
-              {filtered.length} / {scoped.length} 条
+              {filtered.length} / {searchBase.length} 条
             </span>
           </>
         )}
@@ -1037,6 +1043,14 @@ export default function LibraryManagerDialog({
                         {/* 0.39.17 用户反馈「这里分组啥意思，不是已经用标签替代了吗」：
                             行 meta 不再展示内部段落名，只留收录时间 + 标签 + COMMENT
                             （段落仍在数据里，定位/保存按它走，只是不占用户视线） */}
+                        {searching && includeJava && (
+                          <span className="cm-lib-kind">
+                            {row.kind === "ddl" ? "数据表" : "实体类"}
+                          </span>
+                        )}
+                        {searching && includeJava && (row.time || row.tags.length > 0 || row.comment) && (
+                          <span className="cm-meta-dot">·</span>
+                        )}
                         {row.time && (
                           <span className="cm-row-time">{fmtRowTime(row.time, today)}</span>
                         )}

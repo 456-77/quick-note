@@ -302,6 +302,8 @@ export type RecordAction =
   | "adopt-remote"
   /** 本地胜（双边都改过）：保留本地，重新推送。 */
   | "keep-local"
+  /** 云端还停在本设备上次推的那份、本地又改了：不是冲突，继续推。 */
+  | "push-local"
   /** 跟随云端删除（进回收目录）。 */
   | "delete-local"
   /** 云端已删而本地改过：本地胜，重新推送复活。 */
@@ -362,6 +364,13 @@ export function decideRecord(input: RecordDecisionInput): RecordAction {
   if (local.exists) {
     if (local.hash === remoteHash) return "noop-identical";
     if (knownHash !== undefined && local.hash === knownHash) return "adopt-remote";
+    // 云端还停在本设备上次推的那份（remote == known），本地又改了：这不是
+    // 双边改动，继续把本地推上去即可。0.39.20 补的分支——推送不推进游标，
+    // 下一轮 pull 会把上一推拉回来；此前这条路径落进 keep-local 被当成冲突
+    // 扣住（dirty 被撤、conflictHold 写进状态文件），批量轮/多窗口下第二条
+    // 速记起永远推不出去，直到用户手动开仓裁决（0.39.19 用户实锤：
+    // 「添加完速记收件仓库不会自动同步」的第二天障）。
+    if (knownHash !== undefined && knownHash === remoteHash) return "push-local";
     return "keep-local";
   }
 

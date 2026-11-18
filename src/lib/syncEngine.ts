@@ -182,6 +182,13 @@ export class SyncEngine {
   private disposed = false;
   /** 错误提示去重：同一错误只提示一次，成功后复位。 */
   private lastErrorNotice = "";
+  /**
+   * 最近一个完整同步轮的失败原因（null=最近一轮成功）。syncNow 的错误对周期轮
+   * 是自吞的（下一周期重试即可），但批量轮（syncVaultOnce）的调用方需要如实
+   * 知道成败——0.39.20 起 handleArchiveSync 靠它把速记/归档触发的自动轮失败
+   * 亮出来，而不是谎报「已同步」。
+   */
+  lastRoundError: string | null = null;
   /** 内存中的 accessToken；丢了/过期就重新走 refresh → 登录。 */
   private accessToken: string | null = null;
   /** 本周期认定的虚拟文件路径（不落盘，应用时交给宿主合并）。 */
@@ -336,6 +343,7 @@ export class SyncEngine {
       await this.doFlush();
       this.state.lastSyncAt = Date.now();
       this.lastErrorNotice = "";
+      this.lastRoundError = null;
       this.host.onStatus("ok");
       if (this.downloadBudget.deferred > 0) {
         this.host.onNotice(
@@ -344,6 +352,7 @@ export class SyncEngine {
       }
     } catch (err) {
       this.notifyError(err);
+      this.lastRoundError = err instanceof Error ? err.message : String(err);
       this.host.onStatus("error", err instanceof Error ? err.message : String(err));
     } finally {
       this.syncing = false;
@@ -686,6 +695,11 @@ export class SyncEngine {
         }
         return;
       }
+      case "push-local":
+        // 云端就是自己上次推的版本、本地又改了：不是冲突。扫描排下的推送
+        // 队列原样保留，doFlush 照常推（0.39.20：此前这条路径落进 keep-local
+        // 被冲突扣住，批量轮第二条速记起永远推不出去）
+        return;
       case "keep-local":
       case "resurrect-local": {
         this.dirty.delete(record.path); // 本轮扫描可能已排了推送，撤下

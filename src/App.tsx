@@ -2728,9 +2728,13 @@ export default function App() {
    * 0.39.19 用户反馈「添加速记后想要进行同步，必须要打开速记仓库，很麻烦」：
    * 写完速记也走这条联动——收件仓库开着同步就自动跑一轮，有冲突提醒打开
    * 速记仓库处理。
+   * 0.39.20 两处修正：①开关没开的仓库不再**静默**跳过——速记触发的轮次（
+   * fromCapture）用 notice 说明「未开启云同步」，用户才不会以为已经同步出去了；
+   * ②临时轮失败要如实报错（syncVaultOnce 现在会把引擎的 lastRoundError 上抛，
+   * 此前 syncNow 自吞错误、promise 永不 reject，失败也显示「已自动同步仓库」）。
    */
   const handleArchiveSync = useCallback(
-    (involved: string[]) => {
+    (involved: string[], options: { fromCapture?: boolean } = {}) => {
       const sync = syncRef.current;
       if (!sync) return;
       void (async () => {
@@ -2741,34 +2745,40 @@ export default function App() {
           } catch {
             enabled = false;
           }
-          if (!enabled) continue;
+          const name = target.replace(/^.*[\\/]/, "");
+          if (!enabled) {
+            if (options.fromCapture) {
+              notice(`收件仓库「${name}」未开启云同步，本次速记没有自动同步`, "error");
+            }
+            continue;
+          }
           if (vault && target === vault) {
             sync.syncNow();
             continue;
           }
-          const name = target.replace(/^.*[\\/]/, "");
           await sync
             .syncVaultOnce(target, (paths) => {
               setError(`同步「${name}」发现 ${paths.length} 个冲突文件：请打开该仓库手动处理`);
             })
             .then(
               () => setStatus(`已自动同步仓库：${name}`),
-              (e) => setError(`归档后同步「${name}」失败：${e}`),
+              (e) => setError(`「${name}」自动同步失败：${e}`),
             );
         }
       })();
     },
-    [vault],
+    [notice, setError, setStatus, vault],
   );
 
   /** 速记写入后的自动同步（0.39.19）：速记常一口气连记几条，防抖合并成
-   *  一轮（3s 尾随），避免每条各跑一次全量同步。 */
+   *  一轮（3s 尾随），避免每条各跑一次全量同步。fromCapture 让未开同步的
+   *  收件仓库给出可见提示而不是静默跳过（0.39.20）。 */
   const captureSyncTimerRef = useRef<number | undefined>(undefined);
   const scheduleCaptureSync = useCallback(
     (target: string) => {
       window.clearTimeout(captureSyncTimerRef.current);
       captureSyncTimerRef.current = window.setTimeout(() => {
-        handleArchiveSync([target]);
+        handleArchiveSync([target], { fromCapture: true });
       }, 3000);
     },
     [handleArchiveSync],
@@ -7891,6 +7901,10 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // 0.39.20 分层让位：灯箱是视觉最顶层，它开着时 Esc 由它自己消费
+      // （lightbox.ts 捕获阶段已 stopImmediatePropagation，这里是兜底）；
+      // 快速笔记弹窗的图片预览浮层同理（它自己的捕获处理器负责关）
+      if (document.querySelector(".qn-lightbox, .quick-capture-imgview")) return;
       const active = document.activeElement as HTMLElement | null;
       if (active?.closest(".create-row")) return;
       if (tabMenu) {

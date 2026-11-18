@@ -188,7 +188,11 @@ try {
   await mouse(ws, "mouseReleased", head.x + 120, head.y + 72);
   await sleep(200);
   const after = await evaluate(ws, `document.querySelector('.jsonfmt').getBoundingClientRect().left`);
-  check(after - before > 80, "拖动头部移动弹窗", `left ${before} → ${after}`);
+  const dragDiag = await evaluate(
+    ws,
+    `({ innerW: window.innerWidth, styleLeft: document.querySelector('.jsonfmt')?.style.left, transform: getComputedStyle(document.querySelector('.jsonfmt')).transform })`,
+  ).catch(() => "?");
+  check(after - before > 80, "拖动头部移动弹窗", `left ${before} → ${after}  head=${JSON.stringify(head)} diag=${JSON.stringify(dragDiag)}`);
 
   // ---- 4) 📌 固定：弹窗常驻（点外不关、遮罩移除可点背后应用）——**不动窗口置顶**
   //（0.39.19 用户二轮反馈「我要的只是弹窗固定，而不是整个软件界面都固定」）

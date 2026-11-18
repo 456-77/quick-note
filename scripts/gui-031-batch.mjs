@@ -552,11 +552,11 @@ try {
       javaOk = existsSync(javaFile);
       if (javaOk) {
         javaText = readFileSync(javaFile, "utf8");
-        javaOk = javaText.includes("-- @tags: 测试项目A") && javaText.includes("public class Qn31User");
+        javaOk = javaText.includes("// @tags: 测试项目A") && javaText.includes("public class Qn31User");
       }
       if (!javaOk) await sleep(300);
     }
-    check(javaOk, "Java实体.md 落盘且带 -- @tags: 测试项目A（未分组区，0.39.17）", javaText.slice(0, 120));
+    check(javaOk, "Java实体.md 落盘且带 // @tags: 测试项目A（未分组区，0.39.17）", javaText.slice(0, 120));
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
     await sleep(300);
 
@@ -621,6 +621,12 @@ try {
         if (lineNo < 0) return null;
         const lineText = doc.split('\\n')[lineNo];
         const at = view.state.doc.line(lineNo + 1).from + lineText.indexOf('ids_qn31_tab') + 4;
+        // 0.39.20 批测加固：目标行可能已滚出视口（前面的插入/悬停把视口带走了）——
+        // coordsAtPos 对视口外位置给的是估算坐标，鼠标会打到工具栏上，悬停永不触发。
+        // 与 0.39.13「GUI 断言装饰前先滚进视口」同一条纪律
+        const node = view.domAtPos(at).node;
+        const el = node.nodeType === 1 ? node : node.parentElement;
+        el?.scrollIntoView?.({ block: 'center' });
         const coords = view.coordsAtPos(at);
         if (!coords) return null;
         const host = view.dom.getBoundingClientRect();
@@ -706,6 +712,15 @@ try {
     check(headInfo.segs.some((s) => s.includes('数据表')) && headInfo.segs.some((s) => s.includes('Java 实体')), 'cm-seg 分段含 数据表 / Java 实体', headInfo.segs.join('|'));
     const ddlOn = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('数据表'))?.classList.contains('is-on') ?? false`);
     check(ddlOn, '默认选中「数据表」分段');
+    // 0.39.20 用户反馈「不是说可以搜索表名类名吗，结果只能搜索当前选定的数据表内的」：
+    // 有查询词时搜索跨两库（浏览仍按分段分开看），跨库结果行带库别标识
+    await evaluate(ws, `(() => { const set = ${nativeSet}; set(document.querySelector('.lib-page .cm-search'), 'Qn31User'); return true; })()`);
+    const crossHit = await waitFor(ws, `[...document.querySelectorAll('.lib-page .lib-row-name')].some((el) => (el.textContent ?? '').includes('Qn31User'))`, 4000);
+    check(crossHit, '跨库搜索：数据表分段能搜到实体类（0.39.20）');
+    const kindBadge = await evaluate(ws, `document.querySelector('.lib-page .cm-lib-kind')?.textContent ?? ''`);
+    check(kindBadge === '实体类', '跨库结果带库别标识（0.39.20）', kindBadge);
+    await evaluate(ws, `(() => { const set = ${nativeSet}; set(document.querySelector('.lib-page .cm-search'), ''); return true; })()`);
+    await waitFor(ws, `!document.querySelector('.lib-page .cm-lib-kind')`, 3000);
     const ddlRows = await evaluate(ws, `document.querySelectorAll('.lib-page .cm-row').length`);
     check(ddlRows >= 2, '数据表库列出两条（6b 收录 + 测试项目B 同名）', String(ddlRows));
     const rowInfo = await evaluate(ws, `[...document.querySelectorAll('.lib-page .cm-row')].map((r) => ({

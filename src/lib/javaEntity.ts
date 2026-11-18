@@ -291,6 +291,27 @@ export function mergeClassesIntoNote(
     for (const hit of hits) {
       text = text.slice(0, hit.at) + hit.ddl + text.slice(hit.replaceEnd);
     }
+    // 0.39.20 收录替换补写标签（同 mergeDdlIntoNote）：替换跨度从注解块起点
+    // 起、在元数据行之下，弹窗新填的标签此前整个丢掉。替换后的新位置按
+    // add 并集补 @tags（插到**注解块之上**，与追加路径的元数据布局一致）；
+    // @time 保留原值。
+    if ((opts.tags?.length ?? 0) > 0) {
+      const sectionsAfter = matchingSections(ddlSections(text), project);
+      for (const [name] of batch) {
+        if (!replaced.has(name)) continue;
+        const hit = lastClassMatch(text, sectionsAfter, name);
+        if (hit) {
+          text = applyStatementTags(
+            text,
+            annotationBlockStart(text, hit.at),
+            project,
+            opts.tags as string[],
+            "java",
+            "add",
+          );
+        }
+      }
+    }
   }
 
   const pending = [...batch].filter(([name]) => !replaced.has(name)).map(([, ddl]) => ddl);

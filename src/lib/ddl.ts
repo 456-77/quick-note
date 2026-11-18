@@ -642,6 +642,21 @@ export function mergeDdlIntoNote(
       const { advance } = statementSpan(text.slice(hit.at), hit.headLen);
       text = text.slice(0, hit.at) + hit.ddl + text.slice(hit.at + advance);
     }
+    // 0.39.20 收录替换补写标签：替换只换语句体（@tags/@time 元数据行在跨度外
+    // 原样保留），弹窗里新填的标签此前会被整个丢掉（用户实锤「添加弹窗中设置了
+    // 标签为什么还显示无标签」）。替换完成后的新位置按 **add 并集**补 @tags
+    // 行——弹窗留空则原标签原样保留（applyStatementTags add 模式空标签直接
+    // 返回）；@time 不动，保留旧版本的收录时间。
+    if ((opts.tags?.length ?? 0) > 0) {
+      const sectionsAfter = matchingSections(ddlSections(text), project);
+      for (const [table] of batch) {
+        if (!replaced.has(table)) continue;
+        const hit = lastTableMatch(text, sectionsAfter, table);
+        if (hit) {
+          text = applyStatementTags(text, hit.at, project, opts.tags as string[], "sql", "add");
+        }
+      }
+    }
   }
 
   const pending = [...batch].filter(([table]) => !replaced.has(table)).map(([, ddl]) => ddl);

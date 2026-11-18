@@ -386,6 +386,17 @@ export function useSync(options: {
    * 冲突由引擎的 conflictHold 扣住（哈希不更新，打开仓库的常规同步会再次
    * 弹出裁决），`onConflicts` 把本轮撞上的文件报给调用方做提示（0.24：速记
    * 归档触发的自动轮用它提醒用户打开仓库手动处理）。
+   *
+   * 0.39.20 三处修正：
+   * 1. **失败要如实上抛**。syncNow 内部自吞错误（对周期轮那是对的），promise
+   *    永不 reject，调用方的成功提示成了谎言——现在轮次结束后读引擎记录的
+   *    lastRoundError，有错就 reject，handleArchiveSync 才能把失败亮出来。
+   * 2. **per-vault 文件读不到时不再落盘**。base 回落到当前仓库状态（adapt 后
+   *    cursor=0、hashes 空、开关取记忆表）只是临时推断，把它 persist 会把
+   *    仓库自己的真实状态（游标/哈希/开关）整个覆盖掉——临时轮宁可不落盘，
+   *    下轮重新推断。
+   * 3. 云端仓库名按该仓库配置的 vaultName（之前硬取文件夹名，改过名的仓库
+   *    批量轮会推到另一个云端仓库）。
    */
   const syncVaultOnce = useCallback(
     (vaultPath: string, onConflicts?: (paths: string[]) => void): Promise<void> => {
@@ -397,7 +408,7 @@ export function useSync(options: {
           const adapted = adaptStateToVault(base, vaultPath);
           const engine = new SyncEngine(vaultPath, adapted, {
             getFolder: () => "",
-            getVaultName: () => name,
+            getVaultName: () => (adapted.vaultName.trim() !== "" ? adapted.vaultName.trim() : name),
             excludedSyncPaths: () => [],
             getVirtualFiles: () => ({}),
             mergeVirtualFile: () => false,
@@ -406,15 +417,21 @@ export function useSync(options: {
             onConflicts: (items) => {
               if (onConflicts && items.length > 0) onConflicts(items.map((item) => item.path));
             },
-            persist: (next) =>
-              syncStateSaveFor(vaultStateKey(vaultPath), JSON.stringify(next, null, 2)).then(
-                () => {},
-                (e) => noticeRef.current(`保存同步状态失败：${e}`, "error"),
-              ),
+            persist: saved
+              ? (next) =>
+                  syncStateSaveFor(vaultStateKey(vaultPath), JSON.stringify(next, null, 2)).then(
+                    () => {},
+                    (e) => noticeRef.current(`保存同步状态失败：${e}`, "error"),
+                  )
+              : () => Promise.resolve(),
           });
           return engine
             .syncNow("manual")
-            .finally(() => engine.destroy());
+            .finally(() => engine.destroy())
+            .then(() => {
+              const error = engine.lastRoundError;
+              if (error !== null) throw new Error(error);
+            });
         });
     },
     [],
@@ -422,17 +439,22 @@ export function useSync(options: {
 
   /**
    * 指定仓库是否开着自动同步（0.24：速记归档触发同步用）。当前仓库以生效
-   * 开关为准；其他仓库先查「按仓库记忆」的开关表（设备状态里累积的
-   * enabledByVault），查不到再读该仓库自己的 per-vault 状态文件（syncVaultOnce
-   * 落的那份）——它没同步过批量轮时文件不存在，按未开启处理。
+   * 开关为准；其他仓库以**该仓库自己的 per-vault 状态文件为权威**（那是仓库
+   * 窗口的引擎亲自落盘的）。
+   *
+   * 0.39.20 修正：此前先查「按仓库记忆」表（enabledByVault）且**显式 false 也
+   * 直接短路**，不再读文件——记忆表是跨仓库的缓存，会被「切走仓库时记录开关」
+   * （adaptStateToVault）等通道写进历史值；多窗口下一旦表里是 false，速记触发
+   * 的自动同步轮就永远静默跳过，哪怕收件仓库自己的状态文件里 enabled=true
+   * （0.39.19 用户实锤：速记后收件仓库从不自动同步，直到手动打开它）。现在
+   * 只有记忆为 true 才短路，false/缺失都回落文件，读不到文件按未开启处理。
    */
   const enabledForVault = useCallback(async (vaultPath: string): Promise<boolean> => {
     const key = normalizeVaultKey(vaultPath);
     if (vaultRef.current && normalizeVaultKey(vaultRef.current) === key) {
       return stateRef.current.enabled;
     }
-    const memory = stateRef.current.enabledByVault[key];
-    if (typeof memory === "boolean") return memory;
+    if (stateRef.current.enabledByVault[key] === true) return true;
     try {
       const saved = await syncStateLoadFor(vaultStateKey(vaultPath));
       if (!saved) return false;

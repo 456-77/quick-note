@@ -27,6 +27,11 @@ import {
 
 let open: { destroy: () => void } | null = null;
 
+/** 灯箱此刻是否开着（其它 Esc 分层靠它让位：灯箱是视觉最顶层，Esc 只属于它）。 */
+export function lightboxOpen(): boolean {
+  return open !== null || document.querySelector(".qn-lightbox") !== null;
+}
+
 /** 关掉当前灯箱（若已打开）。 */
 export function closeLightbox(): void {
   open?.destroy();
@@ -159,6 +164,14 @@ export function openLightbox(src: string, alt: string): void {
   };
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== "Escape") return;
+    // 0.39.20 分层消费：灯箱是视觉最顶层，Esc 在灯箱开着时只属于它。挂**捕获
+    // 阶段**并 stopImmediatePropagation——速记管理面板/语句库面板的 Esc 处理器
+    // 同样挂在 window 捕获阶段且注册更早（普通 stopPropagation 拦不住同节点的
+    // 后续监听），不拦的话一次 Esc 会同时关灯箱和下层（用户实锤「预览图片时
+    // 点击 esc 会把速记管理面板、收录弹窗一起关掉」）。preventDefault 顺带让
+    // FilePreview 那类检查 defaultPrevented 的监听器跳过。
+    event.preventDefault();
+    event.stopImmediatePropagation();
     if (framing) {
       // 框选态先退框选，再按一次才关灯箱
       exitFraming();
@@ -176,7 +189,8 @@ export function openLightbox(src: string, alt: string): void {
   window.addEventListener("mousemove", onMove);
   window.addEventListener("mouseup", onUp);
   img.addEventListener("dblclick", onDbl);
-  window.addEventListener("keydown", onKey);
+  // 捕获阶段注册——Esc 分层消费的前提（见 onKey 注释）
+  window.addEventListener("keydown", onKey, true);
   root.addEventListener("mousedown", onBackdrop);
 
   // -------------------------------------------------- 移动端触摸（捏合/单指拖/双击）
@@ -432,7 +446,7 @@ export function openLightbox(src: string, alt: string): void {
     root.removeEventListener("wheel", onWheel);
     window.removeEventListener("mousemove", onMove);
     window.removeEventListener("mouseup", onUp);
-    window.removeEventListener("keydown", onKey);
+    window.removeEventListener("keydown", onKey, true);
     root.removeEventListener("mousedown", onBackdrop);
     if (mobile) {
       root.removeEventListener("touchstart", onTouchStart);

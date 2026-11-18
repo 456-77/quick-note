@@ -1093,6 +1093,10 @@ export default function CaptureManager({
     // 同节点的后续监听（target 就在 window 时两者必同节点）。
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // 0.39.20 分层让位：全局灯箱 / 快速笔记弹窗的图片预览浮层盖在本视图之上时，
+      // Esc 属于它们（它们各自捕获阶段消费）；本处理器注册更早，不主动让位会把
+      // 抽屉/面板先关掉（用户实锤「预览图片按 Esc 连速记管理面板一起关」）
+      if (document.querySelector(".qn-lightbox, .quick-capture-imgview")) return;
       if (popover || rowMenu) {
         event.preventDefault();
         event.stopImmediatePropagation();

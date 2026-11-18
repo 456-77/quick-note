@@ -645,3 +645,69 @@ console.log("多标签断言全部通过");
 }
 
 console.log("收录多标签断言全部通过");
+
+// ---------------- 0.39.20 收录替换补写标签（用户「设置了标签为什么还显示无标签」） ----------------
+{
+  const { mergeDdlIntoNote } = await import("../src/lib/ddl.ts");
+  const { mergeClassesIntoNote, parseClassLibrary } = await import("../src/lib/javaEntity.ts");
+
+  // DDL：旧表带 @tags: 海亮 + @time，替换时弹窗填了新标签 → 并集写回，时间保留
+  const ddlNote = [
+    "# 数据库表 DDL",
+    "",
+    "```sql",
+    "-- @tags: 海亮",
+    "-- @time: 2026-11-01 09:00",
+    "CREATE TABLE alpha (x int);",
+    "```",
+    "",
+  ].join("\n");
+  const m1 = mergeDdlIntoNote(ddlNote, "CREATE TABLE alpha (x int, y int);", "", {
+    time: "2026-11-18 10:00",
+    tags: ["中粮"],
+  });
+  assert(m1.includes("-- @tags: 海亮, 中粮"), "DDL 替换补写标签=并集", m1.split("\n").slice(2, 3).join(""));
+  assert(m1.includes("-- @time: 2026-11-01 09:00"), "替换保留原收录时间");
+  assert(!m1.includes("2026-11-18 10:00"), "不新增时间行");
+
+  // 弹窗标签留空 → 原标签原样保留（add 模式空标签直接返回）
+  const m2 = mergeDdlIntoNote(ddlNote, "CREATE TABLE alpha (x int, y int);", "", {
+    time: "2026-11-18 10:00",
+    tags: [],
+  });
+  assert(m2.includes("-- @tags: 海亮") && !m2.includes("海亮, 中粮"), "空标签替换不动原标签");
+
+  // 旧条目没有元数据块 → 新标签落语句上方（与追加路径布局一致）
+  const m3 = mergeDdlIntoNote(
+    "# 数据库表 DDL\n\n```sql\nCREATE TABLE beta (x int);\n```\n",
+    "CREATE TABLE beta (x int, y int);",
+    "",
+    { time: "2026-11-18 10:00", tags: ["中粮"] },
+  );
+  assert(m3.includes("-- @tags: 中粮"), "无元数据旧条目补写新标签", m3.split("\n").slice(2, 3).join(""));
+
+  // Java：替换带注解的旧类（元数据在注解之上）→ 新标签并集、注解跟新源码
+  const javaNote = [
+    "# Java 实体",
+    "",
+    "```java",
+    "// @tags: 海亮",
+    "// @time: 2026-11-01 09:00",
+    '@ApiModel("检查")',
+    "public class CheckScenario { private Long id; }",
+    "```",
+    "",
+  ].join("\n");
+  const j1 = mergeClassesIntoNote(
+    javaNote,
+    '@ApiModel("检查V2")\npublic class CheckScenario { private Long id; }',
+    "",
+    { time: "2026-11-18 10:00", tags: ["中粮"] },
+  );
+  const jEntry = parseClassLibrary(j1).get("CheckScenario")[0];
+  assert(jEntry.tags.join(",") === "海亮,中粮", "Java 替换补写标签=并集", JSON.stringify(jEntry.tags));
+  assert(jEntry.ddl.startsWith('@ApiModel("检查V2")'), "新注解跟着替换进来", jEntry.ddl.slice(0, 30));
+  assert(jEntry.time === "2026-11-01 09:00", "Java 替换保留原时间", jEntry.time ?? "null");
+}
+
+console.log("收录替换补标签断言全部通过");

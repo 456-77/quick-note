@@ -168,7 +168,7 @@ try {
     ws,
     `document.querySelector('.xlsx-toolbar-note')?.textContent ?? ''`,
   );
-  check(hint.includes("Enter 下移") && hint.includes("Tab 右移"), "工具栏出现编辑/导航提示", hint);
+  check(hint.includes("直接编辑"), "工具栏出现编辑/导航提示", hint);
 
   const dbl = (selector) =>
     evaluate(
@@ -281,6 +281,17 @@ try {
         const el = document.activeElement;
         if (el?.tagName === 'TD') return el.dataset.row + ':' + el.dataset.col;
         return el?.tagName ?? 'none';
+      })()`,
+    );
+
+  /** 0.39.20 Enter/Tab 落点直接进编辑态：编辑输入框所在格 "row:col:edit"。 */
+  const activeEditorCell = () =>
+    evaluate(
+      ws,
+      `(() => {
+        const el = document.activeElement;
+        const td = el?.tagName === 'INPUT' ? el.closest('td') : null;
+        return td ? td.dataset.row + ':' + td.dataset.col + ':edit' : (el?.tagName ?? 'none');
       })()`,
     );
 
@@ -403,31 +414,48 @@ try {
   );
   check(navUp, "打开多行导航表");
 
-  // B2 输入 10，Tab：保存并右移到 C2
+  // B2 输入 10，Tab：保存并右移到 C2 —— 0.39.20 起落点直接进编辑态
   await dbl('.xlsx-table tbody td[data-row="1"][data-col="1"]');
   await typeAndKey("10", "Tab");
-  const tabRight = await waitFor(ws, `document.activeElement?.tagName === 'TD' && document.activeElement.dataset.row === '1' && document.activeElement.dataset.col === '2'`, 10000);
-  check(tabRight, "编辑中 Tab：保存并右移到 C2", await activeCell());
+  const tabRight = await waitFor(ws, `document.activeElement?.tagName === 'INPUT' && document.activeElement.closest('td')?.dataset.row === '1' && document.activeElement.closest('td')?.dataset.col === '2'`, 10000);
+  check(tabRight, "编辑中 Tab：保存并右移到 C2 且直接进编辑", await activeEditorCell());
   const b2Text = await evaluate(
     ws,
     `document.querySelector('.xlsx-table tbody td[data-row="1"][data-col="1"]')?.textContent ?? ''`,
   );
   check(b2Text === "10", "Tab 保存的值显示为 10", b2Text);
 
-  // C2（空）Tab：越过最后一列 → 下一行第一列 A3
+  // C2（空、值未改）Tab：跳过写盘，越过最后一列 → 下一行第一列 A3 编辑态
   await pressKey("Tab");
-  const wrapNext = await waitFor(ws, `document.activeElement?.dataset?.row === '2' && document.activeElement?.dataset?.col === '0'`, 5000);
-  check(wrapNext, "行末 Tab 跳到下一行首列（A3）", await activeCell());
+  const wrapNext = await waitFor(ws, `document.activeElement?.tagName === 'INPUT' && document.activeElement.closest('td')?.dataset.row === '2' && document.activeElement.closest('td')?.dataset.col === '0'`, 5000);
+  check(wrapNext, "行末 Tab 跳到下一行首列（A3）并进编辑", await activeEditorCell());
 
-  // A3 Enter → A4；Shift+Enter → 回到 A3
+  // A3 编辑态 Enter → A4 编辑态；Shift+Enter → 回 A3 编辑态
   await pressKey("Enter");
-  const enterDown = await waitFor(ws, `document.activeElement?.dataset?.row === '3' && document.activeElement?.dataset?.col === '0'`, 5000);
-  check(enterDown, "选中格 Enter 下移到 A4", await activeCell());
+  const enterDown = await waitFor(ws, `document.activeElement?.tagName === 'INPUT' && document.activeElement.closest('td')?.dataset.row === '3' && document.activeElement.closest('td')?.dataset.col === '0'`, 5000);
+  check(enterDown, "编辑态 Enter 下移到 A4 并进编辑", await activeEditorCell());
   await pressKey("Enter", true);
-  const shiftUp = await waitFor(ws, `document.activeElement?.dataset?.row === '2' && document.activeElement?.dataset?.col === '0'`, 5000);
-  check(shiftUp, "Shift+Enter 上移回 A3", await activeCell());
+  const shiftUp = await waitFor(ws, `document.activeElement?.tagName === 'INPUT' && document.activeElement.closest('td')?.dataset.row === '2' && document.activeElement.closest('td')?.dataset.col === '0'`, 5000);
+  check(shiftUp, "Shift+Enter 上移回 A3 并进编辑", await activeEditorCell());
 
-  // A3 文本改成「乙改」，Enter 保存后落到 A4
+  // Esc 回选中态；选中格 Enter = 直接编辑当前格（0.39.20 新语义）。
+  // 编辑框卸载后焦点落回 body，先点回目标格拿回焦点（keydown 要从 td 冒泡）
+  await pressKey("Escape");
+  const escBack = await waitFor(ws, `!document.querySelector('.xlsx-cell-input')`, 5000);
+  check(escBack, "Esc 退出编辑框回选中态");
+  await realClickCell(2, 0);
+  await pressKey("Enter");
+  const selEnter = await waitFor(ws, `document.activeElement?.tagName === 'INPUT' && document.activeElement.closest('td')?.dataset.row === '2' && document.activeElement.closest('td')?.dataset.col === '0'`, 5000);
+  check(selEnter, "选中格 Enter 直接编辑当前格", await activeEditorCell());
+  await pressKey("Escape");
+  // 选中格 Tab = 右移并直接编辑
+  await realClickCell(2, 0);
+  await pressKey("Tab");
+  const selTab = await waitFor(ws, `document.activeElement?.tagName === 'INPUT' && document.activeElement.closest('td')?.dataset.row === '2' && document.activeElement.closest('td')?.dataset.col === '1'`, 5000);
+  check(selTab, "选中格 Tab 右移到 B3 并进编辑", await activeEditorCell());
+  await pressKey("Escape");
+
+  // A3 文本改成「乙改」，Enter 保存后落到 A4 编辑态
   await dbl('.xlsx-table tbody td[data-row="2"][data-col="0"]');
   await typeAndKey("乙改", "Enter");
   const a3Saved = await waitFor(
@@ -436,8 +464,8 @@ try {
     15000,
   );
   check(a3Saved, "Enter 保存文本 A3 = 乙改");
-  const enterAfterSave = await waitFor(ws, `document.activeElement?.dataset?.row === '3' && document.activeElement?.dataset?.col === '0'`, 5000);
-  check(enterAfterSave, "保存后 Enter 下移到 A4", await activeCell());
+  const enterAfterSave = await waitFor(ws, `document.activeElement?.tagName === 'INPUT' && document.activeElement.closest('td')?.dataset.row === '3' && document.activeElement.closest('td')?.dataset.col === '0'`, 5000);
+  check(enterAfterSave, "保存后落 A4 并直接进编辑", await activeEditorCell());
 
   // A2 文本改「甲改」，直接点 C2（blur 提交）
   await dbl('.xlsx-table tbody td[data-row="1"][data-col="0"]');
