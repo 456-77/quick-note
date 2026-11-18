@@ -2191,6 +2191,24 @@ html.qn-mobile .xlsx-toolbar {
 
 /* 0.39.19 用户反馈「预览图片的时候，添加识别文本功能」：右上角浮动识别钮 +
    底部结果面板（桌面限定渲染；WinRT OCR 是桌面命令） */
+/* 0.39.24 AI 测试连接的结果文案（设置 → AI） */
+.ai-test-result {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-test-result.is-ok {
+  color: var(--ok);
+}
+
+.ai-test-result.is-error {
+  color: var(--danger);
+}
+
 /* 0.39.23 AI 识别按钮：与「框选识别」并排（普通识别在右，AI 在它左边） */
 .file-preview-ocr-btn.file-preview-ai-btn {
   right: 118px;

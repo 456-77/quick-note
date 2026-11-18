@@ -24,6 +24,7 @@ import { bgFilterCss } from "../lib/background";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
 import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, autostartIsEnabled, autostartEnable, autostartDisable, type AppDataPaths, type DirStat } from "../lib/api";
 import { bgSettingsFor, getSettings, DEFAULTS, type BgSettings, type Settings } from "../lib/settings";
+import { aiTestConnection } from "../lib/aiVision";
 import type { DailyController } from "../lib/useDaily";
 import { issuePortalTicket, type SyncController } from "../lib/useSync";
 import { openExternal } from "../lib/markdownExtras";
@@ -564,6 +565,8 @@ export default function SettingsDialog({
   backConsumerRef,
 }: Props) {
   const [active, setActive] = useState<SectionId>("general");
+  /** AI 测试连接的状态（0.39.24 用户需求「ai 添加测试连接功能」）。 */
+  const [aiTest, setAiTest] = useState<{ busy: boolean; ok: boolean | null; text: string } | null>(null);
   /**
    * 移动端二级结构：true = 分类列表页，false = 分类详情页。
    * 打开面板时回到列表；点分类进详情；详情页头部「‹」返回。
@@ -2350,6 +2353,64 @@ export default function SettingsDialog({
               placeholder="glm-4v-flash"
               onChange={(event) => saveWithFlash({ aiModel: event.target.value })}
             />
+          </Row>
+          <Row
+            label="附加请求头"
+            desc="部分网关要求的自定义头，每行一条 Key: Value（可留空）。"
+            tip="0.39.24：例如 opencode 网关要求 x-opencode-session: <任意会话串>——缺了会报 MissingSessionID。普通 OpenAI 兼容服务留空即可。"
+            keywords="AI 请求头 header opencode session"
+          >
+            <textarea
+              className="settings-text"
+              style={{ minHeight: 56 }}
+              value={settings.aiExtraHeaders}
+              placeholder={"x-opencode-session: quick-note"}
+              spellCheck={false}
+              onChange={(event) => saveWithFlash({ aiExtraHeaders: event.target.value })}
+            />
+          </Row>
+          <Row
+            label="测试连接"
+            desc="发一个最小请求验证 Base URL / API Key / 模型。"
+            keywords="AI 测试 连接 test"
+          >
+            <span className="settings-inline">
+              <button
+                type="button"
+                className="btn btn-mini"
+                disabled={aiTest?.busy ?? false}
+                onClick={() => {
+                  if (aiTest?.busy) return;
+                  setAiTest({ busy: true, ok: null, text: "测试中…" });
+                  void aiTestConnection({
+                    baseUrl: settings.aiBaseUrl,
+                    apiKey: settings.aiApiKey,
+                    model: settings.aiModel,
+                  })
+                    .then((reply) => {
+                      setAiTest({
+                        busy: false,
+                        ok: true,
+                        text: `连接成功${reply ? `：${reply.slice(0, 80)}` : ""}`,
+                      });
+                    })
+                    .catch((e: unknown) => {
+                      setAiTest({
+                        busy: false,
+                        ok: false,
+                        text: e instanceof Error ? e.message : String(e),
+                      });
+                    });
+                }}
+              >
+                {aiTest?.busy ? "测试中…" : "测试连接"}
+              </button>
+              {aiTest && (
+                <span className={`ai-test-result${aiTest.ok === true ? " is-ok" : aiTest.ok === false ? " is-error" : ""}`}>
+                  {aiTest.text}
+                </span>
+              )}
+            </span>
           </Row>
         </section>
 

@@ -181,6 +181,9 @@ export interface Settings {
   aiBaseUrl: string;
   aiApiKey: string;
   aiModel: string;
+  /** 附加请求头（0.39.24：部分网关要求自定义头，如 opencode 的
+   *  `x-opencode-session: <任意会话串>`）。每行一条 `Key: Value`。 */
+  aiExtraHeaders: string;
   /**
    * 最近文件是否包含其他仓库（0.39.23 用户反馈「最近的文件为什么会显示别的仓库
    * 文件」）：默认只显示当前仓库；开启后「最近打开」模式下追加其他仓库的条目
@@ -280,6 +283,7 @@ export const DEFAULTS: Settings = {
   aiBaseUrl: "",
   aiApiKey: "",
   aiModel: "",
+  aiExtraHeaders: "",
   mobileFontScale: 1,
   updateChannel: "stable",
 };

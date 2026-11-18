@@ -14,6 +14,8 @@ export interface AiVisionConfig {
   baseUrl: string;
   apiKey: string;
   model: string;
+  /** 附加请求头（设置里每行 `Key: Value`；部分网关要求自定义头）。 */
+  extraHeaders?: string;
 }
 
 /** 读取当前 AI 配置（全空时视为未配置）。 */
@@ -23,7 +25,74 @@ export function aiConfig(): AiVisionConfig {
     baseUrl: s.aiBaseUrl.trim(),
     apiKey: s.aiApiKey.trim(),
     model: s.aiModel.trim(),
+    extraHeaders: s.aiExtraHeaders,
   };
+}
+
+/** 解析「每行 Key: Value」的附加请求头（空行/没有冒号的行忽略）。 */
+export function parseExtraHeaders(raw: string | undefined): Array<{ name: string; value: string }> {
+  const out: Array<{ name: string; value: string }> = [];
+  for (const line of (raw ?? "").split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === "") continue;
+    const colon = trimmed.indexOf(":");
+    if (colon <= 0) continue;
+    const name = trimmed.slice(0, colon).trim();
+    const value = trimmed.slice(colon + 1).trim();
+    if (name === "" || value === "") continue;
+    out.push({ name, value });
+  }
+  return out;
+}
+
+/** chat/completions 请求统一出口：URL 归一 + 附加请求头 + 状态码/错误体解析。 */
+async function sendChat(cfg: AiVisionConfig, body: unknown): Promise<Record<string, unknown>> {
+  const base = cfg.baseUrl.trim().replace(/\/+$/, "");
+  const url = /\/chat\/completions$/i.test(base) ? base : `${base}/chat/completions`;
+  const response = await httpRequest({
+    method: "POST",
+    url,
+    headers: [
+      { name: "Content-Type", value: "application/json" },
+      { name: "Authorization", value: `Bearer ${cfg.apiKey.trim()}` },
+      ...parseExtraHeaders(cfg.extraHeaders),
+    ],
+    bodyText: JSON.stringify(body),
+  });
+  const text = response.bodyBase64 ? decodeBase64Utf8(response.bodyBase64) : "";
+  if (response.status !== 200) {
+    let detail = text.slice(0, 300);
+    try {
+      const parsed = JSON.parse(text) as { error?: { message?: string }; message?: string };
+      detail = parsed.error?.message ?? parsed.message ?? detail;
+    } catch {
+      // 非 JSON 就原样展示
+    }
+    throw new Error(`HTTP ${response.status}：${detail}`);
+  }
+  try {
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch {
+    throw new Error("AI 返回的不是 JSON（检查 Base URL 是否指向 OpenAI 兼容接口）");
+  }
+}
+
+/** 从 chat/completions 响应取正文（string 或分段数组都兼容）。 */
+function contentOf(parsed: Record<string, unknown>): string {
+  const message = (parsed as { choices?: Array<{ message?: { content?: unknown } }> })
+    ?.choices?.[0]?.message?.content;
+  if (typeof message === "string") return message;
+  if (Array.isArray(message)) {
+    return message
+      .map((part) =>
+        part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string"
+          ? (part as { text: string }).text
+          : "",
+      )
+      .join("")
+      .trim();
+  }
+  return "";
 }
 
 /** 是否已配置（三个字段都齐）。 */
@@ -45,6 +114,24 @@ export const AI_VISION_PROMPT =
   "看不清的内容不要臆测；如果是截图，补充一句它大致在展示什么。";
 
 /**
+ * 测试连接（0.39.24 用户需求「ai 添加测试连接功能」）：发一个最小的**纯文本**
+ * 请求验证 Base URL / API Key / 模型三件套，成功返回模型的简短回复。
+ * `cfg` 由调用方传设置页当前输入值（保证测的就是用户看到的那三个框）。
+ */
+export async function aiTestConnection(cfg: AiVisionConfig): Promise<string> {
+  if (cfg.baseUrl.trim() === "" || cfg.apiKey.trim() === "" || cfg.model.trim() === "") {
+    throw new Error("先填写 Base URL / API Key / 模型名");
+  }
+  const parsed = await sendChat(cfg, {
+    model: cfg.model.trim(),
+    max_tokens: 512,
+    messages: [{ role: "user", content: "连通性测试，请回复：连接成功" }],
+  });
+  const reply = contentOf(parsed);
+  return reply || "连接成功（模型未返回文本）";
+}
+
+/**
  * 对图片做 AI 识别，返回模型输出的文本。失败抛错（调用方展示错误文案）。
  * `mime` 用图片真实类型（裁剪后统一是 PNG）。
  */
@@ -53,9 +140,7 @@ export async function aiRecognizeImage(base64: string, mime = "image/png"): Prom
   if (!aiConfigured()) {
     throw new Error("先在 设置 → AI 配置模型供应商（Base URL / API Key / 模型名）");
   }
-  const base = cfg.baseUrl.replace(/\/+$/, "");
-  const url = /\/chat\/completions$/i.test(base) ? base : `${base}/chat/completions`;
-  const body = {
+  const parsed = await sendChat(cfg, {
     model: cfg.model,
     temperature: 0.1,
     messages: [
@@ -67,43 +152,8 @@ export async function aiRecognizeImage(base64: string, mime = "image/png"): Prom
         ],
       },
     ],
-  };
-  const response = await httpRequest({
-    method: "POST",
-    url,
-    headers: [
-      { name: "Content-Type", value: "application/json" },
-      { name: "Authorization", value: `Bearer ${cfg.apiKey}` },
-    ],
-    bodyText: JSON.stringify(body),
   });
-  const text = response.bodyBase64 ? decodeBase64Utf8(response.bodyBase64) : "";
-  if (response.status !== 200) {
-    // 供应商错误体一般是 {"error":{"message":"..."}}；截一小段便于排查
-    let detail = text.slice(0, 300);
-    try {
-      const parsed = JSON.parse(text) as { error?: { message?: string }; message?: string };
-      detail = parsed.error?.message ?? parsed.message ?? detail;
-    } catch {
-      // 非 JSON 就原样展示
-    }
-    throw new Error(`AI 请求失败（HTTP ${response.status}）：${detail}`);
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error("AI 返回的不是 JSON（检查 Base URL 是否指向 OpenAI 兼容接口）");
-  }
-  const message = (parsed as { choices?: Array<{ message?: { content?: unknown } }> })?.choices?.[0]?.message?.content;
-  if (typeof message === "string") return message;
-  // 少数供应商把 content 给成 [{type:"text",text:"…"}] 的分段数组
-  if (Array.isArray(message)) {
-    const joined = message
-      .map((part) => (part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : ""))
-      .join("")
-      .trim();
-    if (joined) return joined;
-  }
+  const text = contentOf(parsed);
+  if (text) return text;
   throw new Error("AI 没有返回识别内容（模型可能不支持图片输入）");
 }

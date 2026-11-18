@@ -197,6 +197,14 @@ try {
       "AI 设置可见（Base URL / API Key / 模型）",
       JSON.stringify(aiRows),
     );
+    // 0.39.24 测试连接：未配置时点击要给出明确提示（不真连，CI 无供应商）
+    await evaluate(ws, `(() => { [...document.querySelectorAll('.settings-sec[data-sec="ai"] button')].find((b) => b.textContent.includes('测试连接'))?.click(); return true; })()`);
+    const testHint = await waitFor(
+      ws,
+      `(() => { const el = document.querySelector('.settings-sec[data-sec="ai"] .ai-test-result'); return el && el.textContent.includes('先填写'); })()`,
+      5000,
+    );
+    check(testHint, "AI 测试连接：未配置时给出填写提示（0.39.24）");
   }
   // 关设置
   await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
