@@ -80,7 +80,11 @@ export function parseClassLibrary(text: string): ClassLibrary {
       // （0.39.19 起注解收进源码，元数据块在注解块之上）
       const meta = metaBlockAbove(text, lineStart);
       const tags = meta?.hasTags ? meta.tags : project ? [project] : [];
-      const entries = (out.get(key) ?? []).filter((entry) => entry.project !== project);
+      // 同项目内同名：0.39.21 起「同名新增」允许同段并存多份（内容不同），必须
+      // 全部保留；手工复制段落造成的**内容完全相同**的重复照旧收成一条
+      const entries = (out.get(key) ?? []).filter(
+        (entry) => entry.project !== project || entry.ddl !== code,
+      );
       entries.push({ project, tags, time: meta?.time ?? undefined, ddl: code });
       out.set(key, entries);
     }
@@ -263,7 +267,7 @@ export function mergeClassesIntoNote(
   existing: string,
   incoming: string,
   project = "",
-  opts: { time?: string; tags?: string[] } = {},
+  opts: { time?: string; tags?: string[]; mode?: "replace" | "append" } = {},
 ): string {
   const fresh = parseClassLibrary(incoming);
   if (fresh.size === 0) return existing;
@@ -274,9 +278,11 @@ export function mergeClassesIntoNote(
 
   let text = existing;
   const replaced = new Set<string>();
-  // 0.39.17：同名项目段落可能重复——替换跨全部目标段落找最后一次声明
+  // 0.39.17：同名项目段落可能重复——替换跨全部目标段落找最后一次声明。
+  // 0.39.21 用户反馈「虽然同名，但是内容不同呀」：mode=append 时同名也作为
+  // 新条目追加（旧条目原样保留）
   const targets = matchingSections(ddlSections(text), project);
-  if (targets.length > 0) {
+  if (opts.mode !== "append" && targets.length > 0) {
     const hits: Array<{ at: number; ddl: string; replaceEnd: number }> = [];
     for (const [name, ddl] of batch) {
       const hit = lastClassMatch(text, targets, name);

@@ -174,6 +174,13 @@ export interface Settings {
    */
   javaEntityFilePath: string;
   /**
+   * 收录时遇到同名表/类的默认动作（0.39.21 用户反馈「虽然同名，但是内容不同呀」）：
+   * - `append`（默认）：**新增一份**——同名不同内容都保留，悬浮卡下拉可切换查看；
+   * - `replace`：替换原条目（旧行为）。
+   * 收录弹窗里可以按次临时切换，这里只决定初始值。
+   */
+  ddlCaptureMode: "append" | "replace";
+  /**
    * 编辑器字号缩放（0.33.0 批C）：仅移动端消费（桌面 CSS 变量恒 1），
    * 0.85~1.3，写入 html 的 --qn-edit-scale，正文/标题/行高等 em 系全部跟随。
    */
@@ -254,6 +261,7 @@ export const DEFAULTS: Settings = {
   // 仓库根的普通笔记：用户要能直接看到、手工编辑（同步也覆盖），不走隐藏目录
   ddlFilePath: "数据库表DDL.md",
   javaEntityFilePath: "Java实体.md",
+  ddlCaptureMode: "append",
   mobileFontScale: 1,
   updateChannel: "stable",
 };

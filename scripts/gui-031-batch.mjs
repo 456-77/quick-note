@@ -534,6 +534,16 @@ try {
     check(dlg2, "收录弹窗再次弹出（6b）");
     const dialogLabels = await evaluate(ws, `[...document.querySelectorAll('.ddl-project-row label')].map((el) => el.textContent)`);
     check(dialogLabels.some((t) => t === "标签") && !dialogLabels.some((t) => t.includes("项目")), "收录弹窗只问标签（0.39.17 去掉项目）", dialogLabels.join("|"));
+    // 0.39.21 用户反馈「虽然同名，但是内容不同呀」：同名时默认新增一份，可切成替换
+    const modeInfo = await evaluate(ws, `({
+      rows: [...document.querySelectorAll('.ddl-dialog .ddl-project-row label')].map((el) => el.textContent),
+      active: document.querySelector('.ddl-dialog .ddl-mode-seg .is-on')?.textContent ?? '',
+    })`);
+    check(
+      modeInfo.rows.includes("同名时") && modeInfo.active === "新增一份",
+      "收录弹窗「同名时」默认新增一份（0.39.21）",
+      JSON.stringify(modeInfo),
+    );
     await evaluate(ws, `(() => {
       const set = ${nativeSet};
       set(document.querySelector('.ddl-textarea'), "public class Qn31User {\\n  private Long id; // 主键\\n}");
@@ -557,6 +567,29 @@ try {
       if (!javaOk) await sleep(300);
     }
     check(javaOk, "Java实体.md 落盘且带 // @tags: 测试项目A（未分组区，0.39.17）", javaText.slice(0, 120));
+
+    // 0.39.21 同名新增：再收一份**同名不同内容**的类（默认 append）→ 两份并存
+    await evaluate(ws, `(() => {
+      const set = ${nativeSet};
+      set(document.querySelector('.ddl-textarea'), "public class Qn31User {\\n  private String extra; // 新增版\\n}");
+      set(document.querySelector('.ddl-project-row input'), "测试项目A");
+      return true;
+    })()`);
+    await key(ws, { mod: CTRL, key: "Enter" }, "Enter", 13);
+    const savedJava2 = await waitFor(ws, `(document.querySelector('.add-word-message')?.textContent ?? '').includes('已保存')`, 6000);
+    check(savedJava2, "同名类再次收录成功（append 模式）");
+    let bothOk = false;
+    let bothText = "";
+    for (let i = 0; i < 20 && !bothOk; i += 1) {
+      bothText = readFileSync(javaFile, "utf8");
+      bothOk =
+        bothText.includes("public class Qn31User") &&
+        bothText.split("public class Qn31User").length - 1 === 2 &&
+        bothText.includes("private Long id") &&
+        bothText.includes("private String extra");
+      if (!bothOk) await sleep(300);
+    }
+    check(bothOk, "同名两份并存：旧类体保留 + 新类体追加（0.39.21）", bothText.slice(0, 160));
     await key(ws, { mod: 0, key: "Escape" }, "Escape", 27);
     await sleep(300);
 
@@ -744,7 +777,8 @@ try {
     await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('Java 实体'))?.click(); return true; })()`);
     await sleep(300);
     const javaInfo = await evaluate(ws, `({ rows: document.querySelectorAll('.lib-page .cm-row').length, name: document.querySelector('.lib-page .lib-row-name')?.textContent ?? '', on: [...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('Java 实体'))?.classList.contains('is-on') ?? false })`);
-    check(javaInfo.rows === 1 && javaInfo.name === 'Qn31User' && javaInfo.on, '切换到 Java 实体分段（单独列出）', JSON.stringify(javaInfo));
+    // 0.39.21：同名新增后库里有两份 Qn31User（旧类体 + 新类体都保留）
+    check(javaInfo.rows === 2 && javaInfo.name === 'Qn31User' && javaInfo.on, '切换到 Java 实体分段（同名两份都列出）', JSON.stringify(javaInfo));
     // 回数据表 + 标签筛选 popover（Inbox 同款 cm-pop）
     await evaluate(ws, `(() => { [...document.querySelectorAll('.lib-page .cm-seg-btn')].find((b) => b.textContent.includes('数据表'))?.click(); return true; })()`);
     await sleep(300);

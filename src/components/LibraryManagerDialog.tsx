@@ -53,11 +53,14 @@ interface LibraryRow {
   comment: string | null;
   ddl: string;
   kind: LibraryKind;
+  /** 同一（库+键+段落）下的第几条（0 基）：0.39.21 同名新增允许同段多条，
+   *  行身份必须带上它，否则重复条目撞 React key、抽屉开错行 */
+  occurrence: number;
 }
 
-/** 行身份：库 + 键 + 所在段落（同名语句可在不同段落各存一份）。 */
+/** 行身份：库 + 键 + 所在段落 + 同段序号（同名语句可在不同段落/同段多份）。 */
 function rowIdOf(row: LibraryRow): string {
-  return `${row.kind}\u0000${row.key}\u0000${row.project}`;
+  return `${row.kind}\u0000${row.key}\u0000${row.project}\u0000${row.occurrence}`;
 }
 
 /** 「无标签」筛选的哨兵值。 */
@@ -241,6 +244,14 @@ export default function LibraryManagerDialog({
 
   const rows: LibraryRow[] = useMemo(() => {
     const out: LibraryRow[] = [];
+    // 同（库+键+段落）下的条数计数——0.39.21 同名新增后同段可能有多份
+    const seen = new Map<string, number>();
+    const occurrenceOf = (kind: LibraryKind, key: string, project: string) => {
+      const id = `${kind}\u0000${key}\u0000${project}`;
+      const next = seen.get(id) ?? 0;
+      seen.set(id, next + 1);
+      return next;
+    };
     for (const [key, entries] of tables) {
       for (const entry of entries) {
         out.push({
@@ -252,6 +263,7 @@ export default function LibraryManagerDialog({
           comment: tableCommentOf(entry.ddl),
           ddl: entry.ddl,
           kind: "ddl",
+          occurrence: occurrenceOf("ddl", key, entry.project),
         });
       }
     }
@@ -267,6 +279,7 @@ export default function LibraryManagerDialog({
             comment: null,
             ddl: entry.ddl,
             kind: "java",
+            occurrence: occurrenceOf("java", key, entry.project),
           });
         }
       }

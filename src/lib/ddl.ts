@@ -446,7 +446,12 @@ export function parseDdlTables(text: string): DdlLibrary {
       // `@time` 行带出收录时间
       const meta = metaBlockAbove(text, match.index);
       const tags = meta?.hasTags ? meta.tags : project ? [project] : [];
-      const entries = (out.get(key) ?? []).filter((entry) => entry.project !== project);
+      // 同项目内同名：0.39.21 起「同名新增」允许同段并存多份（内容不同），必须
+      // 全部保留；手工复制段落造成的**内容完全相同**的重复照旧收成一条
+      //（旧语义：同项目内同名以最后出现为准）
+      const entries = (out.get(key) ?? []).filter(
+        (entry) => entry.project !== project || entry.ddl !== ddl,
+      );
       entries.push({
         project,
         tags,
@@ -612,7 +617,7 @@ export function mergeDdlIntoNote(
   existing: string,
   incoming: string,
   project = "",
-  opts: { time?: string; tags?: string[] } = {},
+  opts: { time?: string; tags?: string[]; mode?: "replace" | "append" } = {},
 ): string {
   const fresh = parseDdlTables(incoming);
   if (fresh.size === 0) return existing;
@@ -625,9 +630,11 @@ export function mergeDdlIntoNote(
   let text = existing;
   const replaced = new Set<string>();
   // 0.39.17：同名项目段落可能重复（用户库笔记里 `## 海亮`/`## 中远` 各有十几段）——
-  // 替换要跨**全部**目标段落找最后一次出现，不能只看第一个段落
+  // 替换要跨**全部**目标段落找最后一次出现，不能只看第一个段落。
+  // 0.39.21 用户反馈「虽然同名，但是内容不同呀」：mode=append 时**不走替换**，
+  // 同名也作为新条目追加（旧条目原样保留，悬浮卡下拉可切换查看）
   const targets = matchingSections(ddlSections(text), project);
-  if (targets.length > 0) {
+  if (opts.mode !== "append" && targets.length > 0) {
     const hits: Array<{ at: number; headLen: number; ddl: string }> = [];
     for (const [table, ddl] of batch) {
       const hit = lastTableMatch(text, targets, table);

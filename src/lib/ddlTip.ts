@@ -159,13 +159,22 @@ export function buildDdlTipDom(
     const duplicated = new Set(
       labels.filter((label, index) => labels.indexOf(label) !== index),
     );
-    /** 选项文案：标签优先；同名多份且标签相同时补段落名区分。 */
-    const optionText = (index: number) => {
-      const entry = entries[index];
-      return duplicated.has(labels[index])
-        ? `${labels[index]}（${entry.project || "未分组"}）`
-        : labels[index];
-    };
+    /** 选项文案：标签优先；同名多份且标签相同时补段落名；同段落里再撞名
+     * （0.39.21 同名新增允许同段多份）就补序号 #2/#3 区分。 */
+    const optionTexts = (() => {
+      const base = entries.map((entry, index) =>
+        duplicated.has(labels[index])
+          ? `${labels[index]}（${entry.project || "未分组"}）`
+          : labels[index],
+      );
+      const seen = new Map<string, number>();
+      return base.map((text) => {
+        const count = (seen.get(text) ?? 0) + 1;
+        seen.set(text, count);
+        return count > 1 ? `${text} #${count}` : text;
+      });
+    })();
+    const optionText = (index: number) => optionTexts[index];
     if (entries.length > 1) {
       const wrap = document.createElement("span");
       wrap.className = "qn-ddl-tip-project";

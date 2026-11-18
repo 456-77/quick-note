@@ -1330,6 +1330,32 @@ export default function SettingsDialog({
             </span>
           </Row>
           <Row
+            label="收录同名时"
+            desc="收录弹窗粘贴的内容与库里已有表/类同名时的默认动作。"
+            tip="0.39.21 用户反馈「虽然同名，但是内容不同呀」：默认「新增一份」——同名不同内容的两份都保留，笔记里悬停表名/类名的下拉可切换查看；选「替换原条目」则用新粘贴的内容覆盖旧的。收录弹窗里还可以按次临时切换。"
+            keywords="收录 同名 新增 替换 重复 DDL 实体"
+          >
+            <span className="settings-segmented" role="tablist" aria-label="收录同名时">
+              {(
+                [
+                  ["append", "新增一份"],
+                  ["replace", "替换原条目"],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={settings.ddlCaptureMode === value}
+                  className={`settings-segment${settings.ddlCaptureMode === value ? " is-on" : ""}`}
+                  onClick={() => saveWithFlash({ ddlCaptureMode: value })}
+                >
+                  {label}
+                </button>
+              ))}
+            </span>
+          </Row>
+          <Row
             label="批量归入项目"
             desc="把库里现有（未分组）的语句全部归到指定项目（段落 = 这些语句的默认标签）。"
             tip="0.34.13 多项目：已经收录了很多语句、它们都属同一个项目时，在这里填项目名点一次——笔记里第一个语句前会插入 `## 项目名` 段落标题，段落名就是语句的默认标签。0.39 起一条语句可挂多个标签（管理面板「设置标签」），多个项目复用同一份 DDL 不必复制两份。"

@@ -69,11 +69,19 @@ const assert = (cond, msg) => { if (!cond) { console.error("FAIL:", msg); proces
   assert(lib.get("orders").length === 1 && lib.get("orders")[0].project === "中粮", "orders 只在中粮");
   assert(ddlProjectNames(text).join(",") === ",海亮,中粮", "项目名清单（含未分组）");
 
-  // 老笔记（无段落）→ 全部未分组，行为同单项目版
+  // 老笔记（无段落）→ 全部未分组。0.39.21 语义：同项目同名**不同内容**的两份
+  // 都保留（同名新增不再丢旧条目）；**内容完全相同**的手工重复仍收成一条
   const legacy = "```sql\nCREATE TABLE `t1` (a int);\nCREATE TABLE `t1` (b int);\n```";
   const legacyLib = parseDdlTables(legacy);
-  assert(legacyLib.get("t1").length === 1, "同项目同名以最后一次为准");
-  assert(legacyLib.get("t1")[0].project === "" && legacyLib.get("t1")[0].ddl.includes("b int"), "未分组且取后者");
+  assert(legacyLib.get("t1").length === 2, "同项目同名不同内容：两份都保留（0.39.21）");
+  assert(
+    legacyLib.get("t1")[0].project === "" &&
+      legacyLib.get("t1")[0].ddl.includes("a int") &&
+      legacyLib.get("t1")[1].ddl.includes("b int"),
+    "未分组且按出现顺序保留",
+  );
+  const dupSame = "```sql\nCREATE TABLE `t9` (a int);\nCREATE TABLE `t9` (a int);\n```";
+  assert(parseDdlTables(dupSame).get("t9").length === 1, "同项目同名同内容：收成一条（手工重复不吵人）");
 }
 
 // ---------------- mergeDdlIntoNote ----------------
@@ -522,8 +530,9 @@ console.log("多标签断言全部通过");
     "```sql\nCREATE TABLE hsdt_hocr_subtask (a int);\n```\n\n" +
     "```sql\nCREATE TABLE lg_znxd.hsdt_hocr_subtask (b bigint);\n```\n";
   const bothLib = parseDdlTables(both);
-  assert(bothLib.get("hsdt_hocr_subtask")?.length === 1, "同项目同名表只留一条");
-  assert(bothLib.get("hsdt_hocr_subtask")[0].ddl.includes("b bigint"), "后收录的限定名版生效");
+  // 0.39.21：同项目同名**不同内容**两条都保留（裸名/限定名归一到同一条目组）
+  assert(bothLib.get("hsdt_hocr_subtask")?.length === 2, "同项目同名裸名/限定名两条都保留（0.39.21）");
+  assert(bothLib.get("hsdt_hocr_subtask")[1].ddl.includes("b bigint"), "限定名版按出现顺序在后");
   assert(extractTableNames("CREATE TABLE lg_znxd.tbl (id int);").join() === "tbl", "识别表名用裸名");
 
   // 收录合并：库里是裸名，粘贴 schema 限定名 → 原地替换，不追加副本
@@ -711,3 +720,56 @@ console.log("收录多标签断言全部通过");
 }
 
 console.log("收录替换补标签断言全部通过");
+
+// ---------------- 0.39.21 收录同名新增（append 模式） ----------------
+{
+  const { mergeDdlIntoNote, parseDdlTables } = await import("../src/lib/ddl.ts");
+  const { mergeClassesIntoNote, parseClassLibrary } = await import("../src/lib/javaEntity.ts");
+
+  // DDL：同名旧条目带 @tags: 海亮，append 模式收录新版（内容不同）→ 两条并存
+  const ddlNote = "# 数据库表 DDL\n\n```sql\n-- @tags: 海亮\nCREATE TABLE alpha (x int);\n```\n";
+  const appended = mergeDdlIntoNote(ddlNote, "CREATE TABLE alpha (x int, y int);", "", {
+    time: "2026-11-18 15:00",
+    tags: ["中粮"],
+    mode: "append",
+  });
+  const entries = parseDdlTables(appended).get("alpha") ?? [];
+  assert(entries.length === 2, "append：同名两条并存", String(entries.length));
+  assert(
+    entries.some((e) => e.ddl.includes("x int)") || e.ddl.includes("x int);")),
+    "append：旧条目原样保留",
+  );
+  assert(entries.some((e) => e.ddl.includes("y int")), "append：新条目落盘");
+  assert(entries.some((e) => e.tags.includes("中粮")), "append：新条目带新标签", JSON.stringify(entries.map((e) => e.tags)));
+  assert(entries.some((e) => e.tags.includes("海亮")), "append：旧条目标签不被改");
+
+  // replace 模式仍是覆盖（旧行为不变）
+  const replaced = mergeDdlIntoNote(ddlNote, "CREATE TABLE alpha (x int, y int);", "", {
+    mode: "replace",
+  });
+  const repEntries = parseDdlTables(replaced).get("alpha") ?? [];
+  assert(
+    repEntries.length === 1 && repEntries[0].ddl.includes("y int"),
+    "replace：覆盖后只剩一条新版",
+    String(repEntries.length),
+  );
+
+  // Java：append 同名类两份并存
+  const javaNote = "# Java 实体\n\n```java\n// @tags: 海亮\npublic class Foo { int a; }\n```\n";
+  const javaAppended = mergeClassesIntoNote(javaNote, "public class Foo { int b; }", "", {
+    time: "2026-11-18 15:00",
+    tags: ["中粮"],
+    mode: "append",
+  });
+  const jEntries = parseClassLibrary(javaAppended).get("Foo") ?? [];
+  assert(jEntries.length === 2, "Java append：同名两份并存", String(jEntries.length));
+  assert(jEntries.some((e) => e.ddl.includes("int b")), "Java append：新类体落盘");
+  assert(jEntries.some((e) => e.ddl.includes("int a")), "Java append：旧类体原样保留");
+  assert(
+    jEntries.some((e) => e.tags.includes("海亮")),
+    "Java append：旧条目标签不丢",
+    JSON.stringify(jEntries.map((e) => e.tags)),
+  );
+}
+
+console.log("收录同名新增/替换断言全部通过");

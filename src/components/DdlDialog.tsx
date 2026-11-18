@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { extractTableNames } from "../lib/ddl";
 import { extractClassNames } from "../lib/javaEntity";
+import { getSettings } from "../lib/settings";
 import ComboInput from "./ComboInput";
 import { DialogPinButton, useDialogDrag, useDialogPinned } from "./DialogDragPin";
 
@@ -51,8 +52,9 @@ export default function DdlDialog({
   ddlPath,
   tagSuggestions = [],
 }: {
-  /** 落盘由父组件做。返回结果文案；抛错显示在弹窗里。tags = 输入的全部标签词。 */
-  onSubmit: (ddlText: string, tags: string[]) => Promise<string>;
+  /** 落盘由父组件做。返回结果文案；抛错显示在弹窗里。tags = 输入的全部标签词，
+   *  mode = 同名表/类的处理动作（append 新增一份 / replace 替换原条目）。 */
+  onSubmit: (ddlText: string, tags: string[], mode: "replace" | "append") => Promise<string>;
   onClose: () => void;
   /** DDL 笔记路径（提示文案里显示，让用户知道语句存去了哪）。 */
   ddlPath: string;
@@ -64,6 +66,11 @@ export default function DdlDialog({
   const [tags, setTags] = useState(() => lastDdlTags());
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ text: string; kind: "ok" | "error" } | null>(null);
+  // 0.39.21 用户反馈「虽然同名，但是内容不同呀」：同名时默认**新增一份**（两份都
+  // 保留，悬浮卡下拉切换查看），也可以按次切成替换；默认值在 设置 → 编辑 里改
+  const [mode, setMode] = useState<"replace" | "append">(
+    () => getSettings().ddlCaptureMode ?? "append",
+  );
   const areaRef = useRef<HTMLTextAreaElement | null>(null);
   const tagsRef = useRef<HTMLInputElement | null>(null);
 
@@ -85,7 +92,7 @@ export default function DdlDialog({
         .split(/[\s,，、;；]+/)
         .map((part) => part.trim())
         .filter(Boolean);
-      const text = await onSubmit(draft, [...new Set(parts)]);
+      const text = await onSubmit(draft, [...new Set(parts)], mode);
       rememberDdlTags(parts.join(" "));
       setMessage({ text, kind: "ok" });
       setDraft("");
@@ -157,6 +164,29 @@ export default function DdlDialog({
             title="空格/逗号分隔可一次写多个标签（@tags 行）。例：海亮 中远 → 标签为海亮+中远"
           />
         </div>
+        <div className="ddl-project-row">
+          <label>同名时</label>
+          {/* 0.39.21 用户反馈「虽然同名，但是内容不同呀」：默认新增一份（设置里可改），
+              这里只影响本次收录 */}
+          <div className="cm-seg ddl-mode-seg" role="group" aria-label="同名表/类处理">
+            <button
+              type="button"
+              className={`cm-seg-btn${mode === "append" ? " is-on" : ""}`}
+              onClick={() => setMode("append")}
+              title="同名也作为新条目追加，旧条目原样保留（悬浮卡下拉可切换查看）"
+            >
+              新增一份
+            </button>
+            <button
+              type="button"
+              className={`cm-seg-btn${mode === "replace" ? " is-on" : ""}`}
+              onClick={() => setMode("replace")}
+              title="用这次粘贴的内容替换同名旧条目"
+            >
+              替换原条目
+            </button>
+          </div>
+        </div>
         <div className="quick-capture-help">
           <span>
             {tables.length + classes.length > 0
@@ -165,7 +195,9 @@ export default function DdlDialog({
           </span>
           <span className="spacer" />
           <span>
-            {targetHint ? `保存到 ${targetHint} · 同名表/类替换` : "等待可识别的内容…"}
+            {targetHint
+              ? `保存到 ${targetHint} · ${mode === "append" ? "同名表/类新增一份" : "同名表/类替换"}`
+              : "等待可识别的内容…"}
           </span>
         </div>
         <div className="quick-capture-foot">

@@ -8356,6 +8356,12 @@ html:not(.qn-mobile) .jsonfmt-head:active {
 
 /* ---------------- 分段切换 ---------------- */
 
+/* 0.39.21 收录弹窗「同名时 新增/替换」：复用 cm-seg 分段样式，去掉面板用的上边距 */
+.ddl-mode-seg {
+  margin-top: 0;
+  align-self: center;
+}
+
 .cm-seg {
   display: inline-flex;
   align-items: center;

@@ -3282,15 +3282,16 @@ export default function App() {
    * 中直接修改 DDL 语句」）共用这一条通道。
    */
   const saveDdlStatements = useCallback(
-    async (ddlText: string, project = "", tags: string[] = []) => {
+    async (ddlText: string, project = "", tags: string[] = [], mode: "replace" | "append" = "replace") => {
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能保存建表语句");
       const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
       const existing = await readNoteOptional(dir, path);
       const base = existing?.content ?? ddlNoteIntro();
       // 0.39：新语句带 @time 收录时间行（速记有记录时间，语句库同样要有）；
-      // 0.39.8 收录弹窗多标签（首个词=项目段落，全部词=@tags 行）
-      const merged = mergeDdlIntoNote(base, ddlText, project, { time: nowStamp(), tags });
+      // 0.39.8 收录弹窗多标签（首个词=项目段落，全部词=@tags 行）；
+      // 0.39.21 收录弹窗可选同名新增/替换（悬浮卡编辑固定走替换）
+      const merged = mergeDdlIntoNote(base, ddlText, project, { time: nowStamp(), tags, mode });
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
       // 0.38 用户实锤「明明设置了所属项目，为什么还是显示未分组」：库笔记开着
       // 标签时，落盘后的新文本不回写缓冲，随后的自动保存把旧缓冲整篇写回——
@@ -3307,14 +3308,14 @@ export default function App() {
 
   /** Java 实体落盘（0.34.13）：与 DDL 同一条通道，库笔记路径独立配置。 */
   const saveJavaStatements = useCallback(
-    async (ddlText: string, project = "", tags: string[] = []) => {
+    async (ddlText: string, project = "", tags: string[] = [], mode: "replace" | "append" = "replace") => {
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能保存实体类");
       const path = getSettings().javaEntityFilePath.trim();
       if (!path) throw new Error("实体库路径为空（设置 → 编辑 可配置）");
       const existing = await readNoteOptional(dir, path);
       const base = existing?.content ?? javaNoteIntro();
-      const merged = mergeClassesIntoNote(base, ddlText, project, { time: nowStamp(), tags });
+      const merged = mergeClassesIntoNote(base, ddlText, project, { time: nowStamp(), tags, mode });
       await writeNote(dir, path, merged, existing?.hasBom ?? false);
       // 同 saveDdlStatements：防自动保存把旧缓冲写回冲掉刚落的段落
       if (existing) syncLibraryNoteBuffers(path, existing.content, merged);
@@ -3331,13 +3332,13 @@ export default function App() {
    * 识别到 class/interface/enum/record 走实体库，两者都有就两边都收。
    */
   const saveLibraryStatements = useCallback(
-    async (ddlText: string, project = "", tags: string[] = []) => {
+    async (ddlText: string, project = "", tags: string[] = [], mode: "replace" | "append" = "replace") => {
       const messages: string[] = [];
       if (extractTableNames(ddlText).length > 0) {
-        messages.push(await saveDdlStatements(ddlText, project, tags));
+        messages.push(await saveDdlStatements(ddlText, project, tags, mode));
       }
       if (extractClassNames(ddlText).length > 0) {
-        messages.push(await saveJavaStatements(ddlText, project, tags));
+        messages.push(await saveJavaStatements(ddlText, project, tags, mode));
       }
       if (messages.length === 0) {
         throw new Error("没有识别到 CREATE TABLE 语句或 Java 类定义");
@@ -3349,7 +3350,8 @@ export default function App() {
 
   // 悬浮卡的「编辑」走模块级钩子注入（ddlHover.ts 的 saver；卸载时清除）
   useEffect(() => {
-    setDdlSaver((_table, ddl, project) => saveLibraryStatements(ddl, project));
+    // 悬浮卡「编辑」是对既有条目的修改，语义固定为替换（不受收录默认动作影响）
+    setDdlSaver((_table, ddl, project) => saveLibraryStatements(ddl, project, [], "replace"));
     return () => setDdlSaver(null);
   }, [saveLibraryStatements]);
 
@@ -8667,10 +8669,10 @@ export default function App() {
           ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
           tagSuggestions={ddlTagOptions}
           onClose={() => setDdlDialogOpen(false)}
-          onSubmit={async (ddlText, tags) => {
+          onSubmit={async (ddlText, tags, mode) => {
             // 0.39.17 用户反馈「去掉项目」：收录不再问项目段落，语句统一落未分组区，
-            // 语义归属全部走 @tags 行
-            const message = await saveLibraryStatements(ddlText, "", tags);
+            // 语义归属全部走 @tags 行。0.39.21：同名时按弹窗选择新增/替换
+            const message = await saveLibraryStatements(ddlText, "", tags, mode);
             setStatus(message);
             return message;
           }}
