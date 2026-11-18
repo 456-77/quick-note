@@ -284,6 +284,30 @@ export function defaultVaultName(vaultPath: string): string {
   return index >= 0 ? trimmed.slice(index + 1) : trimmed;
 }
 
+/**
+ * 云端仓库名是否像「本地路径」（0.39.22 用户要求加防护）。
+ *
+ * 事故现场（2026-11-18）：另一台设备的同步状态里 vaultName 是整条路径
+ * `D:\study\inbox`（历史版本残留），它把内容推进了一个名为该路径的云端仓库——
+ * 两台设备各自「已同步」却永远看不到对方。名称里出现路径分隔符或盘符冒号，
+ * 几乎必然是误配（正常仓库名就是文件夹名，不含这些字符），一律按未设置处理。
+ */
+export function isPathLikeVaultName(name: string): boolean {
+  const trimmed = name.trim();
+  if (trimmed === "") return false;
+  return /[\\/:]/.test(trimmed);
+}
+
+/**
+ * 生效的云端仓库名：配置值正常就用它，像路径则回落文件夹名（防护见上）。
+ * `fallback` 由调用方用 {@link defaultVaultName} 给出（本模块不做路径语义）。
+ */
+export function effectiveVaultName(configured: string, fallback: string): string {
+  const trimmed = configured.trim();
+  if (trimmed === "" || isPathLikeVaultName(trimmed)) return fallback;
+  return trimmed;
+}
+
 // ---------------------------------------------------------------- 冲突决策
 
 /** 本地此刻的状态（由调用方查出来，本模块不做 IO）。 */

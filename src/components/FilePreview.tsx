@@ -340,6 +340,10 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
   const [svgMarkup, setSvgMarkup] = useState<string | null>(null);
   /** 桌面 HTML 缩放倍率的显示值（0.39.17 浮动菜单百分比；实际值在 htmlZoomRef）。 */
   const [htmlZoomNow, setHtmlZoomNow] = useState(1);
+  /** HTML 缩放模式（0.39.22 用户反馈「优化一下预览文件的响应式布局」）：
+   *  默认**适应宽度**（同 PDF 的 fit 口径；内容比面板宽时等比缩小，面板变宽窄
+   *  自动重算）；Ctrl+滚轮手动缩放后退出，切文件按缩放记忆恢复。 */
+  const htmlFitRef = useRef(true);
   const bodyRef = useRef<HTMLDivElement | null>(null);
   const docxHostRef = useRef<HTMLDivElement | null>(null);
   const pdfHostRef = useRef<HTMLDivElement | null>(null);
@@ -440,12 +444,39 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
     const body = bodyRef.current;
     const size = htmlContentSizeRef.current;
     if (!frame || !body || !size) return;
-    const z = htmlZoomRef.current;
     const viewW = Math.max(1, body.clientWidth - 28); // body 左右 padding 14×2
+    // fit：内容比面板宽就等比缩到恰好铺满（不小于 0.4 防不可读），否则保持 100%
+    const z = htmlFitRef.current
+      ? Math.min(1, Math.max(0.4, viewW / Math.max(size.w, 1)))
+      : htmlZoomRef.current;
+    htmlZoomRef.current = z;
+    setHtmlZoomNow(z);
     frame.style.zoom = String(z);
     frame.style.width = `${Math.max(size.w, viewW / z)}px`;
     frame.style.height = `${size.h}px`;
   }, []);
+
+  // 0.39.22：换文件按缩放记忆恢复 fit/手动模式
+  useEffect(() => {
+    if (kind !== "html") return;
+    const saved = zoomMemoOf(`${vault}/${path}`).zoom;
+    htmlFitRef.current = saved === undefined;
+    htmlZoomRef.current = saved ?? 1;
+    setHtmlZoomNow(saved ?? 1);
+  }, [kind, vault, path]);
+
+  // 0.39.22 响应式：面板宽度变化时，fit 模式重算缩放（手动模式不动，
+  // 让用户自己的倍率保持稳定）
+  useEffect(() => {
+    if (kind !== "html") return;
+    const body = bodyRef.current;
+    if (!body) return;
+    const ro = new ResizeObserver(() => {
+      if (htmlFitRef.current) applyHtmlLayout();
+    });
+    ro.observe(body);
+    return () => ro.disconnect();
+  }, [kind, html, applyHtmlLayout]);
 
   /** 桌面 HTML 缩放（0.39.17）：CSS zoom + 中心锚定，倍率记进预览缩放记忆。 */
   const changeHtmlZoom = useCallback(
@@ -459,6 +490,8 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
       const anchorLeft = body ? body.scrollLeft + body.clientWidth / 2 : 0;
       const anchorTop = body ? body.scrollTop + body.clientHeight / 2 : 0;
       htmlZoomRef.current = clamped;
+      // 手动缩放 = 退出「适应宽度」；记忆里的倍率按文件恢复
+      htmlFitRef.current = false;
       zoomMemoOf(zoomKey).zoom = clamped;
       setHtmlZoomNow(clamped);
       applyHtmlLayout();

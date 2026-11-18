@@ -32,6 +32,7 @@ import { syntaxTheme } from "./syntaxTheme";
 import { logLanguageDescription } from "./logLang";
 import { isCursorInTable, tableShiftTab, tableTab } from "./tableEdit";
 import type { EditorLanguage } from "./fileTypes";
+import { terminalHighlight } from "./terminalHighlight";
 
 /** 视图模式：Live Preview（渲染语法）或源码。 */
 export type ViewMode = "live" | "source";
@@ -75,6 +76,10 @@ function languageExtension(language: EditorLanguage): Extension {
       return sql();
     case "yaml":
       return yaml();
+    case "shell":
+      return terminalHighlight("shell");
+    case "env":
+      return terminalHighlight("env");
     default:
       return [];
   }

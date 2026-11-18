@@ -361,7 +361,7 @@ fn to_relative(root: &Path, path: &Path) -> Result<String, String> {
 /// 新建笔记（空文件）。名称缺 `.md` 自动补；重名自动加序号，不覆盖已有笔记。
 ///
 /// 返回新文件的仓库相对路径。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_note(vault: String, folder: String, name: String) -> Result<String, String> {
     let root = vault_root(&vault)?;
     let clean = sanitize_new_name(&name)?;
@@ -385,7 +385,7 @@ pub fn create_note(vault: String, folder: String, name: String) -> Result<String
 }
 
 /// 新建文件夹。重名自动加序号。返回新建目录的仓库相对路径。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn create_folder(vault: String, folder: String, name: String) -> Result<String, String> {
     let root = vault_root(&vault)?;
     let clean = sanitize_new_name(&name)?;
@@ -537,7 +537,7 @@ fn rename_busy_error(action: &str, e: &std::io::Error) -> String {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn rename_entry(vault: String, path: String, new_name: String) -> Result<RenameResult, String> {
     let root = vault_root(&vault)?;
     let source = resolve_existing(&root, &path)?;
@@ -607,7 +607,7 @@ pub fn rename_entry(vault: String, path: String, new_name: String) -> Result<Ren
 /// 误删笔记是不可逆的损失，先保证能找回来是底线。`.trash` 是隐藏目录，不会出现在
 /// 文件树与 wiki 索引里（枚举时跳过点开头的路径）。
 /// （Obsidian 允许改为"移到系统回收站"，那需要额外的平台 API，暂未提供。）
-#[tauri::command]
+#[tauri::command(async)]
 pub fn delete_entry(vault: String, path: String) -> Result<String, String> {
     let root = vault_root(&vault)?;
     let source = resolve_existing(&root, &path)?;
@@ -634,7 +634,7 @@ pub fn delete_entry(vault: String, path: String) -> Result<String, String> {
 ///
 /// 文件名冲突时自动加序号，不覆盖已有文件——粘贴附件属"新增"，静默覆盖用户文件
 /// 是不可接受的。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_attachment(
     vault: String,
     folder: String,
@@ -693,7 +693,7 @@ pub fn write_attachment(
 ///
 /// 前端用一份数据同时做三件事：渲染文件树（**含空目录**）、建立 wiki 语法的
 /// 「文件名 → 相对路径」索引、统计笔记数量。因此目录与非 `.md` 文件都要返回。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_entries(vault: String) -> Result<Vec<EntryMeta>, String> {
     let root = vault_root(&vault)?;
     let mut out = Vec::new();
@@ -758,7 +758,7 @@ fn decode_legacy_text(body: &[u8]) -> String {
     cow.into_owned()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_note(vault: String, path: String) -> Result<NoteContent, String> {
     let root = vault_root(&vault)?;
     read_note_at(&root, &path)
@@ -770,7 +770,7 @@ pub fn read_note(vault: String, path: String) -> Result<NoteContent, String> {
 /// Obsidian 插件，也可能是第一次用 Quick Note。用 `read_note` 会让"配置不存在"
 /// 走报错路径，与"读盘失败"混成同一件事，前端就没法区分"没有配置"（按默认值走、
 /// 首次修改时创建）和"配置读不出来"（应当提示用户）。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_note_optional(vault: String, path: String) -> Result<Option<NoteContent>, String> {
     let root = vault_root(&vault)?;
     let full = root.join(validate_rel(&path)?);
@@ -798,7 +798,7 @@ pub fn ensure_directory(dir: String) -> Result<usize, String> {
 /// 壁纸轮换（0.32 用户需求）：列出一个**任意**目录（不在仓库里也行）下的图片/// 文件，返回绝对路径。只列直接子文件（不递归——壁纸目录平铺一层是常态，递归
 /// 会把缩略图缓存之类的东西也卷进来），按完整路径排序保证「顺序轮换」可预期。
 /// 扩展名白名单与浏览器可解码的静态图片格式对齐。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_dir_images(dir: String) -> Result<Vec<String>, String> {
     let root = PathBuf::from(&dir);
     if !root.is_dir() {
@@ -892,7 +892,7 @@ pub struct SearchFileHit {
 /// 按文件序排在后面的笔记根本没被扫到；现在每篇必扫，只有结果文件数受
 /// `file_limit` 约束（超出部分前端标「共 y 个文件」）。个人库的量级（数百篇）
 /// 在 Rust 侧全量扫描是毫秒级的，刻意不做倒排索引。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn search_vault(
     vault: String,
     query: String,
@@ -988,7 +988,7 @@ pub fn search_vault(
     Ok(files)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_note(
     vault: String,
     path: String,
@@ -1167,7 +1167,7 @@ pub fn copy_paths_to_clipboard(paths: Vec<String>) -> Result<(), String> {
 
 /// 复制仓库内的文件或目录到目标目录（重名自动加序号，不覆盖）。
 /// 返回新的仓库相对路径。目录会整棵递归复制。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_entry(vault: String, path: String, dest_dir: String) -> Result<String, String> {
     let root = vault_root(&vault)?;
     let source = resolve_existing(&root, &path)?;
@@ -1200,7 +1200,7 @@ pub fn copy_entry(vault: String, path: String, dest_dir: String) -> Result<Strin
 
 /// 移动仓库内的文件或目录到目标目录（拖拽"剪切"的落点）。
 /// 同卷 `fs::rename`，瞬时完成；重名自动加序号，不覆盖。返回新的仓库相对路径。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn move_entry(vault: String, path: String, dest_dir: String) -> Result<String, String> {
     if path.trim().is_empty() {
         return Err("不能移动仓库根目录".into());
@@ -1238,7 +1238,7 @@ pub fn move_entry(vault: String, path: String, dest_dir: String) -> Result<Strin
 /// `copy_paths_to_clipboard`（Set-Clipboard）同一套思路：不引入剪贴板依赖。
 /// 剪贴板里是文本/图片（没有文件列表）时返回空数组——调用方据此决定是否
 /// 回落到应用内剪贴板的粘贴。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_clipboard_file_paths() -> Result<Vec<String>, String> {
     // 先把控制台输出编码设成 UTF-8：默认按系统 OEM 代码页（中文系统是 GBK），
     // 带中文的路径会变乱码
@@ -1279,7 +1279,7 @@ pub struct CopyExternalResult {
 
 /// 把剪贴板（或任意来源）的**绝对路径**文件/目录复制进仓库的目标目录。
 /// 重名自动加序号，不覆盖；单个源失败不拦着其余的，失败清单随结果返回。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn copy_external_into_vault(
     vault: String,
     sources: Vec<String>,
@@ -1340,7 +1340,7 @@ pub struct BinaryContent {
 }
 
 /// 读取附件的原始字节。**不做任何规范化**——图片被改写一个字节，云端就多一份新版本。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn read_binary(vault: String, path: String) -> Result<BinaryContent, String> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 
@@ -1371,7 +1371,7 @@ pub struct BinaryWriteResult {
 /// 与 `write_attachment` 的区别是**不自动加序号**：那个是"粘贴新附件"，重名必须让路、
 /// 绝不覆盖用户文件；这个是"把云端那份原样落回来"，路径由服务端指定，写偏了下一轮扫描
 /// 就会把它当成另一个附件重复上传。所以这里允许覆盖，且逐级创建父目录。
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_binary(vault: String, path: String, data_base64: String) -> Result<BinaryWriteResult, String> {
     use base64::{engine::general_purpose::STANDARD, Engine as _};
 

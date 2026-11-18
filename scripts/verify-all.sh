@@ -75,6 +75,9 @@ echo
 echo "=== 7e/18 代码块括号彩虹嵌套（成对同色/深度循环/字符串跳过） ==="
 node --experimental-strip-types --no-warnings scripts/verify-bracket-rainbow.mjs
 
+echo "=== 7f/18 sh / env 文本文件高亮（关键字/变量/注释/键值） ==="
+node --experimental-strip-types --no-warnings scripts/verify-terminal-highlight.mjs
+
 echo
 echo "=== 8/18 附件命名与链接测试 ==="
 node --experimental-strip-types --no-warnings scripts/verify-attachments.mjs

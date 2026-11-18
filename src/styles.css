@@ -8408,6 +8408,14 @@ html:not(.qn-mobile) .jsonfmt-head:active {
   color: var(--accent);
 }
 
+/* 0.39.22 sh / env 文本文件高亮（terminalHighlight.ts）——配色与 fenced 代码块同一套 */
+.qn-term-comment { color: var(--syn-comment); font-style: italic; }
+.qn-term-str { color: var(--syn-string); }
+.qn-term-kw { color: var(--syn-keyword); font-weight: 600; }
+.qn-term-var { color: var(--syn-def); }
+.qn-term-key { color: var(--syn-def); }
+.qn-term-atom { color: var(--syn-atom); }
+
 /* ---------------- 筛选工具栏 ---------------- */
 
 .cm-toolbar {

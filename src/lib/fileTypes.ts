@@ -23,6 +23,9 @@ export const TEXT_EXTS = new Set([
   "txt", "json", "jsonc", "sql", "yaml", "yml", "toml", "ini", "cfg", "conf",
   "xml", "css", "js", "mjs", "ts", "jsx", "tsx", "py", "java", "rs", "go",
   "sh", "bat", "ps1",
+  // 0.39.22 用户反馈「优化 txt 和 sh、env 文件的内容显示效果，要支持关键字高亮」：
+  // .env 此前不在名单里（打不开），现在当文本文件进编辑器 + KEY=value 高亮
+  "env",
   // 0.39 用户反馈「添加对 .log/.jsonl 文件的阅读和编辑支持，日志文件经常变化」：
   // 日志/行式 JSON 进编辑器（纯文本源码态），配合外部改动跟随实现实时刷新
   "log", "jsonl",
@@ -63,7 +66,16 @@ export function isOpenable(name: string): boolean {
 }
 
 /** 编辑器语法：Markdown 笔记走 GFM，数据文件走对应语言，其余纯文本。 */
-export type EditorLanguage = "markdown" | "json" | "sql" | "yaml" | "plain";
+export type EditorLanguage =
+  | "markdown"
+  | "json"
+  | "sql"
+  | "yaml"
+  /** 0.39.22：sh 脚本的关键字/变量/注释高亮（自绘，见 terminalHighlight.ts） */
+  | "shell"
+  /** 0.39.22：.env 的 KEY=value / 注释高亮 */
+  | "env"
+  | "plain";
 
 export function editorLanguageOf(name: string): EditorLanguage {
   const ext = extOf(name);
@@ -71,6 +83,8 @@ export function editorLanguageOf(name: string): EditorLanguage {
   if (ext === "json" || ext === "jsonc") return "json";
   if (ext === "sql") return "sql";
   if (ext === "yaml" || ext === "yml") return "yaml";
+  if (ext === "sh") return "shell";
+  if (ext === "env") return "env";
   return "plain";
 }
 

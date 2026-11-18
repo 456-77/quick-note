@@ -33,6 +33,8 @@ import {
   mergeTodoSnapshot,
   normalizeSyncState,
   vaultStateKey,
+  isPathLikeVaultName,
+  effectiveVaultName,
 } from "../src/lib/sync.ts";
 import {
   SNAPSHOT_VERSION,
@@ -669,6 +671,19 @@ console.log("\n附件同步（纯逻辑部分）\n");
     vaultStateKey("D:/a_b") !== vaultStateKey("D:/a/b"),
     "下划线与分隔符不撞名（逐字符转义、不折叠连续串）",
   );
+}
+
+// ---------------- 0.39.22 云端仓库名防路径污染（双设备事故回归） ----------------
+{
+  check(isPathLikeVaultName("D:\\study\\inbox"), "盘符+反斜杠路径判为路径名（真实事故值）");
+  check(isPathLikeVaultName("D:/study/inbox"), "正斜杠路径判为路径名");
+  check(isPathLikeVaultName("inbox:2"), "含冒号判为路径名");
+  check(!isPathLikeVaultName("inbox"), "正常仓库名不误判");
+  check(!isPathLikeVaultName("会员库-2026"), "中文/连接符正常名不误判");
+  check(!isPathLikeVaultName(""), "空串不算路径名");
+  check(effectiveVaultName("D:\\study\\inbox", "inbox") === "inbox", "路径名回落文件夹名");
+  check(effectiveVaultName("我的云库", "inbox") === "我的云库", "正常配置名原样生效");
+  check(effectiveVaultName("  ", "inbox") === "inbox", "空配置回落文件夹名");
 }
 
 console.log(failures === 0 ? "\n云同步逻辑验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);

@@ -23,6 +23,8 @@ import {
   DEFAULT_SYNC_STATE,
   adaptStateToVault,
   defaultVaultName,
+  effectiveVaultName,
+  isPathLikeVaultName,
   normalizeSyncState,
   normalizeVaultKey,
   sameVaultPath,
@@ -307,6 +309,19 @@ export function useSync(options: {
         } else {
           next.vault = vault;
         }
+        // 0.39.22 防护（2026-11-18 双设备「都显示已同步但内容不互通」事故）：
+        // 历史残留把云端仓库名存成了整条本地路径（如 `D:\study\inbox`），该设备
+        // 会同步到一个名为该路径的另一个云端仓库。加载时清空坏值回落文件夹名并
+        // 提示，同时落盘修掉状态文件（不修的话设置页里还会一直显示它）。
+        if (isPathLikeVaultName(next.vaultName)) {
+          const bad = next.vaultName.trim();
+          next.vaultName = "";
+          noticeRef.current(
+            `云端仓库名「${bad}」像本地路径（历史残留），已回落为「${defaultVaultName(vault)}」——否则会同步到另一个云端仓库`,
+            "error",
+          );
+          void persist(next);
+        }
         stateRef.current = next;
         setState(next);
         setLastSyncAt(next.lastSyncAt);
@@ -331,10 +346,9 @@ export function useSync(options: {
 
     const host: SyncHost = {
       getFolder: () => folderRef.current,
-      getVaultName: () => {
-        const configured = stateRef.current.vaultName.trim();
-        return configured !== "" ? configured : defaultVaultName(target);
-      },
+      // 0.39.22 防护：配置名像本地路径时回落文件夹名（见 sync.ts isPathLikeVaultName）
+      getVaultName: () =>
+        effectiveVaultName(stateRef.current.vaultName, defaultVaultName(target)),
       excludedSyncPaths: () => excludedPathsRef.current(),
       getVirtualFiles: () => ({ [TODO_SYNC_PATH]: todoSnapshotRef.current() }),
       mergeVirtualFile: (_path, content) => mergeRef.current(content),
@@ -408,7 +422,7 @@ export function useSync(options: {
           const adapted = adaptStateToVault(base, vaultPath);
           const engine = new SyncEngine(vaultPath, adapted, {
             getFolder: () => "",
-            getVaultName: () => (adapted.vaultName.trim() !== "" ? adapted.vaultName.trim() : name),
+            getVaultName: () => effectiveVaultName(adapted.vaultName, name),
             excludedSyncPaths: () => [],
             getVirtualFiles: () => ({}),
             mergeVirtualFile: () => false,
@@ -562,7 +576,7 @@ const listCloudVaults = useCallback(async (): Promise<Array<{ name: string; vers
   }, []);
 
   const vaultName = useMemo(
-    () => (state.vaultName.trim() !== "" ? state.vaultName.trim() : defaultVaultName(vault ?? "")),
+    () => effectiveVaultName(state.vaultName, defaultVaultName(vault ?? "")),
     [state.vaultName, vault],
   );
 
