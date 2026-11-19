@@ -206,6 +206,12 @@ export class SyncEngine {
   private readonly oversizedStamps = new Map<string, string>();
   /** 本轮拉取是否触发过自愈（vaultVersion 倒退）；syncNow 据此就地补扫一轮。 */
   private healedThisRound = false;
+  /**
+   * 外部武装的下一轮自愈（resetCursorAndSync/resetState 清空哈希后置位）：
+   * 拉取阶段带墓碑守卫（「云端已删而本地还在」以本地为准复活，不误删），
+   * 并触发当轮补扫把「本地有云端没有」的内容重新排进推送队列。
+   */
+  private healNextPull = false;
 
   /** 待裁决冲突扣住的路径：推送扫描与 doFlush 都跳过，防止未裁决就被自动覆盖云端。 */
   private readonly conflictHold: Set<string>;
@@ -266,9 +272,27 @@ export class SyncEngine {
     }, 2500);
   }
 
-  /** 重置游标并全量拉取（本地状态异常时的自愈入口）。 */
+  /** 外部武装的自愈（下一轮拉取带墓碑守卫+当轮补扫）。 */
+  armHeal(): void {
+    this.healNextPull = true;
+  }
+
+  /**
+   * 重置并全量对账（本地状态异常/怀疑丢过内容时的自愈入口）。
+   *
+   * 0.39.27 起游标与**哈希一起清空**：这是设置页唯一常驻的重置入口，用户点它
+   * 的预期就是完整对账。只清游标的话哈希表还 claim「已同步」，扫描排不出任何
+   * 推送——「云端丢了历史/本机传丢过附件」永远不会补传（0.39.26 事故的笔电
+   * 实锤：用户点了旧版「重置游标并重拉」，11-19 的截图附件始终补传不上）。
+   * 哈希清空后墓碑守卫随之武装（healNextPull）：「云端已删而本地还在」不能再
+   * 按「本地未改动跟随删除」误删，以本地为准复活。
+   */
   resetCursorAndSync(): void {
     this.state.cursor = 0;
+    this.state.hashes = {};
+    this.state.attachmentHashes = {};
+    this.healNextPull = true;
+    this.host.onNotice("云同步：已重置同步状态，正在全量对账（本地有云端没有的内容会重新上传，可能需要几轮）");
     void this.syncNow("manual");
   }
 
@@ -630,9 +654,12 @@ export class SyncEngine {
     const appliedAttachments = new Map<string, RemoteAttachment>();
     let since = this.state.cursor;
     let finalCursor = this.state.cursor;
-    // 本轮是否处于「自愈对账」状态（applyRecord 的墓碑守卫要读，见下）
-    let healing = false;
-    this.healedThisRound = false;
+    // 本轮是否处于「自愈对账」状态（applyRecord 的墓碑守卫要读，见下）：
+    // 外部武装（resetCursorAndSync/resetState 的 healNextPull）或本轮检测到
+    // 版本号倒退都算。武装过的轮次同样要当轮补扫，所以 healedThisRound 同步置位。
+    let healing = this.healNextPull;
+    this.healNextPull = false;
+    this.healedThisRound = healing;
     for (;;) {
       const data = await this.api<SyncPullData>("GET", since);
       // 0.39.26 自愈（2026-11-18/19 连续两天的事故形态）：服务端版本号**倒退**

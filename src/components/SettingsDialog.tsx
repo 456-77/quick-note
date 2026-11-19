@@ -486,9 +486,9 @@ function SyncActions({ sync }: { sync: SyncController }) {
         className="btn"
         disabled={syncing}
         onClick={() => sync.resetCursorAndSync()}
-        title="游标归零后重新全量拉取一次；本地状态异常时用它"
+        title="游标与哈希一起清空，全量对账一轮：本地有云端没有的内容重新上传，云端有本地没有的重新下载（本地文件不受影响）。怀疑丢过内容/传丢过附件时用它"
       >
-        重置游标并重拉
+        重置并全量对账
       </button>
       <span
         className={`settings-sync-status is-${sync.status}${syncing ? " is-busy" : ""}`}

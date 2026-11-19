@@ -139,6 +139,8 @@ export function useSync(options: {
    */
   const [reloadToken, setReloadToken] = useState(0);
   const [engineToken, setEngineToken] = useState(0);
+  /** 「重置同步状态」后交给重建引擎的墓碑守卫标记（0.39.27，见 engine effect）。 */
+  const pendingHealRef = useRef(false);
 
   /** 引擎与各项回调都要读到最新值，又不想到处重订阅，所以用 ref 镜像。 */
   const stateRef = useRef<SyncDeviceState>(state);
@@ -362,6 +364,12 @@ export function useSync(options: {
     };
 
     const engine = new SyncEngine(target, stateRef.current, host);
+    if (pendingHealRef.current) {
+      // 0.39.27「重置同步状态」重建的引擎：哈希已清空，首轮拉取带墓碑守卫+
+      // 当轮补扫（与 resetCursorAndSync 同一套自愈语义）
+      engine.armHeal();
+      pendingHealRef.current = false;
+    }
     engineRef.current = engine;
     engine.start();
     engine.beginStartupSync();
@@ -572,6 +580,8 @@ const listCloudVaults = useCallback(async (): Promise<Array<{ name: string; vers
     setSaveError(null);
     // 记下当前仓库：游标与哈希本来就是空的，vault 必须写上，否则下次启动会被当成"换了仓库"
     void persist(adaptStateToVault({ ...DEFAULT_SYNC_STATE }, vaultRef.current ?? ""));
+    // 0.39.27：重建的引擎带墓碑守卫——哈希清空后「云端已删而本地还在」不能误删
+    pendingHealRef.current = true;
     // 不走 reloadToken：内存里这一份就是全新的默认状态，再去读一遍磁盘只会读到
     // 那份坏文件（落盘还在防抖窗口里）
     setEngineToken((value) => value + 1);
