@@ -2386,6 +2386,7 @@ export default function SettingsDialog({
                     baseUrl: settings.aiBaseUrl,
                     apiKey: settings.aiApiKey,
                     model: settings.aiModel,
+                    extraHeaders: settings.aiExtraHeaders,
                   })
                     .then((reply) => {
                       setAiTest({

@@ -102,10 +102,19 @@ pub async fn http_request(
     body_text: Option<String>,
     body_base64: Option<String>,
     timeout_ms: Option<u64>,
+    // TLS 通道（0.39.25）：None/空 = 平台默认；"webpki" = 强制 rustls+WebPki。
+    // AI 供应商（如 opencode.ai）的证书链带交叉签名根，Windows SChannel 会报
+    // "native-tls: unable to find any user-specified roots"——与 0.37 有道查词
+    // 同一个坑，AI 请求一律走 webpki。
+    tls: Option<String>,
 ) -> Result<HttpResponse, String> {
+    let tls_choice = match tls.as_deref() {
+        Some("webpki") => TlsChoice::RustlsWebPki,
+        _ => TlsChoice::PlatformDefault,
+    };
     // 阻塞式 IO 放到独立线程：直接在 async 里跑会占住 tokio 的工作线程，界面跟着卡。
     tauri::async_runtime::spawn_blocking(move || {
-        send_once(&method, &url, headers, body_text, body_base64, timeout_ms)
+        send_once(&method, &url, headers, body_text, body_base64, timeout_ms, tls_choice)
     })
     .await
     .map_err(|e| format!("请求线程失败: {e}"))?
@@ -118,6 +127,7 @@ fn send_once(
     body_text: Option<String>,
     body_base64: Option<String>,
     timeout_ms: Option<u64>,
+    tls_choice: TlsChoice,
 ) -> Result<HttpResponse, String> {
     if url.trim().is_empty() {
         return Err("请求地址为空".into());
@@ -138,7 +148,7 @@ fn send_once(
         .body(body)
         .map_err(|e| format!("请求构造失败: {e}"))?;
 
-    let response: Response<Body> = build_agent(timeout_ms)
+    let response: Response<Body> = build_agent_with_tls(timeout_ms, tls_choice)
         .run(request)
         .map_err(|e| format!("无法连接同步服务器（{e}）"))?;
 
@@ -177,7 +187,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_url() {
-        let result = send_once("GET", "  ", Vec::new(), None, None, Some(1000));
+        let result = send_once("GET", "  ", Vec::new(), None, None, Some(1000), TlsChoice::PlatformDefault);
         assert!(result.is_err());
     }
 
@@ -191,6 +201,7 @@ mod tests {
             None,
             None,
             Some(1000),
+            TlsChoice::PlatformDefault,
         );
         let message = result.err().expect("应当报错");
         assert!(message.starts_with("无法连接同步服务器"), "{message}");
@@ -211,6 +222,7 @@ mod tests {
             None,
             None,
             Some(15_000),
+            TlsChoice::PlatformDefault,
         );
         let response = result.expect("https 请求应当成功（TLS provider 配置正确）");
         assert_eq!(response.status, 200, "GitHub API 应返回 200");

@@ -70,6 +70,13 @@ export interface HttpRequestOptions {
   /** 二进制请求体（附件用）。与 bodyText 二选一。 */
   bodyBase64?: string;
   timeoutMs?: number;
+  /**
+   * TLS 通道（0.39.25）：`webpki` = Rust 强制 rustls+WebPki。
+   * AI 供应商（opencode.ai 等）证书链带交叉签名根，桌面默认的 native-tls
+   * （SChannel）会报 "unable to find any user-specified roots"——与 0.37 有道
+   * 查词同一个坑。同步/附件保持平台默认。
+   */
+  tls?: "webpki";
 }
 
 export interface WriteResult {
@@ -482,6 +489,7 @@ export const httpRequest = (options: HttpRequestOptions) =>
     bodyText: options.bodyText ?? null,
     bodyBase64: options.bodyBase64 ?? null,
     timeoutMs: options.timeoutMs ?? null,
+    tls: options.tls ?? null,
   });
 
 /** 读取本机同步状态（JSON 文本）。不存在返回 null（首次使用不是错误）。 */

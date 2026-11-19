@@ -58,6 +58,8 @@ async function sendChat(cfg: AiVisionConfig, body: unknown): Promise<Record<stri
       ...parseExtraHeaders(cfg.extraHeaders),
     ],
     bodyText: JSON.stringify(body),
+    // AI 供应商证书链常带交叉签名根：桌面 native-tls 会拒，强制 rustls+WebPki
+    tls: "webpki",
   });
   const text = response.bodyBase64 ? decodeBase64Utf8(response.bodyBase64) : "";
   if (response.status !== 200) {
