@@ -3,6 +3,14 @@
 // per-vault 状态文件为权威、失败如实上抛）。桩后端做端到端验证：主仓库（另一
 // 窗口语境）里加一条速记 → 收件仓库应在 ~10s 内被临时引擎推上桩。
 //
+// 0.39.26 新增两阶段：
+//   · 阶段 3 根因回归——quickCaptureVault 用反斜杠路径 + per-vault vaultName 空
+//     （0.39.22 清洗后的真实形状），临时轮必须推到 basename 仓，不允许把整条
+//     路径当仓库名发给桩（「D:\study\inbox」假仓库事故）。
+//   · 阶段 4 自愈回归——桩端仓库「重建」（版本倒退到 5）：客户端游标高于服务端
+//     版本时必须重置游标/哈希全量对账；墓碑不得误删本地文件（复活推回）；下一
+//     轮触发时哈希已清 → 全量重推。
+//
 // 镜像用户真实状态形状（排查期实锤环境差异路径用）：
 //   · 收件仓库：15 个 md + 8 张图，per-vault 状态 cursor=401、哈希/戳全匹配
 //   · 桩后端：预置 records v1..401（内容=盘上文件），vaultVersion=401
@@ -439,6 +447,82 @@ try {
   if (!booted2) throw new Error("阶段 2 应用没有启动完成");
   await sleep(6000);
   await captureAndAssert(ws, "CAPSYNC-POISON", "中毒场景");
+
+  // —— 阶段 3：0.39.26 根因回归（2026-11-19「D:\study\inbox」假仓库事故）。
+  // 收件仓库路径改用 **反斜杠**（Windows 原生形态）写进 quickCaptureVault，且
+  // per-vault 状态文件 vaultName 为空（0.39.22 清洗后的真实形状）。旧代码的
+  // fallback `split(/[\/]/)` 切不开反斜杠 → 整条路径被当仓库名发给桩，桩端
+  // vaultOf 会静默建出一个路径名假仓库；修复后必须推到 basename 仓「收件仓库」，
+  // 且全程不出现任何带反斜杠的 vault 名。
+  await killApp();
+  const inboxVaultBackslash = inboxVault.replace(/\//g, "\\");
+  child = spawnApp();
+  ws = await connectApp();
+  await evaluate(ws, `(() => {
+    const raw = JSON.parse(localStorage.getItem('quicknote.settings') || '{}');
+    raw.quickCaptureVault = ${JSON.stringify(inboxVaultBackslash)};
+    localStorage.setItem('quicknote.settings', JSON.stringify(raw));
+    return true;
+  })()`);
+  await cdp(ws, "Page.reload").catch(() => undefined);
+  const booted3 = await waitFor(ws, `!!document.querySelector('.tree-file')`, 30000);
+  check(booted3, "阶段 3 应用重启（收件仓库路径=反斜杠）");
+  if (!booted3) throw new Error("阶段 3 应用没有启动完成");
+  await sleep(6000);
+  const badVaultHits = () => requests.filter((r) => r.vault && r.vault.includes("\\")).length;
+  await captureAndAssert(ws, "CAPSYNC-BS", "反斜杠路径");
+  check(badVaultHits() === 0, "反斜杠路径：全程没有把整条路径当仓库名发给桩", `${badVaultHits()} 条污染请求`);
+  check(
+    !vaults.has(inboxVaultBackslash),
+    "反斜杠路径：桩端没有出现路径名假仓库",
+  );
+
+  // —— 阶段 4：0.39.26 自愈回归（云端历史被重建/删除重置）。把桩端收件仓库
+  // 整个「重建」：版本倒退到 5、记录清到只剩一篇本地没有的新笔记 + 一条针对
+  // 本地已有文件的墓碑。客户端游标（>400）高于桩端版本 → 下一轮必须：
+  // ① 检测版本倒退、重置游标与哈希；② 全量拉取（新笔记落地本地）；
+  // ③ 墓碑守卫：本地已有的文件不跟随删除、复活推回；④ 下一轮触发时全量重推
+  // （哈希已清，历史文件重新上桩）。
+  await killApp();
+  inboxCloud.version = 0;
+  inboxCloud.records.clear();
+  inboxCloud.attachments.clear();
+  const rebuilt = "# 重建后的新笔记\n\n云端重建后才有的内容。\n";
+  inboxCloud.version += 1;
+  inboxCloud.records.set("重建笔记.md", { path: "重建笔记.md", content: rebuilt, deleted: false, version: inboxCloud.version });
+  const tombTarget = "2026-11-14.md";
+  inboxCloud.version += 1;
+  inboxCloud.records.set(tombTarget, { path: tombTarget, content: null, deleted: true, version: inboxCloud.version });
+  // 重建笔记.md 本地刻意没有 → 自愈全量拉取应走 create-local 把它下载落地
+  child = spawnApp();
+  ws = await connectApp();
+  const booted4 = await waitFor(ws, `!!document.querySelector('.tree-file')`, 30000);
+  check(booted4, "阶段 4 应用重启（桩端已重建）");
+  if (!booted4) throw new Error("阶段 4 应用没有启动完成");
+  await sleep(6000);
+  await captureAndAssert(ws, "CAPSYNC-HEAL", "自愈场景");
+  check(existsSync(join(inboxVault, "重建笔记.md")), "自愈：全量拉取把云端新笔记落到了本地");
+  check(existsSync(join(inboxVault, tombTarget)), "自愈墓碑守卫：本地已有文件没有被云端墓碑删掉");
+  const resurrected = requests.some(
+    (r) => r.method === "POST" && r.path === "/api/v1/sync" && r.vault === "收件仓库" && r.body.includes("历史速记 14"),
+  );
+  check(resurrected, "自愈墓碑守卫：被墓碑针对的本地文件复活推回桩端");
+  await sleep(2500); // 状态落盘有 300ms 防抖，等轮次收尾
+  const healed = JSON.parse(readFileSync(perVaultPath, "utf8"));
+  check(healed.cursor <= inboxCloud.version + 10, "自愈：游标已从 >400 重置到桩端版本附近", `cursor=${healed.cursor}`);
+  check(Object.keys(healed.hashes ?? {}).length > 0, "自愈：哈希表已重建");
+  // 第二条速记触发下一轮临时引擎：此时哈希已被自愈清空，扫描应把全部历史文件重新入队推送。
+  // 注意请求体是 JSON 文本，换行是字面量 `\n`（反斜杠+n），不是真实换行符——
+  // 用「历史速记 1\」结尾形态匹配 2026-11-01.md（其他文件是 1X 结尾，不会误匹配）。
+  await captureAndAssert(ws, "CAPSYNC-HEAL2", "自愈后重推");
+  const repushed = requests.filter(
+    (r) => r.method === "POST" && r.path === "/api/v1/sync" && r.vault === "收件仓库" && r.body.includes("历史速记 1\\n"),
+  ).length;
+  check(repushed > 0, "自愈后：哈希清空触发全量重推（历史文件重新上桩）");
+  const attRepushed = requests.filter(
+    (r) => r.method === "POST" && r.path === "/api/v1/sync/attachments" && r.vault === "收件仓库",
+  ).length;
+  check(attRepushed >= 8, "自愈后：附件哈希同样被清空重传（8 张图重新上桩）", `附件 POST ${attRepushed} 条`);
 } catch (e) {
   failures += 1;
   console.log(`✗ 脚本异常：${e.message}`);

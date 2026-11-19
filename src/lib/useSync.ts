@@ -414,12 +414,32 @@ export function useSync(options: {
    */
   const syncVaultOnce = useCallback(
     (vaultPath: string, onConflicts?: (paths: string[]) => void): Promise<void> => {
-      const name = vaultPath.replace(/[\/]+$/, "").split(/[\/]/).pop() ?? vaultPath;
+      // 0.39.26 根因修复（2026-11-19「D:\study\inbox」假仓库事故，用户实锤
+      // 最新版仍复现）：旧写法 `split(/[\/]/)` 只认正斜杠——Windows 原生反斜杠
+      // 路径（D:\study\inbox）切不开，fallback 仓库名直接成了整条路径。速记
+      // 触发的临时轮在状态文件 vaultName 为空（0.39.22 清洗后）或像路径时
+      // 经 effectiveVaultName 回落到这个坏 fallback，把 vault=<整条路径> 发给
+      // 服务端，自动建出假仓库，速记全进错仓。手动开仓的常驻引擎一直用
+      // defaultVaultName（正反斜杠都认）所以没事——「手动同步好、速记同步坏」
+      // 的差异就这一行。统一改走 defaultVaultName。
+      const name = defaultVaultName(vaultPath);
       const configuredBase = stateRef.current;
       return syncStateLoadFor(vaultStateKey(vaultPath))
         .then((saved) => {
           const base = saved ? (normalizeSyncState(JSON.parse(saved)) as SyncDeviceState) : configuredBase;
           const adapted = adaptStateToVault(base, vaultPath);
+          // 0.39.22 的 vaultName 清洗只挂在「打开仓库为当前仓」的加载通道；
+          // 临时轮读的是原始状态文件，残留的路径状 vaultName 在这里就地清空
+          // （引擎的 effectiveVaultName 随后回落到正确的 basename）。读得到
+          // 文件才落盘修正；读不到时 adapted 只是临时推断，落盘会 clobber
+          // 真实状态（0.39.20 口径，维持不落盘）。
+          if (saved && isPathLikeVaultName(adapted.vaultName)) {
+            adapted.vaultName = "";
+            void syncStateSaveFor(vaultStateKey(vaultPath), JSON.stringify(adapted, null, 2)).then(
+              () => {},
+              () => {},
+            );
+          }
           const engine = new SyncEngine(vaultPath, adapted, {
             getFolder: () => "",
             getVaultName: () => effectiveVaultName(adapted.vaultName, name),

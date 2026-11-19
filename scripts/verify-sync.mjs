@@ -216,6 +216,17 @@ console.log("\n服务端地址与仓库名\n");
   check(defaultVaultName("notes") === "notes", "没有分隔符时就是它本身");
   check(defaultVaultName("") === "", "空路径得到空串（由调用方兜底显示）");
 
+  // 0.39.26 事故锚点（2026-11-18/19「D:\study\inbox」假仓库，双设备连续两天静默
+  // 分叉）：速记触发的临时轮（syncVaultOnce）此前自带一份只认正斜杠的 basename
+  // 提取（split(/[\/]/) 切不开反斜杠），fallback 仓库名变成整条路径发给服务端，
+  // 自动建出假仓库——用户实锤「手动同步没事、速记自动同步出事」。现在临时轮
+  // 统一走 defaultVaultName，这里把事故形态锁死。
+  check(defaultVaultName("D:\\study\\inbox") === "inbox", "事故锚点：反斜杠路径取末段 inbox");
+  check(effectiveVaultName("", defaultVaultName("D:\\study\\inbox")) === "inbox",
+    "临时轮 vaultName 为空时回落到正确的 basename（0.39.26 根因修复口径）");
+  check(effectiveVaultName("D:\\study\\inbox", defaultVaultName("D:\\study\\inbox")) === "inbox",
+    "临时轮 vaultName 像路径时也回落到正确的 basename");
+
   const headers = [
     { name: "Content-Type", value: "application/json" },
     { name: "X-Attachment-Path", value: "image/a.png" },
@@ -648,10 +659,10 @@ console.log("\n附件同步（纯逻辑部分）\n");
   countBudget.record(1);
   check(countBudget.exhausted(), "条数上限同样生效");
 
-  check(MAX_ATTACHMENT_BYTES === 50 * 1024 * 1024, "附件上限 50MB（与服务端 max-file-bytes 默认一致）");
+  check(MAX_ATTACHMENT_BYTES === 200 * 1024 * 1024, "附件上限 200MB（0.39.26 与服务端 max-file-bytes 一致放宽）");
   check(
     ATTACHMENT_DOWNLOAD_PER_CYCLE === 20 && ATTACHMENT_DOWNLOAD_BYTES_PER_CYCLE === 200 * 1024 * 1024,
-    "每轮下载额度（20 个 / 200MB，50MB 文件一周期至少完整下 4 个）",
+    "每轮下载额度（20 个 / 200MB）",
   );
 }
 

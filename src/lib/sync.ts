@@ -49,7 +49,7 @@ export interface SyncDeviceState {
   hashes: Record<string, string>;
   /**
    * 附件 path -> 上次同步时的内容 SHA-256。与 `hashes` 分开存：
-   * 正文参与冲突判定，附件有自己的上传方式与体积上限（10MB），
+   * 正文参与冲突判定，附件有自己的上传方式与体积上限（正文 1MB / 附件 200MB），
    * 混在一起会让「本地改过没有」的判断在两类文件之间串味。
    */
   attachmentHashes: Record<string, string>;
@@ -215,8 +215,13 @@ export const PULL_LIMIT = 500;
 /** 服务端限制：path ≤255 字符。 */
 export const MAX_PATH_CHARS = 255;
 
-/** 服务端单文件上限 50MB（daily-sync.attachments.max-file-bytes 默认值，M8）。本地先挡一道，省一次注定被 413 拒的上传。 */
-export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+/**
+ * 服务端单文件上限 200MB（0.39.26 从 50MB 放宽：handTraining 里 80MB 的视频
+ * 实锤「同步文件过大还是会有报错」——50MB 挡住后哈希永远记不上，每个同步周期
+ * 都白读两遍文件再刷一次报错横幅）。daily-sync.attachments.max-file-bytes 同步
+ * 改默认值，nginx client_max_body_size 224m。本地先挡一道，省一次注定被 413 拒的上传。
+ */
+export const MAX_ATTACHMENT_BYTES = 200 * 1024 * 1024;
 /**
  * 每个同步周期最多补下多少个附件、多少字节。
  *

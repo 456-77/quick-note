@@ -197,6 +197,15 @@ export class SyncEngine {
   private reportedSkips = new Set<string>();
   /** 附件下载失败已报过横幅的路径（0.39.4）：连续多轮失败只报一次，成功即复位。 */
   private reportedDownloadFails = new Set<string>();
+  /**
+   * 超过单文件上限的附件：path -> `${mtime}:${size}`。只存内存（重启后重查一遍、
+   * 重报一次横幅，属可接受代价）——超限文件哈希永远记不进 attachmentHashes，
+   * 不挡在这里的话扫描通道每轮都会把它整个读一遍再报一次同样的错（0.39.26，
+   * handTraining 80MB 视频每周期刷屏实锤）。
+   */
+  private readonly oversizedStamps = new Map<string, string>();
+  /** 本轮拉取是否触发过自愈（vaultVersion 倒退）；syncNow 据此就地补扫一轮。 */
+  private healedThisRound = false;
 
   /** 待裁决冲突扣住的路径：推送扫描与 doFlush 都跳过，防止未裁决就被自动覆盖云端。 */
   private readonly conflictHold: Set<string>;
@@ -340,6 +349,14 @@ export class SyncEngine {
       this.downloadBudget.reset();
       await this.scanLocalFiles();
       await this.pullAndApply();
+      if (this.healedThisRound) {
+        // 0.39.26 自愈当轮就地补扫：拉取阶段清空了哈希表，而扫描发生在拉取之前
+        // （当时哈希表还 claim「已同步」，什么都排不上）——此刻重扫一遍，把
+        // 「本地有、云端没有」的文件全部排进推送队列，一轮内完成对账。否则要等
+        // 下一次触发，速记触发的批量轮可能再也没有下一次。
+        this.healedThisRound = false;
+        await this.scanLocalFiles();
+      }
       await this.doFlush();
       this.state.lastSyncAt = Date.now();
       this.lastErrorNotice = "";
@@ -482,6 +499,21 @@ export class SyncEngine {
     for (const item of result.referenced) {
       if (excluded.has(item.path.replace(/\\/g, "/"))) continue;
       const stamp = attachmentStamp(item.modified, item.size);
+      // 0.39.26：超限文件登记过且没再变化就整条跳过——否则每轮都把几十 MB 的
+      // 文件读两遍（扫描一遍、上传通道再读一遍）再弹一次同样的错误横幅
+      //（handTraining 里 80MB 的视频实锤：上限内传不上去，哈希永远记不上，
+      // 每 5 分钟一个周期白读 160MB + 刷屏报错）。
+      if (this.oversizedStamps.get(item.path) === stamp) continue;
+      if (item.size > MAX_ATTACHMENT_BYTES) {
+        if (!this.oversizedStamps.has(item.path)) {
+          this.host.onNotice(
+            `云同步：附件 ${item.path} 超过 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB 上限，不参与同步（文件改动后会重试）`,
+            "error",
+          );
+        }
+        this.oversizedStamps.set(item.path, stamp);
+        continue;
+      }
       const known = this.state.attachmentHashes[item.path];
       if (this.state.attachmentStamps[item.path] === stamp && known !== undefined) continue;
       const content = await readBinary(this.vault, item.path);
@@ -598,8 +630,35 @@ export class SyncEngine {
     const appliedAttachments = new Map<string, RemoteAttachment>();
     let since = this.state.cursor;
     let finalCursor = this.state.cursor;
+    // 本轮是否处于「自愈对账」状态（applyRecord 的墓碑守卫要读，见下）
+    let healing = false;
+    this.healedThisRound = false;
     for (;;) {
       const data = await this.api<SyncPullData>("GET", since);
+      // 0.39.26 自愈（2026-11-18/19 连续两天的事故形态）：服务端版本号**倒退**
+      // = 云端历史被重建/删除重置过，本机游标指向一段已不存在的服务器历史。
+      // 不处理的话游标永远高于服务端 → 拉取恒空、哈希表还 claim「已同步」→
+      // 双向静默分叉（两端都显示已同步但内容不互通）。自愈 = 游标与哈希全部
+      // 作废，按「全新设备」对账一轮：本地有云没有的重新推上去（scan 下一轮
+      // 或本轮 doFlush），真双边改动的照旧进冲突面板，本地独有而云端记着删除
+      // 的以本地为准复活（applyRecord 的 healing 守卫）。
+      if (data.vaultVersion < this.state.cursor) {
+        const staleCursor = this.state.cursor;
+        healing = true;
+        this.healedThisRound = true;
+        since = 0;
+        finalCursor = 0;
+        this.state.cursor = 0;
+        this.state.hashes = {};
+        this.state.attachmentHashes = {};
+        this.host.onNotice(
+          `云同步：检测到云端仓库被重建（版本号从 ${staleCursor} 回退到 ${data.vaultVersion}），已重置本机同步状态并全量对账`,
+          "error",
+        );
+        // 本页是按旧游标查的（服务端版本低于它，必为空且 hasMore=false）——
+        // 直接用重置后的游标重拉第一页，不落在下面的 hasMore break 上
+        continue;
+      }
       const attachments = data.attachments ?? [];
       for (const record of data.records) applied.set(record.path, record);
       for (const attachment of attachments) appliedAttachments.set(attachment.path, attachment);
@@ -628,7 +687,7 @@ export class SyncEngine {
       }
     }
     for (const record of applied.values()) {
-      await this.applyRecord(record);
+      await this.applyRecord(record, healing);
     }
     this.reportConflicts();
     this.state.cursor = finalCursor;
@@ -641,11 +700,16 @@ export class SyncEngine {
    * 多端同时编辑时后同步的一端丢改动。冲突路径进入待裁决清单并**扣住**：推送扫描、
    * doFlush、文件事件都不碰它，直到用户在冲突面板里选「用云端覆盖」或「用本地覆盖云端」。
    */
-  private async applyRecord(record: RemoteRecord): Promise<void> {
+  private async applyRecord(record: RemoteRecord, healing = false): Promise<void> {
     if (this.virtualOnly && !this.virtualPaths.has(record.path)) {
       // 纯虚拟模式的专用仓库里出现了别的路径（不该发生）：忽略，不落盘、不入冲突
       return;
     }
+    // 0.39.26：虚拟路径只归虚拟清单管。syncVaultOnce 临时轮的 getVirtualFiles
+    // 恒为空，待办快照的远端记录落到这里会被当普通笔记写盘，在仓库根生成
+    // daily-sync-todos.json 杂散文件，下一轮又被孤儿附件通道搬上云——清单里
+    // 没有这个名字就忽略，绝不写文件。
+    if (record.path === TODO_SYNC_PATH && !this.virtualPaths.has(record.path)) return;
     if (this.virtualPaths.has(record.path)) {
       if (record.deleted) return;
       if (this.host.mergeVirtualFile(record.path, record.content)) {
@@ -658,6 +722,13 @@ export class SyncEngine {
     // 墓碑先清掉本地记录的哈希（与插件一致），再按决策处理
     const knownHash = this.state.hashes[record.path];
     const note = await readNoteOptional(this.vault, record.path);
+    // 自愈轮的墓碑守卫（0.39.26）：哈希表刚被清空，「本地存在但本机不认识」不再
+    // 能证明「本地未改动」，此时跟随删除会误删本地独有的文件——那批内容很可能
+    // 正是云端丢了历史、等着重传的。自愈语义一律以本地为准复活（推回云端）。
+    if (record.deleted && healing && note !== null) {
+      this.dirty.set(record.path, "mod");
+      return;
+    }
     if (record.deleted) delete this.state.hashes[record.path];
 
     const remoteHash = record.deleted ? null : await sha256Hex(record.content);
@@ -783,7 +854,15 @@ export class SyncEngine {
     }
     const content = await readBinary(this.vault, path);
     if (content.size > MAX_ATTACHMENT_BYTES) {
-      this.host.onNotice(`云同步：附件 ${path} 超过 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB 上限，已跳过`, "error");
+      // 文件事件通道进来的超限文件：登记 stamp（mtime+size 没变就不再重读重报，
+      // 与 scanAttachments 的跳过集同一份），横幅只报第一次
+      if (!this.oversizedStamps.has(path)) {
+        this.host.onNotice(
+          `云同步：附件 ${path} 超过 ${MAX_ATTACHMENT_BYTES / 1024 / 1024}MB 上限，不参与同步（文件改动后会重试）`,
+          "error",
+        );
+      }
+      this.oversizedStamps.set(path, attachmentStamp(content.modified, content.size));
       return;
     }
     this.state.attachmentStamps[path] = attachmentStamp(content.modified, content.size);

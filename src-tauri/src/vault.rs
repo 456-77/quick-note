@@ -1379,8 +1379,9 @@ pub fn write_binary(vault: String, path: String, data_base64: String) -> Result<
     let bytes = STANDARD
         .decode(data_base64.as_bytes())
         .map_err(|e| format!("附件数据解码失败: {e}"))?;
-    // 与服务端同一条上限（10MB），本地再挡一道，省一次注定被 413 拒绝的请求。留了点余量。
-    if bytes.len() > 64 * 1024 * 1024 {
+    // 与服务端同一条上限（0.39.26 起 200MB），本地再挡一道，省一次注定被 413 拒
+    // 绝的请求。留了点余量。
+    if bytes.len() > 220 * 1024 * 1024 {
         return Err(format!("附件过大（{} 字节）", bytes.len()));
     }
 
