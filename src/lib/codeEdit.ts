@@ -905,3 +905,58 @@ export function codeAtCursor(state: EditorState): { text: string; kind: "inline"
   }
   return null;
 }
+
+// ---------------------------------------------------------------- 三击选行不吞换行（0.39.29）
+
+/**
+ * pos 是否落在围栏代码块（FencedCode）里（三击选行钳制的门槛；普通文本保持
+ * CM6 原生行为不变）。
+ */
+export function inFencedCodeAt(state: EditorState, pos: number): boolean {
+  for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
+    if (node.name === "FencedCode") return true;
+  }
+  return false;
+}
+
+/**
+ * 三击选行的「吞换行」钳制（0.39.29 用户反馈「双击代码块中的行，选中整行
+ * 内容，发现会多出一个换行，这就是导致光标移动到下面一行开头位置的原因」）。
+ *
+ * CM6 对多击（click detail≥3，单击+双击连着点也会走到）的选行是 `from=行首、
+ * to=line.to`，且 **`to == line.to` 时 to++ 把行尾换行也选进选区**
+ * （@codemirror/view 的 rangeForClick 三击分支）——随后粘贴/输入落在下一行
+ * 行首，代码行整行复制再粘贴时尤其烦。这里识别「恰好=整行+一个换行」的
+ * 选区形状，返回掐掉换行的区间；其它形状（拖选、跨行、wrapped 视觉行片段）
+ * 一律不动。纯 doc 判断，可在 Node 里断言。
+ */
+export function clampLineBreakSelection(
+  doc: { lineAt(pos: number): { from: number; to: number } ; length: number },
+  from: number,
+  to: number,
+): { from: number; to: number } | null {
+  if (to <= from) return null;
+  const line = doc.lineAt(from);
+  if (from !== line.from) return null;
+  // 恰好多吃一个行尾换行才钳（to 落在下一行行首；文档末行没有换行可吞）
+  if (line.to + 1 !== to || to >= doc.length) return null;
+  return { from, to: line.to };
+}
+
+/**
+ * 编辑器入口：三击（多击）在围栏代码块里时，选区取整行但**不含**行尾换行。
+ * 返回 true 表示已接管（拦住 CM6 原生的 mouseSelection，它会把换行选进去）。
+ */
+export function codeBlockLineClick(view: EditorView, event: MouseEvent): boolean {
+  if (event.button !== 0 || event.detail < 3) return false;
+  const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+  if (pos == null || !inFencedCodeAt(view.state, pos)) return false;
+  const line = view.state.doc.lineAt(pos);
+  event.preventDefault();
+  view.dispatch({
+    selection: EditorSelection.range(line.from, line.to),
+    userEvent: "select.pointer",
+  });
+  view.focus();
+  return true;
+}

@@ -65,9 +65,15 @@ export function buildDdlTipDom(
   // 选中态是局部变量：切换只重铺体部内容，不重建弹窗
   let current = 0;
   // 0.34.13 用户反馈「笔记里一般有一个标签提示属于哪个项目，默认显示标签中
-  // 指定的项目」：defaultProject 由调用方按笔记标签算好传进来
+  // 指定的项目」：defaultProject 由调用方按笔记标签算好传进来。0.39.29 项目
+  // 段落退役后条目的 project 全是未分组，匹配改按**条目标签**（ddlHover 返回
+  // 的就是命中标签）
   const defaultAt = options?.defaultProject
-    ? entries.findIndex((entry) => entry.project === options.defaultProject)
+    ? entries.findIndex((entry) =>
+        entry.tags.some(
+          (tag) => tag.toLowerCase() === (options.defaultProject as string).toLowerCase(),
+        ),
+      )
     : -1;
   if (defaultAt >= 0) current = defaultAt;
   // 体部渲染器按形态在后面赋值（只读 pre / 可编辑双层）；下拉闭包先建后调

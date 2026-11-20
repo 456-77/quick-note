@@ -28,6 +28,15 @@
  * 收录通道零迁移。一条语句可挂任意多个标签，多个项目复用同一份 DDL 不再需要
  * 复制两份。
  *
+ * ## 项目段落退役（0.39.29 用户反馈「我看了ddl，大部分都是用二级标题区分项目，
+ * 改成块内代码添加注释的方式」）
+ *
+ * `## 项目` 标题不再是项目区分的载体：迁移（migrateDdlSectionsToTags /
+ * migrateClassSectionsToTags，App 加载库笔记时自动跑一次）把具名段落下的语句
+ * 并上项目名标签、删掉标题行，之后整篇笔记只有未分组区域，归属全部由块内
+ * 注释表达。解析对 `##` 段落保持兼容（回落路径仍在），但任何写入通道都
+ * 不再创建项目段落。
+ *
  * ## 纯函数
  *
  * 不碰 DOM、不碰 Tauri，Node 里直接断言（verify-all 的一节）。
@@ -161,6 +170,120 @@ export function ddlProjectNames(text: string): string[] {
     if (!names.includes(section.project)) names.push(section.project);
   }
   return names;
+}
+
+// -------------------------------------------------------- ## 段落 → 块内注释迁移（0.39.29）
+
+/**
+ * 把项目名并进 pos 处语句上方的元数据块首标签（迁移与「批量归入项目」共用的
+ * 落盘核心）。已有显式 `@tags` 行：项目名不在其中（大小写不敏感）就并到**最前**
+ * （首标签 = 项目语义），`@time` 原样保留；已包含则原文返回。没有标签行（无论
+ * 有没有 `@time`）：把 `-- @tags: 项目` 行写到元数据块顶 / 语句行首（tags 行在
+ * 前、time 行在后，与 applyStatementTags 的块内次序一致）。
+ */
+export function mergeProjectTagAt(
+  text: string,
+  at: number,
+  project: string,
+  lang: "sql" | "java",
+): string {
+  const meta = metaBlockAbove(text, at);
+  if (meta?.hasTags) {
+    const key = project.toLowerCase();
+    if (meta.tags.some((tag) => tag.toLowerCase() === key)) return text;
+    const lines = [tagsLineText(lang, [project, ...meta.tags])];
+    if (meta.time) lines.push(timeLineText(lang, meta.time));
+    const eol = text.startsWith("\r\n", meta.end) ? "\r\n" : "\n";
+    return text.slice(0, meta.start) + lines.join(eol) + text.slice(meta.end);
+  }
+  const insertAt = meta ? meta.start : lineStartAt(text, at);
+  const eol = eolNear(text, at);
+  return text.slice(0, insertAt) + tagsLineText(lang, [project]) + eol + text.slice(insertAt);
+}
+
+/**
+ * 库笔记「`## 项目` 段落 → 块内 `@tags` 注释」一次性迁移（0.39.29 用户反馈
+ * 「我看了ddl，大部分都是用二级标题区分项目，改成块内代码添加注释的方式」）。
+ *
+ * 每个 `## 项目名`（h2~h6）标题下的语句，把项目名并进语句上方元数据块的首个
+ * 标签（`statementStarts` 回调给出该区间内的语句锚点——DDL 是 CREATE 头、
+ * Java 是类声明行首；两种库各自包装），然后**删掉标题行本身**——物理分组
+ * 退役，语义归属全部由块内注释表达（与 0.39 起的收录行为一致）。所有编辑
+ * 按原文坐标收集、自底向上应用；没有具名段落的笔记返回 null（无需迁移，
+ * 调用方据此跳过写盘——迁移只发生一次，之后这份转换是恒等变换）。
+ */
+export function migrateSectionsToTagRows(
+  text: string,
+  lang: "sql" | "java",
+  statementStarts: (from: number, to: number) => number[],
+): string | null {
+  const named = ddlSections(text).filter((section) => section.project !== "");
+  if (named.length === 0) return null;
+  type Edit = { from: number; to: number; insert: string };
+  const edits: Edit[] = [];
+  for (const section of named) {
+    // 标题行本体（[行首, 行尾含换行)）删除；语句锚点的标签并入
+    const nl = text.indexOf("\n", section.from);
+    const headTo = nl < 0 ? text.length : nl + 1;
+    edits.push({ from: section.from, to: headTo, insert: "" });
+    for (const at of statementStarts(section.from, section.to)) {
+      const meta = metaBlockAbove(text, at);
+      const key = section.project.toLowerCase();
+      if (meta?.hasTags) {
+        if (meta.tags.some((tag) => tag.toLowerCase() === key)) continue;
+        const lines = [tagsLineText(lang, [section.project, ...meta.tags])];
+        if (meta.time) lines.push(timeLineText(lang, meta.time));
+        const eol = text.startsWith("\r\n", meta.end) ? "\r\n" : "\n";
+        edits.push({ from: meta.start, to: meta.end, insert: lines.join(eol) });
+      } else {
+        const insertAt = meta ? meta.start : lineStartAt(text, at);
+        const eol = eolNear(text, at);
+        edits.push({
+          from: insertAt,
+          to: insertAt,
+          insert: `${tagsLineText(lang, [section.project])}${eol}`,
+        });
+      }
+    }
+  }
+  // 自底向上应用：每处编辑只动自己的 [from, to)，靠后的编辑不影响靠前的坐标
+  edits.sort((a, b) => b.from - a.from || b.to - a.to);
+  let out = text;
+  for (const edit of edits) out = out.slice(0, edit.from) + edit.insert + out.slice(edit.to);
+  return out;
+}
+
+/** DDL 库迁移：语句锚点 = 段内每条 CREATE TABLE 的头部起点（与 parse 同一套切法）。 */
+export function migrateDdlSectionsToTags(text: string): string | null {
+  return migrateSectionsToTagRows(text, "sql", (from, to) => {
+    const starts: number[] = [];
+    const span = text.slice(from, to);
+    CREATE_RE.lastIndex = 0;
+    for (let m = CREATE_RE.exec(span); m !== null; m = CREATE_RE.exec(span)) {
+      starts.push(from + m.index);
+      // 消费语句体再继续（残段别把下一条的锚点吞了）
+      const { advance } = statementSpan(span, m[0].length);
+      CREATE_RE.lastIndex = m.index + advance;
+    }
+    return starts;
+  });
+}
+
+/**
+ * 没有显式 `@tags` 行的语句锚点（0.39.29 设置「批量归入项目」用）：给这批
+ * 语句写上项目标签行；已有标签行的语句不动（已经自我描述，补标签走面板）。
+ * Java 版同构在 javaEntity.ts。返回原文坐标（升序），调用方自底向上应用。
+ */
+export function untaggedDdlAnchors(text: string): number[] {
+  const anchors: number[] = [];
+  CREATE_RE.lastIndex = 0;
+  for (let m = CREATE_RE.exec(text); m !== null; m = CREATE_RE.exec(text)) {
+    const meta = metaBlockAbove(text, m.index);
+    if (!meta?.hasTags) anchors.push(m.index);
+    const { advance } = statementSpan(text.slice(m.index), m[0].length);
+    CREATE_RE.lastIndex = m.index + advance;
+  }
+  return anchors;
 }
 
 /**
@@ -319,9 +442,9 @@ export function setDdlEntryTags(
   table: string,
   project = "",
   tags: string[],
-  options: { mode?: "set" | "add"; lang?: "sql" | "java" } = {},
+  options: { mode?: "set" | "add"; lang?: "sql" | "java"; occurrence?: number | null } = {},
 ): { text: string } | null {
-  const hit = locateDdlEntry(text, table, project);
+  const hit = locateDdlEntry(text, table, project, options.occurrence);
   if (!hit) return null;
   return {
     text: applyStatementTags(
@@ -582,23 +705,50 @@ function tableAt(table: string, flags: string): RegExp {
   );
 }
 
+/** 在给定段落集合里找某张表**全部**出现的 CREATE 头（按文档序升序）。 */
+function tableMatches(
+  text: string,
+  sections: DdlSection[],
+  table: string,
+): Array<{ at: number; headLen: number }> {
+  const hits: Array<{ at: number; headLen: number }> = [];
+  for (const section of sections) {
+    const span = text.slice(section.from, section.to);
+    const re = tableAt(table, "gi");
+    for (let m = re.exec(span); m !== null; m = re.exec(span)) {
+      hits.push({ at: section.from + m.index, headLen: m[0].length });
+    }
+  }
+  return hits.sort((a, b) => a.at - b.at);
+}
+
 /** 在给定段落集合里找某张表**最后一次**出现的 CREATE 头（跨重复段落取绝对位置最大）。 */
 function lastTableMatch(
   text: string,
   sections: DdlSection[],
   table: string,
 ): { at: number; headLen: number } | null {
-  let best: { at: number; headLen: number } | null = null;
-  for (const section of sections) {
-    const span = text.slice(section.from, section.to);
-    const re = tableAt(table, "gi");
-    let last: RegExpExecArray | null = null;
-    for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
-    if (!last) continue;
-    const at = section.from + last.index;
-    if (!best || at > best.at) best = { at, headLen: last[0].length };
-  }
-  return best;
+  const hits = tableMatches(text, sections, table);
+  return hits.length > 0 ? hits[hits.length - 1] : null;
+}
+
+/**
+ * 同（项目, 表名）下第 occurrence 份的匹配（0.39.29）。0.39.21 起「同名新增」
+ * 允许同段并存多份；项目段落退役后（迁移进块内 @tags 行）同名的多份几乎总是
+ * 落在同一区域——(名, 项目) 不再唯一，面板行的 occurrence（解析序=文档序）是
+ * 唯一区分键。occurrence=null/缺省 = 最后一次出现（收录替换/悬浮保存的语义）；
+ * 越界返回 null（条目已被手动改动）。
+ */
+function occurrenceTableMatch(
+  text: string,
+  sections: DdlSection[],
+  table: string,
+  occurrence: number | null | undefined,
+): { at: number; headLen: number } | null {
+  const hits = tableMatches(text, sections, table);
+  if (hits.length === 0) return null;
+  if (occurrence == null) return hits[hits.length - 1];
+  return hits[occurrence] ?? null;
 }
 
 /**
@@ -728,8 +878,9 @@ export function locateDdlEntry(
   text: string,
   table: string,
   project = "",
+  occurrence?: number | null,
 ): { from: number; to: number; line: number } | null {
-  const hit = lastTableMatch(text, matchingSections(ddlSections(text), project), table);
+  const hit = occurrenceTableMatch(text, matchingSections(ddlSections(text), project), table, occurrence);
   if (!hit) return null;
   const { cut } = statementSpan(text.slice(hit.at), hit.headLen);
   return { from: hit.at, to: hit.at + cut, line: newlineCount(text, hit.at) };
@@ -746,8 +897,9 @@ export function removeDdlEntry(
   existing: string,
   table: string,
   project = "",
+  occurrence?: number | null,
 ): { text: string; line: number } | null {
-  const hit = locateDdlEntry(existing, table, project);
+  const hit = locateDdlEntry(existing, table, project, occurrence);
   if (!hit) return null;
   // 0.39：语句上方的元数据块（@tags/@time）一并删除（否则留下孤立注释行）
   const meta = metaBlockAbove(existing, hit.from);

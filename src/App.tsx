@@ -97,15 +97,17 @@ import { applyTheme, resolveTheme, watchSystemTheme } from "./lib/theme";
 import { applyBackground } from "./lib/background";
 import { clampRotateMinutes, nextRandom, nextSequential } from "./lib/bgRotate";
 import { deleteProgress, loadProgress, saveProgress } from "./lib/readProgress";
-import { collectLibraryTags, ddlNoteIntro, extractTableNames, locateDdlEntry, mergeDdlIntoNote, nowStamp, parseDdlTables, removeDdlEntry, setDdlEntryTags, stripFenceLines } from "./lib/ddl";
+import { collectLibraryTags, ddlNoteIntro, extractTableNames, locateDdlEntry, mergeDdlIntoNote, mergeProjectTagAt, migrateDdlSectionsToTags, nowStamp, parseDdlTables, removeDdlEntry, setDdlEntryTags, stripFenceLines, untaggedDdlAnchors } from "./lib/ddl";
 import {
   extractClassNames,
   javaNoteIntro,
   locateClassEntry,
   mergeClassesIntoNote,
+  migrateClassSectionsToTags,
   parseClassLibrary,
   removeClassEntry,
   setClassEntryTags,
+  untaggedClassAnchors,
 } from "./lib/javaEntity";
 import { closeDdlTip, installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
 import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
@@ -310,6 +312,41 @@ function UpdateNotes({ markdown }: { markdown: string }) {
   );
 }
 
+/**
+ * 滚轮链路能否在 root 边界内吃下这一步（0.39.29 设置页滚轮穿透修复）：从
+ * target 沿祖先向上走到 root 为止，找 overflow 可滚的容器——能朝滚动方向
+ * 走出步进的才算吃下；链路里全都不行（内容不溢出 / 已在尽头）返回 false，
+ * 调用方 preventDefault 掐掉，浏览器就不会把滚动链到面板底下的笔记。
+ * 只看主导轴（|deltaY| ≥ |deltaX| 走纵向，否则横向）；方向比步长重要，
+ * deltaMode 不参与判断。
+ */
+function settingsWheelChainCanConsume(
+  target: Element,
+  root: Element,
+  deltaY: number,
+  deltaX: number,
+): boolean {
+  const vertical = Math.abs(deltaY) >= Math.abs(deltaX);
+  const forward = vertical ? deltaY > 0 : deltaX > 0;
+  let node: Element | null = target;
+  while (node) {
+    const el = node as HTMLElement;
+    const style = getComputedStyle(el);
+    const overflow = vertical ? style.overflowY : style.overflowX;
+    if (overflow === "auto" || overflow === "scroll" || overflow === "overlay") {
+      const current = vertical ? el.scrollTop : el.scrollLeft;
+      const max = vertical
+        ? el.scrollHeight - el.clientHeight
+        : el.scrollWidth - el.clientWidth;
+      // 还能朝滚动方向走出至少 1px 才算吃下（尽头容差 1px）
+      if (max > 0 && (forward ? current < max - 1 : current > 1)) return true;
+    }
+    if (node === root) break;
+    node = node.parentElement;
+  }
+  return false;
+}
+
 export default function App() {
   const [vault, setVault] = useState<string | null>(null);
   // 最新仓库路径的 ref：事件回调（如回前台重扫）闭包捕获不到最新 state 时读它
@@ -426,14 +463,22 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(getSettings);
   const [showSettings, setShowSettings] = useState(false);
   // 0.38 用户反馈「光标聚焦在设置页左侧，操作滚轮发现，笔记显示内容会上下移动」：
-  // 设置面板悬浮在编辑区上方（absolute 面板，无全屏遮罩），光标落在面板外/面板
-  // 自身不可滚的左栏时，滚轮的默认行为会滚到底下的笔记——设置开着时在捕获阶段
-  // 拦掉面板以外的一切滚轮（面板与它的下拉候选菜单内部照常滚动）
+  // 设置面板悬浮在编辑区上方（absolute 面板，无全屏遮罩），滚轮的默认行为会滚到
+  // 底下的笔记——设置开着时在捕获阶段拦掉面板以外的滚轮。0.39.29 用户反馈「光标
+  // 聚焦到设置页的左侧目录，滚动滚轮会触发当前打开笔记内容的滚动」：面板内也
+  // 不能无脑放行——左侧目录内容不溢出（.settings-nav 的 overflow-y:auto 空转）、
+  // 或右侧内容已滚到头时，链式滚动会越过面板一路穿到底下被盖住的编辑器。只有
+  // 面板链路上真有可滚容器吃得下这一步才放行（settingsWheelChainCanConsume）
   useEffect(() => {
     if (!showSettings) return;
     const onWheel = (event: WheelEvent) => {
       const target = event.target as Element | null;
-      if (target?.closest?.(".settings-panel, .settings-select-menu")) return;
+      const root = target?.closest?.(".settings-panel, .settings-select-menu");
+      if (!root) {
+        event.preventDefault();
+        return;
+      }
+      if (settingsWheelChainCanConsume(target as Element, root, event.deltaY, event.deltaX)) return;
       event.preventDefault();
     };
     window.addEventListener("wheel", onWheel, { capture: true, passive: false });
@@ -3275,8 +3320,40 @@ export default function App() {
         readNoteOptional(dir, ddlPath),
         javaPath ? readNoteOptional(dir, javaPath) : Promise.resolve(null),
       ]);
-      const tables = ddlNote ? parseDdlTables(ddlNote.content) : new Map();
-      const classes = javaNote ? parseClassLibrary(javaNote.content) : new Map();
+      // 0.39.29 用户反馈「我看了ddl，大部分都是用二级标题区分项目，改成块内
+      // 代码添加注释的方式」：`## 项目` 段落 → 块内 `@tags` 行的一次性迁移，
+      // 加载时自动跑（没有具名段落返回 null，不写盘）。迁移后的文本才进解析。
+      // syncLibraryNoteBuffers 声明在本函数之后——闭包体运行时才取值，安全；
+      // 但不能列进 deps 数组（deps 在渲染期求值，会 TDZ）。写盘失败按原文
+      // 解析，别让迁移问题把整座库卸掉。
+      let ddlContent = ddlNote?.content ?? null;
+      if (ddlContent) {
+        try {
+          const migrated = migrateDdlSectionsToTags(ddlContent);
+          if (migrated !== null) {
+            await writeNote(dir, ddlPath, migrated, ddlNote?.hasBom ?? false);
+            syncLibraryNoteBuffers(ddlPath, ddlContent, migrated);
+            ddlContent = migrated;
+          }
+        } catch {
+          // 迁移失败不拦库加载
+        }
+      }
+      let javaContent = javaNote?.content ?? null;
+      if (javaContent) {
+        try {
+          const migrated = migrateClassSectionsToTags(javaContent);
+          if (migrated !== null) {
+            await writeNote(dir, javaPath, migrated, javaNote?.hasBom ?? false);
+            syncLibraryNoteBuffers(javaPath, javaContent, migrated);
+            javaContent = migrated;
+          }
+        } catch {
+          // 同上
+        }
+      }
+      const tables = ddlContent ? parseDdlTables(ddlContent) : new Map();
+      const classes = javaContent ? parseClassLibrary(javaContent) : new Map();
       resourcesRef.current.ddlTables = tables;
       resourcesRef.current.javaClasses = classes;
       // 分屏上下文是 spread 拷贝（notePath 不同）：换 Map 的赋值不传播，手动同步
@@ -3466,7 +3543,7 @@ export default function App() {
    * 状态栏提示以磁盘为准）。
    */
   const deleteLibraryEntry = useCallback(
-    async (kind: LibraryKind, name: string, project: string) => {
+    async (kind: LibraryKind, name: string, project: string, occurrence?: number | null) => {
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能删除语句");
       const path = libraryPathOf(kind);
@@ -3474,8 +3551,8 @@ export default function App() {
       if (!note) throw new Error(`库笔记「${path}」不存在`);
       const removed =
         kind === "ddl"
-          ? removeDdlEntry(note.content, name, project)
-          : removeClassEntry(note.content, name, project);
+          ? removeDdlEntry(note.content, name, project, occurrence)
+          : removeClassEntry(note.content, name, project, occurrence);
       if (!removed) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
       await writeNote(dir, path, removed.text, note.hasBom);
       syncLibraryNoteBuffers(path, note.content, removed.text);
@@ -3495,7 +3572,7 @@ export default function App() {
    * 表名/类名允许改（定位键是旧名）：改完后库键按新文本重算，面板刷新即可。
    */
   const editLibraryEntry = useCallback(
-    async (kind: LibraryKind, name: string, project: string, draft: string) => {
+    async (kind: LibraryKind, name: string, project: string, draft: string, occurrence?: number | null) => {
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能编辑语句");
       const path = libraryPathOf(kind);
@@ -3506,8 +3583,8 @@ export default function App() {
       if (!body.trim()) throw new Error("语句不能为空");
       const hit =
         kind === "ddl"
-          ? locateDdlEntry(note.content, name, project)
-          : locateClassEntry(note.content, name, project);
+          ? locateDdlEntry(note.content, name, project, occurrence)
+          : locateClassEntry(note.content, name, project, occurrence);
       if (!hit) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
       // 按库笔记自己的换行符落盘（CRLF 文件里别混进裸 \n）
       const eol = note.content.includes("\r\n") ? "\r\n" : "\n";
@@ -3523,8 +3600,10 @@ export default function App() {
     [libraryPathOf, loadDdlLibrary, refresh, syncLibraryNoteBuffers],
   );
 
-  /** 批量条目（0.39 语句库标签）：定位/删除按（名, 所在段落）对。 */
-  type LibraryItemRef = { name: string; project: string };
+  /** 批量条目（0.39 语句库标签）：定位/删除按（名, 所在段落, 同名序）定位。
+   *  0.39.29 起（名, 项目) 在项目段落退役后不再唯一（同名多份几乎总在同一
+   *  区域），面板行的 occurrence（解析序=文档序）是唯一区分键。 */
+  type LibraryItemRef = { name: string; project: string; occurrence?: number | null };
 
   /**
    * 语句库「设置标签」（0.39 用户反馈「将移动归类到某个项目改成设置标签，
@@ -3555,8 +3634,8 @@ export default function App() {
       for (const item of items) {
         const next =
           kind === "ddl"
-            ? setDdlEntryTags(text, item.name, item.project, tags, { mode })
-            : setClassEntryTags(text, item.name, item.project, tags, { mode });
+            ? setDdlEntryTags(text, item.name, item.project, tags, { mode, occurrence: item.occurrence })
+            : setClassEntryTags(text, item.name, item.project, tags, { mode, occurrence: item.occurrence });
         if (!next) {
           missing += 1;
           continue;
@@ -3609,8 +3688,8 @@ export default function App() {
       for (const item of items) {
         const removed =
           kind === "ddl"
-            ? removeDdlEntry(text, item.name, item.project)
-            : removeClassEntry(text, item.name, item.project);
+            ? removeDdlEntry(text, item.name, item.project, item.occurrence)
+            : removeClassEntry(text, item.name, item.project, item.occurrence);
         if (!removed) continue;
         text = removed.text;
         deleted += 1;
@@ -3627,9 +3706,12 @@ export default function App() {
 
   /**
    * 批量归组（0.34.13 用户反馈「添加设置，用来初始化所有的 ddl 所属的项目，
-   * 我已经添加了很多 ddl，他们都是同一个项目的」）：在 DDL 笔记的第一个语句
-   * （首个 ```sql 围栏 / 首条 CREATE）之前插入 `## 项目名` 标题——之后的所有
-   * 未分组语句都归入该项目。已有段落包住全部语句时没有可归组的区域，报错说明。
+   * 我已经添加了很多 ddl，他们都是同一个项目的」）。
+   * 0.39.29 项目段落退役：不再插 `## 项目名` 标题（写入通道不再产出会被迁移
+   * 拆掉的段落），改为给**没有显式 @tags 行**的语句批量写 `-- @tags: 项目名`
+   *（DDL 与 Java 实体两库同口径，收录弹窗本来也是两库路由；已有标签行的
+   * 语句不动——已经自我描述，补标签走管理面板）。锚点按原文坐标收集、
+   * 自底向上应用；一次写盘 + 缓冲同步 + 悬浮库重载。
    */
   const assignDdlProject = useCallback(
     async (project: string) => {
@@ -3637,24 +3719,48 @@ export default function App() {
       if (!name) throw new Error("先填项目名");
       const dir = vaultRef.current;
       if (!dir) throw new Error("打开仓库后才能整理 DDL 库");
-      const path = getSettings().ddlFilePath.trim() || "数据库表DDL.md";
-      const note = await readNoteOptional(dir, path);
-      const content = note?.content ?? "";
-      if (!content.trim()) throw new Error("DDL 库笔记还是空的，先收录语句");
-      const firstSection = /^#{2,6}[ \t]/m.exec(content)?.index ?? -1;
-      const firstFence = content.indexOf("```");
-      const firstCreate = /create\s+table/i.exec(content)?.index ?? -1;
-      const candidates = [firstFence, firstCreate].filter((at) => at >= 0);
-      const anchor = candidates.length > 0 ? Math.min(...candidates) : -1;
-      if (anchor < 0 || (firstSection >= 0 && anchor > firstSection)) {
-        throw new Error("没有找到未分组的语句（可能已经都用 ## 项目段落归组过了）");
+      const cfg = getSettings();
+      const ddlPath = cfg.ddlFilePath.trim() || "数据库表DDL.md";
+      const javaPath = cfg.javaEntityFilePath.trim();
+      let total = 0;
+      const touched: string[] = [];
+      const ddlNote = await readNoteOptional(dir, ddlPath);
+      if (ddlNote?.content.trim()) {
+        const anchors = untaggedDdlAnchors(ddlNote.content);
+        if (anchors.length > 0) {
+          let text = ddlNote.content;
+          for (let i = anchors.length - 1; i >= 0; i -= 1) {
+            text = mergeProjectTagAt(text, anchors[i], name, "sql");
+          }
+          await writeNote(dir, ddlPath, text, ddlNote.hasBom);
+          syncLibraryNoteBuffers(ddlPath, ddlNote.content, text);
+          total += anchors.length;
+          touched.push(ddlPath);
+        }
       }
-      const next = `${content.slice(0, anchor)}## ${name}\n\n${content.slice(anchor)}`;
-      await writeNote(dir, path, next, note?.hasBom ?? false);
+      if (javaPath) {
+        const javaNote = await readNoteOptional(dir, javaPath);
+        if (javaNote?.content.trim()) {
+          const anchors = untaggedClassAnchors(javaNote.content);
+          if (anchors.length > 0) {
+            let text = javaNote.content;
+            for (let i = anchors.length - 1; i >= 0; i -= 1) {
+              text = mergeProjectTagAt(text, anchors[i], name, "java");
+            }
+            await writeNote(dir, javaPath, text, javaNote.hasBom);
+            syncLibraryNoteBuffers(javaPath, javaNote.content, text);
+            total += anchors.length;
+            touched.push(javaPath);
+          }
+        }
+      }
+      if (total === 0) {
+        throw new Error("没有需要归组的语句（都有标签行了；要补充标签在管理面板里操作）");
+      }
       await loadDdlLibrary(dir);
-      return `已把现有语句归入项目「${name}」（可在笔记里用 ## 标题调整）`;
+      return `已把 ${total} 条语句/类写上标签「${name}」（@tags 行 → ${touched.join("、")}）`;
     },
-    [loadDdlLibrary],
+    [loadDdlLibrary, syncLibraryNoteBuffers],
   );
 
   /** 笔记数量（目录与非 md 文件不计入）。 */
@@ -6284,7 +6390,7 @@ export default function App() {
    * locate 用的也是解析/合并同款的「段落内最后一次出现」，手工调过的笔记同样找得到。
    */
   const jumpLibraryEntry = useCallback(
-    async (kind: LibraryKind, name: string, project: string) => {
+    async (kind: LibraryKind, name: string, project: string, occurrence?: number | null) => {
       try {
         const dir = vaultRef.current;
         if (!dir) throw new Error("打开仓库后才能定位语句");
@@ -6293,8 +6399,8 @@ export default function App() {
         if (!note) throw new Error(`库笔记「${path}」不存在`);
         const hit =
           kind === "ddl"
-            ? locateDdlEntry(note.content, name, project)
-            : locateClassEntry(note.content, name, project);
+            ? locateDdlEntry(note.content, name, project, occurrence)
+            : locateClassEntry(note.content, name, project, occurrence);
         if (!hit) throw new Error("没在库笔记里找到这条语句（可能已被手动改动）");
         setLibraryPageOpen(false); // 离开语句库页回编辑器看定位结果
         await openNoteAt(path, hit.line);
@@ -8927,6 +9033,9 @@ export default function App() {
         <DdlDialog
           ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
           tagSuggestions={ddlTagOptions}
+          // 库中已有同名提示（0.39.29）：现役两库条目直接下发
+          ddlTables={resourcesRef.current.ddlTables}
+          javaClasses={resourcesRef.current.javaClasses}
           onClose={() => setDdlDialogOpen(false)}
           onSubmit={async (ddlText, tags, mode) => {
             // 0.39.17 用户反馈「去掉项目」：收录不再问项目段落，语句统一落未分组区，
@@ -10848,7 +10957,7 @@ export default function App() {
               ddlPath={getSettings().ddlFilePath.trim() || "数据库表DDL.md"}
               javaPath={getSettings().javaEntityFilePath.trim()}
               onClose={() => setLibraryPageOpen(false)}
-              onJump={(kind, name, project) => void jumpLibraryEntry(kind, name, project)}
+              onJump={(kind, name, project, occurrence) => void jumpLibraryEntry(kind, name, project, occurrence)}
               onDelete={deleteLibraryEntry}
               onEdit={editLibraryEntry}
               onSetTags={setLibraryTags}

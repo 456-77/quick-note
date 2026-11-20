@@ -153,26 +153,28 @@ export default function LibraryManagerDialog({
   ddlPath: string;
   /** 实体库笔记路径；空串 = 实体库关闭（隐藏分段）。 */
   javaPath: string;
-  onJump: (kind: LibraryKind, name: string, project: string) => void;
-  /** 落盘由父组件做；抛错显示在面板里。project = 语句所在段落（定位键）。 */
-  onDelete: (kind: LibraryKind, name: string, project: string) => Promise<string>;
+  /** 落盘定位键 =（名, 所在段落, 同名序）：0.39.29 项目段落退役后 (名, 项目)
+   *  不再唯一，occurrence（解析序=文档序）区分同名的多份。 */
+  onJump: (kind: LibraryKind, name: string, project: string, occurrence: number | null) => void;
+  /** 落盘由父组件做；抛错显示在面板里。 */
+  onDelete: (kind: LibraryKind, name: string, project: string, occurrence: number | null) => Promise<string>;
   /**
    * 编辑语句本体（0.39.16 用户反馈「语句库中的内容无法编辑」）：按（旧显示名,
-   * 所在段落）定位整段替换，返回结果文案。
+   * 所在段落, 同名序）定位整段替换，返回结果文案。
    */
-  onEdit: (kind: LibraryKind, name: string, project: string, draft: string) => Promise<string>;
+  onEdit: (kind: LibraryKind, name: string, project: string, draft: string, occurrence: number | null) => Promise<string>;
   /**
-   * 设置/添加标签：items 是（名, 所在段落）对；mode="set" 整组覆盖，
+   * 设置/添加标签：items 是（名, 所在段落, 同名序）三元组；mode="set" 整组覆盖，
    * "add" 与现有标签取并集。一次读盘批量改一次写盘。
    */
   onSetTags: (
     kind: LibraryKind,
-    items: { name: string; project: string }[],
+    items: { name: string; project: string; occurrence: number | null }[],
     tags: string[],
     mode: "set" | "add",
   ) => Promise<string>;
   /** 批量删除。 */
-  onBatchDelete: (kind: LibraryKind, items: { name: string; project: string }[]) => Promise<string>;
+  onBatchDelete: (kind: LibraryKind, items: { name: string; project: string; occurrence: number | null }[]) => Promise<string>;
   onOpenNote: (kind: LibraryKind) => void;
   /** 重新读取仓库里的库笔记（页头刷新钮）。 */
   onRefresh?: () => void;
@@ -452,7 +454,7 @@ export default function LibraryManagerDialog({
         [...sel]
           .map((id) => rowById(id))
           .filter((row): row is LibraryRow => row !== null)
-          .map((row) => ({ name: row.name, project: row.project })),
+          .map((row) => ({ name: row.name, project: row.project, occurrence: row.occurrence })),
         [tag],
         "add",
       );
@@ -483,7 +485,7 @@ export default function LibraryManagerDialog({
       // 旧 "set" 的返回「已更新 N 条语句的标签」不说加了什么
       const text = await onSetTags(
         row.kind,
-        [{ name: row.name, project: row.project }],
+        [{ name: row.name, project: row.project, occurrence: row.occurrence }],
         [tag],
         "add",
       );
@@ -502,7 +504,7 @@ export default function LibraryManagerDialog({
     try {
       const text = await onSetTags(
         drawerRow.kind,
-        [{ name: drawerRow.name, project: drawerRow.project }],
+        [{ name: drawerRow.name, project: drawerRow.project, occurrence: drawerRow.occurrence }],
         tags,
         "set",
       );
@@ -550,7 +552,7 @@ export default function LibraryManagerDialog({
     }
     setBusy(true);
     try {
-      const text = await onDelete(row.kind, row.name, row.project);
+      const text = await onDelete(row.kind, row.name, row.project, row.occurrence);
       setToast({ text, kind: "ok" });
       if (drawerKey === id) setDrawerKey(null);
     } catch (e) {
@@ -585,7 +587,7 @@ export default function LibraryManagerDialog({
     setEditBusy(true);
     setEditMessage(null);
     try {
-      const text = await onEdit(editRow.kind, editRow.name, editRow.project, editDraft);
+      const text = await onEdit(editRow.kind, editRow.name, editRow.project, editDraft, editRow.occurrence);
       setToast({ text, kind: "ok" });
       setEditRow(null);
       if (drawerKey === rowIdOf(editRow)) setDrawerKey(null);
@@ -609,7 +611,7 @@ export default function LibraryManagerDialog({
         [...sel]
           .map((id) => rowById(id))
           .filter((row): row is LibraryRow => row !== null)
-          .map((row) => ({ name: row.name, project: row.project })),
+          .map((row) => ({ name: row.name, project: row.project, occurrence: row.occurrence })),
       );
       setToast({ text, kind: "ok" });
       clearSel();
@@ -1098,7 +1100,7 @@ export default function LibraryManagerDialog({
                         className="cm-row-quick"
                         title="打开库笔记并跳到这一条"
                         disabled={busy}
-                        onClick={() => onJump(row.kind, row.name, row.project)}
+                        onClick={() => onJump(row.kind, row.name, row.project, row.occurrence)}
                       >
                         定位
                       </button>
@@ -1182,7 +1184,7 @@ export default function LibraryManagerDialog({
                             className="cm-pop-item"
                             onClick={() => {
                               setRowMenu(null);
-                              onJump(row.kind, row.name, row.project);
+                              onJump(row.kind, row.name, row.project, row.occurrence);
                             }}
                           >
                             定位
@@ -1329,7 +1331,7 @@ export default function LibraryManagerDialog({
               </div>
             </div>
             <div className="cm-drawer-foot">
-              <button type="button" className="cm-btn" onClick={() => onJump(drawerRow.kind, drawerRow.name, drawerRow.project)}>
+              <button type="button" className="cm-btn" onClick={() => onJump(drawerRow.kind, drawerRow.name, drawerRow.project, drawerRow.occurrence)}>
                 定位
               </button>
               <button type="button" className="cm-btn" onClick={() => openEdit(drawerRow)}>

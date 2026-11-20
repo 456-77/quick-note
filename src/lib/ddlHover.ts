@@ -89,17 +89,19 @@ function tipOptions(lang: TipLang, defaultProject?: string): DdlTipOptions | und
  * 默认条目：当前笔记的标签里第一个命中条目**标签集**的（0.34.13 用户反馈
  * 「笔记里一般会有一个标签提示属于哪个项目，默认显示标签中指定的项目」；
  * 0.39 起条目可挂多个标签，任一击中即算）。没有标签 / 对不上 → undefined
- * （退回第一条）。
+ * （退回第一条）。0.39.29 项目段落退役后条目的 project 全是未分组（""），
+ * 这里返回**命中的标签本身**，ddlTip 按 tags.includes 对上默认条目。
  */
 function defaultProjectFor(view: EditorView, entries: DdlEntry[]): string | undefined {
   if (entries.length <= 1) return undefined;
   const ctx = view.state.facet(livePreviewContext);
   const tags = (ctx.noteTags?.get(ctx.notePath ?? "") ?? []).map((t) => t.toLowerCase());
   if (tags.length === 0) return undefined;
-  const hit = entries.find((entry) =>
-    entry.tags.some((tag) => tags.includes(tag.toLowerCase())),
-  );
-  return hit?.project;
+  for (const entry of entries) {
+    const tag = entry.tags.find((t) => tags.includes(t.toLowerCase()));
+    if (tag) return tag;
+  }
+  return undefined;
 }
 
 export function ddlHover(): Extension {

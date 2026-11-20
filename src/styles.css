@@ -7635,6 +7635,16 @@ html:not(.qn-mobile) .jsonfmt-head:active {
   flex: 1;
 }
 
+/* 收录弹窗「库中已有同名」提示（0.39.29 用户反馈「添加ddl时，底部要提示
+   是否已有相关内容」）：识别行下方的独立一行，警示色让它从灰字里跳出来 */
+.ddl-exist-hint {
+  display: block;
+  margin-top: 5px;
+  font-size: 11px;
+  color: var(--warn);
+  user-select: none;
+}
+
 /* ------------------------------------------------- JSON 格式转换面板 */
 /* 同一弹窗语系（0.34.13）：600px 淡入缩放，双 textarea + 按钮行 */
 

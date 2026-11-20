@@ -15,7 +15,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { extractTableNames } from "../lib/ddl";
+import { extractTableNames, type DdlEntry, type DdlLibrary } from "../lib/ddl";
 import { extractClassNames } from "../lib/javaEntity";
 import { getSettings } from "../lib/settings";
 import ComboInput from "./ComboInput";
@@ -51,6 +51,8 @@ export default function DdlDialog({
   onClose,
   ddlPath,
   tagSuggestions = [],
+  ddlTables,
+  javaClasses,
 }: {
   /** 落盘由父组件做。返回结果文案；抛错显示在弹窗里。tags = 输入的全部标签词，
    *  mode = 同名表/类的处理动作（append 新增一份 / replace 替换原条目）。 */
@@ -60,6 +62,10 @@ export default function DdlDialog({
   ddlPath: string;
   /** 两库出现过的标签（去重）；下拉候选。 */
   tagSuggestions?: string[];
+  /** 两个库的现役条目（0.39.29 用户反馈「添加ddl时，底部要提示是否已有相关
+   *  内容」）：识别出的表名/类名在库里已有同名条目时，底部给出醒目提示。 */
+  ddlTables?: DdlLibrary;
+  javaClasses?: DdlLibrary;
 }) {
   const [draft, setDraft] = useState("");
   // 0.38 用户反馈「设置项目默认是上一次使用的」：初始值读上次收录用的标签串
@@ -80,6 +86,31 @@ export default function DdlDialog({
 
   const tables = useMemo(() => extractTableNames(draft), [draft]);
   const classes = useMemo(() => extractClassNames(draft), [draft]);
+
+  // 库里已有同名的表/类（0.39.29 用户反馈「底部要提示是否已有相关内容」）：
+  // 按条目标签列出已有归属（无标签回落项目段落名；项目段落退役后一般是标签），
+  // 同归属多份标 ×N。表名键是裸名小写（与 extractTableNames 口径一致），
+  // 类名键保持原文大小写。
+  const existHints = useMemo(() => {
+    const labelOf = (entries: DdlEntry[]) => {
+      const counts = new Map<string, number>();
+      for (const entry of entries) {
+        const label = entry.tags.length > 0 ? entry.tags.join("/") : entry.project || "未分组";
+        counts.set(label, (counts.get(label) ?? 0) + 1);
+      }
+      return [...counts].map(([label, count]) => (count > 1 ? `${label} ×${count}` : label)).join("、");
+    };
+    const parts: string[] = [];
+    for (const name of tables) {
+      const entries = ddlTables?.get(name);
+      if (entries?.length) parts.push(`${name}（${labelOf(entries)}）`);
+    }
+    for (const name of classes) {
+      const entries = javaClasses?.get(name);
+      if (entries?.length) parts.push(`${name}（${labelOf(entries)}）`);
+    }
+    return parts;
+  }, [tables, classes, ddlTables, javaClasses]);
 
   const submit = async () => {
     if ((!tables.length && !classes.length) || busy) return;
@@ -200,6 +231,13 @@ export default function DdlDialog({
               : "等待可识别的内容…"}
           </span>
         </div>
+        {existHints.length > 0 && (
+          <div className="ddl-exist-hint">
+            库中已有 {existHints.length} 条同名：{existHints.slice(0, 6).join("、")}
+            {existHints.length > 6 ? " …" : ""}
+            {`（本次${mode === "append" ? "再新增一份，旧条目保留" : "替换其最后一次出现的条目"}）`}
+          </div>
+        )}
         <div className="quick-capture-foot">
           {message && (
             <span className={`add-word-message is-${message.kind}`}>{message.text}</span>

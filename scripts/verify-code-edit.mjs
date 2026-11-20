@@ -84,5 +84,34 @@ eq(wikiLinkToggleAt("x ![[p.png]] y", 7, 7), { remove: [2, 12], text: "p.png" },
 eq(wikiLinkToggleAt("x [[aa|bb]] y", 0, 1), { wrap: [0, 1] }, "光标贴着前面普通文字 → 包裹而不是误取消");
 eq(wikiLinkToggleAt("x [[aa b", 0, 8), null, "选区里已有链接括号 → 不包裹");
 
+// ============================================================ 三击选行不吞换行（0.39.29）
+console.log("\n三击选行钳制：\n");
+{
+  const { clampLineBreakSelection } = await import("../src/lib/codeEdit.ts");
+  // 极简 doc 桩：行区间与 CM Text 的 lineAt/length 同形状（逐行切分，to 不含换行）
+  const docOf = (text) => {
+    const lines = [];
+    let pos = 0;
+    for (const part of text.split("\n")) {
+      lines.push({ from: pos, to: pos + part.length });
+      pos += part.length + 1;
+    }
+    return {
+      length: text.length,
+      lineAt: (p) => [...lines].reverse().find((l) => l.from <= p && p <= l.to + 1),
+    };
+  };
+  const doc = docOf("```bash\nline one\nline two\n```");
+  // 布局：```bash=0..7（to=7），"line one"=8..16（from=8,to=16），"line two"=17..26，```=26..29
+  // 三击选区形状：[line.from, line.to + 1]（CM6 rangeForClick 多吞一个换行）
+  eq(clampLineBreakSelection(doc, 8, 17), { from: 8, to: 16 }, "整行+换行 → 掐掉换行");
+  eq(clampLineBreakSelection(doc, 9, 17), null, "起点不在行首（拖选片段）→ 不动");
+  eq(clampLineBreakSelection(doc, 8, 16), null, "恰好整行（没吞换行）→ 无需钳");
+  eq(clampLineBreakSelection(doc, 8, 26), null, "跨行选区 → 不动");
+  eq(clampLineBreakSelection(doc, 8, 8), null, "空选区 → 不动");
+  const lastDoc = docOf("```bash\nlast line");
+  eq(clampLineBreakSelection(lastDoc, 8, 18), null, "文档末行（没有换行可吞）→ 不动");
+}
+
 console.log(failures === 0 ? "\n代码切换逻辑验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);
 process.exit(failures === 0 ? 0 : 1);

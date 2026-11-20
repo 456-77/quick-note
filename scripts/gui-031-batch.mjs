@@ -636,7 +636,9 @@ try {
     //    给当前笔记打 #测试项目B 标签 → 默认选中 B（笔记标签指定项目）。
     //    元数据行协议：@time 在围栏内语句上方（0.39.12 修正——此前 fixture 没带
     //    @time，应用如实显示空时间，把「行上显示收录时间」「抽屉展示收录时间」
-    //    两条断言拖成了假失败）
+    //    两条断言拖成了假失败）。
+    //    0.39.29 起 fixture **刻意保留旧式 ## 段落**：应用加载库时会把它迁移成
+    //    块内 @tags 行——chips/下拉标签断言能过就等于端到端验证了迁移通道
     appendFileSync(join(vaultA, "数据库表DDL.md"), "\n## 测试项目B\n\n```sql\n-- @time: 2026-01-01 10:00\nCREATE TABLE ids_qn31_tab (\n  name varchar(10) COMMENT 'B项目版'\n);\n```\n");
     await evaluate(ws, `(() => {
       const view = window.__qnView;
@@ -874,7 +876,10 @@ try {
     const ddlDisk2 = readFileSync(join(vaultA, "数据库表DDL.md"), "utf8");
     const tagLines = ddlDisk2.match(/@tags:[^\n]*/g) ?? [];
     check(tagLines.filter((line) => line.includes('批测批量标签')).length === 2, '两条语句都写入批量标签（0.39）', tagLines.join(' | '));
-    check(ddlDisk2.includes('## 测试项目B') && !ddlDisk2.includes('## 批测批量项目'), '标签操作不搬动语句 / 段落（0.39）');
+    // 0.39.29 项目段落退役：第 640 行追加的 `## 测试项目B` 段落在库加载时被
+    // 自动迁移成块内 `-- @tags: 测试项目B` 行（chips 断言能过本身就证明迁移
+    // 发生了）——这里改断言「标题已拆、标签行在」，并确认标签操作不产生新段落
+    check(!ddlDisk2.includes('## 测试项目B') && ddlDisk2.includes('-- @tags: 测试项目B') && !ddlDisk2.includes('## 批测批量项目'), '标签操作不搬动语句 / ## 段落已迁移成块内 @tags 行（0.39/0.39.29）');
     // Esc 回编辑器；Ctrl+Alt+K 再按开合
     await key(ws, { mod: 0, key: 'Escape' }, 'Escape', 27);
     const editorBack = await waitFor(ws, `!document.querySelector('.editor-pane-notes.is-hidden') && !document.querySelector('.lib-page')`, 2500);

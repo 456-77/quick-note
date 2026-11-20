@@ -773,3 +773,160 @@ console.log("收录替换补标签断言全部通过");
 }
 
 console.log("收录同名新增/替换断言全部通过");
+
+// ---------------- 0.39.29 ## 项目段落 → 块内 @tags 注释迁移 ----------------
+{
+  const { migrateDdlSectionsToTags, migrateSectionsToTagRows, mergeProjectTagAt, untaggedDdlAnchors, parseDdlTables } = await import("../src/lib/ddl.ts");
+  const { migrateClassSectionsToTags, untaggedClassAnchors, parseClassLibrary } = await import("../src/lib/javaEntity.ts");
+
+  // 1) DDL 基本迁移：具名段落 → 语句带项目标签行 + 标题删除 + 迁移幂等
+  const note = [
+    "# 数据库表 DDL",
+    "",
+    "```sql",
+    "-- @tags: 海亮",
+    "CREATE TABLE alpha (x int);",
+    "```",
+    "",
+    "```sql",
+    "CREATE TABLE beta (y int);",
+    "```",
+    "",
+    "## 中远",
+    "",
+    "```sql",
+    "CREATE TABLE gamma (z int);",
+    "```",
+    "",
+    "## 中粮",
+    "",
+    "```sql",
+    "-- @tags: 测试",
+    "-- @time: 2026-11-01 09:00",
+    "CREATE TABLE delta (w int);",
+    "```",
+    "",
+  ].join("\n");
+  const migrated = migrateDdlSectionsToTags(note);
+  assert(migrated !== null, "迁移：有具名段落时返回新文本");
+  assert(!migrated.includes("## 中远") && !migrated.includes("## 中粮"), "迁移：标题行被删除", migrated);
+  const lib = parseDdlTables(migrated);
+  assert((lib.get("gamma") ?? [])[0]?.tags.includes("中远"), "迁移：无标签行语句补项目标签", JSON.stringify([...(lib.get("gamma") ?? [])]));
+  assert((lib.get("delta") ?? [])[0]?.tags.join(",") === "中粮,测试", "迁移：已有标签行并到最前", JSON.stringify([...(lib.get("delta") ?? [])]));
+  assert((lib.get("delta") ?? [])[0]?.time === "2026-11-01 09:00", "迁移：@time 行原样保留");
+  assert((lib.get("alpha") ?? [])[0]?.tags.includes("海亮"), "迁移：未分组区语句不动", JSON.stringify([...(lib.get("alpha") ?? [])]));
+  assert(migrateDdlSectionsToTags(migrated) === null, "迁移：迁完后再次迁移=无操作（幂等）");
+
+  // 2) 同项目标签去重：语句已有同名字标签（大小写不同）不重复并
+  const dup = migrateDdlSectionsToTags("## 中粮\n\n```sql\n-- @tags: 中粮\nCREATE TABLE t (x int);\n```\n");
+  assert(dup !== null && (dup.match(/@tags/g) ?? []).length === 1, "迁移：同名标签去重不重复写行", dup ?? "null");
+
+  // 3) Java 迁移：锚点=注解块起点，标签行落在注解之上
+  const jn = [
+    "# Java 实体",
+    "",
+    "## 中粮",
+    "",
+    "```java",
+    '@ApiModel("检查")',
+    "public class Foo { int x; }",
+    "```",
+    "",
+  ].join("\n");
+  const jm = migrateClassSectionsToTags(jn);
+  assert(jm !== null && !jm.includes("## 中粮"), "Java 迁移：标题删除", jm ?? "null");
+  const jlib = parseClassLibrary(jm);
+  const jEntry = (jlib.get("Foo") ?? [])[0];
+  assert(jEntry?.tags.includes("中粮"), "Java 迁移：类带项目标签", JSON.stringify(jEntry?.tags));
+  assert(jEntry?.ddl.startsWith('@ApiModel("检查")'), "Java 迁移：注解保留在语句体里");
+  assert(jm.indexOf("// @tags: 中粮") < jm.indexOf("@ApiModel"), "Java 迁移：标签行落在注解之上", jm);
+  assert(migrateClassSectionsToTags(jm) === null, "Java 迁移：幂等");
+
+  // 4) mergeProjectTagAt：无标签行语句插入、@time 行保持在标签行之后
+  const single = "```sql\nCREATE TABLE a (x int);\n```\n";
+  const singleAt = single.indexOf("CREATE");
+  const withTag = mergeProjectTagAt(single, singleAt, "海亮", "sql");
+  assert(withTag.startsWith("```sql\n-- @tags: 海亮\nCREATE"), "mergeProjectTagAt：插入标签行", withTag);
+  const withTime = "```sql\n-- @time: 2026-11-01 09:00\nCREATE TABLE a (x int);\n```\n";
+  const withTime2 = mergeProjectTagAt(withTime, withTime.indexOf("CREATE"), "海亮", "sql");
+  assert(
+    withTime2.startsWith("```sql\n-- @tags: 海亮\n-- @time: 2026-11-01 09:00\n"),
+    "mergeProjectTagAt：标签行插到时间行之前（协议次序 tags 前time 后）",
+    withTime2,
+  );
+
+  // 5) untaggedDdlAnchors / untaggedClassAnchors：只报没有标签行的语句
+  const probe = "```sql\n-- @tags: 海亮\nCREATE TABLE a (x int);\n```\n\n```sql\nCREATE TABLE b (y int);\n```\n";
+  const anchors = untaggedDdlAnchors(probe);
+  assert(anchors.length === 1, "untagged：只报无标签行语句", JSON.stringify(anchors));
+  assert(probe.slice(anchors[0]).startsWith("CREATE TABLE b"), "untagged：锚点=语句起点", probe.slice(anchors[0], anchors[0] + 30));
+  const jProbe = "```java\n// @tags: 海亮\npublic class A { }\n```\n\n```java\npublic class B { }\n```\n";
+  const jAnchors = untaggedClassAnchors(jProbe);
+  assert(jAnchors.length === 1, "untagged Java：只报无标签行类", JSON.stringify(jAnchors));
+
+  // 6) 迁移后 replace 收录仍能命中（项目段落没了，matchingSections("") 覆盖全文）
+  const mergedReplace = mergeDdlIntoNote(migrated, "CREATE TABLE gamma (z2 int);", "", { mode: "replace" });
+  const gammaEntries = parseDdlTables(mergedReplace).get("gamma") ?? [];
+  assert(
+    gammaEntries.length === 1 && gammaEntries[0].ddl.includes("z2 int") && gammaEntries[0].tags.includes("中远"),
+    "迁移后替换：命中且保留原标签（替换只换语句体）",
+    JSON.stringify(gammaEntries.map((e) => ({ tags: e.tags, ddl: e.ddl.slice(0, 30) }))),
+  );
+}
+
+console.log("项目段落→块内注释迁移断言全部通过");
+
+// ---------------- 0.39.29 同名多份按 occurrence 定位（迁移后 (名,项目) 不再唯一） ----------------
+{
+  const { locateDdlEntry, removeDdlEntry, setDdlEntryTags } = await import("../src/lib/ddl.ts");
+  const { locateClassEntry } = await import("../src/lib/javaEntity.ts");
+
+  // 两份同名表都在未分组区（迁移后的常态）：@tags 区分
+  const two = [
+    "```sql",
+    "-- @tags: 海亮",
+    "CREATE TABLE twin (v1 int);",
+    "```",
+    "",
+    "```sql",
+    "-- @tags: 中远",
+    "CREATE TABLE twin (v2 int);",
+    "```",
+    "",
+  ].join("\n");
+  const hit0 = locateDdlEntry(two, "twin", "", 0);
+  const hit1 = locateDdlEntry(two, "twin", "", 1);
+  assert(hit0 && two.slice(hit0.from, hit0.to).includes("v1"), "occurrence=0 → 第一份", hit0 ? two.slice(hit0.from, hit0.to) : "null");
+  assert(hit1 && two.slice(hit1.from, hit1.to).includes("v2"), "occurrence=1 → 第二份", hit1 ? two.slice(hit1.from, hit1.to) : "null");
+  assert(locateDdlEntry(two, "twin", "", 2) === null, "occurrence 越界 → null（条目已被改动）");
+  // 缺省 = 最后一次出现（收录替换/悬浮保存的语义不变）
+  const hitLast = locateDdlEntry(two, "twin", "");
+  assert(hitLast && two.slice(hitLast.from, hitLast.to).includes("v2"), "缺省 occurrence → 最后一次出现");
+  // 按序号改标签：只动第二份
+  const tagged = setDdlEntryTags(two, "twin", "", ["批测"], { mode: "add", occurrence: 1 });
+  assert(tagged !== null, "occurrence 定位改标签：命中");
+  const tags0 = (tagged?.text.match(/@tags:[^\n]*/g) ?? []).join(" | ");
+  assert(tags0.includes("海亮") && !tags0.includes("批测，") && (tagged?.text.match(/批测/g) ?? []).length === 1, "只有第二份写入新标签", tags0);
+  // 按序号删除：删掉第一份后剩第二份
+  const removed = removeDdlEntry(two, "twin", "", 0);
+  assert(removed !== null && removed.text.includes("v2") && !removed.text.includes("v1"), "occurrence=0 删除 → 只删第一份", removed?.text ?? "null");
+  // Java 同构
+  const jTwo = [
+    "```java",
+    "// @tags: 海亮",
+    "public class Twin { int a; }",
+    "```",
+    "",
+    "```java",
+    "// @tags: 中远",
+    "public class Twin { int b; }",
+    "```",
+    "",
+  ].join("\n");
+  const jHit0 = locateClassEntry(jTwo, "Twin", "", 0);
+  assert(jHit0 && jTwo.slice(jHit0.from, jHit0.to).includes("int a"), "Java occurrence=0 → 第一份");
+  const jHit1 = locateClassEntry(jTwo, "Twin", "", 1);
+  assert(jHit1 && jTwo.slice(jHit1.from, jHit1.to).includes("int b"), "Java occurrence=1 → 第二份");
+}
+
+console.log("同名 occurrence 定位断言全部通过");

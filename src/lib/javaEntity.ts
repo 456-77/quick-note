@@ -14,7 +14,8 @@
  * ## 多项目
  *
  * 与 ddl.ts 完全同构：`## 项目名` 起段落、未分组兼容老笔记、同名类跨项目
- * 各存一份。段落切割直接复用 ddlSections。
+ * 各存一份。段落切割直接复用 ddlSections。0.39.29 起项目段落退役（迁移进
+ * 块内 `// @tags:` 注释，见 migrateClassSectionsToTags），解析保持兼容。
  *
  * ## 纯函数
  *
@@ -27,6 +28,7 @@ import {
   dropEmptyFence,
   matchingSections,
   metaBlockAbove,
+  migrateSectionsToTagRows,
   sectionProjectAt,
   tagsLineText,
   timeLineText,
@@ -249,18 +251,42 @@ function lastClassMatch(
   sections: { from: number; to: number }[],
   name: string,
 ): { at: number } | null {
-  let best: { at: number } | null = null;
+  const hits = classMatches(text, sections, name);
+  return hits.length > 0 ? hits[hits.length - 1] : null;
+}
+
+/** 全部声明（文档序升序；occurrence 定位与 lastClassMatch 共用）。 */
+function classMatches(
+  text: string,
+  sections: { from: number; to: number }[],
+  name: string,
+): Array<{ at: number }> {
+  const hits: Array<{ at: number }> = [];
   for (const section of sections) {
     const span = text.slice(section.from, section.to);
     const re = classAt(name, "gm");
     re.lastIndex = 0;
-    let last: RegExpExecArray | null = null;
-    for (let m = re.exec(span); m !== null; m = re.exec(span)) last = m;
-    if (!last) continue;
-    const at = section.from + last.index;
-    if (!best || at > best.at) best = { at };
+    for (let m = re.exec(span); m !== null; m = re.exec(span)) {
+      hits.push({ at: section.from + m.index });
+    }
   }
-  return best;
+  return hits.sort((a, b) => a.at - b.at);
+}
+
+/**
+ * 同（项目, 类名）下第 occurrence 份声明（0.39.29，与 ddl.ts 的
+ * occurrenceTableMatch 同口径——同名新增/迁移后 (名, 项目) 不再唯一）。
+ */
+function occurrenceClassMatch(
+  text: string,
+  sections: { from: number; to: number }[],
+  name: string,
+  occurrence: number | null | undefined,
+): { at: number } | null {
+  const hits = classMatches(text, sections, name);
+  if (hits.length === 0) return null;
+  if (occurrence == null) return hits[hits.length - 1];
+  return hits[occurrence] ?? null;
 }
 
 export function mergeClassesIntoNote(
@@ -351,24 +377,64 @@ export function javaNoteIntro(): string {
   return [
     "# Java 实体",
     "",
-    "实体类源码集中收录在这里（设置里可改路径）。笔记里光标悬停在已收录的类名上，会浮动显示该类的源码；用「收录建表语句」弹窗粘贴类源码即可收录（自动识别 class/interface/enum/record），`## 项目名` 段落区分同名类。",
+    "实体类源码集中收录在这里（设置里可改路径）。笔记里光标悬停在已收录的类名上，会浮动显示该类的源码；用「收录建表语句」弹窗粘贴类源码即可收录（自动识别 class/interface/enum/record），归属由类声明上方的 `// @tags:` 注释行表达。",
     "",
   ].join("\n");
+}
+
+/**
+ * Java 实体库迁移（0.39.29「## 项目段落 → 块内 @tags 注释」，见 ddl.ts
+ * migrateSectionsToTagRows）：语句锚点 = 段内每个类声明的**注解块起点**
+ * （元数据块在注解之上，锚点必须落在注解块的顶上，否则 mergeProjectTagAt
+ * 的向上扫描会被 `@ApiModel` 这类注解行截停、找不到已有元数据块）。
+ */
+export function migrateClassSectionsToTags(text: string): string | null {
+  return migrateSectionsToTagRows(text, "java", (from, to) => {
+    const starts: number[] = [];
+    const span = text.slice(from, to);
+    CLASS_RE.lastIndex = 0;
+    for (let m = CLASS_RE.exec(span); m !== null; m = CLASS_RE.exec(span)) {
+      // 与 parseClassLibrary 同一套切法：锚点=注解块起点，游标消费整个类体
+      //（只推进到声明行末尾的话，类体里的 `Xxx.class` 会被当成新声明）
+      const declStart = span.lastIndexOf("\n", m.index) + 1;
+      const blockStart = annotationBlockStart(span, declStart);
+      starts.push(from + blockStart);
+      const { advance } = classSpan(span.slice(blockStart), declStart - blockStart);
+      CLASS_RE.lastIndex = blockStart + advance;
+    }
+    return starts;
+  });
+}
+
+/** 没有显式 `// @tags:` 行的类锚点（0.39.29「批量归入项目」用；同构见 ddl.ts）。 */
+export function untaggedClassAnchors(text: string): number[] {
+  const anchors: number[] = [];
+  CLASS_RE.lastIndex = 0;
+  for (let m = CLASS_RE.exec(text); m !== null; m = CLASS_RE.exec(text)) {
+    const declStart = text.lastIndexOf("\n", m.index) + 1;
+    const blockStart = annotationBlockStart(text, declStart);
+    const meta = metaBlockAbove(text, blockStart);
+    if (!meta?.hasTags) anchors.push(blockStart);
+    const { advance } = classSpan(text.slice(blockStart), declStart - blockStart);
+    CLASS_RE.lastIndex = blockStart + advance;
+  }
+  return anchors;
 }
 
 // -------------------------------------------------------- 管理面板配套（0.35.1）
 
 /**
  * 在库笔记里定位某项目下某个类的源码（面板「定位/删除」用）。
- * 与 {@link locateDdlEntry} 同构：目标项目段落内**最后一次**出现的声明行
- * （解析口径一致），classSpan 切到配对右花括号。找不到返回 null。
+ * 与 {@link locateDdlEntry} 同构：目标项目段落内按 occurrence 取声明（缺省=
+ * **最后一次**出现），classSpan 切到配对右花括号。找不到返回 null。
  */
 export function locateClassEntry(
   text: string,
   name: string,
   project = "",
+  occurrence?: number | null,
 ): { from: number; to: number; line: number } | null {
-  const hit = lastClassMatch(text, matchingSections(ddlSections(text), project), name);
+  const hit = occurrenceClassMatch(text, matchingSections(ddlSections(text), project), name, occurrence);
   if (!hit) return null;
   // 0.39.19 注解保留：定位/删除/改标签的跨度都从注解块起点起算
   const start = annotationBlockStart(text, hit.at);
@@ -385,8 +451,9 @@ export function removeClassEntry(
   existing: string,
   name: string,
   project = "",
+  occurrence?: number | null,
 ): { text: string; line: number } | null {
-  const hit = locateClassEntry(existing, name, project);
+  const hit = locateClassEntry(existing, name, project, occurrence);
   if (!hit) return null;
   // 0.39：元数据块（@tags/@time）一并删除（同 removeDdlEntry）
   const meta = metaBlockAbove(existing, hit.from);
@@ -411,9 +478,9 @@ export function setClassEntryTags(
   name: string,
   project = "",
   tags: string[],
-  options: { mode?: "set" | "add" } = {},
+  options: { mode?: "set" | "add"; occurrence?: number | null } = {},
 ): { text: string } | null {
-  const hit = locateClassEntry(text, name, project);
+  const hit = locateClassEntry(text, name, project, options.occurrence);
   if (!hit) return null;
   return {
     text: applyStatementTags(
