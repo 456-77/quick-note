@@ -192,19 +192,21 @@ export interface TagSpan extends Span {
 }
 
 /**
- * 标签 `#标签`、`#嵌套/标签`。
+ * 标签 `#标签`、`#嵌套/标签`、`#127736`（0.39.28 起允许纯数字：工单号/单号类
+ * 标签，用户实锤「标签行 #127736 # 面板显示还没有标签」）。
  *
  * 判定刻意收紧，避免误伤：
  * - `#` 前面**不能是字母/数字/下划线**（而非"必须是空白"）——中文标点后的标签也算，
  *   例如 `正文、#标签`，这正是把规则从"前一个字符是空白"放宽过来的原因；
  *   同时这样 `[[笔记#小节]]`（前面是汉字）不会被当成标签；
- * - `#` 后面必须是字母/中文/下划线（不能是数字或 `#`）——所以 `# 标题`、`### 标题`
- *   这些 ATX 标题以及 `#1` 都不会命中；
+ * - `#` 后面必须是字母/中文/下划线/数字（不能是 `#` 或空白）——`# 标题`、`### 标题`
+ *   这些 ATX 标题仍然不命中；`#127736` 这类编号标签命中（0.39.28 放宽，此前
+ *   首字符锁死字母/下划线，纯数字标签整条解析不出）；
  * - 标签名里允许字母数字、下划线、连字符与 `/`。
  */
 export function findTags(text: string, base: number, excluded: Array<[number, number]>): TagSpan[] {
   const out: TagSpan[] = [];
-  const pattern = /(?<![\p{L}\p{N}_])#([\p{L}_][\p{L}\p{N}_/-]*)/gu;
+  const pattern = /(?<![\p{L}\p{N}_])#([\p{L}\p{N}_][\p{L}\p{N}_/-]*)/gu;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
     const from = base + match.index;

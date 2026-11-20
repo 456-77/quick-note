@@ -17,6 +17,7 @@ import AddWordDialog from "./components/AddWordDialog";
 import DdlDialog from "./components/DdlDialog";
 import LibraryManagerDialog, { type LibraryKind } from "./components/LibraryManagerDialog";
 import JsonFormatDialog from "./components/JsonFormatDialog";
+import AiChatDialog from "./components/AiChatDialog";
 import SplitPane from "./components/SplitPane";
 import CaptureManager from "./components/CaptureManager";
 import ScreenshotDialog from "./components/ScreenshotDialog";
@@ -175,6 +176,30 @@ const FAVORITES_PIN_KEY = "quicknote.favorites.pin.v2";
 const TAGS_PIN_KEY = "quicknote.tags.pin.v1";
 /** 固定标签页的存储键（按仓库分桶，同收藏）。 */
 const PINNED_TABS_KEY = "quicknote.ui.pinnedTabs";
+
+/**
+ * 切仓库时的标签会话（0.39.28 用户反馈「切换仓库时，已经打开的标签状态要保存」）：
+ * switchVault 是单向清空，此前切走再切回，所有标签都要重开。快照按仓库留在内存
+ * （含 stateStore/scrollStore——编辑器的未保存内容与撤销历史都在里面），切回时
+ * 整包恢复。只留最近 6 个仓库的会话（编辑器状态吃内存，断头会话不回收就是泄漏）；
+ * 重启后不恢复（与既有启动行为一致）。
+ */
+interface VaultTabSession {
+  openTabs: NoteContent[];
+  activeTab: string | null;
+  previewTabs: string[];
+  activePreview: string | null;
+  previewTabsSplit: string[];
+  activePreviewSplit: string | null;
+  rightTabPaths: string[];
+  splitActiveTab: string | null;
+  paneOrder: { main: string[]; split: string[] };
+  editorStates: Map<string, EditorState>;
+  scrolls: Map<string, number>;
+}
+const vaultSessions = new Map<string, VaultTabSession>();
+const VAULT_SESSION_LIMIT = 6;
+const vaultSessionKey = (vault: string) => vault.replace(/[\\/]+$/, "").toLowerCase();
 /** 目录筛选的存储键：仓库 → 被隐藏的一级目录列表（0.20 用户反馈：目录太多干扰阅读）。 */
 const HIDDEN_DIRS_KEY = "quicknote.tree.hiddenDirs";
 /** 0.38.7 ☰ 菜单自定义：默认展示的菜单项（id 集）。 */
@@ -329,7 +354,13 @@ export default function App() {
    * 参与，原样返回。
    */
   const effectiveViewMode = useCallback(
-    (m: ViewMode): ViewMode => (isMobile() && !mobileEditRef.current ? "live" : m),
+    (m: ViewMode, path?: string | null): ViewMode => {
+      // 0.39.28 用户反馈「对于非 md 文档就不需要进行渲染了」：.sh 的 `# 注释` 被
+      // 当标题、`$VAR$` 之间被当数学斜体、`#echo` 渲染成标签胶囊——markdown 实时
+      // 渲染装饰只属于 .md，其他文本文件一律源码视图（语言高亮不受影响）。
+      if (path && !isMarkdownPath(path)) return "source";
+      return isMobile() && !mobileEditRef.current ? "live" : m;
+    },
     [],
   );
   // ---------------------------------------------------------------- 0.34.0 移动端 Obsidian 化壳层
@@ -433,7 +464,10 @@ export default function App() {
     origin?: "tree" | "daily";
   } | null>(null);
   /** 待确认的删除。删笔记不可逆，先问一次。 */
-  const [pendingDelete, setPendingDelete] = useState<{ path: string; isDir: boolean } | null>(null);
+  /** 待确认的删除（0.39.28 起支持批量：文件树多选后菜单「删除 N 项」）。 */
+  const [pendingDelete, setPendingDelete] = useState<{
+    targets: Array<{ path: string; isDir: boolean }>;
+  } | null>(null);
   /**
    * 右侧面板当前页签：日历 / 目录 / 统计。
    *
@@ -720,7 +754,22 @@ export default function App() {
     [],
   );
   /** 知识库内"复制"的文件（Ctrl+V 粘贴进选中的目录；同时已写入系统剪贴板）。 */
-  const [treeClipboard, setTreeClipboard] = useState<{ path: string; isDir: boolean } | null>(null);
+  const [treeClipboard, setTreeClipboard] = useState<{ paths: string[]; cut: boolean } | null>(null);
+  /**
+   * 文件树多选（0.39.28 用户反馈「类似资源管理器，长按 shift 后可以选中多个
+   * 文件进行复制，粘贴，删除，移动等操作」）：Shift+点击范围选（锚点=上一次
+   * 单选/点选的行）、Ctrl+点击逐个增减。只收 Shift/Ctrl 修饰的点击，普通点击
+   * 的行为（开笔记/选目录）完全不变。 */
+  const [treeSelection, setTreeSelection] = useState<string[]>([]);
+  const treeAnchorRef = useRef<string | null>(null);
+  /**
+   * 右键菜单的批量形态（0.39.28）：右键的行在多选集里且选中数 >1 时，菜单按
+   * 「N 项」批量动作（复制/剪切/删除）；否则维持单条目行为。
+   */
+  const menuMultiPaths =
+    menu && treeSelection.length > 1 && treeSelection.includes(menu.path)
+      ? treeSelection
+      : null;
   /**
    * 文件树「只显示选定目录」焦点（0.36.1 用户反馈，移动端大仓库浏览）：
    * 按仓库记忆，右键目录 → 只看此目录；树内出退出芯片。null = 显示全部。
@@ -2335,6 +2384,8 @@ export default function App() {
   const [ddlTagOptions, setDdlTagOptions] = useState<string[]>([]);
   // JSON 格式转换面板（0.34.13 用户反馈）：打开时带入编辑器选区，转换完成后写回
   const [jsonPanelOpen, setJsonPanelOpen] = useState(false);
+  /** AI 对话面板（0.39.28 用户需求「添加 ai 对话功能」；Ctrl+Alt+I）。 */
+  const [aiChatOpen, setAiChatOpen] = useState(false);
   const [jsonSeed, setJsonSeed] = useState("");
   /**
    * 分栏（0.31 只读渲染 → 0.32 双编辑器 → 0.32.2 Obsidian 式分栏）：标签栏
@@ -2438,7 +2489,11 @@ export default function App() {
   /** 程序滚动回声锁：被联动驱动过的容器 120ms 内不再作为滚动源回传。 */
   const splitSyncEchoRef = useRef<{ el: HTMLElement; at: number } | null>(null);
   /** 找一栏里「主滚动容器」：编辑器 scroller / 预览体 / 表格体，取可滚余量
-      最大的那个（隐藏的 display:none 容器余量为 0，自然落选）。 */
+      最大的那个（隐藏的 display:none 容器余量为 0，自然落选）。0.39.28 用户
+      反馈「同步滚动按钮失效，是不是因为这两个表存在多个 sheet」：两张 23 行
+      的短表纵向余量 ≤40px 就被旧阈值整条拦掉——横向很宽时连左右同步也一起
+      停摆。改为「有候选就用」：余量 0 的容器在比例映射端有 >0 守卫，天然
+      no-op；余量最大的那个仍是正确目标。 */
   const paneScrollableOf = useCallback((root: HTMLElement | null): HTMLElement | null => {
     if (!root) return null;
     const candidates = root.querySelectorAll<HTMLElement>(
@@ -2453,7 +2508,7 @@ export default function App() {
         bestExtra = extra;
       }
     }
-    return bestExtra > 40 ? best : null;
+    return best;
   }, []);
   const mainColRef = useRef<HTMLDivElement | null>(null);
   // 0.39.12 用户反馈（21:04）「excel 预览文件外部修改时，不会更新内容」：预览
@@ -3684,7 +3739,7 @@ export default function App() {
       resourcesRef.current.notePath = note.path;
       const newState = createEditorState(note.content, {
         lineEnding: note.lineEnding,
-        mode: isMarkdownPath(note.path) ? effectiveViewMode(modeRef.current) : "source",
+        mode: effectiveViewMode(modeRef.current, note.path),
         language: editorLanguageOf(note.path),
         onDocChanged: handleDocChanged,
         onSave: handleEditorSave,
@@ -3769,7 +3824,7 @@ export default function App() {
       }
       resourcesRef.current.notePath = path;
       // 存量状态的 Compartment 是它创建那一刻的模式/主题，切回来要对齐当前选择
-      applyMode(view, effectiveViewMode(modeRef.current));
+      applyMode(view, effectiveViewMode(modeRef.current, path));
       applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
       requestDecorationRefresh(view);
       setInTable(isCursorInTable(view.state));
@@ -4081,7 +4136,7 @@ export default function App() {
               const adopted = createSplitState(freshSplit);
               stateStore.current.set(splitPathNow, adopted);
               splitView.setState(adopted);
-              applyMode(splitView, effectiveViewMode(modeRef.current));
+              applyMode(splitView, effectiveViewMode(modeRef.current, splitPathNow));
               applyDarkTheme(splitView, resolveTheme(getSettings().theme) === "dark");
               splitView.scrollDOM.scrollTop = top;
               staleTabs.current.delete(splitPathNow);
@@ -4291,6 +4346,36 @@ export default function App() {
   const switchVault = useCallback(
     async (picked: string) => {
       setError(null);
+      // 0.39.28 标签会话：切走前快照当前仓库的全部标签状态（含编辑器未保存内容
+      // 与滚动位置），切回来时整包恢复——用户反馈「切换仓库时，已经打开的标签
+      // 状态要保存」。refs 全部是渲染后镜像（609-622/2139-2143/2355/2361），
+      // 这里读到的就是此刻的真实值。
+      const leaving = vaultRef.current;
+      if (leaving) {
+        const leavingKey = vaultSessionKey(leaving);
+        vaultSessions.delete(leavingKey);
+        vaultSessions.set(leavingKey, {
+          openTabs: openTabsRef.current,
+          activeTab: activeTabRef.current,
+          previewTabs: previewTabsRef.current,
+          activePreview: activePreviewRef.current,
+          previewTabsSplit: previewTabsSplitRef.current,
+          activePreviewSplit: activePreviewSplitRef.current,
+          rightTabPaths: rightTabsRef.current,
+          splitActiveTab: splitActiveRef.current,
+          paneOrder: paneTabOrderRef.current,
+          // 必须拷贝：下面 switchVault 的清理会 stateStore.current.clear()，
+          // 存同一个 Map 引用等于把快照一起清掉（0.27 哈希表浅拷贝事故同款）
+          editorStates: new Map(stateStore.current),
+          scrolls: new Map(scrollStore.current),
+        });
+        // 上限外的最旧会话丢掉（Map 迭代序=插入序，最先插入的是最旧）
+        while (vaultSessions.size > VAULT_SESSION_LIMIT) {
+          const oldest = vaultSessions.keys().next().value;
+          if (oldest === undefined) break;
+          vaultSessions.delete(oldest);
+        }
+      }
       localStorage.setItem(VAULT_KEY, picked);
       recordVault(picked);
       setVault(picked);
@@ -4306,6 +4391,7 @@ export default function App() {
       setSelectedPath(null);
       setTagDashTag(null);
       setTreeClipboard(null);
+      setTreeSelection([]);
       // 右栏先收起（0.32.2 分栏：视图持有旧仓库内容，stateStore 也要清）
       splitViewRef.current = null;
       splitActiveRef.current = null;
@@ -4340,6 +4426,42 @@ export default function App() {
         await refresh(picked);
       } catch (e) {
         setError(String(e));
+      }
+      // 0.39.28 标签会话恢复：切回有快照的仓库时整包还原（编辑器内容在
+      // stateStore 里，activateTab 命中存量状态直接装载，不重读磁盘）。
+      const restoredKey = vaultSessionKey(picked);
+      const session = vaultSessions.get(restoredKey);
+      if (session) {
+        vaultSessions.delete(restoredKey);
+        stateStore.current = session.editorStates;
+        scrollStore.current = session.scrolls;
+        setOpenTabs(session.openTabs);
+        setActiveTab(session.activeTab);
+        setPreviewTabs(session.previewTabs);
+        setActivePreview(session.activePreview);
+        setPreviewTabsSplit(session.previewTabsSplit);
+        setActivePreviewSplit(session.activePreviewSplit);
+        setRightTabPaths(session.rightTabPaths);
+        setSplitActiveTab(session.splitActiveTab);
+        setSplitDirty(false);
+        paneTabOrderRef.current = session.paneOrder;
+        viewOwnerRef.current = session.activeTab;
+        resourcesRef.current.notePath = session.activeTab;
+        if (session.activeTab) {
+          const view = viewRef.current;
+          const restored = stateStore.current.get(session.activeTab);
+          if (view && restored) {
+            view.setState(restored);
+            applyMode(view, effectiveViewMode(modeRef.current, session.activeTab));
+            applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
+            const top = scrollStore.current.get(session.activeTab) ?? 0;
+            requestAnimationFrame(() => {
+              if (viewRef.current === view && viewOwnerRef.current === session.activeTab) {
+                viewRef.current.scrollDOM.scrollTop = top;
+              }
+            });
+          }
+        }
       }
     },
     [refresh, activateVault, recordVault],
@@ -4801,7 +4923,7 @@ export default function App() {
       splitCtxRef.current = ctx;
       return createEditorState(note.content, {
         lineEnding: note.lineEnding,
-        mode: isMarkdownPath(note.path) ? effectiveViewMode(modeRef.current) : "source",
+        mode: effectiveViewMode(modeRef.current, note.path),
         language: editorLanguageOf(note.path),
         onDocChanged: handleDocChanged,
         onSave: handleEditorSave,
@@ -5062,7 +5184,7 @@ export default function App() {
         resourcesRef.current.notePath = note.path;
         const newState = createEditorState(note.content, {
           lineEnding: note.lineEnding,
-          mode: isMarkdownPath(note.path) ? effectiveViewMode(modeRef.current) : "source",
+          mode: effectiveViewMode(modeRef.current, note.path),
           language: editorLanguageOf(note.path),
           onDocChanged: handleDocChanged,
           onSave: handleEditorSave,
@@ -5814,38 +5936,50 @@ export default function App() {
   /** 执行删除（移入仓库内的 .trash，可找回）。 */
   const confirmDelete = useCallback(async () => {
     if (!pendingDelete || !vault) return;
-    const target = pendingDelete;
+    const targets = pendingDelete.targets;
     setPendingDelete(null);
+    setTreeSelection([]);
+    const failed: string[] = [];
+    let cleanedNotes = 0;
+    let trashedCount = 0;
+    /** 所有被删路径的「自身 + 子树」前缀判定（收藏/固定/最近/开标签清理共用）。 */
+    const hit = (p: string) =>
+      targets.some((target) => p === target.path || p.startsWith(`${target.path}/`));
     try {
-      const trashed = await deleteEntry(vault, target.path);
-      // 附件（图片）删除后清理各笔记里的引用：不留一堆破图链接。
-      // 候选集用全文搜索圈定（文件名是足够独特的关键词），再按引用语法精确匹配。
-      let cleanedNotes = 0;
-      if (!target.isDir && !target.path.toLowerCase().endsWith(".md")) {
-        const fileName = target.path.split("/").pop() ?? "";
-        if (fileName) {
-          try {
-            const hits = await searchVault(vault, fileName, 100);
-            for (const hit of hits) {
-              if (!hit.path.toLowerCase().endsWith(".md")) continue;
-              const note = await readNoteOptional(vault, hit.path);
-              if (!note) continue;
-              const next = removeImageReferences(note.content, target.path, fileName);
-              if (next !== null) {
-                await writeNote(vault, hit.path, next, note.hasBom);
-                cleanedNotes += 1;
+      for (const target of targets) {
+        try {
+          await deleteEntry(vault, target.path);
+          trashedCount += 1;
+        } catch (e) {
+          failed.push(`${target.path}（${e}）`);
+          continue;
+        }
+        // 附件（图片）删除后清理各笔记里的引用：不留一堆破图链接。
+        // 候选集用全文搜索圈定（文件名是足够独特的关键词），再按引用语法精确匹配。
+        if (!target.isDir && !target.path.toLowerCase().endsWith(".md")) {
+          const fileName = target.path.split("/").pop() ?? "";
+          if (fileName) {
+            try {
+              const hits = await searchVault(vault, fileName, 100);
+              for (const hitItem of hits) {
+                if (!hitItem.path.toLowerCase().endsWith(".md")) continue;
+                const note = await readNoteOptional(vault, hitItem.path);
+                if (!note) continue;
+                const next = removeImageReferences(note.content, target.path, fileName);
+                if (next !== null) {
+                  await writeNote(vault, hitItem.path, next, note.hasBom);
+                  cleanedNotes += 1;
+                }
               }
+            } catch {
+              // 引用清理失败不回滚删除——文件已在 .trash，引用可以手动补
             }
-          } catch {
-            // 引用清理失败不回滚删除——文件已在 .trash，引用可以手动补
           }
         }
       }
       // 删掉的笔记（或目录下的笔记）开着标签就关掉：留着的话，
       // 接下来的一次自动保存会把文件重新写回来
-      const affected = openTabsRef.current.filter(
-        (tab) => tab.path === target.path || tab.path.startsWith(`${target.path}/`),
-      );
+      const affected = openTabsRef.current.filter((tab) => hit(tab.path));
       for (const tab of affected) {
         dirtyTabs.current.delete(tab.path);
         staleTabs.current.delete(tab.path);
@@ -5881,29 +6015,29 @@ export default function App() {
       await refresh(vault);
       // 删掉的笔记从收藏与最近列表里移除，免得点开 404
       setFavorites((prev) => {
-        const next = prev.filter(
-          (p) => p !== target.path && !p.startsWith(`${target.path}/`),
-        );
+        const next = prev.filter((p) => !hit(p));
         persistFavorites(next);
         return next;
       });
       // 固定状态同理：文件没了固定也没有意义
-      setPinnedTabs((prev) =>
-        prev.filter((p) => p !== target.path && !p.startsWith(`${target.path}/`)),
-      );
+      setPinnedTabs((prev) => prev.filter((p) => !hit(p)));
       setRecentOpens((prev) => {
-        const next = prev.filter(
-          (item) => item.path !== target.path && !item.path.startsWith(`${target.path}/`),
-        );
+        const next = prev.filter((item) => !hit(item.path));
         persistRecentOpens(next);
         return next;
       });
-      setStatus(
-        cleanedNotes > 0
-          ? `已移入回收目录：${trashed}，并清理了 ${cleanedNotes} 篇笔记中的引用`
-          : `已移入回收目录：${trashed}（可以找回）`,
-      );
-      setError(null);
+      if (failed.length > 0) {
+        setError(`删除完成 ${trashedCount} 项，失败 ${failed.length} 项：${failed.join("；")}`);
+      } else {
+        const head =
+          trashedCount > 1 ? `已移入回收目录 ${trashedCount} 项` : "已移入回收目录（可以找回）";
+        setStatus(
+          cleanedNotes > 0
+            ? `${head}，并清理了 ${cleanedNotes} 篇笔记中的引用`
+            : head,
+        );
+        setError(null);
+      }
     } catch (e) {
       setError(String(e));
     }
@@ -5932,9 +6066,9 @@ export default function App() {
       setMode(next);
       localStorage.setItem(MODE_KEY, next);
       const view = viewRef.current;
-      if (view && current) applyMode(view, effectiveViewMode(next));
+      if (view && current) applyMode(view, effectiveViewMode(next, current.path));
       // 右栏视图同一套模式（0.32 双编辑器；右栏仅桌面，包装无副作用）
-      if (splitView && splitActiveRef.current) applyMode(splitView, effectiveViewMode(next));
+      if (splitView && splitActiveRef.current) applyMode(splitView, effectiveViewMode(next, splitActiveRef.current));
       // 高度重排要等 CM 下一轮测量：两帧后按锚行对齐（openNote 的 align 同款节奏）
       const realign = (v: EditorView, lineNo: number) => {
         requestAnimationFrame(() =>
@@ -6013,7 +6147,7 @@ export default function App() {
     const view = viewRef.current;
     if (!view) return;
     applyEditable(view, mobileEditRef.current);
-    applyMode(view, effectiveViewMode(modeRef.current));
+    applyMode(view, effectiveViewMode(modeRef.current, activeTab));
     requestDecorationRefresh(view);
   }, [mobileEdit, activeTab, mode, effectiveViewMode]);
 
@@ -6620,7 +6754,7 @@ export default function App() {
     setSplitError(null);
     let alive = true;
     const align = () => {
-      applyMode(view, effectiveViewMode(modeRef.current));
+      applyMode(view, effectiveViewMode(modeRef.current, splitActiveTab));
       applyDarkTheme(view, resolveTheme(getSettings().theme) === "dark");
       view.scrollDOM.scrollTop =
         scrollStore.current.get(splitActiveTab) ??
@@ -7147,16 +7281,54 @@ export default function App() {
    * 写入系统剪贴板（资源管理器里 Ctrl+V 粘贴文件），并记入应用内剪贴板
    * （在左侧树选中目录后 Ctrl+V 粘贴进知识库）。
    */
+  /**
+   * 文件树条目的修饰键点击（0.39.28 多选）：Shift=从锚点行到当前行范围选
+   * （顺序按 entries 文件索引，跨展开层级也成立），Ctrl=逐个增减。普通点击
+   * 不走这里（FileTree 里保持原有「点文件开笔记 / 点目录选中+展开」）。
+   */
+  const handleTreeEntryClick = useCallback(
+    (path: string, _isDir: boolean, modifiers: { shift: boolean; ctrl: boolean }) => {
+      const order = entries.map((entry) => entry.path);
+      if (modifiers.shift) {
+        const anchor = treeAnchorRef.current ?? path;
+        const from = order.indexOf(anchor);
+        const to = order.indexOf(path);
+        if (from >= 0 && to >= 0) {
+          const [lo, hi] = from <= to ? [from, to] : [to, from];
+          setTreeSelection(order.slice(lo, hi + 1));
+        } else {
+          // 锚点不在索引里（刚新建的文件等）：退化为单选
+          setTreeSelection([path]);
+        }
+        treeAnchorRef.current = path;
+        return;
+      }
+      if (modifiers.ctrl) {
+        setTreeSelection((prev) =>
+          prev.includes(path) ? prev.filter((p) => p !== path) : [...prev, path],
+        );
+        treeAnchorRef.current = path;
+        return;
+      }
+      // 无修饰键（理论上 FileTree 不路由到这里）：单选清批量
+      setTreeSelection([]);
+      treeAnchorRef.current = path;
+    },
+    [entries],
+  );
+
+  /** 复制树条目进应用内剪贴板（0.39.28 起支持多条：文件树 Shift/Ctrl 多选）。 */
   const copyTreeFile = useCallback(
-    async (path: string, isDir: boolean) => {
-      if (!vault) return;
-      setTreeClipboard({ path, isDir });
+    async (paths: string[]) => {
+      if (!vault || paths.length === 0) return;
+      setTreeClipboard({ paths, cut: false });
       try {
-        await copyPathsToClipboard([`${vault.replace(/[\\/]+$/, "")}/${path}`]);
+        const root = vault.replace(/[\\/]+$/, "");
+        await copyPathsToClipboard(paths.map((path) => `${root}/${path}`));
         setStatus(
-          isDir
-            ? "已复制文件夹：可在资源管理器 Ctrl+V 粘贴；选中目录后 Ctrl+V 粘贴进知识库"
-            : "已复制文件：可在资源管理器 Ctrl+V 粘贴；选中目录后 Ctrl+V 粘贴进知识库",
+          paths.length > 1
+            ? `已复制 ${paths.length} 项：可在资源管理器或知识库目录里 Ctrl+V 粘贴`
+            : "已复制：可在资源管理器 Ctrl+V 粘贴；选中目录后 Ctrl+V 粘贴进知识库",
         );
       } catch (e) {
         // 系统剪贴板失败不拦着应用内粘贴：内部剪贴板已经记下了
@@ -7167,26 +7339,64 @@ export default function App() {
     [vault],
   );
 
-  /** 把应用内剪贴板的文件/目录粘贴到指定目录。 */
+  /** 剪切树条目（0.39.28 多选批量移动的第一半：粘贴时执行移动）。 */
+  const cutTreeFile = useCallback(
+    (paths: string[]) => {
+      if (!vault || paths.length === 0) return;
+      setTreeClipboard({ paths, cut: true });
+      setStatus(paths.length > 1 ? `已剪切 ${paths.length} 项：到目标目录右键 → 粘贴完成移动` : "已剪切：到目标目录右键 → 粘贴完成移动");
+    },
+    [vault],
+  );
+
+  /** 把应用内剪贴板的文件/目录粘贴到指定目录（0.39.28 支持多条与剪切=移动）。 */
   const pasteIntoDir = useCallback(
     async (destDir: string) => {
       if (!vault) {
         setError("尚未打开仓库");
         return;
       }
-      if (!treeClipboard) {
+      const clipboard = treeClipboardRef.current;
+      if (!clipboard || clipboard.paths.length === 0) {
         setStatus("剪贴板里还没有从知识库复制的文件（右键 → 复制）");
         return;
       }
+      let copied = 0;
+      let moved = 0;
+      const failures: string[] = [];
       try {
-        const dest = await copyEntry(vault, treeClipboard.path, destDir);
+        for (const path of clipboard.paths) {
+          if (destDir === path || destDir.startsWith(`${path}/`)) {
+            failures.push(`${path}（不能移动/复制到它自己内部）`);
+            continue;
+          }
+          try {
+            if (clipboard.cut) {
+              const nextPath = await moveEntry(vault, path, destDir);
+              await rekeyEntryPaths(path, nextPath);
+              moved += 1;
+            } else {
+              await copyEntry(vault, path, destDir);
+              copied += 1;
+            }
+          } catch (e) {
+            failures.push(`${path}（${e}）`);
+          }
+        }
         await refresh(vault);
-        setStatus(`已粘贴到「${destDir || "仓库根目录"}」：${dest}`);
+        if (clipboard.cut) setTreeClipboard(null); // 剪切是一次性的
+        const verb = clipboard.cut ? "移动" : "粘贴";
+        const ok = copied + moved;
+        if (failures.length > 0) {
+          setError(`${verb}完成 ${ok} 项，失败 ${failures.length} 项：${failures.join("；")}`);
+        } else {
+          setStatus(`已${verb} ${ok} 项到「${destDir || "仓库根目录"}」`);
+        }
       } catch (e) {
         setError(String(e));
       }
     },
-    [vault, treeClipboard, refresh],
+    [vault, refresh],
   );
 
   /** 拖拽移动（剪切）树条目到目标目录，随后把打开标签/收藏/最近列表换键。 */
@@ -7290,7 +7500,7 @@ export default function App() {
   // Ctrl+C / Ctrl+V：焦点在编辑器和输入框之外（文件树、空白区）时，
   // 对「选中的树条目」执行复制/粘贴——与 Obsidian 的文件列表一致。
   // 内部剪贴板为空时不拦截 Ctrl+V，让资源管理器文件的粘贴事件照常走。
-  const treeClipboardRef = useRef<{ path: string; isDir: boolean } | null>(null);
+  const treeClipboardRef = useRef<{ paths: string[]; cut: boolean } | null>(null);
   useEffect(() => {
     treeClipboardRef.current = treeClipboard;
   }, [treeClipboard]);
@@ -7312,9 +7522,7 @@ export default function App() {
         // 在编辑器里）→ 复制树选中项，省得用户必须再点一次文件树
         if (inEditor && !viewRef.current?.state.selection.main.empty) return;
         event.preventDefault();
-        const pickedIsDir =
-          entries.find((entry) => entry.path === selectedPathRef.current)?.isDir ?? false;
-        void copyTreeFile(selectedPathRef.current, pickedIsDir);
+        void copyTreeFile([selectedPathRef.current]);
       } else if (key === "v") {
         // 编辑器内 Ctrl+V 永远是粘贴文本；文件粘贴只在编辑器以外生效
         if (inEditor) return;
@@ -7392,7 +7600,7 @@ export default function App() {
       copy: (relativePath) => void copyImageToClipboard(relativePath),
       crop: (relativePath) => setCropPath(relativePath),
       rename: (relativePath) => beginRename(relativePath),
-      remove: (relativePath) => setPendingDelete({ path: relativePath, isDir: false }),
+      remove: (relativePath) => setPendingDelete({ targets: [{ path: relativePath, isDir: false }] }),
     };
   }, [copyImageToClipboard, beginRename]);
 
@@ -7659,6 +7867,9 @@ export default function App() {
         const sel = view?.state.selection.main;
         setJsonSeed(view && sel && !sel.empty ? view.state.sliceDoc(sel.from, sel.to) : "");
         setJsonPanelOpen(true);
+      },
+      aiChat: () => {
+        setAiChatOpen(true);
       },
     }),
     // 这些回调内部要么读 ref、要么函数式 setState，身份变化不会造成额外开销
@@ -8040,6 +8251,7 @@ export default function App() {
       { id: "quick-todo", title: "快速添加待办…", hint: keyHint("quickTodo"), icon: "✅", run: shortcuts.quickTodo },
       { id: "ddl-capture", title: "收录建表语句…", hint: keyHint("ddlCapture"), icon: "🗄️", run: shortcuts.ddlCapture },
       { id: "json-panel", title: "JSON 格式转换面板…", hint: keyHint("jsonPanel"), icon: "{ }", run: shortcuts.jsonPanel },
+      { id: "ai-chat", title: "AI 对话…", hint: keyHint("aiChat"), icon: "🤖", run: shortcuts.aiChat },
       { id: "recent-files", title: "最近文件…", hint: keyHint("recentFiles"), icon: "🕘", run: shortcuts.recentFiles },
       { id: "capture-manager", title: "速记管理（收件箱整理）", hint: keyHint("captureManager"), icon: "🗂️", run: shortcuts.captureManager },
       { id: "mode", title: mode === "live" ? "切换到源码模式" : "切换到实时预览", hint: keyHint("toggleMode"), icon: "🔀", run: shortcuts.toggleMode },
@@ -8121,9 +8333,19 @@ export default function App() {
       focusDir={treeFocusDir}
       onFocusClear={() => setTreeFocusDir(null)}
       selectedPath={selectedPath}
+      selectedPaths={treeSelection}
       reveal={treeReveal}
-      onSelectPath={setSelectedPath}
-      onOpen={(p) => void openEntry(p)}
+      onSelectPath={(p) => {
+        setSelectedPath(p);
+        // 普通点目录（无修饰键）= 单选语义，批量选择清空
+        setTreeSelection([]);
+        treeAnchorRef.current = p;
+      }}
+      onOpen={(p) => {
+        setTreeSelection([]);
+        void openEntry(p);
+      }}
+      onEntryClick={handleTreeEntryClick}
       onContext={openContextMenu}
       onReveal={(p) => void revealInExplorer(p)}
       onMoveEntry={(p, dest) => void moveTreeEntry(p, dest)}
@@ -8653,16 +8875,18 @@ export default function App() {
         />
       )}
 
-      {/* 最近文件弹窗（0.27：类 IDEA，搜索 + 一级目录筛选） */}
+      {/* 最近文件弹窗（0.27：类 IDEA，搜索 + 一级目录筛选；0.39.28 头部加
+          仓库下拉筛选，其他仓库的条目另起窗口打开——用户反馈「可以在右上角
+          设置一个下拉框选择哪个仓库。对于其他仓库文件，点击后自动在新窗口
+          打开仓库里的文件」） */}
       {recentFilesOpen && (
         <RecentFilesDialog
           recents={recentOpens}
           currentVault={vault ?? ""}
-          showOtherVaults={settings.recentsShowOtherVaults}
           entries={entries}
           activePath={current?.path ?? null}
           onOpen={(path) => void openEntry(path)}
-          onOpenInVault={(target, path) => void openNoteInVault(target, path)}
+          onOpenInNewWindow={(target, path) => void openNewWindow(target, path)}
           onClose={() => setRecentFilesOpen(false)}
         />
       )}
@@ -8726,6 +8950,31 @@ export default function App() {
             setJsonPanelOpen(false);
           }}
           onClose={() => setJsonPanelOpen(false)}
+        />
+      )}
+
+      {/* AI 对话面板（默认键 Ctrl+Alt+I）：可选带当前笔记全文，回复插入光标处 */}
+      {aiChatOpen && (
+        <AiChatDialog
+          noteContext={
+            current
+              ? {
+                  name: current.path,
+                  text: (() => {
+                    const view = viewRef.current;
+                    const sel = view?.state.selection.main;
+                    // 有选区带选区（问「这段什么意思」就是它），没有带全文
+                    return view && sel && !sel.empty
+                      ? view.state.sliceDoc(sel.from, sel.to)
+                      : view
+                        ? view.state.sliceDoc(0, Math.min(view.state.doc.length, 60_000))
+                        : "";
+                  })(),
+                }
+              : null
+          }
+          onInsert={(text) => insertAtCursor(text)}
+          onClose={() => setAiChatOpen(false)}
         />
       )}
 
@@ -9074,7 +9323,9 @@ export default function App() {
       {pendingDelete && (
         <div className="banner banner-warn">
           <span>
-            确定把「{pendingDelete.path}」移入回收目录吗？文件会进仓库内的 .trash，可以找回。
+            {pendingDelete.targets.length > 1
+              ? `确定把这 ${pendingDelete.targets.length} 项移入回收目录吗？文件会进仓库内的 .trash，可以找回。`
+              : `确定把「${pendingDelete.targets[0]?.path}」移入回收目录吗？文件会进仓库内的 .trash，可以找回。`}
           </span>
           <span className="spacer" />
           <button type="button" className="btn" onClick={() => void confirmDelete()}>
@@ -9196,7 +9447,10 @@ export default function App() {
             setMenu(null);
           }} />
           <div className="context-menu" ref={menuRefClampedToViewport(menu.x, menu.y)} style={{ left: menu.x, top: menu.y }}>
-            {!menu.isDir && (
+            {menuMultiPaths && (
+              <div className="context-menu-caption">已选 {menuMultiPaths.length} 项</div>
+            )}
+            {!menuMultiPaths && !menu.isDir && (
               <button
                 type="button"
                 onClick={() => {
@@ -9207,7 +9461,7 @@ export default function App() {
                 {favorites.includes(menu.path) ? "取消收藏" : "收藏"}
               </button>
             )}
-            {!menu.isDir && favorites.includes(menu.path) && (
+            {!menuMultiPaths && !menu.isDir && favorites.includes(menu.path) && (
               <button
                 type="button"
                 onClick={() => {
@@ -9218,25 +9472,29 @@ export default function App() {
                 {pinnedFavorites.includes(menu.path) ? "取消置顶" : "置顶"}
               </button>
             )}
-            <button
-              type="button"
-              onClick={() => {
-                void copyEntryPaths(menu.path, "absolute");
-                setMenu(null);
-              }}
-            >
-              复制绝对路径
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void copyEntryPaths(menu.path, "relative");
-                setMenu(null);
-              }}
-            >
-              复制仓库相对路径
-            </button>
-            {menu.isDir && (
+            {!menuMultiPaths && (
+              <button
+                type="button"
+                onClick={() => {
+                  void copyEntryPaths(menu.path, "absolute");
+                  setMenu(null);
+                }}
+              >
+                复制绝对路径
+              </button>
+            )}
+            {!menuMultiPaths && (
+              <button
+                type="button"
+                onClick={() => {
+                  void copyEntryPaths(menu.path, "relative");
+                  setMenu(null);
+                }}
+              >
+                复制仓库相对路径
+              </button>
+            )}
+            {!menuMultiPaths && menu.isDir && (
               <button
                 type="button"
                 onClick={() => {
@@ -9248,40 +9506,55 @@ export default function App() {
                 {treeFocusDir === menu.path ? "显示全部目录" : "只看此目录"}
               </button>
             )}
+            {!menuMultiPaths && (
+              <button
+                type="button"
+                onClick={() => {
+                  // 新建落点：选中的目录；选中文件时是其所在目录
+                  beginCreate("note", menu.isDir ? menu.path : parentFolderOf(menu.path));
+                  setMenu(null);
+                }}
+              >
+                新建笔记
+              </button>
+            )}
+            {!menuMultiPaths && (
+              <button
+                type="button"
+                onClick={() => {
+                  // 0.39.12 用户反馈「添加选项：新建文件夹」：落点口径与新建笔记一致
+                  beginCreate("folder", menu.isDir ? menu.path : parentFolderOf(menu.path));
+                  setMenu(null);
+                }}
+              >
+                新建文件夹
+              </button>
+            )}
+            {!menuMultiPaths && (
+              <button
+                type="button"
+                onClick={() => beginRename(menu.path, menu.origin === "daily" ? "daily" : "tree")}
+              >
+                重命名
+              </button>
+            )}
             <button
               type="button"
               onClick={() => {
-                // 新建落点：选中的目录；选中文件时是其所在目录
-                beginCreate("note", menu.isDir ? menu.path : parentFolderOf(menu.path));
+                void copyTreeFile(menuMultiPaths ?? [menu.path]);
                 setMenu(null);
               }}
             >
-              新建笔记
+              {menuMultiPaths ? `复制 ${menuMultiPaths.length} 项` : "复制"}
             </button>
             <button
               type="button"
               onClick={() => {
-                // 0.39.12 用户反馈「添加选项：新建文件夹」：落点口径与新建笔记一致
-                beginCreate("folder", menu.isDir ? menu.path : parentFolderOf(menu.path));
+                cutTreeFile(menuMultiPaths ?? [menu.path]);
                 setMenu(null);
               }}
             >
-              新建文件夹
-            </button>
-            <button
-              type="button"
-              onClick={() => beginRename(menu.path, menu.origin === "daily" ? "daily" : "tree")}
-            >
-              重命名
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                void copyTreeFile(menu.path, menu.isDir);
-                setMenu(null);
-              }}
-            >
-              复制
+              {menuMultiPaths ? `剪切 ${menuMultiPaths.length} 项` : "剪切"}
             </button>
             {menu.isDir && treeClipboard && (
               <button
@@ -9291,27 +9564,38 @@ export default function App() {
                   setMenu(null);
                 }}
               >
-                粘贴到此目录
+                {treeClipboard.cut
+                  ? `移动 ${treeClipboard.paths.length} 项到此目录`
+                  : `粘贴 ${treeClipboard.paths.length} 项到此目录`}
+              </button>
+            )}
+            {!menuMultiPaths && (
+              <button
+                type="button"
+                onClick={() => {
+                  void revealInExplorer(menu.path);
+                  setMenu(null);
+                }}
+              >
+                在资源管理器中显示
               </button>
             )}
             <button
               type="button"
-              onClick={() => {
-                void revealInExplorer(menu.path);
-                setMenu(null);
-              }}
-            >
-              在资源管理器中显示
-            </button>
-            <button
-              type="button"
               className="danger"
               onClick={() => {
-                setPendingDelete({ path: menu.path, isDir: menu.isDir });
+                setPendingDelete({
+                  targets: (menuMultiPaths ?? [menu.path]).map((path) => ({
+                    path,
+                    isDir: menuMultiPaths
+                      ? (entries.find((entry) => entry.path === path)?.isDir ?? false)
+                      : menu.isDir,
+                  })),
+                });
                 setMenu(null);
               }}
             >
-              删除…
+              {menuMultiPaths ? `删除 ${menuMultiPaths.length} 项…` : "删除…"}
             </button>
           </div>
         </>

@@ -96,14 +96,19 @@ export function noteTags(text: string): string[] {
 /** 规范化用户输入：去掉 # 与首尾空白；保留中文/字母/数字/下划线/连字符/斜杠。 */
 export function normalizeTagName(input: string): string | null {
   const name = input.trim().replace(/^#+/, "").trim();
-  return /^[\p{L}_][\p{L}\p{N}_/-]*$/u.test(name) ? name : null;
+  // 0.39.28 首字符放宽到数字（工单号类纯数字标签，用户实锤 #127736 解析不出）
+  return /^[\p{L}\p{N}_][\p{L}\p{N}_/-]*$/u.test(name) ? name : null;
 }
 
 /** 一行去掉首尾空白后是否只由标签序列构成（即「标签行」）。 */
 function isTagLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
-  const rest = trimmed.replace(/(^|\s)#[\p{L}_][\p{L}\p{N}_/-]*/gu, "");
+  const rest = trimmed
+    .replace(/(^|\s)#[\p{L}\p{N}_][\p{L}\p{N}_/-]*/gu, "")
+    // 尾部孤立的裸 `#`（用户手滑留下的尾巴，0.39.28 实锤 `#127736 #`）不算非标签内容，
+    // 否则标签行判定为假，后续加标签会错位插行
+    .replace(/(^|\s)#$/, "$1");
   return rest.trim() === "";
 }
 
@@ -180,7 +185,7 @@ export function tagRemoveEdit(text: string, tag: string): TagEdit | null {
   const lineEnd = lineEndIndex === -1 ? text.length : lineEndIndex;
   const line = text.slice(lineStart, lineEnd);
   // 整行只剩这个标签（考虑首行无前导换行的情形）→ 连行带换行一起删
-  if (isTagLine(line) && line.replace(/(^|\s)#[\p{L}_][\p{L}\p{N}_/-]*/gu, "").trim() === "") {
+  if (isTagLine(line) && line.replace(/(^|\s)#[\p{L}\p{N}_][\p{L}\p{N}_/-]*/gu, "").trim() === "") {
     const only = noteTags(line);
     if (only.length === 1 && only[0] === tag && lineEnd < text.length) {
       // 整行收掉；这同时是文档最后一行时，连前面的换行一起吃掉，避免留空尾巴

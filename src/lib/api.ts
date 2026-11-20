@@ -289,7 +289,8 @@ export const storageWritable = () => invoke<boolean>("storage_writable");
 export const startupFile = () => invoke<string | null>("startup_file");
 
 /** 另起一个应用窗口打开指定仓库（「在新窗口打开」）。 */
-export const openNewWindow = (vault: string) => invoke<void>("open_new_window", { vault });
+export const openNewWindow = (vault: string, file?: string) =>
+  invoke<void>("open_new_window", { vault, file: file ?? null });
 
 /**
  * 登记本窗口正打开的仓库（跨进程登记表，识别「已在其他窗口打开」用）。

@@ -159,3 +159,26 @@ export async function aiRecognizeImage(base64: string, mime = "image/png"): Prom
   if (text) return text;
   throw new Error("AI 没有返回识别内容（模型可能不支持图片输入）");
 }
+
+/** AI 对话的一条消息（0.39.28 用户需求「添加 ai 对话功能」）。 */
+export interface AiChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+/**
+ * 多轮对话（0.39.28）：整段历史一起发（OpenAI chat/completions 天然无状态），
+ * 返回模型回复文本。httpRequest 是整包缓冲，没有流式——回复一次性到位，
+ * 请求期间面板显示「思考中…」。失败抛错（调用方展示）。
+ */
+export async function aiChat(messages: AiChatMessage[]): Promise<string> {
+  if (messages.length === 0) throw new Error("还没有输入内容");
+  const cfg = aiConfig();
+  if (!aiConfigured()) {
+    throw new Error("先在 设置 → AI 配置模型供应商（Base URL / API Key / 模型名）");
+  }
+  const parsed = await sendChat(cfg, { model: cfg.model, messages });
+  const text = contentOf(parsed);
+  if (text) return text;
+  throw new Error("AI 没有返回内容（模型可能推理 token 全被消耗，试试换个模型或减少上下文）");
+}

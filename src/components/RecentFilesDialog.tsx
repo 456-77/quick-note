@@ -24,25 +24,23 @@ const DIR_CHIP_LIMIT = 6;
 export default function RecentFilesDialog({
   recents,
   currentVault,
-  showOtherVaults,
   entries,
   activePath,
   onOpen,
-  onOpenInVault,
+  onOpenInNewWindow,
   onClose,
 }: {
   /** 最近的打开记录（0.39.23 带仓库标注：其他仓库的相对路径混进来会串台）。 */
   recents: Array<{ vault: string; path: string }>;
   /** 当前仓库绝对路径（判断哪些记录属于别的仓库）。 */
   currentVault: string;
-  /** 设置项：最近文件是否包含其他仓库（默认只在当前仓库内）。 */
-  showOtherVaults: boolean;
   /** 文件索引（「已编辑」用 mtime 排序；不含目录）。 */
   entries: EntryMeta[];
   activePath: string | null;
   onOpen: (path: string) => void;
-  /** 打开其他仓库里的文件（切仓库 + 定位）。 */
-  onOpenInVault: (vault: string, path: string) => void;
+  /** 打开其他仓库里的文件（0.39.28：另起一个应用窗口打开那个仓库+那篇笔记，
+   *  不再切当前窗口的仓库——用户反馈「点击后自动在新窗口打开仓库里的文件」）。 */
+  onOpenInNewWindow: (vault: string, path: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -51,6 +49,9 @@ export default function RecentFilesDialog({
   const [cursor, setCursor] = useState(0);
   const listRef = useRef<HTMLDivElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  /** 仓库筛选（0.39.28 用户反馈「右上角添加一个下拉框选择哪个仓库」）：
+   *  "current"=当前仓库（默认），"all"=全部仓库，其他值=特定仓库路径。 */
+  const [vaultFilter, setVaultFilter] = useState<string>("current");
 
   useEffect(() => {
     searchRef.current?.focus();
@@ -68,22 +69,32 @@ export default function RecentFilesDialog({
         .map((entry) => entry.path),
     [entries],
   );
-  /** 「最近打开」来源：当前仓库的 + （可选）其他仓库的，都带仓库标注。 */
-  const openedItems = useMemo(() => {
-    const own: Array<{ vault: string; path: string; other: boolean }> = [];
-    const strangers: Array<{ vault: string; path: string; other: boolean }> = [];
-    for (const item of recents) {
-      const ownVault = item.vault === "" || item.vault === currentVault;
-      if (ownVault) own.push({ ...item, other: false });
-      else if (showOtherVaults) strangers.push({ ...item, other: true });
-    }
-    return [...own, ...strangers];
-  }, [recents, currentVault, showOtherVaults]);
+  const ownVaultOf = (vault: string) => vault === "" || vault === currentVault;
+  /** 「最近打开」来源：全部带仓库标注；是否包含其他仓库由下拉筛选决定
+   *  （0.39.28 起「全部仓库」不再受 recentsShowOtherVaults 设置限制——
+   *  弹窗内的显式选择就是用户意图）。 */
+  const openedItems = useMemo(
+    () => recents.map((item) => ({ ...item, other: !ownVaultOf(item.vault) })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [recents, currentVault],
+  );
 
-  const source =
-    mode === "edited"
-      ? edited.map((path) => ({ vault: currentVault, path, other: false }))
-      : openedItems;
+  /** 下拉候选：出现过的其他仓库（按首次出现顺序）。 */
+  const vaultOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const item of recents) {
+      if (!ownVaultOf(item.vault)) seen.add(item.vault);
+    }
+    return [...seen];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recents, currentVault]);
+
+  const source = useMemo(() => {
+    if (mode === "edited") return edited.map((path) => ({ vault: currentVault, path, other: false }));
+    if (vaultFilter === "current") return openedItems.filter((item) => !item.other);
+    if (vaultFilter === "all") return openedItems;
+    return openedItems.filter((item) => item.vault === vaultFilter);
+  }, [mode, edited, currentVault, openedItems, vaultFilter]);
 
   /** 目录 chip 候选：当前来源里按条数聚合的一级目录（搜索词也参与）。 */
   const dirChips = useMemo(() => {
@@ -115,7 +126,7 @@ export default function RecentFilesDialog({
   // 来源/过滤条件变了：目录筛选与选中项都回到第一项
   useEffect(() => {
     setCursor(0);
-  }, [query, dir, mode]);
+  }, [query, dir, mode, vaultFilter]);
   useEffect(() => {
     setDir("");
   }, [mode]);
@@ -129,7 +140,8 @@ export default function RecentFilesDialog({
   const openAt = (index: number) => {
     const item = items[index];
     if (!item) return;
-    if (item.other) onOpenInVault(item.vault, item.path);
+    // 0.39.28：其他仓库的条目另起一个窗口打开（不再切当前窗口的仓库）
+    if (item.other) onOpenInNewWindow(item.vault, item.path);
     else onOpen(item.path);
     onClose();
   };
@@ -148,6 +160,20 @@ export default function RecentFilesDialog({
         <div className="recent-head">
           <span className="recent-title">最近文件</span>
           <span className="recent-count">{items.length} 项</span>
+          <select
+            className="recent-vault-select"
+            value={vaultFilter}
+            title="按仓库筛选（其他仓库的文件会另起窗口打开）"
+            onChange={(event) => setVaultFilter(event.target.value)}
+          >
+            <option value="current">当前仓库</option>
+            {vaultOptions.length > 0 && <option value="all">全部仓库</option>}
+            {vaultOptions.map((vaultPath) => (
+              <option key={vaultPath} value={vaultPath}>
+                {vaultNameOf(vaultPath)}
+              </option>
+            ))}
+          </select>
           <button type="button" className="recent-close" title="关闭（Esc）" onClick={onClose}>
             ×
           </button>

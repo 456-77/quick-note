@@ -123,7 +123,11 @@ check(
 check(JSON.stringify(scan(findTags, "(#括号里的)")) === JSON.stringify(["#括号里的"]), "括号里的标签");
 check(JSON.stringify(scan(findTags, "# 我是标题")) === "[]", "ATX 标题（# 后跟空格）不算标签");
 check(JSON.stringify(scan(findTags, "### 三级标题")) === "[]", "多级 ATX 标题不算标签");
-check(JSON.stringify(scan(findTags, "编号 #1 不算")) === "[]", "纯数字不算标签");
+// 0.39.28 用户实锤「标签行 #127736 # 面板显示还没有标签」：首字符锁死字母/下划线
+// 把工单号类纯数字标签整条拦掉——放宽后数字开头的标签命中（ATX 标题仍不误伤）
+check(JSON.stringify(scan(findTags, "#127736 #")) === JSON.stringify(["#127736"]), "纯数字标签（0.39.28 事故锚点）");
+check(JSON.stringify(scan(findTags, "编号 #1 现在算标签")) === JSON.stringify(["#1"]), "纯数字短标签也算");
+check(JSON.stringify(scan(findTags, "C#10 不算（前面贴着字母）")) === "[]", "字母后贴的 # 仍不算标签");
 check(JSON.stringify(scan(findTags, "[[笔记#小节]]")) === "[]", "wiki 链接里的小节标记不算标签");
 check(JSON.stringify(scan(findTags, "`#代码里`", [[0, 5]])) === "[]", "代码区域里的不算标签");
 
@@ -239,6 +243,19 @@ check(
 );
 // 已有同名标签 → 不动文档
 check(tagAddEdit("# 标题\n\n#测试\n正文", "测试", "\n") === null, "已有同名标签返回 null");
+// 0.39.28 事故锚点：第 3 行是 `#127736 #`（纯数字标签 + 尾部裸 #）时，
+// 追加新标签要并入行尾（isTagLine 容忍尾部裸 #），而不是错位插一行
+check(
+  applied("# 标题\n\n#127736 #", "工作") === "# 标题\n\n#127736 # #工作",
+  "裸 # 尾巴的数字标签行：并入行尾不插行",
+  JSON.stringify(applied("# 标题\n\n#127736 #", "工作")),
+);
+// 纯数字标签可以被面板直接添加（normalizeTagName 放宽后）
+check(
+  applied("# 标题\n\n正文", "127736") === "# 标题\n\n#127736\n正文",
+  "纯数字标签落第 3 行",
+  JSON.stringify(applied("# 标题\n\n正文", "127736")),
+);
 
 
 console.log(failures === 0 ? "\n额外行内语法扫描验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);

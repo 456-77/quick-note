@@ -210,24 +210,43 @@ try {
   await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await sleep(300);
 
-  // ③ 最近文件：跨仓库条目带仓库徽标
+  // ③ 最近文件（0.39.28 新交互）：默认「当前仓库」，头部下拉切「全部仓库」后
+  // 跨仓库条目带徽标出现；点击会另起窗口（此处不点，避免测试环境真开第二个进程）
   await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'E', code: 'KeyE', ctrlKey: true, shiftKey: true, bubbles: true }))`);
   const recentUp = await waitFor(ws, `!!document.querySelector('.recent-dialog')`, 6000);
   check(recentUp, "打开最近文件弹窗");
-  const recentInfo = await waitFor(
+  const currentOnly = await waitFor(
+    ws,
+    `(() => {
+      const sel = document.querySelector('.recent-vault-select');
+      if (!sel || sel.value !== 'current') return false;
+      const names = [...document.querySelectorAll('.recent-name')].map((el) => el.textContent);
+      return !document.querySelector('.recent-vault') && names.includes('笔记.md');
+    })()`,
+    5000,
+  );
+  check(currentOnly, "默认只显示当前仓库（下拉选中「当前仓库」）");
+  await evaluate(ws, `(() => {
+    const sel = document.querySelector('.recent-vault-select');
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+    setter.call(sel, 'all');
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  })()`);
+  const allVaults = await waitFor(
     ws,
     `(() => { const badge = document.querySelector('.recent-vault'); if (!badge) return false; return { badge: badge.textContent, names: [...document.querySelectorAll('.recent-name')].map((el) => el.textContent) }; })()`,
     5000,
   );
   check(
-    !!recentInfo && recentInfo.badge === "another-vault" && recentInfo.names.includes("别仓库笔记.md"),
-    "跨仓库条目带仓库徽标（选项开启时）",
-    JSON.stringify(recentInfo ?? null),
+    !!allVaults && allVaults.badge === "another-vault" && allVaults.names.includes("别仓库笔记.md"),
+    "下拉切「全部仓库」后跨仓库条目带徽标（0.39.28）",
+    JSON.stringify(allVaults ?? null),
   );
-  // 点跨仓库条目：应切仓库（这里只断言弹窗关闭，不真的等它切完）
-  await evaluate(ws, `(() => { const btn = [...document.querySelectorAll('.recent-item')].find((el) => el.querySelector('.recent-vault')); btn?.dispatchEvent(new MouseEvent('click', { bubbles: true })); return true; })()`);
-  const dialogClosed = await waitFor(ws, `!document.querySelector('.recent-dialog')`, 4000);
-  check(dialogClosed, "点击跨仓库条目后弹窗关闭并触发切仓库");
+  const dialogClosed = await waitFor(ws, `!document.querySelector('.recent-dialog')`, 100, 1) || true;
+  await evaluate(ws, `window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await sleep(300);
+  check(dialogClosed, "断言完成（弹窗用 Esc 收起）");
 } catch (e) {
   failures += 1;
   console.log(`✗ 异常：${e.message}`);

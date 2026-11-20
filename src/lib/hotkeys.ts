@@ -97,6 +97,13 @@ export const COMMAND_KEYS: CommandKeys[] = [
     group: "edit",
     keys: ["Mod-Alt-F"],
   },
+  {
+    id: "aiChat",
+    label: "AI 对话…",
+    desc: "与 设置 → AI 里配置的模型多轮对话；可勾选「带上当前笔记」让模型参考全文，回复可插入笔记光标处或复制",
+    group: "edit",
+    keys: ["Mod-Alt-I"],
+  },
   { id: "openVaultPicker", label: "打开其他仓库…", group: "file", keys: [] },
   { id: "heading1", label: "标题 1", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-1"] },
   { id: "heading2", label: "标题 2", desc: "在光标行切换标题级别，再按取消", group: "markdown", keys: ["Mod-2"] },

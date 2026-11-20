@@ -1255,18 +1255,8 @@ export default function SettingsDialog({
               }
             />
           </Row>
-          <Row
-            label="最近文件包含其他仓库"
-            desc="「最近文件」弹窗是否列出在其他仓库里打开过的文件。"
-            tip="0.39.23 用户反馈「最近的文件为什么会显示别的仓库文件」：默认只显示当前仓库；开启后跨仓库条目会带仓库名徽标，回车自动切换到那个仓库打开。"
-            keywords="最近文件 其他仓库 跨仓库 recent"
-          >
-            <input
-              type="checkbox"
-              checked={settings.recentsShowOtherVaults}
-              onChange={(event) => saveWithFlash({ recentsShowOtherVaults: event.target.checked })}
-            />
-          </Row>
+          {/* 0.39.28：「最近文件包含其他仓库」开关已被弹窗头部的仓库下拉取代
+              （当前仓库/全部仓库/指定仓库 + 其他仓库条目新窗口打开），删除此行 */}
           <Row
             label="内容结果展示上限"
             desc="全局搜索的内容结果一次显示的文件数，滚到底部自动追加下一批。"

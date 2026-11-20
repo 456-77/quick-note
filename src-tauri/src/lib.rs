@@ -80,18 +80,23 @@ fn startup_file() -> Option<String> {
     None
 }
 
-/// 另起一个应用进程打开指定仓库（「在新窗口打开仓库」）。
+/// 另起一个应用进程打开指定仓库（「在新窗口打开仓库」；0.39.28 起可带一个
+/// 笔记文件参数——最近文件弹窗里点其他仓库的条目直接在新窗口打开那篇）。
 ///
 /// 用新进程而不是 Tauri 的 WebviewWindow：仓库状态存在 localStorage（按 WebView
 /// 数据目录共享），同进程开第二个窗口会和当前窗口共用同一份 vault 键互相打架；
 /// 独立进程各自走一遍启动流程（启动参数里的仓库优先于 localStorage），互不干扰。
+/// 文件参数走 startup_file 的既有通道：它取第一个 is_file 的参数，仓库目录
+/// 不是文件会被跳过，第二个参数（笔记）正好命中。
 #[tauri::command]
-fn open_new_window(vault: String) -> Result<(), String> {
+fn open_new_window(vault: String, file: Option<String>) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("定位应用失败: {e}"))?;
-    std::process::Command::new(exe)
-        .arg(&vault)
-        .spawn()
-        .map_err(|e| format!("启动新窗口失败: {e}"))?;
+    let mut command = std::process::Command::new(exe);
+    command.arg(&vault);
+    if let Some(file) = file {
+        command.arg(file);
+    }
+    command.spawn().map_err(|e| format!("启动新窗口失败: {e}"))?;
     Ok(())
 }
 

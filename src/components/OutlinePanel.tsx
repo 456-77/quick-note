@@ -12,6 +12,7 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { outlineInlineSpans, outlineOf, type OutlineEntry } from "../lib/outline";
+import { isMarkdownPath } from "../lib/fileTypes";
 import type { PdfToc } from "./FilePreview";
 
 /** 文档源：全文 + 换行符（行号口径与编辑器一致）。null = 没有可显示的文档。 */
@@ -40,6 +41,9 @@ export default function OutlinePanel({ getDoc, revision, activeKey, onJump, curs
   const entries = useMemo<OutlineEntry[]>(() => {
     const doc = getDoc();
     if (!doc || !activeKey) return [];
+    // 0.39.28 用户反馈「对于非 md 文档就不需要进行渲染了」：`.sh` 的 `# 注释`
+    // 是 shell 注释不是标题，大纲只对 markdown 计算（PDF 书签分支在上面不受影响）
+    if (!isMarkdownPath(activeKey)) return [];
     return outlineOf(doc.text.split(doc.lineBreak));
     // revision 触发重算：键入、粘贴、外部改动都会递增它
     // eslint-disable-next-line react-hooks/exhaustive-deps

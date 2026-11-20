@@ -66,10 +66,25 @@ export type LeftView = "files" | "favorites" | "recents";
 /** 树内拖拽的 MIME 标记：dragover 时靠它区分「树内拖拽」与外部拖放。 */
 export const TREE_DRAG_MIME = "application/x-quicknote-tree-entry";
 
-/** 拖拽源通用处理：把条目路径写进 dataTransfer，允许移动与复制两种效果。 */
-function dragEntryStart(event: React.DragEvent, path: string): void {
-  event.dataTransfer.setData(TREE_DRAG_MIME, path);
+/** 拖拽源通用处理：把条目路径写进 dataTransfer，允许移动与复制两种效果。
+ *  0.39.28：拖的行在多选集里时把整个选择集（JSON 数组）一起带走。 */
+function dragEntryStart(event: React.DragEvent, path: string, extraPaths?: string[]): void {
+  const paths = extraPaths && extraPaths.length > 1 && extraPaths.includes(path) ? extraPaths : [path];
+  event.dataTransfer.setData(TREE_DRAG_MIME, paths.length > 1 ? JSON.stringify(paths) : path);
   event.dataTransfer.effectAllowed = "copyMove";
+}
+
+/** 拖放数据解析：单路径（旧格式/单选）与 JSON 数组（0.39.28 多选）都兼容。 */
+function parseDragPaths(source: string): string[] {
+  if (source.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(source) as unknown;
+      if (Array.isArray(parsed)) return parsed.filter((p): p is string => typeof p === "string");
+    } catch {
+      // 非 JSON 就按单路径处理
+    }
+  }
+  return [source];
 }
 
 interface TreeNode {
@@ -250,25 +265,34 @@ function NoteRow({
   active,
   favorite,
   picked,
+  selected,
   onOpen,
+  onEntryClick,
   onContext,
   onReveal,
   leading,
   kind = "markdown",
+  dragPaths,
 }: {
   node: Pick<TreeNode, "path" | "name" | "size" | "modified">;
   indent?: number;
   active: boolean;
   favorite: boolean;
   onOpen: (path: string) => void;
+  /** Shift/Ctrl 修饰点击：范围选/增减（0.39.28 多选）。 */
+  onEntryClick: (path: string, isDir: boolean, modifiers: { shift: boolean; ctrl: boolean }) => void;
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
   onReveal: (path: string) => void;
   /** 被 Ctrl+C/V 体系选中的行：虚线高亮（区别于打开态的实底高亮）。 */
   picked?: boolean;
+  /** 在多选集里的行：与 picked 同款虚线高亮。 */
+  selected?: boolean;
   /** 替代默认文档图标的图标（收藏视图用星标）。 */
   leading?: React.ReactNode;
   /** 行类型：markdown 走编辑器；text 是数据文件；preview 打开预览窗格。 */
   kind?: "markdown" | "text" | "preview";
+  /** 拖动时若本行在多选集里，把整个选择集一起带上（0.39.28）。 */
+  dragPaths?: string[];
 }) {
   const hint =
     kind === "preview"
@@ -292,11 +316,22 @@ function NoteRow({
       ref={rowRef}
       role="button"
       tabIndex={0}
-      className={`tree-item tree-file${active ? " is-active" : ""}${picked ? " is-picked" : ""}${flash ? " is-flash" : ""}`}
+      className={`tree-item tree-file${active ? " is-active" : ""}${
+        picked || selected ? " is-picked" : ""
+      }${flash ? " is-flash" : ""}`}
       style={indent ? { paddingLeft: `${indent}px` } : undefined}
       draggable
-      onDragStart={(event) => dragEntryStart(event, node.path)}
+      onDragStart={(event) => dragEntryStart(event, node.path, dragPaths)}
       onClick={(event) => {
+        // Shift/Ctrl+点击：多选（范围/增减），不开笔记（0.39.28）
+        if (event.shiftKey || event.ctrlKey || event.metaKey) {
+          event.preventDefault();
+          onEntryClick(node.path, false, {
+            shift: event.shiftKey,
+            ctrl: event.ctrlKey || event.metaKey,
+          });
+          return;
+        }
         // Alt+点击：在资源管理器中定位文件（revealItemInDir 会高亮它本身）
         if (event.altKey) {
           event.preventDefault();
@@ -340,6 +375,8 @@ function Node({
   activePath,
   favorites,
   selectedPath,
+  selectedSet,
+  onEntryClick,
   onSelectPath,
   onOpen,
   onContext,
@@ -353,6 +390,10 @@ function Node({
   favorites: string[];
   /** 当前选中的目录（粘贴目标）。 */
   selectedPath: string | null;
+  /** 多选集合（0.39.28），高亮与拖拽多带用。 */
+  selectedSet: Set<string>;
+  /** Shift/Ctrl 修饰点击：范围选/增减（0.39.28 多选）。 */
+  onEntryClick: (path: string, isDir: boolean, modifiers: { shift: boolean; ctrl: boolean }) => void;
   onSelectPath: (path: string) => void;
   onOpen: (path: string) => void;
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
@@ -390,7 +431,7 @@ function Node({
           }${dropActive ? " is-drop" : ""}`}
           style={{ paddingLeft: `${10 + depth * 14}px` }}
           draggable
-          onDragStart={(event) => dragEntryStart(event, node.path)}
+          onDragStart={(event) => dragEntryStart(event, node.path, [...selectedSet])}
           onDragOver={(event) => {
             // 只接树内拖拽（外部文件拖放走别处）；Ctrl 决定复制还是移动
             if (!event.dataTransfer.types.includes(TREE_DRAG_MIME)) return;
@@ -404,11 +445,25 @@ function Node({
             event.preventDefault();
             event.stopPropagation();
             setDropActive(false);
-            if (!source || source === node.path) return;
-            if (event.ctrlKey) onCopyEntry(source, node.path);
-            else onMoveEntry(source, node.path);
+            const sources = parseDragPaths(source);
+            if (sources.length === 0) return;
+            // 多选拖拽（0.39.28）：逐条移动/复制；拖进自己子树的条目由 App 侧守卫跳过
+            for (const sourcePath of sources) {
+              if (sourcePath === node.path) continue;
+              if (event.ctrlKey) onCopyEntry(sourcePath, node.path);
+              else onMoveEntry(sourcePath, node.path);
+            }
           }}
           onClick={(event) => {
+            // Shift/Ctrl+点击目录：加入多选，不切换展开（0.39.28）
+            if (event.shiftKey || event.ctrlKey || event.metaKey) {
+              event.preventDefault();
+              onEntryClick(node.path, true, {
+                shift: event.shiftKey,
+                ctrl: event.ctrlKey || event.metaKey,
+              });
+              return;
+            }
             // Alt+点击目录：在资源管理器中定位（高亮这个文件夹）
             if (event.altKey) {
               event.preventDefault();
@@ -438,6 +493,8 @@ function Node({
                 activePath={activePath}
                 favorites={favorites}
                 selectedPath={selectedPath}
+                selectedSet={selectedSet}
+                onEntryClick={onEntryClick}
                 onSelectPath={onSelectPath}
                 onOpen={onOpen}
                 onContext={onContext}
@@ -491,7 +548,10 @@ function Node({
       active={node.path === activePath}
       favorite={favorites.includes(node.path)}
       picked={node.path === selectedPath}
+      selected={selectedSet.has(node.path)}
+      dragPaths={[...selectedSet]}
       onOpen={onOpen}
+      onEntryClick={onEntryClick}
       onContext={onContext}
       onReveal={onReveal}
       leading={leading}
@@ -512,6 +572,8 @@ export default function FileTree({
   focusDir,
   onFocusClear,
   selectedPath,
+  selectedPaths,
+  onEntryClick,
   onSelectPath,
   onOpen,
   onContext,
@@ -537,6 +599,10 @@ export default function FileTree({
   onFocusClear?: () => void;
   /** 当前选中的目录（粘贴目标）。 */
   selectedPath: string | null;
+  /** 多选集（0.39.28：Shift 范围选 / Ctrl 点选，批量复制/剪切/删除用）。 */
+  selectedPaths: string[];
+  /** 修饰键点击（Shift/Ctrl）：范围选与逐个增减。普通点击不走这里。 */
+  onEntryClick: (path: string, isDir: boolean, modifiers: { shift: boolean; ctrl: boolean }) => void;
   onSelectPath: (path: string) => void;
   onOpen: (path: string) => void;
   onContext: (path: string, isDir: boolean, x: number, y: number) => void;
@@ -548,6 +614,7 @@ export default function FileTree({
   /** 「定位当前文件」请求（0.34.6）：App 的按钮发起，见 TreeReveal。 */
   reveal?: TreeReveal | null;
 }) {
+  const selectedSet = useMemo(() => new Set(selectedPaths), [selectedPaths]);
   const tree = useMemo(() => {
     let visible = hiddenDirs && hiddenDirs.size > 0
       ? entries.filter((entry) => !isUnderHiddenDirs(entry.path, hiddenDirs))
@@ -616,7 +683,10 @@ export default function FileTree({
             node={node}
             active={node.path === activePath}
             favorite
+            selected={selectedSet.has(node.path)}
+            dragPaths={[...selectedSet]}
             onOpen={onOpen}
+            onEntryClick={onEntryClick}
             onContext={onContext}
             onReveal={onReveal}
             leading={
@@ -644,7 +714,10 @@ export default function FileTree({
             node={node}
             active={node.path === activePath}
             favorite={favoriteSet.has(node.path)}
+            selected={selectedSet.has(node.path)}
+            dragPaths={[...selectedSet]}
             onOpen={onOpen}
+            onEntryClick={onEntryClick}
             onContext={onContext}
             onReveal={onReveal}
             leading={<IconClock size={14} className="tree-icon" />}
@@ -667,7 +740,10 @@ export default function FileTree({
             node={node}
             active={node.path === activePath}
             favorite={favoriteSet.has(node.path)}
+            selected={selectedSet.has(node.path)}
+            dragPaths={[...selectedSet]}
             onOpen={onOpen}
+            onEntryClick={onEntryClick}
             onContext={onContext}
             onReveal={onReveal}
             kind={node.kind === "text" ? "text" : node.kind === "preview" ? "preview" : "markdown"}
@@ -742,6 +818,8 @@ export default function FileTree({
           activePath={activePath}
           favorites={favorites}
           selectedPath={selectedPath}
+          selectedSet={selectedSet}
+          onEntryClick={onEntryClick}
           onSelectPath={onSelectPath}
           onOpen={onOpen}
           onContext={onContext}
