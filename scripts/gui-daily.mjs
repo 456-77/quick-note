@@ -209,7 +209,10 @@ try {
     ws,
     `(() => {
        const tab = [...document.querySelectorAll('.sidebar-tab')].find(b => b.textContent.trim() === '日历');
-       tab.click();
+       // 0.39.30 IDEA 语义：图标条点已激活图标=收起面板——仅在面板收起或日历
+       // 未激活时才点击（默认 rightPanel 就是 daily，无条件点会把面板点收起）
+       const collapsed = document.querySelector('.body').classList.contains('right-collapsed');
+       if (collapsed || tab.getAttribute('aria-selected') !== 'true') tab.click();
        return true;
      })()`,
   );
@@ -223,9 +226,11 @@ try {
     `(() => {
        const right = document.querySelector('.sidebar-right');
        const left = document.querySelector('.sidebar:not(.sidebar-right)');
+       // 0.39.30 页签迁到外缘图标条（IDEA 式）：从 .side-strip-right 取
+       const strip = document.querySelector('.side-strip-right');
        return {
          right: !!right,
-         rightTabs: right ? [...right.querySelectorAll('.sidebar-tab')].map(b => b.textContent.trim()) : [],
+         rightTabs: strip ? [...strip.querySelectorAll('.sidebar-tab')].map(b => b.textContent.trim()) : [],
          calInRight: !!right?.querySelector('.cal-grid'),
          leftHasTree: !!left?.querySelector('.tree-file'),
          leftHasTabbar: !!left?.querySelector('.sidebar-tabs'),

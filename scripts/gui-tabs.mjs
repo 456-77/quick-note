@@ -250,17 +250,17 @@ try {
   check(await toggleByTopbar("文件栏", "left-collapsed", false), "顶栏开关展开左栏");
   check(await toggleByTopbar("侧栏", "right-collapsed", true), "顶栏开关收起右栏");
   check(await toggleByTopbar("侧栏", "right-collapsed", false), "顶栏开关展开右栏");
-  // 收起状态下编辑器旁的悬浮恢复钮可用
+  // 收起状态下外缘图标条可展开（0.39.30 恢复钮删除，IDEA 语义：点图标=展开）
   check(
     await toggleByTopbar("文件栏", "left-collapsed", true),
-    "再次收起左栏（为恢复钮测试做准备）",
+    "再次收起左栏（为图标条展开测试做准备）",
   );
   check(
     await evaluate(
       ws,
-      `(() => { const b = document.querySelector(".sidebar-restore"); b?.click(); return !!b; })()`,
+      `(() => { const b = document.querySelector(".side-strip-left .left-view-tab"); b?.click(); return !!b; })()`,
     ),
-    "侧栏收起后编辑器旁出现悬浮恢复钮",
+    "侧栏收起后点外缘图标条可展开",
   );
   let leftVisible = false;
   for (let i = 0; i < 10 && !leftVisible; i += 1) {

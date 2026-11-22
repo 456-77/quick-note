@@ -326,8 +326,15 @@ try {
   check(tagStyle && tagStyle.rows > 0, "标签列表有条目（qn22tag）", JSON.stringify(tagStyle));
 
   // ---------------------------------------------- 6. 收藏置顶
-  // 先回知识库视图
-  await click(ws, `Array.from(document.querySelectorAll('.left-view-tab'))[0]`, "切回知识库视图");
+  // 先回知识库视图（0.39.30 IDEA 语义：点已激活图标=收起面板——已在知识库
+  // 且面板展开时就别点）
+  await evaluate(ws, `(() => {
+    const b = Array.from(document.querySelectorAll('.left-view-tab'))[0];
+    if (!b) return false;
+    const collapsed = document.querySelector('.body').classList.contains('left-collapsed');
+    if (collapsed || b.getAttribute('aria-selected') !== 'true') b.click();
+    return true;
+  })()`);
   await sleep(200);
   const ctxMenuOn = (label) =>
     evaluate(ws, `(() => {

@@ -579,6 +579,7 @@ kbd {
 
 /* 专注模式：侧栏与状态栏全部退场，只留顶栏（它是标题栏）与编辑器 */
 .app.zen .sidebar,
+.app.zen .side-strip,
 .app.zen .statusbar {
   display: none;
 }
@@ -756,8 +757,9 @@ kbd {
   align-items: center;
   gap: 6px;
   /* 0.33.1 用户反馈：与上方页签行间距太大——收紧上下留白；
-     0.39.8 再收一档（用户截图实测两行间仍有约 25px 视觉空隙） */
-  padding: 3px 10px 4px;
+     0.39.8 再收一档（用户截图实测两行间仍有约 25px 视觉空隙）；
+     0.39.30 页签行迁到外缘图标条后本行成为面板首行，顶部回到 8px 呼吸位 */
+  padding: 8px 10px 4px;
   flex: none;
 }
 
@@ -812,18 +814,8 @@ kbd {
 
 /* 0.39.9 用户反馈「改变左侧面板宽度时，顶栏元素布局应该动态变化……宽度
    不足以显示所有元素时，考虑不显示中文提示，只显示图标」：< 280px 时
-   页签文字隐藏只留图标（title 悬浮兜底语义）、标题行收起被截断的标题——
+   收起标题行的标题（页签行 0.39.30 已迁到外缘图标条，图标本来就常驻）——
    is-narrow 类由 App 按宽度挂（拖动中直接写 DOM 类不走 React 渲染） */
-.sidebar-left.is-narrow .left-view-tab-text {
-  display: none;
-}
-
-.sidebar-left.is-narrow .left-view-tab {
-  gap: 0;
-  padding-left: 0;
-  padding-right: 0;
-}
-
 .sidebar-left.is-narrow .panel-title {
   display: none;
 }
@@ -859,6 +851,70 @@ kbd {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
+}
+
+/* 0.39.30 IDEA 式侧栏：外缘竖向图标条（用户反馈「修改左右侧边栏的ui布局，
+   参考idea方式」，截图对齐 IDEA 左右工具窗条）。图标条**常驻**窗口左右缘
+   （面板收起也不消失——IDEA 工具窗语义：点已激活图标收面板、再点展开）。
+   按钮复用 left-view-tab / sidebar-tab 类（激活态语言与原页签一致），文字
+   span 只留在 DOM 给批测 textContent 定位/读屏，视觉纯图标。 */
+.side-strip {
+  flex: none;
+  width: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 0;
+  background: var(--panel);
+}
+
+.side-strip-left {
+  box-shadow: 1px 0 0 var(--border-soft);
+}
+
+.side-strip-right {
+  box-shadow: -1px 0 0 var(--border-soft);
+}
+
+/* 图标形态：压掉横排页签的 flex:1 / 文字内边距，收成 32×30 方形图标钮 */
+.side-strip .left-view-tab,
+.side-strip .sidebar-tab {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 30px;
+  min-height: 0;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+}
+
+.side-strip .left-view-tab:hover,
+.side-strip .sidebar-tab:hover {
+  background: var(--hover);
+}
+
+.side-strip .side-strip-label {
+  display: none;
+}
+
+/* 收藏数徽标：贴在收藏图标右下角的实心小胶囊（>99 显示 99+）——挂按钮上沿
+   会被读成属于上一个图标（0.39.30 截图实测），角标式贴角归属才明确 */
+.side-strip-badge {
+  position: absolute;
+  right: 1px;
+  bottom: 1px;
+  min-width: 13px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--panel);
+  font-size: 8.5px;
+  font-weight: 700;
+  line-height: 13px;
+  text-align: center;
+  pointer-events: none;
 }
 
 /* 左栏的名称筛选框 */
@@ -4338,35 +4394,8 @@ html.qn-alt-held .cm-line {
 
 /* ---------------------------------------------------------------- 侧栏收起 */
 
-/* 收起走宽度+透明度动画（见 .sidebar）；这里只保留贴边的恢复钮 */
-.sidebar-restore {
-  position: absolute;
-  top: 50%;
-  z-index: 15;
-  width: 20px;
-  height: 60px;
-  padding: 0;
-  border: 1px solid var(--border);
-  border-radius: 0 8px 8px 0;
-  background: var(--surface);
-  color: var(--text-dim);
-  font-size: 12px;
-  cursor: pointer;
-  opacity: 0.55;
-  transition: opacity 0.15s ease, color 0.15s ease;
-  left: 0;
-}
-
-.sidebar-restore:hover {
-  opacity: 1;
-  color: var(--accent);
-}
-
-.sidebar-restore-right {
-  left: auto;
-  right: 0;
-  border-radius: 8px 0 0 8px;
-}
+/* 0.39.30：贴边恢复钮已删——面板开合统一走外缘图标条（.side-strip，IDEA
+   工具窗语义）；收起动画仍走 .sidebar 的宽度+透明度过渡 */
 
 /* ---------------------------------------------------------------- 设置面板 */
 
@@ -5942,7 +5971,8 @@ html.qn-bg-on .statusbar {
   background: color-mix(in srgb, var(--panel) var(--qn-veil-panel, 82%), transparent);
 }
 
-html.qn-bg-on .sidebar {
+html.qn-bg-on .sidebar,
+html.qn-bg-on .side-strip {
   background: color-mix(in srgb, var(--panel) var(--qn-veil-side, 66%), transparent);
 }
 
@@ -10446,8 +10476,9 @@ html.qn-mobile .drawer-backdrop {
   background: rgba(0, 0, 0, 0.42);
 }
 
-/* 边缘的 » 恢复钮在抽屉模型下多余（药丸/边缘手势负责开合） */
-html.qn-mobile .sidebar-restore {
+/* 0.39.30：图标条是桌面专属（移动端开合走药丸/边缘手势，抽屉模型不变）；
+   JSX 已按 isMobile 门控，这里兜底防泄漏 */
+html.qn-mobile .side-strip {
   display: none;
 }
 

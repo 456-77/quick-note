@@ -436,7 +436,9 @@ try {
 
   // ============================================== 6. 日历日格等高
   {
-    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.sidebar-tab')].find((el) => el.textContent.includes('日历')); b?.click(); return !!b; })()`);
+    // 0.39.30 IDEA 语义：图标条点已激活图标=收起面板——默认 rightPanel 就是
+    // daily，仅在收起或未激活时点击
+    await evaluate(ws, `(() => { const b = [...document.querySelectorAll('.sidebar-tab')].find((el) => el.textContent.includes('日历')); const collapsed = document.querySelector('.body').classList.contains('right-collapsed'); if (b && (collapsed || b.getAttribute('aria-selected') !== 'true')) b.click(); return !!b; })()`);
     const grid = await waitFor(ws, `document.querySelectorAll('.cal-day').length > 20`, 10000);
     const cells = await evaluate(ws, `(() => {
       const out = [];

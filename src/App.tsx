@@ -9974,6 +9974,49 @@ export default function App() {
             }}
           />
         )}
+          {!isMobile() && (
+            /* 0.39.30 用户反馈「修改左右侧边栏的ui布局，参考idea方式」：外缘竖向
+               图标条（IDEA 工具窗语义）——图标条**常驻**（面板收起也不消失），
+               点未激活图标=切到该视图并展开面板；点已激活图标=收起面板，再点
+               同一图标=展开。按钮保留 left-view-tab 类 + 隐藏文字 span（视觉
+               只留图标，批测仍按 textContent 定位）。 */
+            <div className="side-strip side-strip-left" role="tablist" aria-label="导航视图">
+              {([
+                { key: "files", label: "知识库", icon: <IconLibrary size={17} /> },
+                { key: "favorites", label: "收藏", icon: <IconStar size={17} /> },
+                { key: "recents", label: "最近", icon: <IconClock size={17} /> },
+                { key: "tags", label: "标签", icon: <IconTag size={17} /> },
+              ] as const).map((v) => {
+                const on = !leftCollapsed && leftView === v.key;
+                return (
+                  <button
+                    key={v.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={on}
+                    className={`left-view-tab${on ? " is-on" : ""}`}
+                    onClick={() => {
+                      if (on) {
+                        setLeftCollapsed(true);
+                      } else {
+                        setLeftView(v.key);
+                        setLeftCollapsed(false);
+                      }
+                    }}
+                    title={v.label}
+                  >
+                    {v.icon}
+                    <span className="side-strip-label">{v.label}</span>
+                    {v.key === "favorites" && visibleFavorites.length > 0 && (
+                      <span className="side-strip-badge">
+                        {visibleFavorites.length > 99 ? "99+" : visibleFavorites.length}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
           <aside
             className={`sidebar sidebar-left${creating || (renaming && renameOwner === "tree") ? " m-inputting" : ""}${sidebarResizing ? " is-resizing" : ""}${!isMobile() && (sidebarResizing ? sidebarLiveRef.current : sidebarWidth) < SIDEBAR_NARROW_AT ? " is-narrow" : ""}`}
             style={
@@ -10239,55 +10282,9 @@ export default function App() {
               </>
             ) : (
               <>
-          {/* 0.33.1 用户反馈：功能选项（视图页签）与新建按钮行上下互换——页签
-              在顶（样式向右侧面板的 .sidebar-tabs 看齐），标题行在下；新建
-              笔记/日记/文件夹只在知识库视图显示（收藏/最近/标签用不到） */}
-          <div className="left-view" role="tablist" aria-label="导航视图">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={leftView === "files"}
-              className={`left-view-tab${leftView === "files" ? " is-on" : ""}`}
-              onClick={() => setLeftView("files")}
-              title="知识库"
-            >
-              <IconLibrary size={13} />
-              <span className="left-view-tab-text">知识库</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={leftView === "favorites"}
-              className={`left-view-tab${leftView === "favorites" ? " is-on" : ""}`}
-              onClick={() => setLeftView("favorites")}
-              title="收藏"
-            >
-              <IconStar size={13} />
-              <span className="left-view-tab-text">收藏{visibleFavorites.length > 0 ? ` ${visibleFavorites.length}` : ""}</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={leftView === "recents"}
-              className={`left-view-tab${leftView === "recents" ? " is-on" : ""}`}
-              onClick={() => setLeftView("recents")}
-              title="最近"
-            >
-              <IconClock size={13} />
-              <span className="left-view-tab-text">最近</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={leftView === "tags"}
-              className={`left-view-tab${leftView === "tags" ? " is-on" : ""}`}
-              onClick={() => setLeftView("tags")}
-              title="标签仪表盘：集中查看与整理标签"
-            >
-              <IconTag size={13} />
-              <span className="left-view-tab-text">标签</span>
-            </button>
-          </div>
+          {/* 0.39.30：桌面视图页签迁到外缘图标条（IDEA 式，见 .side-strip）——
+              面板顶部只剩标题行；新建笔记/日记/文件夹只在知识库视图显示
+              （收藏/最近/标签用不到）。移动端抽屉的 .left-view 页签行不受影响。 */}
           <div className="panel-head">
             <span className="panel-title">
               {leftView === "files" ? "知识库" : leftView === "favorites" ? "收藏" : leftView === "recents" ? "最近" : "标签"}
@@ -10928,26 +10925,8 @@ export default function App() {
             </div>
             )
           )}
-          {leftCollapsed && (
-            <button
-              type="button"
-              className="sidebar-restore"
-              onClick={() => setLeftCollapsed(false)}
-              title="展开文件栏（Ctrl+B）"
-            >
-              »
-            </button>
-          )}
-          {rightCollapsed && (
-            <button
-              type="button"
-              className="sidebar-restore sidebar-restore-right"
-              onClick={() => setRightCollapsed(false)}
-              title="展开面板（Ctrl+Shift+B）"
-            >
-              «
-            </button>
-          )}
+          {/* 0.39.30：贴边「»/«」恢复钮删除——面板展开/收起统一走外缘图标条
+              （IDEA 语义：点已激活图标收起、再点展开），恢复钮与图标条功能重叠 */}
           </div>
           {/* 语句库管理整页（0.35.3 四轮反馈：速记管理同款形态，不占标签外壳） */}
           {libraryPageOpen && vault && (
@@ -11024,53 +11003,33 @@ export default function App() {
           </aside>
         ) : (
         <aside className="sidebar sidebar-right">
-          <div className="sidebar-tabs" role="tablist" aria-label="右侧面板">
-            {/* 0.34.0：日历/单词本搬进移动端左抽屉分区——移动端只留 目录/统计 */}
-            {!isMobile() && (
+          {/* 0.39.30：桌面页签行迁到外缘图标条（见 .side-strip-right）——移动端
+              抽屉仍用这排页签（0.34.0：日历/单词本在移动端左抽屉，这里只留
+              目录/统计）。 */}
+          {isMobile() && (
+            <div className="sidebar-tabs" role="tablist" aria-label="右侧面板">
               <button
                 type="button"
                 role="tab"
-                aria-selected={rightPanel === "daily"}
-                className={`sidebar-tab${rightPanel === "daily" ? " is-on" : ""}`}
-                onClick={() => changeRightPanel("daily")}
+                aria-selected={rightPanel === "outline"}
+                className={`sidebar-tab${rightPanel === "outline" ? " is-on" : ""}`}
+                onClick={() => changeRightPanel("outline")}
               >
-                <IconCalendar size={13} />
-                日历
+                <IconListTree size={13} />
+                目录
               </button>
-            )}
-            <button
-              type="button"
-              role="tab"
-              aria-selected={rightPanel === "outline"}
-              className={`sidebar-tab${rightPanel === "outline" ? " is-on" : ""}`}
-              onClick={() => changeRightPanel("outline")}
-            >
-              <IconListTree size={13} />
-              目录
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={rightPanel === "stats"}
-              className={`sidebar-tab${rightPanel === "stats" ? " is-on" : ""}`}
-              onClick={() => changeRightPanel("stats")}
-            >
-              <IconChart size={13} />
-              统计
-            </button>
-            {!isMobile() && (
               <button
                 type="button"
                 role="tab"
-                aria-selected={rightPanel === "vocab"}
-                className={`sidebar-tab${rightPanel === "vocab" ? " is-on" : ""}`}
-                onClick={() => changeRightPanel("vocab")}
+                aria-selected={rightPanel === "stats"}
+                className={`sidebar-tab${rightPanel === "stats" ? " is-on" : ""}`}
+                onClick={() => changeRightPanel("stats")}
               >
-                <IconLibrary size={13} />
-                单词
+                <IconChart size={13} />
+                统计
               </button>
-            )}
-          </div>
+            </div>
+          )}
           {rightPanel === "daily" && !isMobile() && calendarPanelEl}
           {rightPanel === "outline" && (
             <OutlinePanel
@@ -11133,6 +11092,44 @@ export default function App() {
           )}
           {rightPanel === "vocab" && !isMobile() && vocabPanelEl}
         </aside>
+        )}
+        {!isMobile() && (
+          /* 0.39.30 用户反馈「修改左右侧边栏的ui布局，参考idea方式」：右缘竖向
+             图标条，语义与左侧对称——点未激活图标=切面板并展开；点已激活图标=
+             收起面板。Inbox（速记管理）占住右栏时图标条仍在（无激活项），点
+             任意图标=退出 Inbox 并落到对应面板。 */
+          <div className="side-strip side-strip-right" role="tablist" aria-label="右侧面板">
+            {([
+              { key: "daily", label: "日历", icon: <IconCalendar size={17} /> },
+              { key: "outline", label: "目录", icon: <IconListTree size={17} /> },
+              { key: "stats", label: "统计", icon: <IconChart size={17} /> },
+              { key: "vocab", label: "单词", icon: <IconLibrary size={17} /> },
+            ] as const).map((v) => {
+              const on = !rightCollapsed && !captureManagerOpen && rightPanel === v.key;
+              return (
+                <button
+                  key={v.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={on}
+                  className={`sidebar-tab${on ? " is-on" : ""}`}
+                  onClick={() => {
+                    if (captureManagerOpen) setCaptureManagerOpen(false);
+                    if (!rightCollapsed && rightPanel === v.key) {
+                      setRightCollapsed(true);
+                    } else {
+                      changeRightPanel(v.key);
+                      setRightCollapsed(false);
+                    }
+                  }}
+                  title={v.label}
+                >
+                  {v.icon}
+                  <span className="side-strip-label">{v.label}</span>
+                </button>
+              );
+            })}
+          </div>
         )}
       </div>
 

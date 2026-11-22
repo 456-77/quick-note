@@ -183,12 +183,22 @@ try {
   // → 点击」可能点偏（0.30 批测偶发：点击落空，后面全线雪崩）——整循环重试。
   const openVocabTab = async () => {
     for (let attempt = 0; attempt < 8; attempt += 1) {
-      const pos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
-      if (!pos) {
-        await sleep(500);
-        continue;
+      // 0.39.30 IDEA 语义：图标条点已激活图标=收起面板——已展开且已激活时
+      // 只等面板就位，不再点击（否则重试反而把面板点收起）
+      const needClick = await evaluate(ws, `(() => {
+        const tab = [...document.querySelectorAll('.sidebar-tab')].find((el) => el.textContent.includes('单词'));
+        if (!tab) return false;
+        const collapsed = document.querySelector('.body').classList.contains('right-collapsed');
+        return collapsed || tab.getAttribute('aria-selected') !== 'true';
+      })()`);
+      if (needClick) {
+        const pos = await rectCenter(ws, `Array.from(document.querySelectorAll('.sidebar-tab')).find((el) => el.textContent.includes('单词'))`);
+        if (!pos) {
+          await sleep(500);
+          continue;
+        }
+        await mouseClick(ws, pos.x, pos.y);
       }
-      await mouseClick(ws, pos.x, pos.y);
       await sleep(600);
       if (await evaluate(ws, `!!document.querySelector('.vocab-search')`)) return true;
     }
