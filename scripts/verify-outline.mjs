@@ -91,9 +91,50 @@ const heads = (src) => outlineOf(src).map((entry) => entry.text);
   assert.equal(got[20], "项目19");
 }
 
-// 7) Setext 标题不受围栏修复影响
+// 7) Setext：`===` 是标题；`---` 一律当分隔线（0.39.31 用户反馈「分割线上面
+//    一行文字会渲染成标题」——上一行不再进目录）
 {
-  assert.deepEqual(heads(lines("一级标题", "===", "", "普通文字", "---")), ["一级标题", "普通文字"]);
+  assert.deepEqual(heads(lines("一级标题", "===", "", "普通文字", "---")), ["一级标题"]);
+}
+
+// 8) 大纲拖动移动章节（0.39.31 用户反馈「支持拖动目录，来直接移动 md 文件内容」）
+{
+  const { moveSectionEdit } = await import("../src/lib/outline.ts");
+  const apply = (text, edit) => {
+    // 按原文坐标从后往前应用（CM6 多 change 同语义）
+    const sorted = [...edit.changes].sort((a, b) => b.from - a.from);
+    let out = text;
+    for (const change of sorted) {
+      out = out.slice(0, change.from) + (change.insert ?? "") + out.slice(change.to ?? change.from);
+    }
+    return out;
+  };
+  const doc = ["# 总览", "", "## A", "内容 A", "### A1", "子内容", "", "## B", "内容 B", "", "## C", "内容 C"].join("\n");
+  // B 整节（含空行）移到 A 之前
+  const before = moveSectionEdit(doc, 7, 2, "before");
+  assert.equal(
+    apply(doc, before),
+    ["# 总览", "", "## B", "内容 B", "", "## A", "内容 A", "### A1", "子内容", "", "## C", "内容 C"].join("\n"),
+    "各节整体前移（B 的章节含空行一起搬）",
+  );
+  // A 整节（含子标题 A1）移到 C 之后 → 文末（章节自带的尾随空行一起搬走）
+  const toEnd = moveSectionEdit(doc, 2, 10, "after");
+  assert.equal(
+    apply(doc, toEnd),
+    ["# 总览", "", "## B", "内容 B", "", "## C", "内容 C", "", "## A", "内容 A", "### A1", "子内容", "", ""].join("\n"),
+    "拖到最后一个条目之后 = 文末（子树一起走）",
+  );
+  // 拖进自己的子标题里 = 非法
+  assert.equal(moveSectionEdit(doc, 2, 4, "before"), null, "拖进自己子树被拒");
+  // 原地（before 自己 / after 自己）都是 no-op
+  assert.equal(moveSectionEdit(doc, 7, 7, "before"), null, "原地 no-op");
+  assert.equal(moveSectionEdit(doc, 7, 7, "after"), null, "拖到自己之后 no-op");
+  // CRLF：搬动后分隔符保持一致
+  const crlf = doc.replace(/\n/g, "\r\n");
+  const crlfEdit = moveSectionEdit(crlf, 7, 2, "before");
+  const crlfOut = apply(crlf, crlfEdit);
+  assert.equal(crlfOut.split("\r\n").length, crlf.split("\r\n").length, "CRLF 文档行数不变");
+  assert.ok(crlfOut.includes("## B\r\n内容 B"), "CRLF 章节连分隔符一起搬");
 }
 
 console.log("大纲围栏状态机断言全部通过 ✓");

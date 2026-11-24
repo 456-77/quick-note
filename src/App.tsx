@@ -37,6 +37,7 @@ import {
   IconCheck,
   IconClock,
   IconDatabase,
+  IconBriefcase,
   IconCode,
   IconCopy,
   IconDots,
@@ -110,14 +111,15 @@ import {
   untaggedClassAnchors,
 } from "./lib/javaEntity";
 import { closeDdlTip, installDdlCellHover, setDdlSaver } from "./lib/ddlHover";
+import { moveSectionEdit } from "./lib/outline";
 import { notifyDdlLibraryUpdated } from "./lib/ddlMark";
 import { dueReminders, initialFiredMarks, type ReminderFired } from "./lib/reminders";
 import {
   fetchWeather,
   insertWeatherPlaceholder,
   weatherPlaceholderRange,
-  replaceWeatherPlaceholder,
-  removeWeatherPlaceholder,
+  settleWeatherPlaceholder,
+  WEATHER_UNAVAILABLE_TEXT,
 } from "./lib/weather";
 import { blobTypeOf, removeImageReferences } from "./lib/imageOps";
 import { buildWeeklyReview, weekdayZh, type ReviewDiary } from "./lib/weeklyReview";
@@ -174,6 +176,12 @@ const emptyEditorState = () =>
 const FAVORITES_V2_KEY = "quicknote.favorites.v2";
 /** 收藏置顶的存储键（按仓库分桶，同收藏；0.21 用户反馈：收藏栏要能置顶）。 */
 const FAVORITES_PIN_KEY = "quicknote.favorites.pin.v2";
+/**
+ * 工作文件（0.39.31 用户反馈「在左侧添加工作文件选项。右键文件，右键标签头
+ * 可以将文件添加到工作文件中」）：手工维护的待办式文件清单，按仓库分桶存
+ * 相对路径，插入顺序即展示顺序（越加越靠后）。
+ */
+const WORKING_FILES_KEY = "quicknote.workingFiles.v1";
 /** 标签列表置顶的存储键（按仓库分桶；0.27 用户反馈：标签也要置顶+重命名）。 */
 const TAGS_PIN_KEY = "quicknote.tags.pin.v1";
 /** 固定标签页的存储键（按仓库分桶，同收藏）。 */
@@ -568,10 +576,12 @@ export default function App() {
   );
   /** 全局命令面板（Ctrl+K）开关。 */
   const [paletteOpen, setPaletteOpen] = useState(false);
-  /** 左栏视图：知识库 / 收藏 / 最近 / 标签。 */
-  const [leftView, setLeftView] = useState<"files" | "favorites" | "recents" | "tags">("files");
+  /** 左栏视图：知识库 / 收藏 / 最近 / 标签 / 工作文件。 */
+  const [leftView, setLeftView] = useState<"files" | "favorites" | "recents" | "tags" | "working">("files");
   /** 收藏的笔记（本机 localStorage，**按仓库分桶**：切换仓库各看各的收藏）。 */
   const [favorites, setFavorites] = useState<string[]>([]);
+  /** 工作文件（0.39.31，按仓库分桶；右键文件/标签头加入，顺序即展示顺序）。 */
+  const [workingFiles, setWorkingFiles] = useState<string[]>([]);
   /** 置顶的收藏（按仓库分桶，同收藏；收藏视图里排在最前）。 */
   const [pinnedFavorites, setPinnedFavorites] = useState<string[]>([]);
   /** 最近打开的笔记（本机 localStorage，新的在前）。0.39.23 起每条带**仓库标注**
@@ -1131,6 +1141,45 @@ export default function App() {
     [favorites, persistFavorites],
   );
 
+  // 工作文件与收藏同一套分桶存储（0.39.31）
+  useEffect(() => {
+    if (!vault) return;
+    try {
+      const raw = localStorage.getItem(WORKING_FILES_KEY);
+      const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+      setWorkingFiles(Array.isArray(map[vault]) ? map[vault] : []);
+    } catch {
+      setWorkingFiles([]);
+    }
+  }, [vault]);
+
+  const persistWorkingFiles = useCallback(
+    (next: string[]) => {
+      try {
+        const raw = localStorage.getItem(WORKING_FILES_KEY);
+        const map = raw ? (JSON.parse(raw) as Record<string, string[]>) : {};
+        if (vault) map[vault] = next;
+        localStorage.setItem(WORKING_FILES_KEY, JSON.stringify(map));
+      } catch {
+        // 存不进去只影响下次启动的列表，不打断操作
+      }
+      setWorkingFiles(next);
+    },
+    [vault],
+  );
+
+  /** 加入/移出工作文件（文件树右键、标签头右键、工作文件视图都走这里）。 */
+  const toggleWorkingFile = useCallback(
+    (path: string) => {
+      const inList = workingFiles.includes(path);
+      persistWorkingFiles(
+        inList ? workingFiles.filter((p) => p !== path) : [...workingFiles, path],
+      );
+      setStatus(inList ? "已从工作文件移除" : "已加入工作文件");
+    },
+    [workingFiles, persistWorkingFiles],
+  );
+
   /** 固定/取消固定标签：固定后置顶显示、不响应关闭，直到取消固定。 */
   const togglePinTab = useCallback((path: string) => {
     setPinnedTabs((prev) =>
@@ -1163,6 +1212,16 @@ export default function App() {
       return true;
     });
   }, [favorites, existingNotePaths]);
+
+  /** 工作文件列表（去重 + 只保留真实存在的；顺序保持加入顺序）。 */
+  const visibleWorkingFiles = useMemo(() => {
+    const seen = new Set<string>();
+    return workingFiles.filter((p) => {
+      if (seen.has(p) || !existingNotePaths.has(p)) return false;
+      seen.add(p);
+      return true;
+    });
+  }, [workingFiles, existingNotePaths]);
 
   const recordRecent = useCallback((path: string) => {
     // 0.39.23：带仓库标注——openNoteInVault 会先 switchVault 再打开，vaultRef
@@ -3960,6 +4019,24 @@ export default function App() {
     view.focus();
   }, []);
 
+  /**
+   * 大纲拖动移动章节（0.39.31 用户反馈「支持拖动目录，来直接移动 md 文件内容」）：
+   * 对当前大纲跟随的文档源（主编辑器 / 分屏）派发一次事务；范围与落点由纯函数
+   * moveSectionEdit 计算（含「拖进自己子树=非法」等守卫）。改动走正常脏→自动
+   * 保存链路，不单独写盘。
+   */
+  const moveOutlineSection = useCallback(
+    (fromLine: number, targetLine: number, place: "before" | "after") => {
+      const view = outlineFollow === "split" ? splitViewRef.current : viewRef.current;
+      if (!view) return;
+      const edit = moveSectionEdit(view.state.sliceDoc(), fromLine, targetLine, place);
+      if (!edit) return;
+      view.dispatch({ changes: edit.changes });
+      view.focus();
+    },
+    [outlineFollow],
+  );
+
   /** 关闭标签。有未保存内容先落盘（后台标签直接用它存量的状态写，不用先激活）。 */
   const closeTab = useCallback(
     async (path: string) => {
@@ -5533,18 +5610,14 @@ export default function App() {
    */
   const fillWeatherPlaceholder = useCallback(async (path: string, city: string) => {
     const weather = await fetchWeather(city.trim());
+    // 0.39.31 用户反馈「如果天气未获取到占位符会消失，改成常驻」：失败不再删行，
+    // 换成「🌤️ 天气未获取」——三行头部（标题/天气/标签）结构不因网络状况漂移。
+    const nextLine = `> ${weather ?? WEATHER_UNAVAILABLE_TEXT}`;
     const applyToView = (view: EditorView): boolean => {
       const text = view.state.sliceDoc();
       const range = weatherPlaceholderRange(text);
       if (!range) return false; // 用户已自己动过这行：尊重现状
-      if (weather) {
-        view.dispatch({ changes: { from: range.from, to: range.to, insert: `> ${weather}` } });
-      } else {
-        // 失败删除整行：连同行尾分隔符一起删，别留空行
-        const sep =
-          text.startsWith("\r\n", range.to) ? 2 : text.startsWith("\n", range.to) || text.startsWith("\r", range.to) ? 1 : 0;
-        view.dispatch({ changes: { from: range.from, to: range.to + sep } });
-      }
+      view.dispatch({ changes: { from: range.from, to: range.to, insert: nextLine } });
       return true;
     };
     if (viewOwnerRef.current === path && viewRef.current && applyToView(viewRef.current)) return;
@@ -5553,9 +5626,7 @@ export default function App() {
     if (!v) return;
     try {
       const note = await readNote(v, path);
-      const next = weather
-        ? replaceWeatherPlaceholder(note.content, weather)
-        : removeWeatherPlaceholder(note.content);
+      const next = settleWeatherPlaceholder(note.content, weather);
       if (!next) return;
       await writeNote(v, path, next, note.hasBom);
       // 后台标签：标 stale，激活时与磁盘对账（未打开就不用管）
@@ -5858,6 +5929,12 @@ export default function App() {
       setFavorites((prev) => {
         const next = prev.map((p) => (affected(p) ? remap(p) : p));
         persistFavorites(next);
+        return next;
+      });
+      // 工作文件同口径换键（0.39.31）
+      setWorkingFiles((prev) => {
+        const next = prev.map((p) => (affected(p) ? remap(p) : p));
+        persistWorkingFiles(next);
         return next;
       });
       setRecentOpens((prev) => {
@@ -8426,7 +8503,7 @@ export default function App() {
 
   // 0.34.0 移动端左抽屉分区化后，桌面侧栏与移动抽屉共用同一批内容组件——
   // Props 只写一份，两个分支各取所需。
-  const renderTree = (view: "files" | "favorites" | "recents") => (
+  const renderTree = (view: "files" | "favorites" | "recents" | "working") => (
     <FileTree
       entries={entries}
       activePath={current?.path ?? null}
@@ -8435,6 +8512,7 @@ export default function App() {
       favorites={visibleFavorites}
       pinnedFavorites={pinnedFavorites}
       recents={recents}
+      workingFiles={visibleWorkingFiles}
       hiddenDirs={hiddenDirs}
       focusDir={treeFocusDir}
       onFocusClear={() => setTreeFocusDir(null)}
@@ -8506,8 +8584,8 @@ export default function App() {
     />
   );
   // 移动端文件分区顶部的小页签（知识库/收藏/最近；标签升级成了独立分区）。
-  // 桌面持久化的 leftView 停在被搬走的「tags」上时归位到知识库。
-  const mobileLeftView = leftView === "tags" ? "files" : leftView;
+  // 桌面持久化的 leftView 停在被搬走的「tags」/「working」上时归位到知识库。
+  const mobileLeftView = leftView === "tags" || leftView === "working" ? "files" : leftView;
   // 抽屉底行的文件夹计数（Obsidian 图3：仓库名下挂「N 个文件, N 个文件夹」）
   const dirCount = useMemo(() => entries.filter((e) => e.isDir).length, [entries]);
   // 移动端抽屉分区清单（Obsidian 图3 底部卡）：文件列表/搜索/标签/单词本/日历
@@ -9570,7 +9648,18 @@ export default function App() {
                 {favorites.includes(menu.path) ? "取消收藏" : "收藏"}
               </button>
             )}
-            {!menuMultiPaths && !menu.isDir && favorites.includes(menu.path) && (
+            {!menuMultiPaths && !menu.isDir && (
+              <button
+                type="button"
+                onClick={() => {
+                  toggleWorkingFile(menu.path);
+                  setMenu(null);
+                }}
+              >
+                {workingFiles.includes(menu.path) ? "从工作文件移除" : "添加到工作文件"}
+              </button>
+            )}
+            {!menuMultiPaths && favorites.includes(menu.path) && (
               <button
                 type="button"
                 onClick={() => {
@@ -9778,6 +9867,16 @@ export default function App() {
                   </button>
                   <button
                     type="button"
+                    onClick={() => {
+                      // 0.39.31 用户反馈「右键标签头可以将文件添加到工作文件中」
+                      toggleWorkingFile(tabMenu.path);
+                      setTabMenu(null);
+                    }}
+                  >
+                    {workingFiles.includes(tabMenu.path) ? "从工作文件移除" : "添加到工作文件"}
+                  </button>
+                  <button
+                    type="button"
                     disabled={rightPreviews.length === 0}
                     onClick={() => {
                       // 关闭所在栏里它右侧的预览标签；被关掉的有激活中的就地把
@@ -9869,6 +9968,16 @@ export default function App() {
                   }}
                 >
                   {isPinned ? "取消固定" : "固定标签"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    // 0.39.31 用户反馈「右键标签头可以将文件添加到工作文件中」
+                    toggleWorkingFile(tabMenu.path);
+                    setTabMenu(null);
+                  }}
+                >
+                  {workingFiles.includes(tabMenu.path) ? "从工作文件移除" : "添加到工作文件"}
                 </button>
                 <button
                   type="button"
@@ -9984,6 +10093,7 @@ export default function App() {
               {([
                 { key: "files", label: "知识库", icon: <IconLibrary size={17} /> },
                 { key: "favorites", label: "收藏", icon: <IconStar size={17} /> },
+                { key: "working", label: "工作文件", icon: <IconBriefcase size={17} /> },
                 { key: "recents", label: "最近", icon: <IconClock size={17} /> },
                 { key: "tags", label: "标签", icon: <IconTag size={17} /> },
               ] as const).map((v) => {
@@ -10287,7 +10397,7 @@ export default function App() {
               （收藏/最近/标签用不到）。移动端抽屉的 .left-view 页签行不受影响。 */}
           <div className="panel-head">
             <span className="panel-title">
-              {leftView === "files" ? "知识库" : leftView === "favorites" ? "收藏" : leftView === "recents" ? "最近" : "标签"}
+              {leftView === "files" ? "知识库" : leftView === "favorites" ? "收藏" : leftView === "working" ? "工作文件" : leftView === "recents" ? "最近" : "标签"}
             </span>
             {leftView === "files" && (
               <>
@@ -11067,6 +11177,7 @@ export default function App() {
                       : activeTab
               }
               cursorLine={outlineFollow === "split" ? splitCursorLine : cursorLine}
+              onMoveSection={moveOutlineSection}
               onJump={(line) => {
                 // 分屏模式下点击标题：在**分屏编辑器内**定位（0.32——此前只读时代
                 // 是在主编辑器重开该文件，会把并排的另一篇顶掉，用户明确不要）

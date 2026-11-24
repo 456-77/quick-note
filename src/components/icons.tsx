@@ -204,6 +204,15 @@ export const IconClock = ({ size, className }: IconProps) => (
   <svg {...base(size, className)}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
 );
 
+/** 工作文件（0.39.31 用户反馈：左侧新增「工作文件」视图）。 */
+export const IconBriefcase = ({ size, className }: IconProps) => (
+  <svg {...base(size, className)}>
+    <rect width="20" height="14" x="2" y="7" rx="2" />
+    <path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2" />
+    <path d="M2 13h20" />
+  </svg>
+);
+
 export const IconLibrary = ({ size, className }: IconProps) => (
   <svg {...base(size, className)}>
     <path d="M4 20h16" /><path d="M6 20V9" /><path d="M11 20V9" /><path d="M16 20V9" />

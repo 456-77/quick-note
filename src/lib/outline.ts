@@ -67,22 +67,111 @@ export function outlineOf(lines: string[]): OutlineEntry[] {
       continue;
     }
 
-    // Setext：本行非空、无 #，下一行全是 = 或 -（至少两个，避免把列表/分隔线误判）
+    // Setext：本行非空、无 #，下一行全是 = 或 -（至少两个，避免把列表误判）
+    // 0.39.31 用户反馈「分割线上面一行文字会渲染成标题」：`---` 一律按分隔线
+    // 对待——不产出 setext H2 目录项（与 livePreview 的渲染口径一致），
+    // 只有 `===` 下划线继续作为 H1 标题。
     if (trimmed.length > 0 && !trimmed.startsWith("#") && index + 1 < lines.length) {
       const next = lines[index + 1].replace(/\r$/, "").trim();
       if (/^={2,}$/.test(next)) {
         entries.push({ level: 1, text: trimmed, line: index });
         continue;
       }
-      if (/^-{2,}$/.test(next) && !/^\s*([-*+]|\d+\.)\s/.test(trimmed)) {
-        // `---` 是分隔线还是 setext 下划线，取决于上一行有没有文字——有文字就是标题
-        entries.push({ level: 2, text: trimmed, line: index });
-        continue;
-      }
     }
   }
 
   return entries;
+}
+
+/** 大纲拖动重排的一次文档编辑（0.39.31 用户反馈「支持拖动目录，来直接移动
+ *  md 文件内容」）。changes 用**原文坐标**，供 CM6 一次事务应用。 */
+export interface SectionMoveEdit {
+  changes: { from: number; to?: number; insert?: string }[];
+  /** 新文档里被移动章节标题的起点（事务的 selection 锚点）。 */
+  cursor: number;
+}
+
+/**
+ * 计算「把 fromLine 标题及其整个章节移动到 targetLine 之前/之后」的编辑。
+ *
+ * 章节范围：从标题行到下一个 `level <= 自身` 的标题行（含中间空行），
+ * 文档末尾到文末。落点按**条目间隙**解释：after target = 目标条目下一个
+ * 条目的行首（列表顺序），最后一个条目之后 = 文末。
+ *
+ * 只处理 ATX / `===` setext 标题（`---` 已按分隔线排除，见 outlineOf）。
+ * 目标落在被移动章节内部（自己的子标题）或原位置时返回 null。
+ */
+export function moveSectionEdit(
+  text: string,
+  fromLine: number,
+  targetLine: number,
+  place: "before" | "after",
+): SectionMoveEdit | null {
+  const lines = text.split("\n");
+  if (fromLine < 0 || fromLine >= lines.length) return null;
+  const entries = outlineOf(lines);
+  const sourceIndex = entries.findIndex((entry) => entry.line === fromLine);
+  if (sourceIndex < 0) return null;
+  const level = entries[sourceIndex].level;
+  let endLine = lines.length;
+  for (let i = sourceIndex + 1; i < entries.length; i += 1) {
+    if (entries[i].level <= level) {
+      endLine = entries[i].line;
+      break;
+    }
+  }
+  let destLine: number;
+  if (place === "before") {
+    destLine = targetLine;
+  } else {
+    const next = entries.find((entry) => entry.line > targetLine);
+    destLine = next ? next.line : lines.length;
+  }
+  if (destLine > fromLine && destLine < endLine) return null; // 放进自己肚子里
+  if (destLine === fromLine) return null; // 原地
+  if (destLine === endLine) return null; // 章节末尾 = 位置没变
+
+  const starts: number[] = [];
+  let offset = 0;
+  for (const line of lines) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+  const startOffset = starts[fromLine];
+  const endOffset = endLine < lines.length ? starts[endLine] : text.length;
+  const destOffset = destLine < lines.length ? starts[destLine] : text.length;
+  const section = text.slice(startOffset, endOffset);
+  const nl = text.includes("\r\n") ? "\r\n" : "\n";
+  // 让落点前后保持可读的分节结构：与上一行之间留一个空行（上一行本来就空
+  // 则不重复加）；文末落点若文件不以换行结尾，先补一个换行再补空行。
+  const atEof = destOffset === text.length;
+  const endsWithNl = text.endsWith("\n");
+  const prevLineText = atEof
+    ? (endsWithNl ? lines[lines.length - 2] ?? "" : lines[lines.length - 1] ?? "")
+    : (lines[destLine - 1] ?? "");
+  let prefix = atEof && !endsWithNl ? nl : "";
+  if (prevLineText.trim() !== "") prefix += nl;
+  let insertText = section;
+  if (destLine < lines.length && !insertText.endsWith("\n")) insertText += nl;
+  insertText = prefix + insertText;
+
+  if (destOffset < startOffset) {
+    return {
+      changes: [
+        { from: destOffset, insert: insertText },
+        { from: startOffset, to: endOffset },
+      ],
+      cursor: destOffset + prefix.length,
+    };
+  }
+  const removed = endOffset - startOffset;
+  return {
+    changes: [
+      { from: startOffset, to: endOffset },
+      { from: destOffset, insert: insertText },
+    ],
+    cursor: destOffset - removed + prefix.length,
+  };
 }
 
 /**

@@ -1084,7 +1084,43 @@ kbd {
   cursor: pointer;
   transition: background 0.12s ease, color 0.12s ease;
   user-select: none;
+  /* 0.39.31 层级竖线的定位容器（绝对定位覆盖层，不影响布局） */
+  position: relative;
 }
+
+/* 0.39.31 用户反馈「添加不同颜色竖线突出层级关系」：目录/文件行的层级竖线。
+   绝对定位在左内边距上，行高与拖拽落点都不受影响；颜色按层级循环。 */
+.tree-guides {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tree-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  opacity: 0.55;
+  background: var(--qn-guide, transparent);
+}
+
+:root {
+  --qn-guide-1: #4c8dff;
+  --qn-guide-2: #25a86b;
+  --qn-guide-3: #d1942c;
+  --qn-guide-4: #a565e0;
+  --qn-guide-5: #d95d5d;
+  --qn-guide-6: #2aa7b5;
+}
+
+/* 层级色板：树行当背景线用、大纲行当左边框用（同一组颜色） */
+.qg1 { --qn-guide: var(--qn-guide-1); }
+.qg2 { --qn-guide: var(--qn-guide-2); }
+.qg3 { --qn-guide: var(--qn-guide-3); }
+.qg4 { --qn-guide: var(--qn-guide-4); }
+.qg5 { --qn-guide: var(--qn-guide-5); }
+.qg6 { --qn-guide: var(--qn-guide-6); }
 
 .tree-item:hover {
   background: var(--hover);
@@ -2362,6 +2398,8 @@ html.qn-mobile .xlsx-toolbar {
   font: inherit;
   font-size: 12.5px;
   line-height: 1.5;
+  /* 0.39.31：滚到尽头别把滚轮链给下面的图片预览（用户反馈「滚动的是图片」） */
+  overscroll-behavior: contain;
 }
 
 .file-preview-image img {
@@ -4323,7 +4361,8 @@ html.qn-alt-held .cm-line {
 }
 
 .outline-item {
-  display: block;
+  display: flex;
+  align-items: center;
   padding: 4px 9px;
   margin: 1px 0;
   border: 0;
@@ -4337,6 +4376,28 @@ html.qn-alt-held .cm-line {
   text-overflow: ellipsis;
   white-space: nowrap;
   transition: background 0.12s ease, color 0.12s ease;
+}
+
+/* 0.39.31 层级竖线（大纲）：每级一个 12px 宽的引导格，颜色按层级循环 */
+.outline-guide {
+  flex: none;
+  align-self: stretch;
+  width: 12px;
+  border-left: 1px solid var(--qn-guide, transparent);
+  opacity: 0.55;
+}
+
+/* 0.39.31 大纲拖动移动章节：拖起条目变淡，落点上下沿高亮 */
+.outline-item.is-drag-source {
+  opacity: 0.45;
+}
+
+.outline-item.is-drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.outline-item.is-drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .outline-item:hover {
@@ -4359,6 +4420,8 @@ html.qn-alt-held .cm-line {
 }
 
 .outline-text {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -6963,6 +7026,8 @@ html.qn-style-bluetopaz .editor-host .cm-lp-callout-title {
   font: inherit;
   font-size: 12.5px;
   line-height: 1.5;
+  /* 0.39.31：面板内滚轮只滚结果文本，不链到灯箱缩放/页面 */
+  overscroll-behavior: contain;
 }
 
 .qn-lightbox-hint {

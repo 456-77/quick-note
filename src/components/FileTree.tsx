@@ -3,6 +3,7 @@ import type { EntryMeta } from "../lib/api";
 import { fileKindOf } from "../lib/fileTypes";
 import { compareFileNames } from "../lib/fileNameSort";
 import {
+  IconBriefcase,
   IconChevronDown,
   IconChevronRight,
   IconClock,
@@ -61,7 +62,7 @@ const compareByDatePrefix = (a: string, b: string): number => {
   return compareFileNames(a, b);
 };
 
-export type LeftView = "files" | "favorites" | "recents";
+export type LeftView = "files" | "favorites" | "working" | "recents";
 
 /** 树内拖拽的 MIME 标记：dragover 时靠它区分「树内拖拽」与外部拖放。 */
 export const TREE_DRAG_MIME = "application/x-quicknote-tree-entry";
@@ -258,9 +259,24 @@ function formatTime(ms: number): string {
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
+/**
+ * 层级竖线（0.39.31 用户反馈「优化目录和左侧文件列表的展示，添加不同颜色竖线
+ * 突出层级关系」）：绝对定位覆盖在行的左内边距上，**不参与布局**——行高、
+ * 对齐与树内拖拽全不受影响；颜色按祖先层级循环（qg1..qg6）。
+ */
+function TreeGuides({ depth }: { depth: number }) {
+  if (depth <= 0) return null;
+  return (
+    <span className="tree-guides" aria-hidden>
+      {Array.from({ length: depth }).map((_, i) => (
+        <i key={i} className={`tree-guide qg${(i % 6) + 1}`} style={{ left: 10 + i * 14 }} />
+      ))}
+    </span>
+  );
+}
+
 /** 笔记行的通用渲染。行是 div[role=button]：行尾要挂 ⋯ 按钮，button 里不能嵌 button。 */
-function NoteRow({
-  node,
+function NoteRow({  node,
   indent,
   active,
   favorite,
@@ -349,6 +365,8 @@ function NoteRow({
         onContext(node.path, false, event.clientX, event.clientY);
       }}
     >
+      {/* 0.39.31 层级竖线：indent = 28 + depth*14（见 Node 的调用处） */}
+      {indent && indent >= 42 ? <TreeGuides depth={Math.round((indent - 28) / 14)} /> : null}
       {leading ?? <IconFileText size={14} className="tree-icon" />}
       <span className="tree-label">{node.name}</span>
       <span className="tree-size">{formatTime(node.modified) || formatSize(node.size)}</span>
@@ -477,6 +495,7 @@ function Node({
           title={`${node.path}（点击选中为粘贴目标 · Alt+点击在资源管理器中定位）`}
           {...contextProps}
         >
+          <TreeGuides depth={depth} />
           <span className="tree-caret">
             {expanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />}
           </span>
@@ -527,6 +546,7 @@ function Node({
         }}
         {...contextProps}
       >
+        <TreeGuides depth={depth} />
         <IconFile size={14} className="tree-icon" />
         <span className="tree-label">{node.name}</span>
         <span className="tree-size">{formatSize(node.size)}</span>
@@ -568,6 +588,7 @@ export default function FileTree({
   favorites,
   pinnedFavorites,
   recents,
+  workingFiles,
   hiddenDirs,
   focusDir,
   onFocusClear,
@@ -591,6 +612,8 @@ export default function FileTree({
   /** 置顶的收藏（收藏视图里排在最前，0.21 用户反馈）。 */
   pinnedFavorites?: string[];
   recents: string[];
+  /** 工作文件（0.39.31）：按加入顺序展示的扁平列表。 */
+  workingFiles?: string[];
   /** 被隐藏的一级目录集合（目录筛选，0.20 用户反馈：目录太多干扰阅读）。 */
   hiddenDirs?: ReadonlySet<string>;
   /** 「只显示选定目录」焦点（0.36.1 用户反馈，移动端大仓库）：只列该目录子树。 */
@@ -638,12 +661,19 @@ export default function FileTree({
     return out.slice(0, 200);
   }, [tree, terms]);
 
-  /** 收藏 / 最近视图的扁平笔记列表。 */
+  /** 收藏 / 工作文件 / 最近视图的扁平笔记列表。 */
   const pinnedSet = useMemo(() => new Set(pinnedFavorites ?? []), [pinnedFavorites]);
   const flatNotes = useMemo(() => {
     if (view === "files") return null;
     const all: TreeNode[] = [];
     collectNotes(tree, all);
+    const byPath = new Map(all.map((node) => [node.path, node]));
+    if (view === "working") {
+      // 工作文件：完全按加入顺序（不做名称/置顶重排），只保留还存在的
+      return (workingFiles ?? [])
+        .map((path) => byPath.get(path))
+        .filter((node): node is TreeNode => Boolean(node));
+    }
     if (view === "favorites") {
       // 置顶的排最前（按置顶先后），其余按名称排（0.21 用户反馈：收藏置顶）
       const pinned: TreeNode[] = [];
@@ -658,16 +688,43 @@ export default function FileTree({
       return [...pinned, ...rest];
     }
     // 最近：按打开顺序（recents 里已按新到旧），只显示还存在的
-    const byPath = new Map(all.map((node) => [node.path, node]));
     return recents
       .map((path) => byPath.get(path))
       .filter((node): node is TreeNode => Boolean(node));
-  }, [view, tree, favoriteSet, pinnedSet, recents]);
+  }, [view, tree, favoriteSet, pinnedSet, recents, workingFiles]);
 
   const content = (() => {
     if (entries.length === 0) {
       return <div className="tree-empty">仓库内暂无内容</div>;
     }
+
+  if (view === "working") {
+    return (
+      <div className="tree is-filtered">
+        {(!flatNotes || flatNotes.length === 0) && (
+          <div className="tree-empty">
+            工作文件还是空的。在文件或标签头上右键「添加到工作文件」。
+          </div>
+        )}
+        {flatNotes?.map((node) => (
+          <NoteRow
+            key={node.path}
+            node={node}
+            active={node.path === activePath}
+            favorite={favoriteSet.has(node.path)}
+            selected={selectedSet.has(node.path)}
+            dragPaths={[...selectedSet]}
+            onOpen={onOpen}
+            onEntryClick={onEntryClick}
+            onContext={onContext}
+            onReveal={onReveal}
+            kind={node.kind === "text" ? "text" : node.kind === "preview" ? "preview" : "markdown"}
+            leading={<IconBriefcase size={14} className="tree-icon" />}
+          />
+        ))}
+      </div>
+    );
+  }
 
   if (view === "favorites") {
     return (

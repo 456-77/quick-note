@@ -101,7 +101,7 @@ export function normalizeTagName(input: string): string | null {
 }
 
 /** 一行去掉首尾空白后是否只由标签序列构成（即「标签行」）。 */
-function isTagLine(line: string): boolean {
+export function isTagLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
   const rest = trimmed

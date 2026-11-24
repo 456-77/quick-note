@@ -50,6 +50,21 @@ assert(!fromJsonStringSafe("垃圾"), "垃圾输入报错");
 assert(!beautifySafe("{a:1}"), "非法 JSON 报错");
 assert(!beautifySafe('"{\\"a\\":1} {\\"b\\":2}"'), "拼接串解一层后不是合法 JSON 报错");
 
+// ---- 0.39.31 多一层转义自动修复（用户反馈：从日志复制的 JSON 带 \" 无法格式化）----
+import { parseJsonLoose } from "../src/lib/formatJson.ts";
+const escapedObj = '{\\"a\\":1,\\"b\\":\\"x\\"}';
+const repaired = parseJsonLoose(escapedObj);
+assert(repaired.repaired === true && repaired.value.b === "x", "单层转义 JSON 自动解转义后解析");
+assert(beautifyJson(escapedObj) === '{\n  "a": 1,\n  "b": "x"\n}\n', "beautify 吃掉一层转义");
+// 双层转义：JSON → 字符串（内层仍是转义 JSON）→ 字符串
+const twice = JSON.stringify(JSON.stringify({ a: 1 })).replace(/^"|"$/g, "");
+const twiceParsed = parseJsonLoose(twice);
+assert(twiceParsed.repaired === true && twiceParsed.value.a === 1, "双层转义逐层修复");
+// 合法 JSON 带正常转义时不误判（含 \n、\\ 字符串内容）
+const legit = '{"p":"C:\\\\tmp","n":"a\\nb"}';
+const legitParsed = parseJsonLoose(legit);
+assert(legitParsed.repaired === false && legitParsed.value.p === "C:\\tmp", "合法 JSON 不被改写");
+
 function fromJsonStringSafe(text) {
   try { fromJsonString(text); return true; } catch { return false; }
 }

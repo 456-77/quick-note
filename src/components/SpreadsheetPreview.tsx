@@ -30,6 +30,13 @@ const MAX_FILTER_VALUES = 500;
  * 互不串扰，清除筛选即从缓存删除。
  */
 const filterCache = new Map<string, Record<number, string[]>>();
+/**
+ * 上次停留的 sheet（0.39.31 用户反馈「切标签页时，原来 excel 预览文件要保持
+ * 之前打开 sheet 页」）：筛选有 filterCache，sheet 页此前每次重挂载都回第一个。
+ * 按「cacheKey（仓库::路径）→ sheet 名」记最后一个，重挂载时按名字找回
+ * （不用下标：工作簿改动后 sheet 顺序/数量可能变）。
+ */
+const sheetCache = new Map<string, string>();
 
 /** 列序号 → Excel 列名（0 → A，26 → AA）。表头为空时用它兜底显示。 */
 function columnName(index: number): string {
@@ -339,7 +346,11 @@ export default function SpreadsheetPreview({
     value: string,
   ) => Promise<void>;
 }) {
-  const [sheetIndex, setSheetIndex] = useState(0);
+  const [sheetIndex, setSheetIndex] = useState(() => {
+    const cached = cacheKey ? sheetCache.get(cacheKey) : undefined;
+    const found = cached ? sheets.findIndex((item) => item.name === cached) : -1;
+    return found >= 0 ? found : 0;
+  });
   const sheet = sheets[Math.min(sheetIndex, sheets.length - 1)];
   /** 生效的列筛选：列下标 → 选中的显示值（数组非空）。初始从缓存回填——
    *  切走文件再切回来（组件重挂载）时筛选还在。 */
@@ -593,11 +604,13 @@ export default function SpreadsheetPreview({
     editTokenRef.current += 1;
   }, [sheetIndex, cacheKey]);
 
-  // 换文件（cacheKey 变化）时回到第一个 sheet；分屏栏复用同一实例，不重置的话
-  // sheetIndex 指着上一个文件的 sheet 序号
+  // 换文件（cacheKey 变化）时恢复该文件上次停留的 sheet；没有记录才回第一个
+  // （0.39.31：此前一律 setSheetIndex(0)，切标签回来就丢 sheet）
   useEffect(() => {
-    setSheetIndex(0);
-  }, [cacheKey]);
+    const cached = cacheKey ? sheetCache.get(cacheKey) : undefined;
+    const found = cached ? sheets.findIndex((item) => item.name === cached) : -1;
+    setSheetIndex(found >= 0 ? found : 0);
+  }, [cacheKey, sheets]);
 
   // 筛选变化写回缓存（清除筛选 = 从缓存删除），保证切走再切回是"最后一次"的状态
   useEffect(() => {
@@ -989,7 +1002,11 @@ export default function SpreadsheetPreview({
               role="tab"
               aria-selected={index === sheetIndex}
               className={`file-preview-sheet${index === sheetIndex ? " is-on" : ""}`}
-              onClick={() => setSheetIndex(index)}
+              onClick={() => {
+                setSheetIndex(index);
+                // 记下这次停留的 sheet 名，切走/切标签回来时按名恢复（0.39.31）
+                if (cacheKey) sheetCache.set(cacheKey, item.name);
+              }}
             >
               {item.name}
             </button>

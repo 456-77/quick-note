@@ -234,6 +234,10 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
   );
   const [frameMode, setFrameMode] = useState(false);
   const frameModeRef = useRef(false);
+  /** 识别结果面板（0.39.31 用户反馈「点击识别内容，滚动鼠标滚轮，滚动的是
+   *  图片而不是识别弹窗中的内容」）：面板盖在图片宿主上、自身不滚，滚轮会
+   *  冒泡到 body 把图片层滚走。下面用原生非被动监听把面板区域的滚轮截住。 */
+  const ocrPanelRef = useRef<HTMLDivElement | null>(null);
   /** 框选/识别的通道（0.39.23：AI 识别与普通识别共用同一套框选交互）。 */
   const frameKindRef = useRef<"ocr" | "ai">("ocr");
   const frameStartRef = useRef<{ x: number; y: number } | null>(null);
@@ -281,6 +285,26 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
       ocrCache.set(`${vault}\u0000${path}`, next);
     }
   }, [imageUrl, imageOcr?.busy, vault, path]);
+
+  // 识别结果面板吞掉滚轮（0.39.31 用户反馈「滚动的是图片，而不是识别弹窗中
+  // 的内容」）：面板是图片宿主的绝对定位子节点、自身不产生滚动条，滚轮默认
+  // 会链式冒泡到 .file-preview-body 把整张图滚走。这里非被动监听：面板内
+  // preventDefault，并手动把增量滚给结果文本框（它才是真正的内容滚动区）。
+  useEffect(() => {
+    const panel = ocrPanelRef.current;
+    if (!panel || imageOcr?.text == null) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      const area = panel.querySelector<HTMLTextAreaElement>(".file-preview-ocr-text");
+      if (!area) return;
+      const max = area.scrollHeight - area.clientHeight;
+      if (max <= 0) return;
+      const step = event.deltaMode === 1 ? event.deltaY * 18 : event.deltaMode === 2 ? event.deltaY * area.clientHeight : event.deltaY;
+      area.scrollTop = Math.max(0, Math.min(max, area.scrollTop + step));
+    };
+    panel.addEventListener("wheel", onWheel, { passive: false });
+    return () => panel.removeEventListener("wheel", onWheel);
+  }, [imageOcr?.text]);
 
   // 框选态的窗口级拖动/收尾（0.39.19 用户反馈「不是全部识别而是识别框定的
   // 范围内的内容」）：mousemove 更新选框，mouseup 把视口选框换算成图片自然
@@ -1761,7 +1785,7 @@ export default function FilePreview({ vault, path, onClose, embedded = false, es
                   />
                 )}
                 {imageOcr?.text != null && (
-                  <div className="file-preview-ocr">
+                  <div className="file-preview-ocr" ref={ocrPanelRef}>
                     <div className="file-preview-ocr-head">
                       <span className="file-preview-ocr-title">
                         {imageOcr.kind === "ai" ? "AI 识别结果" : "识别结果"}

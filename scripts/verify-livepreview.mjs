@@ -95,20 +95,26 @@ const overlapOf = (items, [a, b]) => items.filter((d) => d.from < b && d.to > a)
 console.log("场景 A：光标停在文末（正文各行都处于渲染态）\n");
 const A = decorate(doc.length);
 
-// 1. 标题（ATX + setext 各一个）
+// 1. 标题（ATX + `===` setext 各一个；`---` setext 按分隔线渲染，不算标题）
 check(withClass(A.items, "cm-lp-h1").length === 2, "一级标题行装饰：ATX 一个 + setext 一个", `实际=${withClass(A.items, "cm-lp-h1").length}`);
-check(withClass(A.items, "cm-lp-h2").length === 2, "二级标题行装饰：ATX 一个 + setext 一个", `实际=${withClass(A.items, "cm-lp-h2").length}`);
+check(withClass(A.items, "cm-lp-h2").length === 1, "二级标题行装饰：只有 ATX（`---` 不再产 H2）", `实际=${withClass(A.items, "cm-lp-h2").length}`);
 check(hidesWithin(A.items, "# 语法覆盖").length === 1, "标题的 `#` 连同其后空格被隐藏");
 check(hidesWithin(A.items, "## 列表与分割线").length === 1, "二级标题的 `##` 被隐藏");
 // setext：正文在上一行，`=====` 独占下一行——藏掉它之后必须压掉行高，否则留空行
 check(
-  withClass(A.items, "cm-lp-collapsed").length === 2,
-  "两个 setext 标题的下划线行都被压掉高度",
+  withClass(A.items, "cm-lp-collapsed").length === 1,
+  "`===` setext 标题的下划线行被压掉高度",
   `实际=${withClass(A.items, "cm-lp-collapsed").length}`,
 );
 check(
   hidesWithin(A.items, "===============").length === 1,
   "setext 的 `=====` 被隐藏",
+);
+// 0.39.31 用户反馈「分割线上面一行文字会渲染成标题」：`---` 下划线换成 <hr>，
+// 上面一行保持正文
+check(
+  A.items.some((d) => d.widgetName === "RuleWidget" && d.from === doc.indexOf("---------------")),
+  "`---` setext 下划线渲染成分隔线",
 );
 
 // 2. 行内样式
@@ -133,10 +139,11 @@ check(hidesWithin(A.items, "- [ ]").length === 1, "任务项的 `-` 被隐藏（
 const bullets = widgetOf(A.items, "BulletWidget");
 check(bullets.length === 2, "普通列表项换成圆点小部件", `实际=${bullets.length}`);
 
-// 4. 分割线
+// 4. 分割线（独立 `---` + 0.39.31 起 setext 的 `---` 下划线也走 <hr>）
 const rules = widgetOf(A.items, "RuleWidget");
-check(rules.length === 1, "分割线换成 <hr> 小部件", `实际=${rules.length}`);
-check(rules[0]?.text === "---", "分割线只替换 `---` 本身，保留行尾换行");
+check(rules.length === 2, "分割线换成 <hr> 小部件（含 setext 下划线）", `实际=${rules.length}`);
+check(rules.some((d) => d.text === "---"), "分割线只替换 `---` 本身，保留行尾换行");
+check(rules.some((d) => d.text === "---------------"), "setext 下划线整段被 <hr> 替换");
 // 回归断言：CM6 禁止插件产生两类装饰，一旦违反会让装饰集整体抛异常、
 // 编辑器渲染成空白（错误只显示在界面的提示条里，很容易漏掉）：
 //   1. 块级装饰 → "Block decorations may not be specified via plugins"

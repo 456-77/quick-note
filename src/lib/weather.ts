@@ -9,9 +9,10 @@
  * fetch 的 IO 部分在 `fetchWeather` 里，动态 import 以免 Node 测试环境碰到 Tauri API。
  */
 
+import { isTagLine } from "./tags.ts";
+
 /** Open-Meteo 地理编码响应（只取用到的字段）。 */
-export interface GeocodingResponse {
-  results?: { latitude: number; longitude: number }[];
+export interface GeocodingResponse {  results?: { latitude: number; longitude: number }[];
 }
 
 export interface ForecastResponse {
@@ -113,9 +114,32 @@ export function insertWeatherLine(content: string, weather: string): string {
 export const WEATHER_PLACEHOLDER_TEXT = "⏳ 天气获取中…";
 export const WEATHER_PLACEHOLDER_LINE = `> ${WEATHER_PLACEHOLDER_TEXT}`;
 
+/**
+ * 抓取失败时的常驻占位（0.39.31 用户反馈「如果天气未获取到这个占位符会消失，
+ * 改成常驻」）：以前失败就把整行删掉，笔记头部从三行变两行、正文顶到第 3 行，
+ * 加标签时又整体下移一次。现在失败只把文案换成「天气未获取」，**行永远在**。
+ */
+export const WEATHER_UNAVAILABLE_TEXT = "🌤️ 天气未获取";
+export const WEATHER_UNAVAILABLE_LINE = `> ${WEATHER_UNAVAILABLE_TEXT}`;
+
 export function insertWeatherPlaceholder(content: string): string {
   const lines = content.split("\n");
-  lines.splice(weatherInsertAt(lines), 0, WEATHER_PLACEHOLDER_LINE);
+  const at = weatherInsertAt(lines);
+  lines.splice(at, 0, WEATHER_PLACEHOLDER_LINE);
+  // 0.39.31 用户反馈「标签占位第三行，笔记内容直接从第四行开始」：天气行下面
+  // 没有正文时补足空行——第 3 行留给标签行，输入从第 4 行开始（默认模板只有
+  // `# 标题\n` 两行，不补的话正文会从第 3 行起写，标签反而把正文顶下去）。
+  const next = lines[at + 1];
+  if (next === undefined) {
+    // 原文没有尾随换行：天气行是最后一行，补出第 3、4 行
+    lines.push("", "");
+  } else if (next.trim() !== "" && !isTagLine(next)) {
+    // 模板正文紧跟标题：天气行后补一个空行，把正文顶到第 4 行
+    lines.splice(at + 1, 0, "");
+  } else if (at === lines.length - 2) {
+    // 天气行就是最后一行内容（末尾那个空串是 split 出来的幻影行）：再补一行
+    lines.push("");
+  }
   return lines.join("\n");
 }
 
@@ -136,6 +160,19 @@ export function replaceWeatherPlaceholder(content: string, weather: string): str
   const range = weatherPlaceholderRange(content);
   if (!range) return null;
   return content.slice(0, range.from) + `> ${weather}` + content.slice(range.to);
+}
+
+/**
+ * 占位行收尾（0.39.31）：抓到天气换成真天气；没抓到（null）换成常驻的
+ * 「天气未获取」——都不删行，保证笔记头部三行结构与标签行位置稳定。
+ * 没找到占位行返回 null（尊重用户手改）。
+ */
+export function settleWeatherPlaceholder(content: string, weather: string | null): string | null {
+  const range = weatherPlaceholderRange(content);
+  if (!range) return null;
+  return (
+    content.slice(0, range.from) + `> ${weather ?? WEATHER_UNAVAILABLE_TEXT}` + content.slice(range.to)
+  );
 }
 
 /** 删掉占位行（抓取失败时用，别留一句「获取中」在日记里）；没找到返回 null。 */

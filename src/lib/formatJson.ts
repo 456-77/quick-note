@@ -13,17 +13,85 @@
 
 export function formatJsonText(raw: string): { ok: true; text: string } | { ok: false; error: string } {
   try {
-    const value = JSON.parse(raw) as unknown;
+    const value = parseJsonLoose(raw).value;
     return { ok: true, text: JSON.stringify(value, null, 2) };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
 
+/**
+ * 把「被整体转义过一层」的文本解回原样（0.39.31 用户反馈「这个 json 数据为什么
+ * 无法格式化」——从日志/抓包/聊天窗口复制来的 JSON 常带一层 `\"`：文本本身是
+ * JSON 字符串的**内容**，却少了外层引号，直接 parse 必然在位置 1 报错）。
+ *
+ * 单遍顺序扫描（不是 replace 链，`\\\"` 才能正确降一层）：认识的转义解掉，
+ * 不认识的（`\d` 之类）原样保留。没有可解的转义时返回 null——避免把普通
+ * 非法 JSON 也来回「修」一遍。
+ */
+function unescapeJsonPayload(text: string): string | null {
+  if (!text.includes("\\")) return null;
+  let out = "";
+  let changed = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch !== "\\" || i + 1 >= text.length) {
+      out += ch;
+      continue;
+    }
+    const next = text[i + 1];
+    switch (next) {
+      case '"': out += '"'; i += 1; changed = true; break;
+      case "\\": out += "\\"; i += 1; changed = true; break;
+      case "/": out += "/"; i += 1; changed = true; break;
+      case "b": out += "\b"; i += 1; changed = true; break;
+      case "f": out += "\f"; i += 1; changed = true; break;
+      case "n": out += "\n"; i += 1; changed = true; break;
+      case "r": out += "\r"; i += 1; changed = true; break;
+      case "t": out += "\t"; i += 1; changed = true; break;
+      case "u": {
+        const hex = text.slice(i + 2, i + 6);
+        if (/^[0-9a-fA-F]{4}$/.test(hex)) {
+          out += String.fromCharCode(parseInt(hex, 16));
+          i += 5;
+          changed = true;
+        } else {
+          out += ch;
+        }
+        break;
+      }
+      default:
+        out += ch;
+    }
+  }
+  return changed ? out : null;
+}
+
+/**
+ * 宽容解析：先按原样 parse；失败且文本里有转义序列时，逐层解转义再试
+ * （最多 3 层，覆盖「JSON → 字符串 → 字符串」的层级）。仍失败抛**第一次**
+ * 的原生错误——位置信息对应用户贴进来的原文，不会因为解转义而漂移。
+ */
+export function parseJsonLoose(text: string, maxRepairLayers = 3): { value: unknown; repaired: boolean } {
+  let firstError: unknown;
+  let current = text;
+  for (let layer = 0; layer <= maxRepairLayers; layer += 1) {
+    try {
+      return { value: JSON.parse(current) as unknown, repaired: layer > 0 };
+    } catch (e) {
+      if (layer === 0) firstError = e;
+    }
+    const next = unescapeJsonPayload(current);
+    if (next === null || next === current) break;
+    current = next;
+  }
+  throw firstError instanceof Error ? firstError : new Error(String(firstError));
+}
+
 /** 解析失败的中文错误（带位置提示；JSON.parse 原生消息在 Chromium 里较友好，直接拼接）。 */
 function parseJson(text: string): unknown {
   try {
-    return JSON.parse(text);
+    return parseJsonLoose(text).value;
   } catch (e) {
     throw new Error(`不是合法的 JSON：${e instanceof Error ? e.message : String(e)}`);
   }

@@ -10,7 +10,7 @@
  * 切开，行号才能和编辑器对上（CRLF/CR 文件也不例外）。
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { outlineInlineSpans, outlineOf, type OutlineEntry } from "../lib/outline";
 import { isMarkdownPath } from "../lib/fileTypes";
 import type { PdfToc } from "./FilePreview";
@@ -30,6 +30,12 @@ interface Props {
   activeKey: string | null;
   /** 跳转到指定行（0 基）。 */
   onJump: (line: number) => void;
+  /**
+   * 拖动条目移动整个章节（0.39.31 用户反馈「支持拖动目录，来直接移动 md 文件
+   * 内容」）：targetLine 是落点条目的标题行，place = 落在它之前/之后
+   * （after 按列表顺序解释为下一个条目的行首；最后一个条目之后 = 文末）。
+   */
+  onMoveSection?: (fromLine: number, targetLine: number, place: "before" | "after") => void;
   /** 光标所在行（0 基）：用于高亮"当前位置"所在的标题；-1 = 无光标（分屏查看）。 */
   cursorLine: number;
   /** PDF 书签目录（0.39.17）：预览的 PDF 有书签时接管面板（点条目跳页），
@@ -37,7 +43,13 @@ interface Props {
   pdfToc?: PdfToc | null;
 }
 
-export default function OutlinePanel({ getDoc, revision, activeKey, onJump, cursorLine, pdfToc }: Props) {
+export default function OutlinePanel({ getDoc, revision, activeKey, onJump, onMoveSection, cursorLine, pdfToc }: Props) {
+  /** 拖动中的章节标题行（0 基）；null = 未在拖。 */
+  const [dragLine, setDragLine] = useState<number | null>(null);
+  /** 落点提示：目标条目行 + 前/后。 */
+  const [dropHint, setDropHint] = useState<{ line: number; place: "before" | "after" } | null>(null);
+  /** 刚结束一次拖动：抑制随后的 click 跳转（部分浏览器会补发 click）。 */
+  const dragEndedAtRef = useRef(0);
   const entries = useMemo<OutlineEntry[]>(() => {
     const doc = getDoc();
     if (!doc || !activeKey) return [];
@@ -118,11 +130,92 @@ export default function OutlinePanel({ getDoc, revision, activeKey, onJump, curs
           <button
             type="button"
             key={`${entry.line}-${index}`}
-            className={`outline-item outline-h${entry.level}${index === activeIndex ? " is-active" : ""}`}
-            style={{ paddingLeft: 8 + (entry.level - 1) * 12 }}
-            title={`跳到第 ${entry.line + 1} 行`}
-            onClick={() => onJump(entry.line)}
+            className={`outline-item outline-h${entry.level}${index === activeIndex ? " is-active" : ""}${
+              dragLine === entry.line ? " is-drag-source" : ""
+            }${
+              dropHint?.line === entry.line
+                ? dropHint.place === "before"
+                  ? " is-drop-before"
+                  : " is-drop-after"
+                : ""
+            }`}
+            style={{ paddingLeft: 8 }}
+            title={
+              onMoveSection
+                ? `第 ${entry.line + 1} 行 · 点击跳转，拖动可移动整节`
+                : `跳到第 ${entry.line + 1} 行`
+            }
+            draggable={!!onMoveSection}
+            onDragStart={
+              onMoveSection
+                ? (event) => {
+                    setDragLine(entry.line);
+                    event.dataTransfer.effectAllowed = "move";
+                    // Firefox 需要 setData 才会真正开始拖动
+                    event.dataTransfer.setData("text/plain", String(entry.line));
+                  }
+                : undefined
+            }
+            onDragEnd={
+              onMoveSection
+                ? () => {
+                    dragEndedAtRef.current = Date.now();
+                    setDragLine(null);
+                    setDropHint(null);
+                  }
+                : undefined
+            }
+            onDragOver={
+              onMoveSection
+                ? (event) => {
+                    if (dragLine === null) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const place = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+                    setDropHint((prev) =>
+                      prev?.line === entry.line && prev.place === place
+                        ? prev
+                        : { line: entry.line, place },
+                    );
+                  }
+                : undefined
+            }
+            onDragLeave={
+              onMoveSection
+                ? (event) => {
+                    // 在条目内部的子元素之间移动不算离开，避免指示线闪烁
+                    const next = event.relatedTarget as Node | null;
+                    if (next && event.currentTarget.contains(next)) return;
+                    setDropHint((prev) => (prev?.line === entry.line ? null : prev));
+                  }
+                : undefined
+            }
+            onDrop={
+              onMoveSection
+                ? (event) => {
+                    event.preventDefault();
+                    const from = dragLine;
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const place = event.clientY < rect.top + rect.height / 2 ? "before" : "after";
+                    dragEndedAtRef.current = Date.now();
+                    setDragLine(null);
+                    setDropHint(null);
+                    if (from === null) return;
+                    onMoveSection(from, entry.line, place);
+                  }
+                : undefined
+            }
+            onClick={() => {
+              // 刚拖完的一次 click 不跳转（拖拽落点已产生文档改动）
+              if (Date.now() - dragEndedAtRef.current < 300) return;
+              onJump(entry.line);
+            }}
           >
+            {/* 0.39.31 用户反馈「添加不同颜色竖线突出层级关系」：逐级引导线 */}
+            {Array.from({ length: entry.level - 1 }).map((_, i) => (
+              <span key={i} className={`outline-guide qg${(i % 6) + 1}`} aria-hidden />
+            ))}
             <span className="outline-text">
               {/* 标题里的行内标记渲染出来（0.27）：**加粗** 等不再以原文示人 */}
               {outlineInlineSpans(entry.text || "（无标题文字）").map((span, i) =>

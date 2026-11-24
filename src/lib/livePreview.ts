@@ -3015,8 +3015,23 @@ export function buildLivePreviewDecorations(
           // setext 标题：正文在上一行，`=====` / `-----` 是下一行的 HeaderMark
           const level = name === "SetextHeading1" ? 1 : 2;
           const textLine = doc.lineAt(node.from);
-          marks.push(LINE_CLASS[level].range(textLine.from));
           const headerMark = node.node.firstChild;
+          // 0.39.31 用户反馈「分割线上面一行文字会渲染成标题」：CommonMark 把
+          // 「正文 + `---`」解析成 setext H2，用户却把 `---` 当分隔线用。这里把
+          // 全连字符下划线按 HorizontalRule 渲染（上面一行保持正文），只有
+          // `===` 下划线才继续按 H1 标题处理。
+          const underline =
+            headerMark?.name === "HeaderMark"
+              ? doc.sliceString(headerMark.from, headerMark.to).trim()
+              : "";
+          if (headerMark?.name === "HeaderMark" && /^-+$/.test(underline)) {
+            // 光标/选区落在下划线上=编辑意图，露出源码（与 HorizontalRule 同口径）
+            if (!ctx.touched(headerMark.from, headerMark.to)) {
+              replaceWith(headerMark.from, headerMark.to, new RuleWidget());
+            }
+            return undefined;
+          }
+          marks.push(LINE_CLASS[level].range(textLine.from));
           // 下划线行只在光标真的落在那一行（按位置判断）时显形，与 ATX 同理
           if (
             headerMark?.name === "HeaderMark" &&

@@ -132,6 +132,10 @@ export function openLightbox(src: string, alt: string): void {
   // -------------------------------------------------- 桌面交互（滚轮/拖动/双击）
   const onWheel = (event: WheelEvent) => {
     if (framing) return; // 框选态不缩放
+    // 0.39.31 用户反馈「AI 识别后点击识别内容，滚轮滚动的是图片而不是识别弹窗
+    // 中的内容」：识别面板盖在图上，滚轮落在面板里时该滚的是结果文本。放行
+    // 浏览器默认行为（textarea 自己滚），不缩放图片。
+    if ((event.target as HTMLElement | null)?.closest?.(".qn-lightbox-ocr")) return;
     event.preventDefault();
     zoomAt(event.deltaY < 0 ? 1.15 : 1 / 1.15, event.clientX, event.clientY);
   };

@@ -201,7 +201,9 @@ console.log("\n大纲提取\n");
   check(!heads.includes("代码块里"), "围栏代码块里的 # 不是标题");
   check(!heads.includes("波浪栏里"), "~~~ 围栏同样跳过");
   check(heads.includes("1:Setext 一级"), "setext 一级（===）");
-  check(heads.includes("2:Setext 二级"), "setext 二级（---）");
+  // 0.39.31 用户反馈「分割线上面一行文字会渲染成标题」：`---` 一律当分隔线，
+  // 不再产出 setext 二级目录项（与 livePreview 的渲染口径一致）
+  check(!heads.includes("Setext 二级"), "setext 二级（---）按分隔线处理");
   // 列表项后面跟 ---：列表行不是 setext 标题
   check(!heads.includes("列表项"), "列表行不因后面的 --- 变成标题");
 

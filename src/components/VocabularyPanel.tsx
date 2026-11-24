@@ -163,14 +163,17 @@ interface LookupState {
 }
 
 /** 快速复习的进行态（0.27 规范 §八：先英文 → 主动看释义 → 认识/不认识 → 进度）。
-    answered：本卡是否已作答——「不认识」作答后翻出释义停留，等「下一个」再推进
-    （0.34.6 用户反馈：直接跳下一个等于没学）；认识仍直接推进。 */
+    answered：本卡是否已作答——两种作答都翻出释义停留，等「下一个」再推进
+    （0.34.6 用户反馈「不认识」直接跳等于没学；0.39.31 用户反馈「已认识」也
+    要先显示释义、点下一个才进入下一个）。
+    knownIndexes：已记为认识的卡下标——回退重看再点一次「认识」不重复计数。 */
 interface ReviewState {
   queue: VocabEntry[];
   index: number;
   revealed: boolean;
   knownCount: number;
   answered: "known" | "unknown" | null;
+  knownIndexes: number[];
 }
 
 const LOOKUP_IDLE: LookupState = { status: "idle", result: null, manualMeaning: "", manualOpen: false };
@@ -583,24 +586,28 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
       showToast("没有待学习的单词");
       return;
     }
-    setReview({ queue, index: 0, revealed: false, knownCount: 0, answered: null });
+    setReview({ queue, index: 0, revealed: false, knownCount: 0, answered: null, knownIndexes: [] });
   }, [entries, showToast]);
 
-  /** 复习作答：认识 → 落为已掌握并推进；不认识 → 翻出释义停留在本卡（0.34.6
-      用户反馈「点不认识直接跳下一个」——正是不认识的词才需要看释义），用户点
-      「下一个」才推进队列，到尾进完成态。 */
+  /** 复习作答：认识 → 记为已掌握并**翻出释义停留**（0.39.31 用户反馈「点击
+      已认识不要直接跳转到下一个，而是要显示释义，用户点击下一个后才进入下一个」）；
+      不认识 → 翻出释义停留（0.34.6 同款语义）。两种作答都由「下一个」推进队列，
+      到尾进完成态。 */
   const reviewAnswer = useCallback(
     (known: boolean) => {
       if (!review || review.index >= review.queue.length) return;
       const entry = review.queue[review.index];
       if (known) {
         void mutate((content) => setVocabLearned(content, entry.word, true).content);
+        const alreadyCounted = review.knownIndexes.includes(review.index);
         setReview({
           ...review,
-          index: review.index + 1,
-          revealed: false,
-          answered: null,
-          knownCount: review.knownCount + 1,
+          answered: "known",
+          revealed: true,
+          knownCount: alreadyCounted ? review.knownCount : review.knownCount + 1,
+          knownIndexes: alreadyCounted
+            ? review.knownIndexes
+            : [...review.knownIndexes, review.index],
         });
         return;
       }
@@ -613,6 +620,13 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
   const reviewNext = useCallback(() => {
     if (!review) return;
     setReview({ ...review, index: review.index + 1, revealed: false, answered: null });
+  }, [review]);
+
+  /** 回到上一张（0.39.31 用户反馈「这个弹窗添加一个上一个选项」）：重新作答，
+      已记为认识的卡不重复计数（knownIndexes 去重）。 */
+  const reviewPrev = useCallback(() => {
+    if (!review || review.index <= 0) return;
+    setReview({ ...review, index: review.index - 1, revealed: false, answered: null });
   }, [review]);
 
   if (!vault) {
@@ -1036,6 +1050,7 @@ export default function VocabularyPanel({ vault, revision, version, notice, back
           onReveal={() => setReview((prev) => (prev ? { ...prev, revealed: true } : prev))}
           onAnswer={reviewAnswer}
           onNext={reviewNext}
+          onPrev={reviewPrev}
           onClose={() => setReview(null)}
           onRestart={startReview}
         />
@@ -1079,6 +1094,7 @@ function VocabReview({
   onReveal,
   onAnswer,
   onNext,
+  onPrev,
   onClose,
   onRestart,
 }: {
@@ -1086,6 +1102,7 @@ function VocabReview({
   onReveal: () => void;
   onAnswer: (known: boolean) => void;
   onNext: () => void;
+  onPrev: () => void;
   onClose: () => void;
   onRestart: () => void;
 }) {
@@ -1160,10 +1177,20 @@ function VocabReview({
               </button>
             )}
             <div className="vocab-detail-actions">
-              {review.answered === "unknown" ? (
-                // 0.34.6 用户反馈：不认识 → 翻出释义停留，看完点「下一个」才推进
+              {/* 0.39.31 用户反馈「添加一个上一个选项」：第 2 张起常驻上一个 */}
+              {review.index > 0 && (
+                <button type="button" className="vocab-detail-act" onClick={onPrev}>
+                  上一个
+                </button>
+              )}
+              {review.answered !== null ? (
+                // 0.34.6 / 0.39.31：不认识与认识都先翻出释义停留，看完点「下一个」才推进
                 <>
-                  <span className="vocab-review-mark">已记为不认识 · 看完释义点下一个</span>
+                  <span className="vocab-review-mark">
+                    {review.answered === "known"
+                      ? "已记为认识 · 看完释义点下一个"
+                      : "已记为不认识 · 看完释义点下一个"}
+                  </span>
                   <button type="button" className="vocab-detail-act vocab-detail-primary" onClick={onNext}>
                     下一个
                   </button>

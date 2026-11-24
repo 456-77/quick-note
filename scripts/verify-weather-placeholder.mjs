@@ -5,9 +5,11 @@
 
 import {
   WEATHER_PLACEHOLDER_LINE,
+  WEATHER_UNAVAILABLE_LINE,
   insertWeatherPlaceholder,
   weatherPlaceholderRange,
   replaceWeatherPlaceholder,
+  settleWeatherPlaceholder,
   removeWeatherPlaceholder,
 } from "../src/lib/weather.ts";
 
@@ -68,6 +70,32 @@ check(
   replaceWeatherPlaceholder("# 标题\n正文", "☀️ 晴") === null,
   "替换：没有占位行返回 null（用户动过就别碰）",
 );
+
+// 0.39.31：默认模板只有 `# 标题\n`——天气行后面补足空行，标签位第 3 行、正文第 4 行
+check(
+  insertWeatherPlaceholder("# 标题\n") === `# 标题\n${WEATHER_PLACEHOLDER_LINE}\n\n`,
+  "占位行：默认模板补出标签位（第 3 行）",
+);
+check(
+  insertWeatherPlaceholder("# 标题") === `# 标题\n${WEATHER_PLACEHOLDER_LINE}\n\n`,
+  "占位行：无尾随换行同样补足两行",
+);
+check(
+  insertWeatherPlaceholder("# 标题\n正文") === `# 标题\n${WEATHER_PLACEHOLDER_LINE}\n\n正文`,
+  "占位行：模板正文被顶到第 4 行",
+);
+
+// 0.39.31：抓取失败换成常驻「天气未获取」，不再删行
+check(
+  settleWeatherPlaceholder(`# 标题\n${WEATHER_PLACEHOLDER_LINE}\n\n`, null) ===
+    `# 标题\n${WEATHER_UNAVAILABLE_LINE}\n\n`,
+  "收尾：失败保留行（改成天气未获取）",
+);
+check(
+  settleWeatherPlaceholder(`# 标题\n${WEATHER_PLACEHOLDER_LINE}\n`, "☀️ 晴") === "# 标题\n> ☀️ 晴\n",
+  "收尾：成功原位换真天气",
+);
+check(settleWeatherPlaceholder("# 标题\n正文", null) === null, "收尾：没有占位行返回 null");
 
 // 删除
 {
