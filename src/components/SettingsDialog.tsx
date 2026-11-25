@@ -22,7 +22,7 @@ import { createPortal } from "react-dom";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { bgFilterCss } from "../lib/background";
 import { DAILY_CONFIG_FILE } from "../lib/daily";
-import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, autostartIsEnabled, autostartEnable, autostartDisable, type AppDataPaths, type DirStat } from "../lib/api";
+import { clearWebviewCache, pickDirectory, listSubdirs, listVaults, webviewCacheStat, openLocalPath, autostartIsEnabled, autostartEnable, autostartDisable, type AppDataPaths, type DirStat } from "../lib/api";
 import { bgSettingsFor, getSettings, DEFAULTS, type BgSettings, type Settings } from "../lib/settings";
 import { aiTestConnection } from "../lib/aiVision";
 import type { DailyController } from "../lib/useDaily";
@@ -1070,6 +1070,22 @@ export default function SettingsDialog({
               checked={daily.settings.autoDetectCodeLang}
               onChange={(event) =>
                 daily.updateSettings({ autoDetectCodeLang: event.target.checked })
+              }
+            />
+          </Row>
+
+          <Group>编辑</Group>
+          <Row
+            label="代码块自动换行"
+            desc="代码块默认折行显示；关闭后超宽代码按原样单行排布，用底部滑杆左右滑动。"
+            tip="0.39.32 用户需求：关闭后编辑器出现横向滚动条（只在代码块超宽时需要）。普通正文始终折行，不受影响。"
+            keywords="代码块 换行 自动换行 wrap 滑杆 横向滚动"
+          >
+            <input
+              type="checkbox"
+              checked={settings.codeBlockWrap}
+              onChange={(event) =>
+                saveWithFlash({ codeBlockWrap: event.target.checked })
               }
             />
           </Row>
@@ -2345,6 +2361,21 @@ export default function SettingsDialog({
             />
           </Row>
           <Row
+            label="识图系统提示词"
+            desc="「AI 识别」发给模型的 system 消息，可规定输出格式（如只输出表格）。留空用内置默认。"
+            tip="0.39.32 用户需求：设置后图片仍按框选范围识别，用户消息只保留一句中性任务描述。"
+            keywords="AI 识别 系统提示词 system prompt OCR 识图"
+          >
+            <textarea
+              className="settings-text"
+              style={{ minHeight: 64 }}
+              value={settings.aiVisionSystemPrompt}
+              placeholder="留空 = 内置默认（逐字转录可见文字，看不清不臆测）"
+              spellCheck={false}
+              onChange={(event) => saveWithFlash({ aiVisionSystemPrompt: event.target.value })}
+            />
+          </Row>
+          <Row
             label="附加请求头"
             desc="部分网关要求的自定义头，每行一条 Key: Value（可留空）。"
             tip="0.39.24：例如 opencode 网关要求 x-opencode-session: <任意会话串>——缺了会报 MissingSessionID。普通 OpenAI 兼容服务留空即可。"
@@ -2446,7 +2477,7 @@ export default function SettingsDialog({
               title="在系统资源管理器中打开数据目录"
               onClick={() => {
                 const dir = dataPaths?.webview_data_dir;
-                if (dir) void import("@tauri-apps/plugin-opener").then(({ openPath }) => openPath(dir));
+                if (dir) void openLocalPath(dir);
               }}
             >
               打开目录

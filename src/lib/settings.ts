@@ -185,6 +185,18 @@ export interface Settings {
    *  `x-opencode-session: <任意会话串>`）。每行一条 `Key: Value`。 */
   aiExtraHeaders: string;
   /**
+   * AI 识图的系统提示词（0.39.32 用户需求「对于 ai 识别文本功能，添加系统提示词
+   * 设置」）：作为 system 消息发给模型，可规定输出格式（如「只输出表格」）。
+   * 留空 = 用 aiVision.ts 里的内置默认提示词。
+   */
+  aiVisionSystemPrompt: string;
+  /**
+   * 代码块自动换行（0.39.32 用户需求「对于代码块，添加一个选项切换自动换行，
+   * 默认是自动换行；当不是自动换行时，底部有滑杆直接左右滑动展示内容」）。
+   * true=折行（历史行为）；false=不折行，代码块超宽时横向滚动。
+   */
+  codeBlockWrap: boolean;
+  /**
    * 最近文件是否包含其他仓库（0.39.23 用户反馈「最近的文件为什么会显示别的仓库
    * 文件」）：默认只显示当前仓库；开启后「最近打开」模式下追加其他仓库的条目
    * （带仓库名标识，回车会切换到那个仓库打开）。
@@ -284,6 +296,8 @@ export const DEFAULTS: Settings = {
   aiApiKey: "",
   aiModel: "",
   aiExtraHeaders: "",
+  aiVisionSystemPrompt: "",
+  codeBlockWrap: true,
   mobileFontScale: 1,
   updateChannel: "stable",
 };

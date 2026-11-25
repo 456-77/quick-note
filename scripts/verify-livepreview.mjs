@@ -23,7 +23,7 @@ import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { buildLivePreviewDecorations, computeBlockDecorations } from "../src/lib/livePreview.ts";
 import { prepareEmbedMarkdown, sliceSection, splitEmbedTarget } from "../src/lib/embed.ts";
 import { externalUrlAt } from "../src/lib/markdownExtras.ts";
-import { resolveResource, resolveWikiTarget } from "../src/lib/paths.ts";
+import { localAbsolutePath, resolveResource, resolveWikiTarget } from "../src/lib/paths.ts";
 
 const file = process.argv[2] ?? "test-vault/features.md";
 const doc = readFileSync(file, "utf8");
@@ -392,6 +392,45 @@ check(
   JSON.stringify(overlapping.map((d) => d.text)),
 );
 
+// 0.39.32 用户反馈「表格头第一个为空时，渲染结果有问题」：lezer 不给空单元格
+// 产出 TableCell 节点，按 push 顺序排会整体左移一列——按管道计数落位后，
+// 空首格/空中间格都要留出空数组，后续列不得左移。
+{
+  const collectIn = (docText) => {
+    const state = EditorState.create({
+      doc: docText,
+      // 光标必须在表格外，否则 touched() 判定「在表格内」会退回源码不给 widget
+      selection: { anchor: docText.length },
+      extensions: [markdown({ base: markdownLanguage })],
+    });
+    const items = [];
+    computeBlockDecorations(state).between(0, docText.length, (from, to, value) => {
+      items.push({ from, to, widget: value.spec?.widget, widgetName: value.spec?.widget?.constructor.name });
+    });
+    return items.find((d) => d.widgetName === "TableWidget");
+  };
+  const cell = (t, row, col) => (t?.widget?.rows?.[row]?.[col] ?? []).map((r) => r.text).join("");
+
+  const emptyFirst = collectIn(
+    "| | fileOcr | fileAIGC |\n| --- | --- | --- |\n| 通道 | hzero | AIP |\n",
+  );
+  check(cell(emptyFirst, 0, 0) === "", "空首列表头：第一格留空", JSON.stringify(cell(emptyFirst, 0, 0)));
+  check(cell(emptyFirst, 0, 1) === "fileOcr", "空首列表头：第二格不左移", JSON.stringify(cell(emptyFirst, 0, 1)));
+  check(cell(emptyFirst, 0, 2) === "fileAIGC", "空首列表头：第三格不左移", JSON.stringify(cell(emptyFirst, 0, 2)));
+  check(cell(emptyFirst, 1, 0) === "通道", "空首列表头：数据行首格正常");
+  check(
+    emptyFirst?.widget?.rawRows?.[0]?.[1] === "fileOcr" &&
+      emptyFirst?.widget?.rawRows?.[0]?.[0] === undefined,
+    "空首列表头：rawRows 同样按列落位（就地编辑写回不串列）",
+    JSON.stringify(emptyFirst?.widget?.rawRows?.[0]),
+  );
+
+  const emptyMiddle = collectIn("| a | b | c |\n| --- | --- | --- |\n| 1 | | 3 |\n");
+  check(cell(emptyMiddle, 1, 0) === "1", "空中间格：左列不右移");
+  check(cell(emptyMiddle, 1, 1) === "", "空中间格：中间留空");
+  check(cell(emptyMiddle, 1, 2) === "3", "空中间格：右列不左移", JSON.stringify(cell(emptyMiddle, 1, 2)));
+}
+
 // ============================================================ mermaid 图
 console.log("\n场景 F：mermaid 图（与表格同为块级替换）\n");
 
@@ -470,6 +509,20 @@ check(
   "`..` 不允许越过仓库根",
   at("../../../../../../Windows/System32/x.png").local,
 );
+
+// 0.39.32 本地文件链接：绝对路径识别（D:\ / D:/ / UNC / file://），
+// 普通相对路径与 / 开头（仓库根）必须返回 null，语义不能互相吞
+check(localAbsolutePath("D:\\hand\\a\\b.java") === "D:\\hand\\a\\b.java", "盘符 + 反斜杠识别为本地绝对路径");
+check(localAbsolutePath("D:/hand/a/b.java") === "D:/hand/a/b.java", "盘符 + 正斜杠识别为本地绝对路径");
+check(localAbsolutePath("\\\\srv\\share\\a.png") === "\\\\srv\\share\\a.png", "UNC 路径识别为本地绝对路径");
+check(localAbsolutePath("file:///D:/hand/a.png") === "D:/hand/a.png", "file:/// 盘符路径剥掉 scheme 与根斜杠");
+check(
+  localAbsolutePath("file:///storage/emulated/0/a.png") === "/storage/emulated/0/a.png",
+  "file:/// POSIX 路径保留前导斜杠（安卓）",
+);
+check(localAbsolutePath("my%20file.pdf") === null, "相对路径不是绝对路径");
+check(localAbsolutePath("/attachments/a.png") === null, "`/` 开头按仓库根解析，不当作 OS 绝对路径");
+check(localAbsolutePath("https://example.com/a") === null, "http 地址不是本地路径");
 
 // ============================================================ Obsidian wiki 语法
 console.log("\n场景 H：Obsidian wiki 语法\n");
@@ -857,6 +910,54 @@ console.log("\n场景 I：0.35.1 链接修复——非空选区保持源码 + �
     check(
       hidesInDoc(mkAt(aliasSlot, aliasSlot.indexOf("|")), aliasSlot, "[[|别名]]").length === 0,
       "光标停在 [[| 的目标槽位：源码态（别名流打目标不翻渲染）",
+    );
+  }
+
+  // 0.39.32 本地文件链接：`] (D:\…)` 的空格也要放宽吸收，绝对路径原样带进
+  // data-md-link（App 交给系统默认程序打开）——用户笔记的真实写法
+  {
+    const doc3 = "看 [X.java:414](D:\\hand\\a\\b.java) 与 [Y] (D:\\hand\\c\\d.java) 两处";
+    const items3 = [];
+    const state3 = EditorState.create({
+      doc: doc3,
+      selection: { anchor: doc3.length },
+      extensions: [markdown({ base: markdownLanguage })],
+    });
+    buildLivePreviewDecorations(state3, 0, doc3.length).between(0, doc3.length, (from, to, value) => {
+      const spec = value.spec ?? {};
+      items3.push({
+        from,
+        to,
+        kind: from === to ? "line" : spec.widget !== undefined ? "widget" : spec.class ? "mark" : "hide",
+        cls: spec.class,
+        attrs: spec.attributes,
+        text: doc3.slice(from, to),
+      });
+    });
+    const linkOf = (needle) => {
+      const at = doc3.indexOf(needle);
+      return items3.find(
+        (d) => d.kind === "mark" && d.cls?.includes("cm-lp-link") && d.from >= at && d.to <= at + needle.length,
+      );
+    };
+    const hidesOf = (needle) => {
+      const at = doc3.indexOf(needle);
+      return items3.filter((d) => d.kind === "hide" && d.from >= at && d.to <= at + needle.length);
+    };
+    check(
+      linkOf("[X.java:414](D:\\hand\\a\\b.java)")?.attrs?.["data-md-link"] === "D:\\hand\\a\\b.java",
+      "绝对本地路径链接：data-md-link 保留盘符路径",
+      JSON.stringify(linkOf("[X.java:414](D:\\hand\\a\\b.java)")?.attrs),
+    );
+    check(
+      linkOf("[Y] (D:\\hand\\c\\d.java)")?.attrs?.["data-md-link"] === "D:\\hand\\c\\d.java",
+      "`] (路径)` 空格写法被放宽吸收并携带目标",
+      JSON.stringify(linkOf("[Y] (D:\\hand\\c\\d.java)")?.attrs),
+    );
+    check(
+      hidesOf("[Y] (D:\\hand\\c\\d.java)").length === 2,
+      "`] (路径)`：`[` 与 `] (路径)` 都隐藏（空格一并藏掉）",
+      JSON.stringify(hidesOf("[Y] (D:\\hand\\c\\d.java)")),
     );
   }
 }

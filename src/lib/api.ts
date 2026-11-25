@@ -211,6 +211,15 @@ export const moveEntry = (vault: string, path: string, destDir: string) =>
 /** 读取系统剪贴板里的文件/目录绝对路径列表（资源管理器"复制文件"语义）；没有则空数组。 */
 export const readClipboardFilePaths = () => invoke<string[]>("read_clipboard_file_paths");
 
+/**
+ * 用系统默认程序打开本地路径（0.39.32 本地文件链接）。
+ *
+ * **不要用 `@tauri-apps/plugin-opener` 的 openPath**：那条通道受 capability 的
+ * opener scope 约束，本项目没配 allow 路径，实测一律 `Not allowed to open path`。
+ * 这个命令走 Rust 侧 `OpenerExt`，桌面/安卓都能用。
+ */
+export const openLocalPath = (path: string) => invoke<void>("open_local_path", { path });
+
 export interface CopyExternalResult {
   /** 成功拷入的仓库相对路径。 */
   copied: string[];

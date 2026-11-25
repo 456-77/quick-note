@@ -909,17 +909,6 @@ export function codeAtCursor(state: EditorState): { text: string; kind: "inline"
 // ---------------------------------------------------------------- 三击选行不吞换行（0.39.29）
 
 /**
- * pos 是否落在围栏代码块（FencedCode）里（三击选行钳制的门槛；普通文本保持
- * CM6 原生行为不变）。
- */
-export function inFencedCodeAt(state: EditorState, pos: number): boolean {
-  for (let node: SyntaxNode | null = syntaxTree(state).resolveInner(pos, -1); node; node = node.parent) {
-    if (node.name === "FencedCode") return true;
-  }
-  return false;
-}
-
-/**
  * 三击选行的「吞换行」钳制（0.39.29 用户反馈「双击代码块中的行，选中整行
  * 内容，发现会多出一个换行，这就是导致光标移动到下面一行开头位置的原因」）。
  *
@@ -943,14 +932,23 @@ export function clampLineBreakSelection(
   return { from, to: line.to };
 }
 
+/** 三击不接管的目标：表格单元格（contenteditable 自管选区）、浮层与代码块头部按钮。 */
+const TRIPLE_CLICK_SKIP = ".cm-lp-tablewrap, .cm-lp-mermaid, .cm-tooltip, .cm-lp-codehead";
+
 /**
- * 编辑器入口：三击（多击）在围栏代码块里时，选区取整行但**不含**行尾换行。
- * 返回 true 表示已接管（拦住 CM6 原生的 mouseSelection，它会把换行选进去）。
+ * 编辑器入口：三击（多击）选中整行时**不含行尾换行**。
+ *
+ * 0.39.32 用户反馈「选中序号内容整行时，光标会跳转到下一行开头位置」——
+ * 0.39.29 的同款钳制只挂了围栏代码块，普通正文/列表行同样会吞掉行尾换行
+ * 让光标落到下一行行首。这里去掉围栏门槛，全文档接管；表格单元格/浮层里
+ * 有各自的交互宿主，不接管。返回 true 表示已接管（拦住 CM6 原生 mouseSelection）。
  */
-export function codeBlockLineClick(view: EditorView, event: MouseEvent): boolean {
+export function lineTripleClick(view: EditorView, event: MouseEvent): boolean {
   if (event.button !== 0 || event.detail < 3) return false;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest?.(TRIPLE_CLICK_SKIP)) return false;
   const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
-  if (pos == null || !inFencedCodeAt(view.state, pos)) return false;
+  if (pos == null) return false;
   const line = view.state.doc.lineAt(pos);
   event.preventDefault();
   view.dispatch({

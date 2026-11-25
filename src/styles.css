@@ -2792,6 +2792,28 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   line-height: 1.65;
 }
 
+/* ------------------------------------------------- 代码块自动换行开关（0.39.32）
+   设置 → 常规 → 代码块自动换行。默认折行；关闭后代码块行按原样单行排布
+   （white-space:pre），由 .cm-scroller 提供横向滚动（编辑器根的 qn-code-nowrap
+   类由 livePreview.ts 的 syncCodeWrapClass 同步）。普通正文始终折行。
+
+   width:max-content 是必须的：行盒跟着内容变宽，代码块底色才会铺到横向
+   滚动出去的部分；min-width:100% 保证短行仍铺满整行宽度。 */
+.editor-host .cm-line.cm-lp-codewrap-off {
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  width: max-content;
+  min-width: 100%;
+}
+
+/* 特异性必须压过 `.editor-host .cm-scroller { overflow-x: hidden }`（0,2,0）——
+   「硬禁页面横滚」仍然有效：只有显式关掉代码块换行、存在超宽代码块时才出现
+   横向滑杆。 */
+.editor-host .cm-editor.qn-code-nowrap .cm-scroller {
+  overflow-x: auto;
+}
+
 /* ------------------------------------------------- log 块阅读优化 */
 /*
  * 逐行装饰只允许「不影响布局」的样式（背景/颜色），margin/圆角/描边一律禁止——

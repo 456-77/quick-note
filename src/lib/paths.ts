@@ -126,6 +126,29 @@ function normalizeInsideVault(base: string[], target: string): string {
   return parts.join("/");
 }
 
+/**
+ * 本地绝对路径识别（0.39.32 用户反馈「本地链接文件为什么不支持打开」）。
+ *
+ * 只认三种明确形态：Windows 盘符（`D:\a` / `D:/a`）、UNC（`\\server\share`）、
+ * `file://` URL——`/` 开头在 Markdown 里按**仓库根**解析（见 resolveResource），
+ * 不能当 OS 绝对路径。返回解码后的路径串（file:// 去掉 scheme），不是绝对路径
+ * 返回 null。Open 动作由调用方交给系统默认程序。
+ */
+export function localAbsolutePath(url: string): string | null {
+  const raw = safeDecode(url.trim());
+  if (/^file:\/\//i.test(raw)) {
+    let rest = raw.replace(/^file:\/\//i, "");
+    // file://localhost/C:/x（少见）→ C:/x
+    if (/^localhost\//i.test(rest)) rest = rest.slice("localhost/".length);
+    // file:///C:/x → /C:/x：盘符前的根斜杠要剥掉；POSIX 路径（/storage/…）保留
+    if (/^\/[a-zA-Z]:[\\/]/.test(rest)) rest = rest.slice(1);
+    return rest === "" ? null : rest;
+  }
+  if (/^[a-zA-Z]:[\\/]/.test(raw)) return raw;
+  if (/^\\\\[^\\]+\\/.test(raw)) return raw;
+  return null;
+}
+
 /** 仓库相对路径 → 绝对路径（纯字符串）。 */
 export function absoluteInVault(vaultPath: string, relative: string): string {
   const normalized = vaultPath.replace(/\\/g, "/");

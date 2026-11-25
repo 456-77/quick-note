@@ -25,7 +25,7 @@ import { ddlHover } from "./ddlHover";
 import { ddlKnownMarks } from "./ddlMark";
 import { customSearchPanel } from "./searchPanel";
 import { attachmentPaste, smartPaste, type AttachmentOptions, type CodePasteOptions } from "./paste";
-import { codeAtCursor, codeBlockLineClick, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList, toggleWikiLink } from "./codeEdit";
+import { codeAtCursor, lineTripleClick, toggleBold, toggleBulletList, toggleCodeBlock, editorShiftTab, editorTab, toggleHeading, toggleInlineCode, toggleNumberList, toggleTaskList, toggleWikiLink } from "./codeEdit";
 import { markdownPairAction } from "./autoPairs";
 import { bindingFor, comboOf, comboOfCode, isCapturing, isHotkeyEnabled } from "./hotkeys";
 import { syntaxTheme } from "./syntaxTheme";
@@ -309,10 +309,10 @@ export function createEditorState(
       Prec.highest(keymap.of([{ key: "Enter", run: listItemEnter }])),
       linkClickHandler(),
       altClickHandler(),
-      // 三击选行不吞行尾换行（0.39.29 用户反馈；仅围栏代码块内接管，见
-      // codeEdit.ts clampLineBreakSelection 的来龙去脉）
+      // 三击选行不吞行尾换行（0.39.29 代码块 → 0.39.32 全文档接管，见
+      // codeEdit.ts lineTripleClick 的来龙去脉）
       EditorView.domEventHandlers({
-        mousedown: (event, view) => codeBlockLineClick(view, event),
+        mousedown: (event, view) => lineTripleClick(view, event),
       }),
       // 表名悬浮预览（0.31）：光标停在已收录的表名上显示建表语句
       ddlHover(),

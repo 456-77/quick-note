@@ -141,6 +141,20 @@ fn first_existing_path(paths: Vec<String>) -> Option<String> {
         .find(|p| std::path::Path::new(p).is_file())
 }
 
+/// 用系统默认程序打开本地路径（0.39.32 用户反馈「本地链接文件为什么不支持打开」）。
+///
+/// 前端直接调 `@tauri-apps/plugin-opener` 的 openPath 会走 capability 的 opener
+/// scope——本项目没有配置任何 allow 路径，实测一律 `Not allowed to open path`
+/// （连既有的「打开附件/导出目录」都受影响）。这里改走 plugin 的 Rust API：
+/// 由应用自己的命令发起，不受前端 ACL scope 限制；移动端同样是默认程序打开。
+#[tauri::command(async)]
+async fn open_local_path(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_path(path.clone(), None::<&str>)
+        .map_err(|err| format!("打开文件失败：{err}"))
+}
+
 /// 移动端默认仓库目录：app 私有数据目录下的 `vault`（不存在则创建）。
 ///
 /// Android 的分区存储（Scoped Storage）下没有稳定的「用户自选目录」语义，仓库固定
@@ -424,6 +438,7 @@ pub fn run() {
             write_text_file,
             read_binary_file,
             first_existing_path,
+            open_local_path,
             export_pdf_via_browser,
             default_vault_dir,
             vault_home::vault_home_get,

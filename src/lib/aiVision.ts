@@ -136,24 +136,35 @@ export async function aiTestConnection(cfg: AiVisionConfig): Promise<string> {
 /**
  * 对图片做 AI 识别，返回模型输出的文本。失败抛错（调用方展示错误文案）。
  * `mime` 用图片真实类型（裁剪后统一是 PNG）。
+ *
+ * 0.39.32 用户需求「对于 ai 识别文本功能，添加系统提示词设置」：设置里填了
+ * 系统提示词就以 system 消息发送（可规定输出格式），用户消息只剩一句中性的
+ * 任务描述；没填维持内置默认提示词。
  */
 export async function aiRecognizeImage(base64: string, mime = "image/png"): Promise<string> {
   const cfg = aiConfig();
   if (!aiConfigured()) {
     throw new Error("先在 设置 → AI 配置模型供应商（Base URL / API Key / 模型名）");
   }
+  const systemPrompt = getSettings().aiVisionSystemPrompt.trim();
+  const userContent: Array<Record<string, unknown>> = [
+    {
+      type: "text",
+      text: systemPrompt === "" ? AI_VISION_PROMPT : "请按系统提示处理这张图片。",
+    },
+    { type: "image_url", image_url: { url: `data:${mime};base64,${base64}` } },
+  ];
+  const messages: Array<Record<string, unknown>> =
+    systemPrompt === ""
+      ? [{ role: "user", content: userContent }]
+      : [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ];
   const parsed = await sendChat(cfg, {
     model: cfg.model,
     temperature: 0.1,
-    messages: [
-      {
-        role: "user",
-        content: [
-          { type: "text", text: AI_VISION_PROMPT },
-          { type: "image_url", image_url: { url: `data:${mime};base64,${base64}` } },
-        ],
-      },
-    ],
+    messages,
   });
   const text = contentOf(parsed);
   if (text) return text;

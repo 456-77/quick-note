@@ -60,6 +60,7 @@ import {
   EMPTY_CONTEXT,
   IMAGE_EXT,
   livePreviewContext,
+  localAbsolutePath,
   resolveResource,
   resolveResourceRelative,
   resolveWikiRelative,
@@ -77,6 +78,9 @@ interface TextRun {
   strike: boolean;
   code: boolean;
   link: boolean;
+  /** 链接目标（0.39.32）：表格单元格里的链接要能点开——渲染成 span 时写进
+   *  data-md-link，App 的 document 级委托据此跟随；非链接段没有这个字段。 */
+  href?: string;
   /** `==高亮==`：GFM 不认识，语法树里没有节点，靠 splitHighlight 切出来。 */
   highlight: boolean;
 }
@@ -103,6 +107,7 @@ function flattenInline(
   state: EditorState,
   parent: SyntaxNode,
   flags: Omit<TextRun, "text">,
+  resources?: LivePreviewContext,
 ): TextRun[] {
   const doc = state.doc;
   const runs: TextRun[] = [];
@@ -123,41 +128,75 @@ function flattenInline(
     }
     if (child.from > pos) push(doc.sliceString(pos, child.from));
 
+    let consumedTo = child.to;
     switch (child.name) {
       case "StrongEmphasis":
-        runs.push(...flattenInline(state, child, { ...flags, bold: true }));
+        runs.push(...flattenInline(state, child, { ...flags, bold: true }, resources));
         break;
       case "Emphasis":
-        runs.push(...flattenInline(state, child, { ...flags, italic: true }));
+        runs.push(...flattenInline(state, child, { ...flags, italic: true }, resources));
         break;
       case "Strikethrough":
-        runs.push(...flattenInline(state, child, { ...flags, strike: true }));
+        runs.push(...flattenInline(state, child, { ...flags, strike: true }, resources));
         break;
       case "InlineCode":
-        runs.push(...flattenInline(state, child, { ...flags, code: true }));
+        runs.push(...flattenInline(state, child, { ...flags, code: true }, resources));
         break;
       case "Link": {
-        // 链接只取可见文字，丢掉 `](url)`。
+        // 链接只取可见文字，丢掉 `](url)`；目标单独存 href，渲染时写进
+        // data-md-link 供 App 的点击委托跟随（0.39.32 用户反馈「本地链接文件
+        // 为什么不支持打开」——表格单元格里的链接此前完全没有目标信息）。
         const open = child.firstChild;
         const close = open?.nextSibling;
         const text =
           open && close
             ? doc.sliceString(open.to, close.from)
             : doc.sliceString(child.from, child.to);
-        runs.push({ text, ...flags, link: true });
+        let url = "";
+        const urlNode = child.getChild("URL");
+        if (urlNode) {
+          url = doc.sliceString(urlNode.from, urlNode.to).trim();
+        } else {
+          // 0.35.1 同款宽松吸收（0.39.32 补空格）：`[文字] (D:\a\b.java)` 这种
+          // `]` 与 `(` 之间带空格的写法，lezer 只把 `[文字]` 解析成无 URL 的
+          // Link，目标以字面文本留在单元格尾巴上——吸收进 href 并一起吞掉。
+          const tail = doc.sliceString(child.to, parent.to);
+          const loose = /^[ \t]*\(([^()\n]+)\)/.exec(tail);
+          if (loose) {
+            url = loose[1].trim();
+            consumedTo = child.to + loose[0].length;
+          }
+        }
+        if (url.length > 1 && url.startsWith("<") && url.endsWith(">")) {
+          url = url.slice(1, -1);
+        }
+        runs.push({ text, ...flags, link: true, href: url === "" ? undefined : linkHrefOf(resources, url) });
         break;
       }
       default:
-        if (child.firstChild) runs.push(...flattenInline(state, child, flags));
+        if (child.firstChild) runs.push(...flattenInline(state, child, flags, resources));
         else push(doc.sliceString(child.from, child.to));
     }
-    pos = child.to;
+    pos = Math.max(child.to, consumedTo);
   }
 
   if (pos < parent.to) push(doc.sliceString(pos, parent.to));
   // GFM 不认识 `==`：高亮段在语法树里只是普通文本，按正则切开标上 flag
   // （0.31 表格单元格高亮渲染；code/link 段不切，与正文排除口径一致）。
   return expandHighlights(runs);
+}
+
+/**
+ * 链接目标 → 点击跟随用的地址（0.39.32）。
+ *
+ * 绝对本地路径（盘符/UNC/file://）原样保留——交给系统默认程序打开；
+ * 其余按仓库相对路径解析（与正文链接装饰同一条 resolveWikiRelative），
+ * 解析不出来就保留原文（由 App 决定错误提示）。
+ */
+function linkHrefOf(resources: LivePreviewContext | undefined, url: string): string {
+  const abs = localAbsolutePath(url);
+  if (abs) return abs;
+  return (resources ? resolveWikiRelative(resources, url) : null) ?? url;
 }
 
 /**
@@ -200,6 +239,12 @@ function appendRuns(target: HTMLElement, runs: TextRun[]): void {
       const link = document.createElement("span");
       link.className = "cm-lp-link";
       link.textContent = run.text;
+      // 0.39.32：表格单元格里的链接也要能点开——目标写进属性，App 的
+      // document 捕获委托（[data-md-link]）统一跟随；正文链接走装饰 mark。
+      if (run.href) {
+        link.setAttribute("data-md-link", run.href);
+        link.title = `点击打开：${run.href}`;
+      }
       node = link;
     } else {
       node = document.createTextNode(run.text);
@@ -1640,6 +1685,9 @@ class TableWidget extends WidgetType {
     // mousedown/click，触摸滚动（touch-action）不受影响；鼠标路径走 mousedown
     const swallowPointer = (event: PointerEvent) => {
       if (event.altKey || editable) return;
+      // 0.39.32：链接要能点开——取消 pointerdown 会连合成 mousedown 一起掐掉，
+      // App 的 document 点击委托就永远收不到；链接上放行，其余照旧吞掉。
+      if ((event.target as HTMLElement | null)?.closest?.("[data-md-link]")) return;
       event.preventDefault();
       event.stopPropagation();
     };
@@ -1920,6 +1968,13 @@ function attachCellEvents(view: EditorView, wrap: HTMLElement, cell: HTMLElement
           return;
         }
       }
+      return;
+    }
+    // 0.39.32：链接点击交给 App 的 document 捕获委托打开——这里不抢焦点、
+    // 也不 stopPropagation（让外层 mousedown 继续 preventDefault，CM 不会把
+    // 光标放进表格翻成源码）。单元格其余区域仍是「点击进入编辑」。
+    if ((event.target as HTMLElement | null)?.closest?.("[data-md-link]")) {
+      event.preventDefault();
       return;
     }
     event.stopPropagation();
@@ -2340,17 +2395,36 @@ function refocusAfterCommit(
 }
 
 /** 从 Table 语法节点提取表格内容与对齐方式。 */
-function parseTable(state: EditorState, table: SyntaxNode): ParsedTable {
+function parseTable(
+  state: EditorState,
+  table: SyntaxNode,
+  resources: LivePreviewContext,
+): ParsedTable {
   const rows: TextRun[][][] = [];
   const raw: string[][] = [];
   let align: (null | "left" | "center" | "right")[] = [];
   let delimiterLine = "";
 
+  /**
+   * 单元格列号 = 行首到该单元格之间可见管道的个数 - 1（行首管道不算列）。
+   *
+   * 0.39.32 用户反馈「表格头第一个为空时，渲染结果有问题」：lezer 对**空单元格**
+   * （`| | fileOcr |` 的第一格、`| a | | b |` 的中间格）不产出 TableCell 节点，
+   * 直接按 push 顺序排列会让后续单元格整体左移一列、与分隔行/表体错位。
+   * 按管道计数落位，缺口自然留出空数组——渲染时就是空格子。
+   */
+  const columnOf = (parent: SyntaxNode, child: SyntaxNode): number => {
+    const before = state.doc.sliceString(parent.from, child.from);
+    let pipes = 0;
+    for (let i = 0; i < before.length; i += 1) if (before[i] === "|") pipes += 1;
+    return Math.max(0, pipes - 1);
+  };
+
   const cellsOf = (parent: SyntaxNode): TextRun[][] => {
     const out: TextRun[][] = [];
     for (let child = parent.firstChild; child; child = child.nextSibling) {
       if (child.name === "TableCell") {
-        out.push(flattenInline(state, child, EMPTY_FLAGS));
+        out[columnOf(parent, child)] = flattenInline(state, child, EMPTY_FLAGS, resources);
       }
     }
     return out;
@@ -2360,7 +2434,7 @@ function parseTable(state: EditorState, table: SyntaxNode): ParsedTable {
     const out: string[] = [];
     for (let child = parent.firstChild; child; child = child.nextSibling) {
       if (child.name === "TableCell") {
-        out.push(state.doc.sliceString(child.from, child.to).trim());
+        out[columnOf(parent, child)] = state.doc.sliceString(child.from, child.to).trim();
       }
     }
     return out;
@@ -2962,7 +3036,9 @@ export function buildLivePreviewDecorations(
             // 整体当作链接目标；与 wiki 语法重叠时不接管（那归 wiki 分支）。
             if (!urlNode) {
               const lineTo = doc.lineAt(node.to).to;
-              const loose = /^\(([^()\n]+)\)/.exec(doc.sliceString(node.to, lineTo));
+              // 0.39.32 用户反馈的本地链接写法是 `[文字] (D:\a\b.java)`——`]`
+              // 与 `(` 之间有一个空格。放宽吸收的目标：空格一并藏掉。
+              const loose = /^[ \t]*\(([^()\n]+)\)/.exec(doc.sliceString(node.to, lineTo));
               if (loose && loose[1].trim() && !inWiki(node.to, node.to + loose[0].length)) {
                 url = loose[1].trim();
                 showTo = node.to + loose[0].length;
@@ -2989,7 +3065,7 @@ export function buildLivePreviewDecorations(
                     : Decoration.mark({
                         class: "cm-lp-link",
                         attributes: {
-                          "data-md-link": resolveWikiRelative(resources, url) ?? url,
+                          "data-md-link": linkHrefOf(resources, url),
                         },
                       }).range(open.to, close.from),
                 );
@@ -3205,6 +3281,11 @@ export function buildLivePreviewDecorations(
           }
           const variant = codeBlockVariantOf(infoText);
           const blockClass = `cm-lp-codeblock${variant ? ` cm-lp-codeblock-${variant}` : ""}`;
+          // 0.39.32 用户需求「对于代码块，添加一个选项切换自动换行，默认是自动换行；
+          // 当不是自动换行时，底部有滑杆直接左右滑动」：设置关闭时给代码块行挂
+          // cm-lp-codewrap-off（white-space:pre），横向滚动由 .cm-scroller 提供
+          // （编辑器根的 qn-code-nowrap 类见 livePreviewExtension）。
+          const codeWrapOff = !getSettings().codeBlockWrap;
           // 整块加底色，包含被隐藏的围栏行，视觉上才连续。
           // 圆角只挂首尾行（行级圆角会把多行块拆成一摞小格子），CSS 见
           // .cm-lp-codeblock-first/-last；单行块两者叠加。
@@ -3212,6 +3293,7 @@ export function buildLivePreviewDecorations(
           const lastLine = doc.lineAt(node.to).number;
           for (let n = firstLine; n <= lastLine; n += 1) {
             let cls = blockClass;
+            if (codeWrapOff) cls += " cm-lp-codewrap-off";
             if (n === firstLine) cls += " cm-lp-codeblock-first";
             if (n === lastLine) cls += " cm-lp-codeblock-last";
             marks.push(Decoration.line({ class: cls }).range(doc.line(n).from));
@@ -3447,6 +3529,18 @@ function requestGutterAlign(view: EditorView): void {
 }
 
 /** Live Preview 扩展。装饰只在视口内计算，长文档不会因全量装饰而变慢。 */
+/**
+ * 代码块换行设置 → 编辑器根类（0.39.32 用户需求「代码块自动换行，默认开；
+ * 关闭后底部有滑杆左右滑动」）。
+ *
+ * 行级 white-space:pre 由装饰类 cm-lp-codewrap-off 承担，滚动条的出现条件
+ * （.cm-scroller overflow-x）必须挂在这条根类上——不能靠 :has()，老 WebView
+ * 不一定支持；插件重建/刷新时同步一次即可。
+ */
+function syncCodeWrapClass(view: EditorView): void {
+  view.dom.classList.toggle("qn-code-nowrap", !getSettings().codeBlockWrap);
+}
+
 export function livePreviewExtension() {
   return [
     ViewPlugin.fromClass(
@@ -3455,6 +3549,7 @@ export function livePreviewExtension() {
 
         constructor(view: EditorView) {
           this.decorations = decorationsFor(view);
+          syncCodeWrapClass(view);
         }
 
         update(update: ViewUpdate) {
@@ -3468,6 +3563,7 @@ export function livePreviewExtension() {
             update.state.facet(EditorView.editable);
           if (update.docChanged || update.selectionSet || update.viewportChanged || forced || editableFlipped) {
             this.decorations = decorationsFor(update.view);
+            syncCodeWrapClass(update.view);
           }
         }
       },
@@ -3662,7 +3758,7 @@ export function computeBlockDecorations(state: EditorState): DecorationSet {
       if (node.name !== "Table") return undefined;
       if (touched(node.from, node.to)) return false;
 
-      const parsed = parseTable(state, node.node);
+      const parsed = parseTable(state, node.node, state.facet(livePreviewContext));
       if (parsed.rows.length === 0) return false;
 
       const [from, to] = wholeLines(node.from, node.to);

@@ -66,7 +66,7 @@ import {
   IconTag,
   IconX,
 } from "./components/icons";
-import { allowAssetAnyDir, allowAssetDir, appDataPaths, betaUpdateInstall, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, ensureDirectory, listDirImages, listVaults, localSyncedVaults, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
+import { allowAssetAnyDir, allowAssetDir, appDataPaths, betaUpdateInstall, copyEntry, copyExternalIntoVault, copyPathsToClipboard, createFolder, createNote, defaultVaultDir, deleteEntry, focusVaultWindow, ensureDirectory, listDirImages, listVaults, localSyncedVaults, listEntries, moveEntry, onScreenshotHotkey, onVaultChanged, openedVaults, openLocalPath, pickDirectory, pickVault, readBinary, readClipboardFilePaths, readNote, readNoteOptional, registerOpenVault, renameEntry, openNewWindow, screenshotCapture, searchVault, setCustomDataDir, setScreenshotHotkey, startupFile, startupVault, unregisterOpenVault, vaultHomeGet, watchVault, writeAttachment, writeNote } from "./lib/api";
 import { isMobile } from "./lib/platform";
 import { MobileVaultGate, vaultHomeSkipped } from "./components/MobileVaultGate";
 import type { AppDataPaths, EntryMeta, NoteContent, VaultInfo } from "./lib/api";
@@ -81,7 +81,7 @@ import type { CaptureImage } from "./components/QuickCaptureDialog";
 import { lineEndingLabel } from "./lib/lineEndings";
 import { clearEmbedCache, renderMarkdownToHtml, splitEmbedTarget } from "./lib/embed";
 import { applyMermaidTheme, clearMermaidCache, requestDecorationRefresh, setMermaidNotice, toggleableBlockAt } from "./lib/livePreview";
-import { EMPTY_CONTEXT, absoluteInVault, resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
+import { EMPTY_CONTEXT, absoluteInVault, localAbsolutePath, resolveWikiRelative, type LivePreviewContext } from "./lib/paths";
 import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { bgSettingsFor, getSettings, onSettingsChange, updateBgSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
@@ -2539,6 +2539,19 @@ export default function App() {
   }, [splitDirty]);
   /** 分屏编辑器实例（SplitPane 挂载时经 onReady 交上来）。 */
   const splitViewRef = useRef<EditorView | null>(null);
+  /**
+   * 代码块自动换行设置（0.39.32）：设置变化不产生编辑器事务，但代码块行装饰
+   * （cm-lp-codewrap-off）与编辑器根的 qn-code-nowrap 类都由 livePreview 按
+   * 设置现算——显式发一次 refresh 让两个视图立即换形态。
+   */
+  const codeBlockWrapRef = useRef(settings.codeBlockWrap);
+  useEffect(() => {
+    if (codeBlockWrapRef.current === settings.codeBlockWrap) return;
+    codeBlockWrapRef.current = settings.codeBlockWrap;
+    for (const view of [viewRef.current, splitViewRef.current]) {
+      if (view) requestDecorationRefresh(view);
+    }
+  }, [settings.codeBlockWrap]);
   /** 右栏装载失败提示（null = 正常；读盘重试后仍失败时显示在右栏内）。 */
   const [splitError, setSplitError] = useState<string | null>(null);
   /**
@@ -7392,20 +7405,36 @@ export default function App() {
         return;
       }
       const { path: noteTarget, section } = splitEmbedTarget(target);
-      if (!/\.md$/i.test(noteTarget)) {
+      // 0.39.32 用户反馈「本地链接文件为什么不支持打开」：绝对本地路径
+      // （`D:\…`、`\\server\…`、`file://…`）不能拼进仓库——落在当前仓库内的
+      // `.md` 换成相对路径走编辑器，其余（含库外文件）交给系统默认程序。
+      const absoluteTarget = localAbsolutePath(noteTarget);
+      let resolvedTarget = noteTarget;
+      if (absoluteTarget) {
+        const root = vaultRef.current?.replace(/\\/g, "/").replace(/\/+$/, "") ?? "";
+        const absNorm = absoluteTarget.replace(/\\/g, "/");
+        if (root !== "" && absNorm.toLowerCase().startsWith(`${root.toLowerCase()}/`)) {
+          resolvedTarget = absNorm.slice(root.length + 1);
+        } else {
+          openLocalPath(absoluteTarget)
+            .then(() => setStatus(`已用系统程序打开：${noteTarget}`))
+            .catch((e) => setError(String(e)));
+          return;
+        }
+      }
+      if (!/\.md$/i.test(resolvedTarget)) {
         // 非笔记文件（图片/pdf/任何附件）：系统默认程序打开
         if (!vaultRef.current) {
           setError("尚未打开仓库，无法打开链接的文件");
           return;
         }
-        const absolute = absoluteInVault(vaultRef.current, noteTarget);
-        import("@tauri-apps/plugin-opener")
-          .then(({ openPath }) => openPath(absolute))
+        const absolute = absoluteInVault(vaultRef.current, resolvedTarget);
+        openLocalPath(absolute)
           .then(() => setStatus(`已用系统程序打开：${noteTarget}`))
-          .catch((e) => setError(`打开文件失败：${e}`));
+          .catch((e) => setError(String(e)));
         return;
       }
-      void openEntryRef.current(noteTarget).then(() => {
+      void openEntryRef.current(resolvedTarget).then(() => {
         if (!section) return;
         window.setTimeout(() => {
           const view = viewRef.current;
