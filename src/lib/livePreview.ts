@@ -462,11 +462,48 @@ class RuleWidget extends WidgetType {
 }
 
 /**
- * 围栏代码块的头部条：语言名 + 一键复制。
+ * 每个代码块的「自动换行」覆盖（0.39.33 用户反馈：代码块头部的换行按钮）。
  *
- * 挂在起始围栏行（```ts 那一行）上，与语言标签同一位置。复制按钮在 mousedown
- * 就 preventDefault + stopPropagation——CM 若收到这个按下事件会把光标放进围栏块，
- * 该行随即退回源码、按钮在 click 触发前就没了（正是要防的竞态）。
+ * 默认值跟随设置 codeBlockWrap；点块头的换行按钮只改这一块。键 = 围栏起始行
+ * 的文档位置（随文档变更映射）。状态必须放在 StateField 里而不是模块变量：
+ * 一份状态可能同时挂在主/分屏视图上（stateStore），模块级 Map 会串台/泄漏。
+ */
+export const setCodeBlockWrap = StateEffect.define<{ pos: number; wrap: boolean }>();
+
+export const codeBlockWrapField = StateField.define<Map<number, boolean>>({
+  create: () => new Map(),
+  update(value, tr) {
+    let next = value;
+    if (tr.docChanged && next.size > 0) {
+      const mapped = new Map<number, boolean>();
+      for (const [pos, wrap] of next) mapped.set(tr.changes.mapPos(pos, -1), wrap);
+      next = mapped;
+    }
+    for (const effect of tr.effects) {
+      if (!effect.is(setCodeBlockWrap)) continue;
+      if (next === value) next = new Map(value);
+      // 回到默认值就删键：全局设置切换时不会留下过期的块级覆盖
+      if (effect.value.wrap === getSettings().codeBlockWrap) next.delete(effect.value.pos);
+      else next.set(effect.value.pos, effect.value.wrap);
+    }
+    return next;
+  },
+});
+
+/** 该块是否自动换行：块级覆盖优先，否则跟设置。 */
+function codeBlockWrapAt(state: EditorState, pos: number): boolean {
+  return state.field(codeBlockWrapField, false)?.get(pos) ?? getSettings().codeBlockWrap;
+}
+
+/**
+ * 围栏代码块的头部条：语言名 + 自动换行开关 + 一键复制。
+ *
+ * 挂在起始围栏行（```ts 那一行）上，与语言标签同一位置。没有语言名（裸 ```
+ * 围栏）时也渲染——用户要求「即使没有设置语言，也应该有复制选项」。裸围栏
+ * 没有 CodeInfo 节点，就把开围栏的 CodeMark 整个替换成头部条。
+ * 复制/换行按钮在 mousedown 就 preventDefault + stopPropagation——CM 若收到
+ * 这个按下事件会把光标放进围栏块，该行随即退回源码、按钮在 click 触发前
+ * 就没了（正是要防的竞态）。
  * 点语言签：用 toDOM 传入的 view 把光标送到语言名末尾进编辑态，并立即弹出
  * 语言联想（startCompletion）。位置进 eq——块前的文字改动会让位置漂移，
  * 必须随重建刷新。
@@ -475,16 +512,26 @@ class CodeHeaderWidget extends WidgetType {
   readonly info: string;
   readonly code: string;
   readonly infoTo: number;
+  readonly blockPos: number;
+  readonly wrap: boolean;
 
-  constructor(info: string, code: string, infoTo: number) {
+  constructor(info: string, code: string, infoTo: number, blockPos: number, wrap: boolean) {
     super();
     this.info = info;
     this.code = code;
     this.infoTo = infoTo;
+    this.blockPos = blockPos;
+    this.wrap = wrap;
   }
 
   eq(other: CodeHeaderWidget) {
-    return other.info === this.info && other.code === this.code && other.infoTo === this.infoTo;
+    return (
+      other.info === this.info &&
+      other.code === this.code &&
+      other.infoTo === this.infoTo &&
+      other.blockPos === this.blockPos &&
+      other.wrap === this.wrap
+    );
   }
 
   toDOM(view: EditorView) {
@@ -501,6 +548,26 @@ class CodeHeaderWidget extends WidgetType {
       view.dispatch({ selection: { anchor: this.infoTo }, scrollIntoView: true });
       view.focus();
       startCompletion(view);
+    });
+
+    const wrap = document.createElement("button");
+    wrap.type = "button";
+    wrap.className = `cm-lp-codewrap${this.wrap ? " is-on" : " is-off"}`;
+    wrap.title = this.wrap ? "自动换行：开（点击关闭本代码块换行）" : "自动换行：关（点击开启本代码块换行）";
+    wrap.setAttribute("aria-pressed", String(this.wrap));
+    wrap.setAttribute("aria-label", "自动换行");
+    // 折行箭头图标（与参考截图同款语义：换行开/关）
+    wrap.innerHTML =
+      '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="9 14 4 9 9 4"></polyline><path d="M20 20v-7a4 4 0 0 0-4-4H4"></path></svg>';
+    wrap.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    wrap.addEventListener("click", (event) => {
+      event.stopPropagation();
+      view.dispatch({
+        effects: [setCodeBlockWrap.of({ pos: this.blockPos, wrap: !this.wrap }), refreshDecorations.of(null)],
+      });
     });
 
     const copy = document.createElement("button");
@@ -529,7 +596,7 @@ class CodeHeaderWidget extends WidgetType {
       );
     });
 
-    box.append(chip, copy);
+    box.append(chip, wrap, copy);
     return box;
   }
 }
@@ -3282,10 +3349,11 @@ export function buildLivePreviewDecorations(
           const variant = codeBlockVariantOf(infoText);
           const blockClass = `cm-lp-codeblock${variant ? ` cm-lp-codeblock-${variant}` : ""}`;
           // 0.39.32 用户需求「对于代码块，添加一个选项切换自动换行，默认是自动换行；
-          // 当不是自动换行时，底部有滑杆直接左右滑动」：设置关闭时给代码块行挂
-          // cm-lp-codewrap-off（white-space:pre），横向滚动由 .cm-scroller 提供
-          // （编辑器根的 qn-code-nowrap 类见 livePreviewExtension）。
-          const codeWrapOff = !getSettings().codeBlockWrap;
+          // 当不是自动换行时，底部有滑杆直接左右滑动」：块级覆盖（0.39.33 头部
+          // 按钮）优先，否则跟设置。关闭时给代码块行挂 cm-lp-codewrap-off
+          // （white-space:pre），横向滚动由 .cm-scroller 提供（编辑器根类见
+          // livePreviewExtension）。
+          const codeWrapOff = !codeBlockWrapAt(state, node.from);
           // 整块加底色，包含被隐藏的围栏行，视觉上才连续。
           // 圆角只挂首尾行（行级圆角会把多行块拆成一摞小格子），CSS 见
           // .cm-lp-codeblock-first/-last；单行块两者叠加。
@@ -3299,14 +3367,13 @@ export function buildLivePreviewDecorations(
             marks.push(Decoration.line({ class: cls }).range(doc.line(n).from));
           }
           if (!active) {
-            let closing: { from: number; to: number } | null = null;
+            const codeMarks: { from: number; to: number }[] = [];
             let codeInfo: { from: number; to: number; text: string } | null = null;
             let codeText = "";
             let child = node.node.firstChild;
             while (child) {
               if (child.name === "CodeMark") {
-                hide(child.from, child.to);
-                closing = { from: child.from, to: child.to };
+                codeMarks.push({ from: child.from, to: child.to });
               } else if (child.name === "CodeInfo") {
                 codeInfo = { from: child.from, to: child.to, text: doc.sliceString(child.from, child.to) };
               } else if (child.name === "CodeText") {
@@ -3314,12 +3381,36 @@ export function buildLivePreviewDecorations(
               }
               child = child.nextSibling;
             }
-            if (codeInfo) {
-              replaceWith(codeInfo.from, codeInfo.to, new CodeHeaderWidget(codeInfo.text, codeText, codeInfo.to));
+            // 头部条挂载点：有语言名用 CodeInfo；裸围栏（``` 后面什么都没有）
+            // 没有 CodeInfo 节点（0.39.33 用户反馈「没有设置语言也应该有复制
+            // 按钮」），改用开围栏的 CodeMark 整段替换。
+            const headerRange = codeInfo ?? codeMarks[0] ?? null;
+            if (headerRange) {
+              replaceWith(
+                headerRange.from,
+                headerRange.to,
+                new CodeHeaderWidget(
+                  codeInfo?.text ?? "",
+                  codeText,
+                  headerRange.to,
+                  node.from,
+                  codeBlockWrapAt(state, node.from),
+                ),
+              );
+            }
+            // 除被头部条吃掉的标记外，其余围栏标记照旧隐藏
+            for (const mark of codeMarks) {
+              if (headerRange && mark.from === headerRange.from && mark.to === headerRange.to) continue;
+              hide(mark.from, mark.to);
             }
             // 收尾围栏被藏掉后，那一行就空了。若它只剩围栏本身，就把行高压掉，
             // 否则每个代码块底部都会多出一条空行。
-            // 起始行不处理——那行还有语言标签，需要正常高度。
+            // 起始行不处理——那行还有语言标签/复制按钮，需要正常高度。
+            // 裸围栏只有一段 CodeMark（未闭合）时它是头部条的宿主，不能再当收尾压掉。
+            const closing =
+              codeMarks.length >= 2 || (codeInfo && codeMarks.length === 1)
+                ? codeMarks[codeMarks.length - 1]
+                : null;
             if (closing) {
               const line = doc.lineAt(closing.from);
               if (line.from === closing.from && line.to === closing.to) {
@@ -3538,7 +3629,20 @@ function requestGutterAlign(view: EditorView): void {
  * 不一定支持；插件重建/刷新时同步一次即可。
  */
 function syncCodeWrapClass(view: EditorView): void {
-  view.dom.classList.toggle("qn-code-nowrap", !getSettings().codeBlockWrap);
+  // 块级覆盖（0.39.33）也要算：全局开、单块关时同样需要横向滑杆
+  let anyOff = !getSettings().codeBlockWrap;
+  if (!anyOff) {
+    const overrides = view.state.field(codeBlockWrapField, false);
+    if (overrides) {
+      for (const wrap of overrides.values()) {
+        if (!wrap) {
+          anyOff = true;
+          break;
+        }
+      }
+    }
+  }
+  view.dom.classList.toggle("qn-code-nowrap", anyOff);
 }
 
 export function livePreviewExtension() {

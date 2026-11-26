@@ -92,8 +92,8 @@ export const COMMAND_KEYS: CommandKeys[] = [
   },
   {
     id: "jsonPanel",
-    label: "JSON 格式转换面板…",
-    desc: "格式化 / 压缩 JSON，文本与 JSON 字符串互转（字符串化的多层一次解开）；打开时带入选区，结果可写回笔记或复制",
+    label: "JSON / Base64 转换面板…",
+    desc: "格式化 / 压缩 JSON，文本与 JSON 字符串互转（字符串化的多层一次解开）；自动识别并解码 base64（含 URL 里的片段）；打开时带入选区，结果可写回笔记或复制",
     group: "edit",
     keys: ["Mod-Alt-F"],
   },

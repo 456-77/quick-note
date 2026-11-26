@@ -2935,6 +2935,36 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   opacity: 1;
 }
 
+/* 代码块「自动换行」切换钮（0.39.33 用户反馈：头部加切换按钮，参考截图
+   右上角的换行/复制图标）。默认跟随设置；点击只改当前块。 */
+.cm-lp-codewrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: var(--code-chip-bg);
+  color: var(--code-chip-text);
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.72;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.cm-lp-codewrap:hover {
+  opacity: 1;
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* 关掉本块换行时淡一点，与「开」的后态有区分 */
+.cm-lp-codewrap.is-off {
+  opacity: 0.42;
+}
+
 .cm-lp-bullet {
   color: var(--accent);
   font-weight: 700;
@@ -6693,7 +6723,8 @@ html.qn-style-bluetopaz .editor-host .cm-lp-codeblock-config {
 }
 
 html.qn-style-bluetopaz .editor-host .cm-lp-codeinfo,
-html.qn-style-bluetopaz .editor-host .cm-lp-codecopy {
+html.qn-style-bluetopaz .editor-host .cm-lp-codecopy,
+html.qn-style-bluetopaz .editor-host .cm-lp-codewrap {
   background: color-mix(in srgb, var(--bt-blue) 18%, var(--surface-3));
   color: color-mix(in srgb, var(--bt-blue) 70%, var(--text));
 }
@@ -7981,10 +8012,17 @@ html:not(.qn-mobile) .jsonfmt-head:active {
 .jsonfmt-help {
   display: flex;
   align-items: center;
+  gap: 10px;
   margin-top: 6px;
   font-size: 11px;
   color: var(--text-faint);
   user-select: none;
+}
+
+/* 0.39.33 Base64 自动识别提示（检测到片段时靠右显示） */
+.jsonfmt-hint {
+  margin-left: auto;
+  color: var(--accent);
 }
 
 /* 标签 chip 输入：Enter 生成、Backspace 删尾、× 移除 */

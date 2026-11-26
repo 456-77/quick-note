@@ -18,6 +18,7 @@ import { Decoration, EditorView, ViewPlugin, keymap, type DecorationSet, type Vi
 import {
   findNext,
   findPrevious,
+  getSearchQuery,
   replaceAll,
   replaceNext,
   search,
@@ -33,6 +34,9 @@ import { fieldPattern } from "./searchVariants.ts";
  * 避免"按 Enter 没找到东西却把页面滚走了"的错乱感。
  */
 function centeredFind(view: EditorView, find: (view: EditorView) => boolean): void {
+  // 命令执行前的兜底同步（见 syncQueryToView）：状态里没有我们的查询时，
+  // CM 的 findNext/findPrevious 会退回 openSearchPanel 弹出原生 Find Bar。
+  if (!syncQueryToView(view)) return;
   const before = view.state.selection.main;
   find(view);
   const after = view.state.selection.main;
@@ -112,6 +116,22 @@ loadPanelState();
 let panel: HTMLElement | null = null;
 let panelView: EditorView | null = null;
 
+/**
+ * 恒真匹配过滤：只为给查询对象打一个**引用标记**。
+ *
+ * SearchQuery.eq 会连 test 一起比（引用相等）。没有这个标记时，「视图里没有
+ * search 扩展」的占位状态会退回 defaultQuery(state)，如果恰好等于面板预填词
+ * （选区=搜索词这种常见情况），syncQueryToView 会误判「已同步成功」，CM 的
+ * findNext 随后走兜底弹默认面板。带上同一个函数引用就不可能误判。
+ * 语义上恒真 = 不过滤任何命中。
+ */
+const MATCH_ALL = () => true;
+
+/** 空查询用「永不匹配」的哨兵：没有有效查询时 findNext 才什么都不做。 */
+function emptyQuery(): SearchQuery {
+  return new SearchQuery({ search: "\u0000a^", test: MATCH_ALL });
+}
+
 function buildQuery(): SearchQuery {
   // 字段联动：生成段间允许 `_` 的正则（大小写不敏感、整词关闭——联动本身就是
   // 宽口径的字段查找）。与正则模式互斥，buildQuery 只会在两者取其一时走到这里。
@@ -124,6 +144,7 @@ function buildQuery(): SearchQuery {
         caseSensitive: false,
         regexp: true,
         wholeWord: false,
+        test: MATCH_ALL,
       });
     }
   }
@@ -133,6 +154,7 @@ function buildQuery(): SearchQuery {
     caseSensitive: panelState.caseSensitive,
     regexp: panelState.regexp,
     wholeWord: panelState.wholeWord,
+    test: MATCH_ALL,
   });
 }
 
@@ -144,9 +166,7 @@ function applyQuery(view: EditorView): void {
   // 下一次文档/选区变化才出现（不动就不亮）。0.32.2 修，双编辑器让它稳定复现
   queryEpoch += 1;
   view.dispatch({
-    effects: setSearchQuery.of(
-      panelState.query ? buildQuery() : new SearchQuery({ search: "\u0000a^" }),
-    ),
+    effects: setSearchQuery.of(panelState.query ? buildQuery() : emptyQuery()),
   });
 }
 
@@ -258,6 +278,33 @@ function refresh(view: EditorView): void {
   updateCount(view);
 }
 
+/**
+ * 把面板当前的查询同步进**视图此刻的状态**，并确认真的装进去了。
+ *
+ * 两个必须同步的场景：
+ *  - 分屏新开/切换文件：视图 setState 是异步的（右栏装载 effect 读盘后才
+ *    换状态），`openSearchPanelOn` 早于它执行时，setSearchQuery 落在旧状态
+ *    上随即被 setState 丢掉——高亮/计数对着旧文档，点「下一处」还会落进
+ *    CM 的兜底分支（状态里没有有效查询 → openSearchPanel 弹出原生 Find
+ *    Bar，0.39.33 用户实锤「自绘搜索弹窗按钮没反应 + 原生搜索弹窗」）。
+ *  - 占位视图（没有装 search 扩展的空状态）：dispatch 是空操作，返回 false
+ *    让调用方放弃命令——绝不能让 CM 的兜底把默认面板装进来。
+ */
+function syncQueryToView(view: EditorView): boolean {
+  const wanted = panelState.query ? buildQuery() : emptyQuery();
+  if (getSearchQuery(view.state).eq(wanted)) return true;
+  view.dispatch({ effects: setSearchQuery.of(wanted) });
+  return getSearchQuery(view.state).eq(wanted);
+}
+
+/** 重新把面板查询落到视图状态上（视图状态被 setState 替换后调用）。 */
+export function resyncSearchPanelOn(view: EditorView): void {
+  if (!panel || panelView !== view) return;
+  const input = panel.querySelector<HTMLInputElement>(".qn-search-input");
+  if (input && input.value !== panelState.query) input.value = panelState.query;
+  refresh(view);
+}
+
 function openReplaceRow(): void {
   panelState.replaceOpen = true;
   panel?.querySelector<HTMLElement>(".qn-search-replace")?.removeAttribute("hidden");
@@ -282,7 +329,7 @@ function closePanel(view: EditorView): void {
   // epoch 先自增再 dispatch（顺序说明见 applyQuery）
   queryEpoch += 1;
   view.dispatch({
-    effects: setSearchQuery.of(new SearchQuery({ search: "\u0000a^" })),
+    effects: setSearchQuery.of(emptyQuery()),
   });
   view.contentDOM?.focus();
 }
@@ -418,12 +465,17 @@ function buildPanel(view: EditorView): HTMLElement {
         persistPanelState();
         break;
       case "replace-one":
-        centeredFind(view, replaceNext);
-        refresh(view);
+        if (syncQueryToView(view)) {
+          centeredFind(view, replaceNext);
+          refresh(view);
+        }
         break;
       case "replace-all":
-        replaceAll(view);
-        refresh(view);
+        // replaceAll 同样走 searchCommand：状态里查询失效时会弹默认面板
+        if (syncQueryToView(view)) {
+          replaceAll(view);
+          refresh(view);
+        }
         break;
       case "close":
         closePanel(view);

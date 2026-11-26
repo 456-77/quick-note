@@ -65,6 +65,44 @@ const legit = '{"p":"C:\\\\tmp","n":"a\\nb"}';
 const legitParsed = parseJsonLoose(legit);
 assert(legitParsed.repaired === false && legitParsed.value.p === "C:\\tmp", "合法 JSON 不被改写");
 
+// ---- 0.39.33 Base64 自动识别解码（用户需求：识别内容中的 base64 并解码）----
+import { decodeBase64Auto, findBase64InText } from "../src/lib/formatJson.ts";
+
+const b64Url =
+  "https://cwgx-ai-gtw-uat.ehailiang.com/hitf/v2p/rest/invoke/SFpFUk86SEZTSURTOmhmaW5zLWlkcy5jaGVjay1yZXN1bHQuY3V4TGlzdA==?docNumber=AR202611250121&sourceSystem=HFINS&docCategory=ACR_INVOICE&lang=th_TH&logicFlag=Y";
+const urlHits = findBase64InText(b64Url);
+assert(
+  urlHits.length === 1 &&
+    urlHits[0].decoded === "HZERO:HFSIDS:hfins-ids.check-result.cuxList",
+  "URL 路径里的 base64 自动识别并解码",
+);
+assert(urlHits[0].raw === "SFpFUk86SEZTSURTOmhmaW5zLWlkcy5jaGVjay1yZXN1bHQuY3V4TGlzdA==", "raw 保留原文片段");
+assert(decodeBase64Auto("aGVsbG8gd29ybGQ=") === "hello world", "整段 base64 解码");
+assert(
+  decodeBase64Auto("5L2g5aW977yM5LiW55WM77yB") === "你好，世界！",
+  "base64 → UTF-8 中文",
+);
+assert(decodeBase64Auto("aGVsbG8K") === "hello\n", "保留 base64 内容里的换行");
+// URL-safe 变体：😀 的 base64 是 8J+YgA==（含 +），URL-safe 写作 8J-YgA==
+assert(decodeBase64Auto("8J-YgA==") === "😀", "URL-safe -_ 也能解");
+// 多行粘贴的整段 base64（日志里常见的换行）
+assert(decodeBase64Auto("aGVsbG8g\nd29ybGQ=") === "hello world", "多行整段 base64（空白忽略）");
+// 误报防线：普通文本/代码/纯字母数字 ID 不解
+assert(findBase64InText("这是一段普通的中文文本，没有 base64。").length === 0, "普通中文不误报");
+assert(findBase64InText("const answer: number = 42;").length === 0, "普通代码不误报");
+assert(findBase64InText("AR202611250121").length === 0, "短字母数字 ID 不误报");
+assert(findBase64InText("https://example.com/api/v1/users?page=2").length === 0, "普通 URL 不误报");
+assertThrows(() => decodeBase64Auto("没有 base64 的内容"), "识别不到时抛错");
+
+function assertThrows(fn, msg) {
+  try {
+    fn();
+    assert(false, msg);
+  } catch {
+    assert(true, msg);
+  }
+}
+
 function fromJsonStringSafe(text) {
   try { fromJsonString(text); return true; } catch { return false; }
 }

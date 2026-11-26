@@ -85,7 +85,7 @@ import { EMPTY_CONTEXT, absoluteInVault, localAbsolutePath, resolveWikiRelative,
 import { menuRefClampedToViewport } from "./lib/menuClamp";
 import { bgSettingsFor, getSettings, onSettingsChange, updateBgSettings, updateSettings, takeLegacyAttachmentFolder, type Settings } from "./lib/settings";
 import { allBindings, COMMAND_KEYS, formatKey, matchCommand, onHotkeysChange } from "./lib/hotkeys";
-import { closeSearchPanelIfOpen, openSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
+import { closeSearchPanelIfOpen, openSearchPanelOn, resyncSearchPanelOn, searchPanelFindNext } from "./lib/searchPanel";
 import { VOCAB_FILENAME, addVocabEntry, updateVocabEntry } from "./lib/vocabulary";
 import { vocabLookup } from "./lib/api";
 import { loadVocabularyContent, saveVocabularyContent } from "./lib/vocabStore";
@@ -6429,6 +6429,34 @@ export default function App() {
       const isRightNow = rightTabsRef.current.includes(path);
       const view = isRightNow ? splitViewRef.current : viewRef.current;
       if (!view) return;
+      // 0.39.33 用户反馈「全局搜索定位到右侧分屏页面内的文件，文件内搜索还是弹
+      // 原生搜索、点自绘搜索面板按钮没反应」：右栏装载是 effect 里的异步读盘
+      // （setState 晚于 openNote 返回），这里按旧文档算行号、把搜索查询 dispatch
+      // 到旧状态上——setState 一换全丢，CM 的 findNext 在状态里找不到有效查询
+      // 就退回 openSearchPanel 弹出默认 Find Bar。等目标状态真的装上再继续。
+      const sameView = () => (isRightNow ? splitViewRef.current : viewRef.current) === view;
+      const ready = () => {
+        if (!sameView()) return true;
+        const current = stateStore.current.get(path);
+        const sideReady = isRightNow ? splitActiveRef.current === path : viewOwnerRef.current === path;
+        // 不能比 state 同一性：装载后的 applyMode/applyLivePreviewContext 会
+        // reconfigure Compartment 生成新 state（doc 对象不变）。按 doc 比。
+        return sideReady && !!current && view.state.doc === current.doc;
+      };
+      if (!ready()) {
+        await new Promise<void>((resolve) => {
+          const deadline = Date.now() + 3000;
+          const tick = () => {
+            if (!sameView() || ready() || Date.now() > deadline) {
+              resolve();
+              return;
+            }
+            window.setTimeout(tick, 16);
+          };
+          window.setTimeout(tick, 16);
+        });
+        if (!sameView()) return;
+      }
       const target = view.state.doc.line(
         Math.min(Math.max(line + 1, 1), view.state.doc.lines),
       );
@@ -6437,6 +6465,10 @@ export default function App() {
         return;
       }
       openSearchPanelOn(view, term);
+      // 兜底：极端时序下（等待超时/状态再被替换）查询可能落在旧状态上，
+      // 面板还挂着就再同步一次（no-op 条件已由 resyncSearchPanelOn 自己判）
+      window.setTimeout(() => resyncSearchPanelOn(view), 300);
+      window.setTimeout(() => resyncSearchPanelOn(view), 1200);
       let scrollPos = target.from;
       const block = toggleableBlockAt(view.state, target.from);
       if (block && target.from >= block.from && target.from <= block.to) {
@@ -8462,7 +8494,7 @@ export default function App() {
       { id: "quick-capture", title: "快速笔记（收件箱）", hint: keyHint("quickCapture"), icon: "📥", run: shortcuts.quickCapture },
       { id: "quick-todo", title: "快速添加待办…", hint: keyHint("quickTodo"), icon: "✅", run: shortcuts.quickTodo },
       { id: "ddl-capture", title: "收录建表语句…", hint: keyHint("ddlCapture"), icon: "🗄️", run: shortcuts.ddlCapture },
-      { id: "json-panel", title: "JSON 格式转换面板…", hint: keyHint("jsonPanel"), icon: "{ }", run: shortcuts.jsonPanel },
+      { id: "json-panel", title: "JSON / Base64 转换面板…", hint: keyHint("jsonPanel"), icon: "{ }", run: shortcuts.jsonPanel },
       { id: "ai-chat", title: "AI 对话…", hint: keyHint("aiChat"), icon: "🤖", run: shortcuts.aiChat },
       { id: "recent-files", title: "最近文件…", hint: keyHint("recentFiles"), icon: "🕘", run: shortcuts.recentFiles },
       { id: "capture-manager", title: "速记管理（收件箱整理）", hint: keyHint("captureManager"), icon: "🗂️", run: shortcuts.captureManager },

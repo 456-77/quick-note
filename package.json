@@ -1,7 +1,7 @@
 {
   "name": "quick-note",
   "private": true,
-  "version": "0.39.32",
+  "version": "0.39.33",
   "license": "MIT",
   "type": "module",
   "scripts": {

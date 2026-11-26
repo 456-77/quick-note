@@ -20,7 +20,7 @@ import { dirname, join } from "node:path";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { buildLivePreviewDecorations, computeBlockDecorations } from "../src/lib/livePreview.ts";
+import { buildLivePreviewDecorations, codeBlockWrapField, computeBlockDecorations, setCodeBlockWrap } from "../src/lib/livePreview.ts";
 import { prepareEmbedMarkdown, sliceSection, splitEmbedTarget } from "../src/lib/embed.ts";
 import { externalUrlAt } from "../src/lib/markdownExtras.ts";
 import { localAbsolutePath, resolveResource, resolveWikiTarget } from "../src/lib/paths.ts";
@@ -960,6 +960,78 @@ console.log("\n场景 I：0.35.1 链接修复——非空选区保持源码 + �
       JSON.stringify(hidesOf("[Y] (D:\\hand\\c\\d.java)")),
     );
   }
+}
+
+console.log("\n场景 K：裸围栏代码块头部条 + 块级自动换行覆盖（0.39.33）\n");
+{
+  // 用户反馈：没有写明语言的代码块也要有复制按钮；头部还要有换行切换钮。
+  const bareDoc =
+    "# 标题\n\n```\n第一行代码\n第二行代码\n```\n\n```ts\nconst a = 1;\n```\n\n正文\n";
+  const openAt = bareDoc.indexOf("```");
+  const closeAt = bareDoc.indexOf("```", openAt + 3);
+  const tsOpenAt = bareDoc.lastIndexOf("```ts");
+
+  const mkState = () =>
+    EditorState.create({
+      doc: bareDoc,
+      selection: { anchor: bareDoc.length },
+      extensions: [markdown({ base: markdownLanguage }), codeBlockWrapField],
+    });
+  const collectDoc = (state) => {
+    const out = [];
+    buildLivePreviewDecorations(state, 0, bareDoc.length).between(0, bareDoc.length, (from, to, value) => {
+      const spec = value.spec ?? {};
+      out.push({
+        from,
+        to,
+        kind: from === to ? "line" : spec.widget !== undefined ? "widget" : spec.class ? "mark" : "hide",
+        cls: spec.class,
+        widget: spec.widget,
+        widgetName: spec.widget ? spec.widget.constructor.name : null,
+      });
+    });
+    return out;
+  };
+
+  let state = mkState();
+  let items = collectDoc(state);
+  const bareHeader = items.find(
+    (d) => d.kind === "widget" && d.from === openAt && d.widgetName === "CodeHeaderWidget",
+  );
+  check(!!bareHeader, "裸围栏也有头部条（CodeHeaderWidget）", JSON.stringify(items.filter((d) => d.kind === "widget")));
+  check(
+    bareHeader?.widget?.info === "" && bareHeader?.widget?.code === "第一行代码\n第二行代码",
+    "头部条携带代码全文、语言名为空",
+  );
+  check(bareHeader?.widget?.wrap === true, "默认跟随设置=自动换行开");
+  check(
+    items.some((d) => d.kind === "hide" && d.from === closeAt && d.to === closeAt + 3),
+    "收尾围栏照旧隐藏",
+  );
+  check(!items.some((d) => d.cls?.includes("cm-lp-codewrap-off")), "默认折行：没有 codewrap-off 行装饰");
+
+  // 块级关掉换行：行装饰出现，头部 widget 的 wrap 变 false（eq 不相等会重建 DOM）
+  state = state.update({ effects: setCodeBlockWrap.of({ pos: openAt, wrap: false }) }).state;
+  items = collectDoc(state);
+  const offLines = items.filter((d) => d.kind === "line" && d.cls?.includes("cm-lp-codewrap-off"));
+  check(offLines.length === 4, "关闭本块换行：整块 4 行都挂 codewrap-off", JSON.stringify(offLines.map((d) => d.from)));
+  check(
+    items.find((d) => d.from === openAt && d.widgetName === "CodeHeaderWidget")?.widget?.wrap === false,
+    "头部按钮同步为「关」",
+  );
+  check(
+    !items.some((d) => d.kind === "line" && d.cls?.includes("cm-lp-codewrap-off") && d.from > tsOpenAt),
+    "另一块（ts）不受影响",
+  );
+
+  // 点回「开」= 删除覆盖，恢复跟设置
+  state = state.update({ effects: setCodeBlockWrap.of({ pos: openAt, wrap: true }) }).state;
+  items = collectDoc(state);
+  check(!items.some((d) => d.cls?.includes("cm-lp-codewrap-off")), "点回「开」恢复默认折行");
+  check(
+    items.find((d) => d.from === openAt && d.widgetName === "CodeHeaderWidget")?.widget?.wrap === true,
+    "头部按钮回到「开」",
+  );
 }
 
 console.log(failures === 0 ? "\nLive Preview 装饰层验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);

@@ -10,8 +10,8 @@
  * - 还原为 JSON：字符串字面量解开，内容是 JSON 就顺手格式化。
  */
 
-import { useEffect, useRef, useState } from "react";
-import { beautifyJson, fromJsonString, minifyJson, toJsonString } from "../lib/formatJson";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { beautifyJson, decodeBase64Auto, findBase64InText, fromJsonString, minifyJson, toJsonString } from "../lib/formatJson";
 import { DialogPinButton, useDialogDrag, useDialogPinned } from "./DialogDragPin";
 
 export default function JsonFormatDialog({
@@ -39,7 +39,27 @@ export default function JsonFormatDialog({
   useEffect(() => {
     inputRef.current?.focus();
     inputRef.current?.select();
-  }, []);
+    // 0.39.33：打开时预填的如果是带 base64 的 URL/日志（而不是 JSON），直接把
+    // 解码结果摆到输出框——「自动识别并解码」的主路径（选一段 → 按快捷键）。
+    const text = initialText.trim();
+    if (text && !/^[[{"]/.test(text)) {
+      try {
+        setOutput(decodeBase64Auto(text));
+      } catch {
+        // 没有 base64：保持空输出，等用户手动点按钮
+      }
+    }
+  }, [initialText]);
+
+  /** 当前输入里检测到几段 base64（仅提示，不自动执行）。 */
+  const base64Count = useMemo(() => {
+    if (!input.trim()) return 0;
+    try {
+      return findBase64InText(input).length;
+    } catch {
+      return 0;
+    }
+  }, [input]);
 
   const run = (label: string, fn: (text: string) => string) => {
     try {
@@ -87,7 +107,7 @@ export default function JsonFormatDialog({
       {!pinned && <div className="menu-backdrop" onClick={onClose} />}
       <div ref={dialogRef} className="jsonfmt" role="dialog" aria-label="文本格式转换">
         <div className="jsonfmt-head" {...dialogDrag}>
-          <span className="jsonfmt-title">JSON 格式转换</span>
+          <span className="jsonfmt-title">JSON / Base64 转换</span>
           <span className="spacer" />
           <DialogPinButton pinned={pinned} onToggle={() => setPinned((value) => !value)} />
           <button type="button" className="quick-capture-esc" title="关闭 (Esc)" onClick={onClose}>
@@ -118,6 +138,13 @@ export default function JsonFormatDialog({
         <div className="jsonfmt-actions">
           <button type="button" onClick={() => run("格式化", beautifyJson)} title="解析并缩进展开；字符串化的 JSON 自动解包">
             格式化
+          </button>
+          <button
+            type="button"
+            onClick={() => run("Base64 解码", decodeBase64Auto)}
+            title="自动识别文本里的 base64（整段 / URL 路径 / 日志片段）并解码成 UTF-8 文本"
+          >
+            Base64 解码
           </button>
           <button type="button" onClick={() => run("压缩", minifyJson)} title="压成单行">
             压缩
@@ -181,6 +208,9 @@ export default function JsonFormatDialog({
         />
         <div className="jsonfmt-help">
           <span>转换只在面板里进行，点「写回笔记」才会动笔记</span>
+          {base64Count > 0 && (
+            <span className="jsonfmt-hint">检测到 {base64Count} 段 base64，可点「Base64 解码」</span>
+          )}
         </div>
       </div>
     </>

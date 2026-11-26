@@ -18,7 +18,7 @@ import { sql } from "@codemirror/lang-sql";
 import { yaml } from "@codemirror/lang-yaml";
 import { languages } from "@codemirror/language-data";
 import { separatorFor } from "./lineEndings";
-import { blockWidgetsField, gutterNumberAlign, livePreviewExtension } from "./livePreview";
+import { blockWidgetsField, codeBlockWrapField, gutterNumberAlign, livePreviewExtension } from "./livePreview";
 import { livePreviewContext, type LivePreviewContext } from "./paths";
 import { altClickHandler, linkClickHandler } from "./markdownExtras";
 import { ddlHover } from "./ddlHover";
@@ -301,6 +301,9 @@ export function createEditorState(
         ),
       ),
       livePreviewCompartment.of(modeExtensions(effectiveMode)),
+      // 代码块「自动换行」的块级覆盖（0.39.33）：常驻不进 live 的 Compartment，
+      // 源码/实时切换、setState 换状态都不能丢（字段随文档变更映射位置）
+      codeBlockWrapField,
       attachment ? attachmentPaste(attachment) : [],
       codePasteOptions ? smartPaste(codePasteOptions) : [],
       // 列表回车接管（highest 压过 lang-markdown 内置 Enter——它包在 Prec.high

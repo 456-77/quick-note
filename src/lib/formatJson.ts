@@ -154,3 +154,138 @@ export function fromJsonString(text: string): string {
   }
   return value;
 }
+
+// ---------------------------------------------------------------- Base64
+//
+// 0.39.33 用户需求「添加接 base64 码功能，能够自动识别给的内容中的源码，并解码」：
+// 抓包/日志里贴来的 URL 常把业务标识（有时是整段源码）base64 塞在路径里，
+// 例如 …/invoke/SFpFUk86SEZTSURTOm…TGlzdA==?docNumber=…。这里做**自动识别**：
+// 整段是 base64 就整段解；否则扫描文本里所有 base64 形态的片段（URL 路径段
+// 里的 / 会切分尝试），逐个解成 UTF-8 文本。
+//
+// 判定既要宽松（URL-safe -_、缺省 padding、日志换行）又要防误报（普通单词
+// 恰好由 base64 字母表组成）：解码必须通过 UTF-8 严格解码 + 可打印比例检查，
+// 且短于 12 字符的裸片段不参与（有 `=` padding 的 8 字符起）。
+
+/** 一段识别成功的 base64。 */
+export interface Base64Hit {
+  /** 原文中的片段（原样，可能带 URL-safe 字符/缺省 padding）。 */
+  raw: string;
+  start: number;
+  end: number;
+  /** 解码后的 UTF-8 文本。 */
+  decoded: string;
+}
+
+const BASE64_CHARS = /^[A-Za-z0-9+/_=-]+$/;
+/** 候选片段：至少 8 个 base64 字符（含 padding）。URL 里的 / 由后续切段处理。 */
+const BASE64_TOKEN_RE = /[A-Za-z0-9+/_=-]{8,}/g;
+
+/** 解码结果是不是「像文本」：UTF-8 严格解码已由调用方保证，这里防控制符/乱码。 */
+function looksLikeText(text: string): boolean {
+  if (!text.trim()) return false;
+  let bad = 0;
+  let total = 0;
+  for (const ch of text) {
+    total += 1;
+    const code = ch.codePointAt(0) ?? 0;
+    const ok =
+      code === 9 ||
+      code === 10 ||
+      code === 13 ||
+      (code >= 0x20 && code !== 0x7f) ||
+      code >= 0xa0;
+    if (!ok) bad += 1;
+  }
+  // 含至少一个字母/数字/汉字/符号（emoji 也是正常文本）：纯标点/空白串
+  // 没有展示价值，也更容易是误报
+  return bad / total <= 0.1 && /[\p{L}\p{N}\p{So}]/u.test(text);
+}
+
+/** 尝试把一个片段按 base64（标准或 URL-safe）解成文本；不合法返回 null。 */
+function tryDecodeBase64(token: string, wholeInput = false): string | null {
+  if (!BASE64_CHARS.test(token)) return null;
+  // `=` 只允许出现在结尾（两个以内）
+  if (/=.*[^=]/.test(token) || /=.*=.*=/.test(token)) return null;
+  const body = token.replace(/=+$/, "");
+  if (body.length < (wholeInput ? 4 : 8)) return null;
+  // 裸片段太短容易把普通单词误判；整段输入不受此限（用户明确只贴了一段），
+  // 有 padding 的 8 字符起算安全
+  if (!wholeInput && body.length < 12 && !token.endsWith("=")) return null;
+  if (token.length % 4 === 1) return null;
+  const normalized = token.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4)) % 4);
+  let bytes: Uint8Array;
+  try {
+    const binary = atob(padded);
+    bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  } catch {
+    return null;
+  }
+  if (bytes.length === 0) return null;
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+  return looksLikeText(text) ? text : null;
+}
+
+/**
+ * 自动识别文本中的 base64 并解码。
+ *
+ * 顺序：先试整段（去掉所有空白后整段都是 base64 字符，覆盖多行粘贴的
+ * base64）；不行再按「非 base64 字符」切 token 扫描。URL 路径里的 / 属于
+ * base64 字母表，整 token 会混进 host/path，所以整 token 解不开时再按 /
+ * 切段逐个试（`…/invoke/<base64>?x=y` 命中 `/` 后的那段）。
+ * 相邻/重叠的命中只保留最外层。
+ */
+export function findBase64InText(text: string): Base64Hit[] {
+  const hits: Base64Hit[] = [];
+  const whole = text.trim();
+  const compact = whole.replace(/\s+/g, "");
+  if (compact.length >= 8 && BASE64_CHARS.test(compact)) {
+    const decoded = tryDecodeBase64(compact, true);
+    if (decoded !== null) {
+      hits.push({ raw: whole, start: text.indexOf(whole), end: text.indexOf(whole) + whole.length, decoded });
+      return hits;
+    }
+  }
+  BASE64_TOKEN_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = BASE64_TOKEN_RE.exec(text))) {
+    const token = match[0];
+    const attempts: string[] = [token];
+    // URL 场景：/ 是 base64 字符但更像路径分隔符，整段解不开就按 / 切
+    if (token.includes("/")) {
+      for (const piece of token.split("/")) if (piece && piece !== token) attempts.push(piece);
+    }
+    let raw = "";
+    let decoded: string | null = null;
+    for (const attempt of attempts) {
+      decoded = tryDecodeBase64(attempt);
+      if (decoded !== null) {
+        raw = attempt;
+        break;
+      }
+    }
+    if (decoded === null || !raw) continue;
+    const start = text.indexOf(raw, match.index);
+    if (start < 0) continue;
+    if (hits.some((hit) => start >= hit.start && start + raw.length <= hit.end)) continue;
+    hits.push({ raw, start, end: start + raw.length, decoded });
+  }
+  return hits;
+}
+
+/** 自动识别并解码；识别不到抛中文错误（面板上直接展示）。 */
+export function decodeBase64Auto(text: string): string {
+  const hits = findBase64InText(text);
+  if (hits.length === 0) {
+    throw new Error("没有识别到可解码的 base64（支持整段 base64、URL/日志里夹带的 base64 片段）");
+  }
+  if (hits.length === 1) return hits[0].decoded;
+  return hits.map((hit, index) => `— 第 ${index + 1} 段 —\n${hit.decoded}`).join("\n\n");
+}
