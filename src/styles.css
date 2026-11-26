@@ -2598,6 +2598,10 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
      居中偏移 = (100cqw - 900px)/2（cqw 容器是 .cm-scroller）；显式 margin 而
      不是 auto——auto 边距会被 gutter 的占位挤动（见上行号注释）。 */
   flex: 1 1 auto;
+  /* 0.39.34：允许内容盒收缩到视口宽（默认 min-width:auto 会被最长行撑到
+     max-content）——不折行代码块才能在自己的行内横向滚动，而不是把整个
+     页面/滚动容器撑宽。页面级横滚禁令依旧由 .cm-scroller overflow-x:hidden 兜底。 */
+  min-width: 0;
   padding: 28px 0 0;
   max-width: 900px;
   margin-left: max(24px, (100cqw - 900px) / 2);
@@ -2792,26 +2796,86 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   line-height: 1.65;
 }
 
-/* ------------------------------------------------- 代码块自动换行开关（0.39.32）
-   设置 → 常规 → 代码块自动换行。默认折行；关闭后代码块行按原样单行排布
-   （white-space:pre），由 .cm-scroller 提供横向滚动（编辑器根的 qn-code-nowrap
-   类由 livePreview.ts 的 syncCodeWrapClass 同步）。普通正文始终折行。
+/* ------------------------------------------------- 代码块内层横向滑动（0.39.34）
+   设置 → 常规 → 代码块自动换行 / 每个代码块头部的「自动换行」开关。
+   关掉折行时**只有这个代码块内部**可以左右滑动，页面本身绝不横移
+   （.cm-scroller overflow-x:hidden 硬禁令不变）。
 
-   width:max-content 是必须的：行盒跟着内容变宽，代码块底色才会铺到横向
-   滚动出去的部分；min-width:100% 保证短行仍铺满整行宽度。 */
+   实现：每行自己是隐藏滚动容器（white-space:pre + overflow hidden），JS 同步
+   各行的 scrollLeft（livePreview.ts 的 applyCodeScroll）；行尾有超宽行内占位
+   （.cm-lp-codepad）让短行也能等量平移，列不错位；底部滑杆是收尾围栏行里的
+   自绘 widget（.cm-lp-codescroll）。不折行只在渲染态生效，光标进块时正常折行。 */
 .editor-host .cm-line.cm-lp-codewrap-off {
   white-space: pre;
   word-break: normal;
   overflow-wrap: normal;
-  width: max-content;
-  min-width: 100%;
+  overflow-x: hidden;
+  overflow-y: hidden;
 }
 
-/* 特异性必须压过 `.editor-host .cm-scroller { overflow-x: hidden }`（0,2,0）——
-   「硬禁页面横滚」仍然有效：只有显式关掉代码块换行、存在超宽代码块时才出现
-   横向滑杆。 */
-.editor-host .cm-editor.qn-code-nowrap .cm-scroller {
-  overflow-x: auto;
+/* 行尾超宽占位：不占高度、不拦鼠标，只补出可滚动宽度（滚出去的部分被行裁掉）。 */
+.editor-host .cm-lp-codepad {
+  display: inline-block;
+  width: 12000px;
+  height: 0;
+  line-height: 0;
+  vertical-align: baseline;
+  pointer-events: none;
+}
+
+/* 收尾围栏行改当滑杆行：行高压到 widget 高度（12px），不再压成 0（cm-lp-fence
+   只用于折行块）。 */
+.editor-host .cm-line.cm-lp-scrollrow {
+  line-height: 0;
+  padding-top: 2px;
+  padding-bottom: 8px;
+}
+
+.editor-host .cm-lp-codescroll {
+  /* inline-flex：inline-level 才跟着行盒（line-height:0）走，块级 flex 会把
+     收尾行撑到 ~49px；vertical-align:top 让 12px 的条贴行首。 */
+  display: inline-flex;
+  vertical-align: top;
+  align-items: center;
+  width: 100%;
+  height: 12px;
+  padding: 0 2px;
+  box-sizing: border-box;
+  user-select: none;
+  /* 触摸拖动拇指时不连带滚编辑器 */
+  touch-action: none;
+}
+
+.editor-host .cm-lp-codescroll-track {
+  position: relative;
+  flex: 1;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-faint) 20%, transparent);
+}
+
+.editor-host .cm-lp-codescroll-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 4px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--text-faint) 55%, transparent);
+  cursor: grab;
+}
+
+.editor-host .cm-lp-codescroll-thumb:hover,
+.editor-host .cm-lp-codescroll-thumb.is-dragging {
+  background: color-mix(in srgb, var(--accent) 65%, transparent);
+}
+
+.editor-host .cm-lp-codescroll-thumb.is-dragging {
+  cursor: grabbing;
+}
+
+/* 没有超宽内容时拇指铺满（禁用态观感），提示这里是不折行模式 */
+.editor-host .cm-lp-codescroll.is-idle .cm-lp-codescroll-thumb {
+  opacity: 0.35;
 }
 
 /* ------------------------------------------------- log 块阅读优化 */

@@ -962,9 +962,10 @@ console.log("\n场景 I：0.35.1 链接修复——非空选区保持源码 + �
   }
 }
 
-console.log("\n场景 K：裸围栏代码块头部条 + 块级自动换行覆盖（0.39.33）\n");
+console.log("\n场景 K：裸围栏代码块头部条 + 块级换行覆盖 + 块内横滑（0.39.33/0.39.34）\n");
 {
-  // 用户反馈：没有写明语言的代码块也要有复制按钮；头部还要有换行切换钮。
+  // 用户反馈：没有写明语言的代码块也要有复制按钮；头部还要有换行切换钮；
+  // 关掉换行后只在代码块内部左右滑动（行内滚动容器 + 行尾占位 + 底部滑杆）。
   const bareDoc =
     "# 标题\n\n```\n第一行代码\n第二行代码\n```\n\n```ts\nconst a = 1;\n```\n\n正文\n";
   const openAt = bareDoc.indexOf("```");
@@ -986,6 +987,7 @@ console.log("\n场景 K：裸围栏代码块头部条 + 块级自动换行覆盖
         to,
         kind: from === to ? "line" : spec.widget !== undefined ? "widget" : spec.class ? "mark" : "hide",
         cls: spec.class,
+        attrs: spec.attributes,
         widget: spec.widget,
         widgetName: spec.widget ? spec.widget.constructor.name : null,
       });
@@ -1016,21 +1018,47 @@ console.log("\n场景 K：裸围栏代码块头部条 + 块级自动换行覆盖
   const offLines = items.filter((d) => d.kind === "line" && d.cls?.includes("cm-lp-codewrap-off"));
   check(offLines.length === 4, "关闭本块换行：整块 4 行都挂 codewrap-off", JSON.stringify(offLines.map((d) => d.from)));
   check(
+    offLines.every((d) => d.attrs?.["data-codewrap"] === String(openAt)),
+    "codewrap-off 行都带 data-codewrap（滚动同步分组键）",
+    JSON.stringify(offLines.map((d) => d.attrs)),
+  );
+  check(
     items.find((d) => d.from === openAt && d.widgetName === "CodeHeaderWidget")?.widget?.wrap === false,
     "头部按钮同步为「关」",
+  );
+  check(
+    offLines.some((d) => d.cls?.includes("cm-lp-scrollrow")),
+    "收尾围栏行挂 cm-lp-scrollrow（滑杆行）",
+  );
+  check(
+    items.some((d) => d.kind === "widget" && d.from === closeAt && d.widgetName === "CodeScrollBarWidget"),
+    "收尾围栏替换成底部滑杆 widget",
+  );
+  check(
+    items.filter((d) => d.widgetName === "CodeScrollPadWidget").length === 2,
+    "每个代码行尾都有超宽占位（短行也能等量平移）",
+    JSON.stringify(items.filter((d) => d.widgetName === "CodeScrollPadWidget")),
+  );
+  check(
+    !items.some((d) => d.kind === "hide" && d.from === closeAt),
+    "滑杆行的收尾围栏不再单独隐藏",
   );
   check(
     !items.some((d) => d.kind === "line" && d.cls?.includes("cm-lp-codewrap-off") && d.from > tsOpenAt),
     "另一块（ts）不受影响",
   );
 
-  // 点回「开」= 删除覆盖，恢复跟设置
+  // 点回「开」= 删除覆盖，恢复跟设置（滑杆/占位全部退场，收尾围栏回到压缩隐藏）
   state = state.update({ effects: setCodeBlockWrap.of({ pos: openAt, wrap: true }) }).state;
   items = collectDoc(state);
   check(!items.some((d) => d.cls?.includes("cm-lp-codewrap-off")), "点回「开」恢复默认折行");
   check(
     items.find((d) => d.from === openAt && d.widgetName === "CodeHeaderWidget")?.widget?.wrap === true,
     "头部按钮回到「开」",
+  );
+  check(
+    !items.some((d) => d.widgetName === "CodeScrollPadWidget" || d.widgetName === "CodeScrollBarWidget"),
+    "恢复折行后块内滚动结构清理干净",
   );
 }
 

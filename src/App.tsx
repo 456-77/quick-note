@@ -2541,8 +2541,9 @@ export default function App() {
   const splitViewRef = useRef<EditorView | null>(null);
   /**
    * 代码块自动换行设置（0.39.32）：设置变化不产生编辑器事务，但代码块行装饰
-   * （cm-lp-codewrap-off）与编辑器根的 qn-code-nowrap 类都由 livePreview 按
-   * 设置现算——显式发一次 refresh 让两个视图立即换形态。
+   * （cm-lp-codewrap-off / 底部滑杆行）都由 livePreview 按设置现算——显式发一次
+   * refresh 让两个视图立即换形态（横向滚动在块内层完成，不动 scroller，见
+   * livePreview 的 CodeScrollBarWidget）。
    */
   const codeBlockWrapRef = useRef(settings.codeBlockWrap);
   useEffect(() => {

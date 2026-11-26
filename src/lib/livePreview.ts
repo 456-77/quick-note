@@ -3338,49 +3338,57 @@ export function buildLivePreviewDecorations(
           // 行装饰与块级替换落在同一行会冲突。光标进入该块（active）时则按普通代码块
           // 处理，方便直接改图定义。
           if (!active && mermaidCode(state, node.node) !== null) return false;
-          // 语义色（报错/配置）：只按围栏 info 串判定，见 codeBlockVariantOf。
-          let infoText = "";
+          // 子节点一次收集齐：语义色、头部条、收尾围栏、行尾占位与底部滑杆都要用
+          const codeMarks: { from: number; to: number }[] = [];
+          let codeInfo: { from: number; to: number; text: string } | null = null;
+          let codeText = "";
+          let codeTextNode: SyntaxNode | null = null;
           for (let child = node.node.firstChild; child; child = child.nextSibling) {
-            if (child.name === "CodeInfo") {
-              infoText = doc.sliceString(child.from, child.to);
-              break;
+            if (child.name === "CodeMark") {
+              codeMarks.push({ from: child.from, to: child.to });
+            } else if (child.name === "CodeInfo") {
+              codeInfo = { from: child.from, to: child.to, text: doc.sliceString(child.from, child.to) };
+            } else if (child.name === "CodeText") {
+              codeTextNode = child;
+              codeText = doc.sliceString(child.from, child.to);
             }
           }
-          const variant = codeBlockVariantOf(infoText);
+          const variant = codeBlockVariantOf(codeInfo?.text ?? "");
           const blockClass = `cm-lp-codeblock${variant ? ` cm-lp-codeblock-${variant}` : ""}`;
-          // 0.39.32 用户需求「对于代码块，添加一个选项切换自动换行，默认是自动换行；
-          // 当不是自动换行时，底部有滑杆直接左右滑动」：块级覆盖（0.39.33 头部
-          // 按钮）优先，否则跟设置。关闭时给代码块行挂 cm-lp-codewrap-off
-          // （white-space:pre），横向滚动由 .cm-scroller 提供（编辑器根类见
-          // livePreviewExtension）。
-          const codeWrapOff = !codeBlockWrapAt(state, node.from);
+          // 0.39.34 用户反馈「点击取消自动换行时，只有当前代码块取消换行，并且这个
+          // 代码块底部有滑杆左右移动，而不是整个文件页面都取消换行」：
+          // 不折行只在**渲染态**生效（光标在块内时正常折行编辑——块内滚动容器里
+          // 光标跑到裁剪区外会看不见，编辑体验不保）。横向滚动完全在行内做，
+          // 页面级横滚仍被 .cm-scroller overflow-x:hidden 禁令挡住。
+          const wrap = codeBlockWrapAt(state, node.from);
+          const codeWrapOff = !active && !wrap;
+          // 收尾围栏（有语言名的未闭合块只有一个 CodeMark，它也是收尾）
+          const closing =
+            codeMarks.length >= 2 || (codeInfo && codeMarks.length === 1)
+              ? codeMarks[codeMarks.length - 1]
+              : null;
           // 整块加底色，包含被隐藏的围栏行，视觉上才连续。
           // 圆角只挂首尾行（行级圆角会把多行块拆成一摞小格子），CSS 见
           // .cm-lp-codeblock-first/-last；单行块两者叠加。
           const firstLine = doc.lineAt(node.from).number;
           const lastLine = doc.lineAt(node.to).number;
+          const scrollRowLine = codeWrapOff && closing ? doc.lineAt(closing.from).number : null;
           for (let n = firstLine; n <= lastLine; n += 1) {
             let cls = blockClass;
             if (codeWrapOff) cls += " cm-lp-codewrap-off";
             if (n === firstLine) cls += " cm-lp-codeblock-first";
             if (n === lastLine) cls += " cm-lp-codeblock-last";
-            marks.push(Decoration.line({ class: cls }).range(doc.line(n).from));
+            if (n === scrollRowLine) cls += " cm-lp-scrollrow";
+            marks.push(
+              Decoration.line({
+                class: cls,
+                // 行内滚动同步用块起点做分组键。必须走装饰 attributes——
+                // 外部 setAttribute 会被 CM 的 MutationObserver 清掉。
+                attributes: codeWrapOff ? { "data-codewrap": String(node.from) } : undefined,
+              }).range(doc.line(n).from),
+            );
           }
           if (!active) {
-            const codeMarks: { from: number; to: number }[] = [];
-            let codeInfo: { from: number; to: number; text: string } | null = null;
-            let codeText = "";
-            let child = node.node.firstChild;
-            while (child) {
-              if (child.name === "CodeMark") {
-                codeMarks.push({ from: child.from, to: child.to });
-              } else if (child.name === "CodeInfo") {
-                codeInfo = { from: child.from, to: child.to, text: doc.sliceString(child.from, child.to) };
-              } else if (child.name === "CodeText") {
-                codeText = doc.sliceString(child.from, child.to);
-              }
-              child = child.nextSibling;
-            }
             // 头部条挂载点：有语言名用 CodeInfo；裸围栏（``` 后面什么都没有）
             // 没有 CodeInfo 节点（0.39.33 用户反馈「没有设置语言也应该有复制
             // 按钮」），改用开围栏的 CodeMark 整段替换。
@@ -3389,57 +3397,53 @@ export function buildLivePreviewDecorations(
               replaceWith(
                 headerRange.from,
                 headerRange.to,
-                new CodeHeaderWidget(
-                  codeInfo?.text ?? "",
-                  codeText,
-                  headerRange.to,
-                  node.from,
-                  codeBlockWrapAt(state, node.from),
-                ),
+                new CodeHeaderWidget(codeInfo?.text ?? "", codeText, headerRange.to, node.from, wrap),
               );
             }
-            // 除被头部条吃掉的标记外，其余围栏标记照旧隐藏
+            // 除被头部条/底部滑杆吃掉的标记外，其余围栏标记照旧隐藏
+            const closingRange = codeWrapOff ? closing : null;
             for (const mark of codeMarks) {
               if (headerRange && mark.from === headerRange.from && mark.to === headerRange.to) continue;
+              if (closingRange && mark.from === closingRange.from && mark.to === closingRange.to) continue;
               hide(mark.from, mark.to);
             }
-            // 收尾围栏被藏掉后，那一行就空了。若它只剩围栏本身，就把行高压掉，
-            // 否则每个代码块底部都会多出一条空行。
-            // 起始行不处理——那行还有语言标签/复制按钮，需要正常高度。
-            // 裸围栏只有一段 CodeMark（未闭合）时它是头部条的宿主，不能再当收尾压掉。
-            const closing =
-              codeMarks.length >= 2 || (codeInfo && codeMarks.length === 1)
-                ? codeMarks[codeMarks.length - 1]
-                : null;
             if (closing) {
               const line = doc.lineAt(closing.from);
               if (line.from === closing.from && line.to === closing.to) {
-                marks.push(Decoration.line({ class: "cm-lp-fence" }).range(line.from));
+                if (codeWrapOff) {
+                  // 收尾围栏行改挂底部滑杆（行高由 widget 撑起，见 .cm-lp-scrollrow）
+                  replaceWith(closing.from, closing.to, new CodeScrollBarWidget(node.from, codeText));
+                } else {
+                  // 收尾围栏被藏掉后，那一行就空了。若它只剩围栏本身，就把行高压掉，
+                  // 否则每个代码块底部都会多出一条空行。
+                  marks.push(Decoration.line({ class: "cm-lp-fence" }).range(line.from));
+                }
               }
+            }
+          }
+          // 不折行块：给每个代码行尾塞超宽占位，让短行也能和长行等量平移
+          if (codeWrapOff && codeTextNode && codeTextNode.to > codeTextNode.from) {
+            const pad = new CodeScrollPadWidget();
+            const startNo = doc.lineAt(codeTextNode.from).number;
+            const stopNo = closing
+              ? doc.lineAt(closing.from).number - 1
+              : doc.lineAt(codeTextNode.to).number;
+            for (let n = startNo; n <= stopNo; n += 1) {
+              marks.push(Decoration.widget({ widget: pad, side: 1 }).range(doc.line(n).to));
             }
           }
           // 括号彩虹嵌套（0.39.19 用户反馈「代码块中的{}或者[]…多重嵌套…改成
           // 嵌套时显示不同颜色，成对的颜色要相同」）：按深度给 {} [] () 上
           // 6 色循环档。log 块的 [线程]/[级别] 括号有自己的语义色，不掺和；
           // mermaid 块在前面的分支已经 return。
-          if (variant !== "log") {
-            let codeTextNode: SyntaxNode | null = null;
-            for (let child = node.node.firstChild; child; child = child.nextSibling) {
-              if (child.name === "CodeText") {
-                codeTextNode = child;
-                break;
-              }
-            }
-            if (codeTextNode) {
-              const codeText = doc.sliceString(codeTextNode.from, codeTextNode.to);
-              for (const mark of bracketRainbowMarks(codeText)) {
-                marks.push(
-                  Decoration.mark({ class: `qn-bracket-${mark.level}` }).range(
-                    codeTextNode.from + mark.from,
-                    codeTextNode.from + mark.to,
-                  ),
-                );
-              }
+          if (variant !== "log" && codeTextNode) {
+            for (const mark of bracketRainbowMarks(codeText)) {
+              marks.push(
+                Decoration.mark({ class: `qn-bracket-${mark.level}` }).range(
+                  codeTextNode.from + mark.from,
+                  codeTextNode.from + mark.to,
+                ),
+              );
             }
           }
           // log 块的行级级别条：只加左缘色条（box-shadow），不改背景，且
@@ -3450,14 +3454,7 @@ export function buildLivePreviewDecorations(
           // 终端记录时提示符经常丢）跳过级别判定：`grep -n "ERROR" x.log`
           // 这类命令行不该被当成错误行染红。
           {
-            let infoText = "";
-            for (let child = node.node.firstChild; child; child = child.nextSibling) {
-              if (child.name === "CodeInfo") {
-                infoText = doc.sliceString(child.from, child.to);
-                break;
-              }
-            }
-            if (/^log\b/i.test(infoText.trim())) {
+            if (/^log\b/i.test((codeInfo?.text ?? "").trim())) {
               for (let n = firstLine + 1; n < lastLine; n += 1) {
                 const line = doc.line(n);
                 const text = line.text;
@@ -3621,28 +3618,337 @@ function requestGutterAlign(view: EditorView): void {
 
 /** Live Preview 扩展。装饰只在视口内计算，长文档不会因全量装饰而变慢。 */
 /**
- * 代码块换行设置 → 编辑器根类（0.39.32 用户需求「代码块自动换行，默认开；
- * 关闭后底部有滑杆左右滑动」）。
+ * 代码块「不自动换行」的块内横向滚动（0.39.34 用户反馈：关掉换行后只有当前
+ * 代码块内部可以左右滑动，页面本身不能整体横移）。
  *
- * 行级 white-space:pre 由装饰类 cm-lp-codewrap-off 承担，滚动条的出现条件
- * （.cm-scroller overflow-x）必须挂在这条根类上——不能靠 :has()，老 WebView
- * 不一定支持；插件重建/刷新时同步一次即可。
+ * 约束：
+ *  - 页面级横滚是硬禁令（.cm-scroller overflow-x: hidden）——0.39.32/33 让
+ *    scroller 出横滑杆的方案会把整页内容一起拖动，用户明确否决；
+ *  - 代码块是行级装饰框架（逐行 .cm-line），没有现成的块级容器可用来做
+ *    overflow 滚动。
+ *
+ * 做法：每行自己是隐藏滚动容器（overflow hidden + white-space pre），JS 同步
+ * 各行的 scrollLeft；行尾塞一个超宽的行内占位（.cm-lp-codepad），让短行也有
+ * 足够的可滚动宽度，所有行才能等量平移、列不错位。底部滑杆是收尾围栏行里的
+ * 自绘 widget（拖动/点轨道都直接写各行的 scrollLeft）。
+ *
+ * 注意坑：
+ *  - 行 DOM 的属性和 style 由 CM 管理（MutationObserver 会把外部写入清掉），
+ *    所以横向偏移只能写 scrollLeft（不是属性），data-codewrap 必须来自
+ *    Decoration.line 的 attributes；
+ *  - .cm-content 必须允许收缩（min-width:0，见 styles.css）——否则内容宽 =
+ *    最长行宽，行内滚动容器永远没有溢出，滑杆无效。
  */
-function syncCodeWrapClass(view: EditorView): void {
-  // 块级覆盖（0.39.33）也要算：全局开、单块关时同样需要横向滑杆
-  let anyOff = !getSettings().codeBlockWrap;
-  if (!anyOff) {
-    const overrides = view.state.field(codeBlockWrapField, false);
-    if (overrides) {
-      for (const wrap of overrides.values()) {
-        if (!wrap) {
-          anyOff = true;
-          break;
-        }
-      }
+
+/** 行尾超宽占位：给短行补出与长行相同的可滚动宽度。 */
+class CodeScrollPadWidget extends WidgetType {
+  eq() {
+    return true;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-lp-codepad";
+    span.setAttribute("aria-hidden", "true");
+    return span;
+  }
+}
+
+interface CodeScrollMetrics {
+  /** 行内可见的内容宽度（不含左右 padding）。 */
+  contentWidth: number;
+  /** 代码最长一行的自然宽度（canvas 量）。 */
+  maxTextWidth: number;
+  /** 最大可滚动偏移。 */
+  maxOffset: number;
+}
+
+interface CodeScrollInfo {
+  blockPos: number;
+  code: string;
+}
+
+const codeScrollOffsets = new WeakMap<EditorView, Map<number, number>>();
+const codeScrollMetrics = new WeakMap<EditorView, Map<number, CodeScrollMetrics>>();
+/** 滑杆 DOM → 所属代码块（位置 + 代码全文，量宽/重算用）。 */
+const codeScrollInfos = new WeakMap<HTMLElement, CodeScrollInfo>();
+const codeScrollRefreshPending = new WeakMap<EditorView, number>();
+const codeTextWidthCache = new Map<string, number>();
+let codeMeasureCanvas: HTMLCanvasElement | null = null;
+
+function codeScrollOffsetsOf(view: EditorView): Map<number, number> {
+  let map = codeScrollOffsets.get(view);
+  if (!map) {
+    map = new Map();
+    codeScrollOffsets.set(view, map);
+  }
+  return map;
+}
+
+function codeScrollBarOf(view: EditorView, blockPos: number): HTMLElement | null {
+  return view.contentDOM.querySelector<HTMLElement>(`.cm-lp-codescroll[data-codewrap="${blockPos}"]`);
+}
+
+/**
+ * 代码块最长一行的自然宽度。用 canvas + 行的实际计算字体量（逐行 measureText，
+ * 比在 DOM 里塞测量节点便宜，也不受虚拟化影响——最长行可能不在视口里）。
+ */
+function measureCodeMaxWidth(fontSource: HTMLElement, code: string): number {
+  const cs = getComputedStyle(fontSource);
+  const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+  const key = `${font}\u0000${code}`;
+  const cached = codeTextWidthCache.get(key);
+  if (cached !== undefined) return cached;
+  if (!codeMeasureCanvas) codeMeasureCanvas = document.createElement("canvas");
+  const ctx = codeMeasureCanvas.getContext("2d");
+  if (!ctx) return 0;
+  ctx.font = font;
+  const tabSize = Math.max(1, Number.parseInt(cs.tabSize || "8", 10) || 8);
+  let max = 0;
+  for (const rawLine of code.split(/\r\n|\r|\n/)) {
+    const text = rawLine.includes("\t") ? rawLine.replace(/\t/g, " ".repeat(tabSize)) : rawLine;
+    const width = ctx.measureText(text).width;
+    if (width > max) max = width;
+  }
+  if (codeTextWidthCache.size > 40) codeTextWidthCache.clear();
+  codeTextWidthCache.set(key, max);
+  return max;
+}
+
+function codeScrollMetricsOf(view: EditorView, bar: HTMLElement): CodeScrollMetrics | null {
+  const info = codeScrollInfos.get(bar);
+  if (!info) return null;
+  return codeScrollMetricsForBlock(view, info.blockPos, info.code);
+}
+
+/** 从语法树取某个代码块的全文（滑杆不在视口里时也要能量宽）。 */
+function codeTextAt(state: EditorState, blockPos: number): string | null {
+  let node: SyntaxNode | null = syntaxTree(state).resolveInner(blockPos, 1);
+  while (node && node.name !== "FencedCode") node = node.parent;
+  if (!node) return null;
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.name === "CodeText") return state.sliceDoc(child.from, child.to);
+  }
+  return "";
+}
+
+/**
+ * 取某块的滚动指标：优先缓存；没有缓存时用**可见代码行**的实际字体量
+ * （长块滚到中段时底部滑杆行不在 DOM 里，之前只认滑杆导致横向滚轮/偏移
+ * 同步整个失效——0.39.34 实测）。
+ */
+function codeScrollMetricsForBlock(
+  view: EditorView,
+  blockPos: number,
+  codeHint?: string,
+): CodeScrollMetrics | null {
+  const cached = codeScrollMetrics.get(view)?.get(blockPos);
+  if (cached) return cached;
+  const anyLine = view.contentDOM.querySelector<HTMLElement>(
+    `.cm-line.cm-lp-codewrap-off[data-codewrap="${blockPos}"]`,
+  );
+  if (!anyLine) return null;
+  const code = codeHint ?? codeTextAt(view.state, blockPos);
+  if (code === null) return null;
+  const maxTextWidth = measureCodeMaxWidth(anyLine, code);
+  const cs = getComputedStyle(anyLine);
+  const paddingLeft = Number.parseFloat(cs.paddingLeft) || 0;
+  const paddingRight = Number.parseFloat(cs.paddingRight) || 0;
+  const contentWidth = Math.max(1, anyLine.clientWidth - paddingLeft - paddingRight);
+  const maxOffset = Math.max(0, Math.ceil(maxTextWidth - contentWidth));
+  const metrics: CodeScrollMetrics = { contentWidth, maxTextWidth, maxOffset };
+  let map = codeScrollMetrics.get(view);
+  if (!map) {
+    map = new Map();
+    codeScrollMetrics.set(view, map);
+  }
+  map.set(blockPos, metrics);
+  return metrics;
+}
+
+/** 滑杆可见比例（拇指宽 / 轨道宽）。 */
+function codeScrollThumbWidth(metrics: CodeScrollMetrics, trackWidth: number): number {
+  if (trackWidth <= 0) return 0;
+  const ratio = metrics.maxTextWidth > 0 ? metrics.contentWidth / metrics.maxTextWidth : 1;
+  return Math.max(24, Math.min(trackWidth, Math.round(trackWidth * ratio)));
+}
+
+function updateCodeScrollThumb(view: EditorView, blockPos: number, offset: number, metrics: CodeScrollMetrics): void {
+  const bar = codeScrollBarOf(view, blockPos);
+  if (!bar) return;
+  const track = bar.querySelector<HTMLElement>(".cm-lp-codescroll-track");
+  const thumb = bar.querySelector<HTMLElement>(".cm-lp-codescroll-thumb");
+  if (!track || !thumb) return;
+  const trackWidth = track.clientWidth;
+  if (trackWidth <= 0) return;
+  const thumbWidth = codeScrollThumbWidth(metrics, trackWidth);
+  const usable = Math.max(0, trackWidth - thumbWidth);
+  const left = metrics.maxOffset > 0 ? Math.round((offset / metrics.maxOffset) * usable) : 0;
+  thumb.style.width = `${thumbWidth}px`;
+  thumb.style.transform = `translateX(${left}px)`;
+  bar.classList.toggle("is-idle", metrics.maxOffset <= 0);
+  bar.dataset.maxOffset = String(metrics.maxOffset);
+}
+
+function currentCodeScroll(view: EditorView, blockPos: number): number {
+  return codeScrollOffsetsOf(view).get(blockPos) ?? 0;
+}
+
+/** 设定偏移并同步到该块所有行的 scrollLeft（短行靠占位 widget 不截断）。 */
+function applyCodeScroll(view: EditorView, blockPos: number, value: number): void {
+  const metrics = codeScrollMetricsForBlock(view, blockPos);
+  if (!metrics) return;
+  const offset = Math.max(0, Math.min(metrics.maxOffset, Math.round(value)));
+  codeScrollOffsetsOf(view).set(blockPos, offset);
+  for (const line of view.contentDOM.querySelectorAll<HTMLElement>(`.cm-lp-codewrap-off[data-codewrap="${blockPos}"]`)) {
+    line.scrollLeft = offset;
+  }
+  updateCodeScrollThumb(view, blockPos, offset, metrics);
+}
+
+/**
+ * 视口/装饰重建后把各块当前偏移重新落到新的行 DOM 上并更新滑杆。
+ * 行 DOM 会被 CM 复用/重建，scrollLeft 不是文档状态，必须每次补。
+ */
+function refreshCodeScrollbars(view: EditorView): void {
+  let metricsMap = codeScrollMetrics.get(view);
+  if (!metricsMap) {
+    metricsMap = new Map();
+    codeScrollMetrics.set(view, metricsMap);
+  }
+  const seen = new Set<number>();
+  for (const bar of view.contentDOM.querySelectorAll<HTMLElement>(".cm-lp-codescroll")) {
+    const info = codeScrollInfos.get(bar);
+    if (!info) continue;
+    const metrics = codeScrollMetricsOf(view, bar);
+    if (!metrics) continue;
+    metricsMap.set(info.blockPos, metrics);
+    seen.add(info.blockPos);
+    applyCodeScroll(view, info.blockPos, currentCodeScroll(view, info.blockPos));
+  }
+  // 滑杆行不在视口里（块很长时）也要把偏移补到可见的行上
+  for (const [blockPos, offset] of codeScrollOffsetsOf(view)) {
+    for (const line of view.contentDOM.querySelectorAll<HTMLElement>(`.cm-lp-codewrap-off[data-codewrap="${blockPos}"]`)) {
+      if (line.scrollLeft !== offset) line.scrollLeft = offset;
     }
   }
-  view.dom.classList.toggle("qn-code-nowrap", anyOff);
+  // 位置漂移后旧缓存会误命中别的块：只保留本视口在用的
+  for (const key of [...metricsMap.keys()]) if (!seen.has(key)) metricsMap.delete(key);
+}
+
+function scheduleCodeScrollRefresh(view: EditorView): void {
+  if (codeScrollRefreshPending.has(view)) return;
+  const handle = window.requestAnimationFrame(() => {
+    codeScrollRefreshPending.delete(view);
+    refreshCodeScrollbars(view);
+  });
+  codeScrollRefreshPending.set(view, handle);
+}
+
+/** 横向滚轮/Shift+滚轮：只在代码块（或滑杆）上接管，纵向滚动照旧。 */
+function handleCodeScrollWheel(view: EditorView, event: WheelEvent): void {
+  const target = event.target as HTMLElement | null;
+  if (!target) return;
+  const line = target.closest?.(".cm-lp-codewrap-off[data-codewrap]") as HTMLElement | null;
+  const bar = target.closest?.(".cm-lp-codescroll") as HTMLElement | null;
+  const raw = line?.dataset.codewrap ?? bar?.dataset.codewrap;
+  if (raw === undefined) return;
+  const blockPos = Number(raw);
+  if (!Number.isFinite(blockPos)) return;
+  let delta = 0;
+  if (Math.abs(event.deltaX) > Math.abs(event.deltaY)) delta = event.deltaX;
+  else if (event.shiftKey) delta = event.deltaY;
+  if (!delta) return;
+  event.preventDefault();
+  if (event.deltaMode === 1) delta *= 16;
+  else if (event.deltaMode === 2) delta *= Math.max(240, view.contentDOM.clientWidth);
+  applyCodeScroll(view, blockPos, currentCodeScroll(view, blockPos) + delta);
+}
+
+/** 代码块底部滑杆：轨道点按 + 拇指拖动，全部直接写各行的 scrollLeft。 */
+class CodeScrollBarWidget extends WidgetType {
+  readonly blockPos: number;
+  readonly code: string;
+
+  constructor(blockPos: number, code: string) {
+    super();
+    this.blockPos = blockPos;
+    this.code = code;
+  }
+
+  eq(other: CodeScrollBarWidget) {
+    return other.blockPos === this.blockPos && other.code === this.code;
+  }
+
+  toDOM(view: EditorView) {
+    const box = document.createElement("span");
+    box.className = "cm-lp-codescroll";
+    box.dataset.codewrap = String(this.blockPos);
+    box.setAttribute("aria-hidden", "true");
+
+    const track = document.createElement("span");
+    track.className = "cm-lp-codescroll-track";
+    const thumb = document.createElement("span");
+    thumb.className = "cm-lp-codescroll-thumb";
+    track.append(thumb);
+    box.append(track);
+    codeScrollInfos.set(box, { blockPos: this.blockPos, code: this.code });
+
+    let dragging = false;
+    let startX = 0;
+    let startOffset = 0;
+    thumb.addEventListener("pointerdown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      dragging = true;
+      startX = event.clientX;
+      startOffset = currentCodeScroll(view, this.blockPos);
+      thumb.setPointerCapture(event.pointerId);
+      thumb.classList.add("is-dragging");
+    });
+    thumb.addEventListener("pointermove", (event) => {
+      if (!dragging) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const bar = codeScrollBarOf(view, this.blockPos);
+      if (!bar) return;
+      const metrics = codeScrollMetricsOf(view, bar);
+      const currentTrack = bar.querySelector<HTMLElement>(".cm-lp-codescroll-track");
+      if (!metrics || !currentTrack) return;
+      const trackWidth = currentTrack.clientWidth;
+      const usable = trackWidth - codeScrollThumbWidth(metrics, trackWidth);
+      if (usable <= 0) return;
+      const delta = ((event.clientX - startX) / usable) * metrics.maxOffset;
+      applyCodeScroll(view, this.blockPos, startOffset + delta);
+    });
+    const endDrag = (event: PointerEvent) => {
+      if (!dragging) return;
+      dragging = false;
+      thumb.classList.remove("is-dragging");
+      try {
+        thumb.releasePointerCapture(event.pointerId);
+      } catch {
+        // 指针已释放
+      }
+    };
+    thumb.addEventListener("pointerup", endDrag);
+    thumb.addEventListener("pointercancel", endDrag);
+    track.addEventListener("pointerdown", (event) => {
+      if (event.target === thumb) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const bar = codeScrollBarOf(view, this.blockPos);
+      if (!bar) return;
+      const metrics = codeScrollMetricsOf(view, bar);
+      if (!metrics || metrics.maxOffset <= 0) return;
+      const rect = track.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      applyCodeScroll(view, this.blockPos, ratio * metrics.maxOffset);
+    });
+
+    scheduleCodeScrollRefresh(view);
+    return box;
+  }
 }
 
 export function livePreviewExtension() {
@@ -3650,10 +3956,20 @@ export function livePreviewExtension() {
     ViewPlugin.fromClass(
       class {
         decorations: DecorationSet;
+        private view: EditorView;
+        private onWheel: (event: WheelEvent) => void;
 
         constructor(view: EditorView) {
+          this.view = view;
           this.decorations = decorationsFor(view);
-          syncCodeWrapClass(view);
+          // setState 换文档（切标签/分屏换文件）：旧文档的位置偏移全部作废，
+          // 否则新文档里同位置的块会继承上一条笔记的横向位置
+          codeScrollOffsets.delete(view);
+          codeScrollMetrics.delete(view);
+          this.onWheel = (event: WheelEvent) => handleCodeScrollWheel(view, event);
+          // 非被动：横向滚轮要 preventDefault；纵向照旧交给编辑器滚动
+          view.contentDOM.addEventListener("wheel", this.onWheel, { passive: false });
+          scheduleCodeScrollRefresh(view);
         }
 
         update(update: ViewUpdate) {
@@ -3665,10 +3981,30 @@ export function livePreviewExtension() {
           const editableFlipped =
             update.startState.facet(EditorView.editable) !==
             update.state.facet(EditorView.editable);
-          if (update.docChanged || update.selectionSet || update.viewportChanged || forced || editableFlipped) {
-            this.decorations = decorationsFor(update.view);
-            syncCodeWrapClass(update.view);
+          if (update.docChanged) {
+            // 位置全变了：偏移/指标缓存按块起点做键，继续用会套到别的块上
+            codeScrollOffsets.delete(update.view);
+            codeScrollMetrics.delete(update.view);
+          } else if (update.geometryChanged) {
+            // 视口宽度/字号变了：指标（可见内容宽）要重算，偏移由 refresh 夹取
+            codeScrollMetrics.delete(update.view);
           }
+          if (
+            update.docChanged ||
+            update.selectionSet ||
+            update.viewportChanged ||
+            update.geometryChanged ||
+            forced ||
+            editableFlipped
+          ) {
+            this.decorations = decorationsFor(update.view);
+            scheduleCodeScrollRefresh(update.view);
+          }
+        }
+
+        destroy() {
+          // setState 也会走 destroy（随后新插件重建）：滚动监听成对装卸
+          this.view.contentDOM.removeEventListener("wheel", this.onWheel);
         }
       },
       { decorations: (plugin) => plugin.decorations },
