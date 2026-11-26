@@ -65,8 +65,8 @@ const legit = '{"p":"C:\\\\tmp","n":"a\\nb"}';
 const legitParsed = parseJsonLoose(legit);
 assert(legitParsed.repaired === false && legitParsed.value.p === "C:\\tmp", "合法 JSON 不被改写");
 
-// ---- 0.39.33 Base64 自动识别解码（用户需求：识别内容中的 base64 并解码）----
-import { decodeBase64Auto, findBase64InText } from "../src/lib/formatJson.ts";
+// ---- 0.39.33/0.39.35 Base64 自动识别解码 + 转码 ----
+import { decodeBase64Auto, decodeBase64Text, encodeBase64, findBase64InText } from "../src/lib/formatJson.ts";
 
 const b64Url =
   "https://cwgx-ai-gtw-uat.ehailiang.com/hitf/v2p/rest/invoke/SFpFUk86SEZTSURTOmhmaW5zLWlkcy5jaGVjay1yZXN1bHQuY3V4TGlzdA==?docNumber=AR202611250121&sourceSystem=HFINS&docCategory=ACR_INVOICE&lang=th_TH&logicFlag=Y";
@@ -93,6 +93,15 @@ assert(findBase64InText("const answer: number = 42;").length === 0, "普通代�
 assert(findBase64InText("AR202611250121").length === 0, "短字母数字 ID 不误报");
 assert(findBase64InText("https://example.com/api/v1/users?page=2").length === 0, "普通 URL 不误报");
 assertThrows(() => decodeBase64Auto("没有 base64 的内容"), "识别不到时抛错");
+
+// 转码（0.39.35 快捷键弹窗）：UTF-8 编码 + 与解码往返
+assert(encodeBase64("hello world") === "aGVsbG8gd29ybGQ=", "编码：ASCII");
+assert(encodeBase64("你好，世界！") === "5L2g5aW977yM5LiW55WM77yB", "编码：中文按 UTF-8");
+assert(decodeBase64Auto(encodeBase64("中文😀 mixed\nline")) === "中文😀 mixed\nline", "编码 → 解码往返");
+assert(encodeBase64("") === "", "空文本编码为空串");
+assert(decodeBase64Text("YQ==") === "a", "显式解码：短 padding 也解");
+assert(decodeBase64Text(b64Url) === "HZERO:HFSIDS:hfins-ids.check-result.cuxList", "显式解码：URL 片段");
+assertThrows(() => decodeBase64Text("普通中文文本"), "显式解码普通文本抛错");
 
 function assertThrows(fn, msg) {
   try {

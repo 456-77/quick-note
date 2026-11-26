@@ -63,6 +63,8 @@ export type ClassLibrary = DdlLibrary;
 export function parseClassLibrary(text: string): ClassLibrary {
   const out: ClassLibrary = new Map();
   const sections = ddlSections(text);
+  /** 文档序记录：@ExtendPOJO 子类要挂到它前面出现的父类条目上。 */
+  const records: Array<{ name: string; project: string; entry: DdlEntry }> = [];
   CLASS_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = CLASS_RE.exec(text)) !== null) {
@@ -87,13 +89,84 @@ export function parseClassLibrary(text: string): ClassLibrary {
       const entries = (out.get(key) ?? []).filter(
         (entry) => entry.project !== project || entry.ddl !== code,
       );
-      entries.push({ project, tags, time: meta?.time ?? undefined, ddl: code });
+      const entry: DdlEntry = { project, tags, time: meta?.time ?? undefined, ddl: code };
+      entries.push(entry);
       out.set(key, entries);
+      records.push({ name, project, entry });
     }
     // 游标永远向前：从声明行首起消费整个类体
     CLASS_RE.lastIndex = lineStart + advance;
   }
+  attachExtendPojoChildren(records);
   return out;
+}
+
+/**
+ * Hand 的 `@ExtendPOJO` 扩展实体（0.39.35 用户需求「在原本的实体后面添加这段
+ * 代码，识别时要保留下来」）：子类代码在库笔记里就写在父类条目后面，这里把子类
+ * 源码**追加到父类条目的 ddl** 上，悬停父类时能一起看到扩展字段；子类自身仍
+ * 保留独立条目（悬停子类名照常出卡）。
+ *
+ * 只认带 `@ExtendPOJO` 注解、且 extends 的父类**在文档中出现在它之前**的类；
+ * 同项目优先、否则取最近一次。追加带 idempotent 判重（同一段子类代码不重复拼）。
+ */
+function attachExtendPojoChildren(records: Array<{ name: string; project: string; entry: DdlEntry }>): void {
+  for (let i = 0; i < records.length; i += 1) {
+    const child = records[i];
+    if (!isExtendPojo(child.entry.ddl)) continue;
+    const parentName = extendedParentOf(child.entry.ddl);
+    if (!parentName || parentName === child.name) continue;
+    let parent: (typeof records)[number] | null = null;
+    for (let j = i - 1; j >= 0; j -= 1) {
+      const candidate = records[j];
+      if (candidate.name !== parentName) continue;
+      if (candidate.project === child.project) {
+        parent = candidate;
+        break;
+      }
+      if (!parent) parent = candidate;
+    }
+    if (!parent) continue;
+    if (parent.entry.ddl.includes(child.entry.ddl)) continue;
+    parent.entry.ddl = `${parent.entry.ddl}\n\n${child.entry.ddl}`;
+  }
+}
+
+/** 是不是 Hand 的 `@ExtendPOJO` 扩展实体（类级注解，允许全限定名/带参）。 */
+export function isExtendPojo(code: string): boolean {
+  return /(?:^|\n)[ \t]*@(?:[\w$]+\.)*ExtendPOJO\b/.test(code);
+}
+
+/**
+ * 类声明 extends 的父类简单名（跳过泛型参数列表里的 `extends`：
+ * `class Foo<T extends Bar> extends Baz` → Baz；`class Foo implements Bar` → null）。
+ */
+export function extendedParentOf(code: string): string | null {
+  const decl = /\bclass[ \t]+[A-Za-z_$][\w$]*/.exec(code);
+  if (!decl) return null;
+  let depth = 0;
+  for (let i = decl.index + decl[0].length; i < code.length; i += 1) {
+    const ch = code[i];
+    if (ch === "<") {
+      depth += 1;
+      continue;
+    }
+    if (ch === ">") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === "{") break;
+    if (depth > 0) continue;
+    const rest = code.slice(i);
+    const kw = /^(extends|implements)\b/.exec(rest);
+    if (!kw) continue;
+    if (kw[1] === "implements") return null;
+    const type = /^\s*([\w$.]+)/.exec(rest.slice(kw[0].length));
+    if (!type) return null;
+    const parts = type[1].split(".");
+    return parts[parts.length - 1] || null;
+  }
+  return null;
 }
 
 /**
@@ -346,8 +419,6 @@ export function mergeClassesIntoNote(
     }
   }
 
-  const pending = [...batch].filter(([name]) => !replaced.has(name)).map(([, ddl]) => ddl);
-  if (pending.length === 0) return text;
   // 0.39：新追加的类带 @time 收录时间行（每类一行；替换旧类保留原时间）。
   // 0.39.8 收录弹窗多标签；0.39.17 起没有项目段落，单个标签也要写 @tags 行
   //（标签行在前、时间行在后，与 ddl.ts applyStatementTags 次序一致）
@@ -357,6 +428,31 @@ export function mergeClassesIntoNote(
   ]
     .filter(Boolean)
     .join("\n");
+
+  // 0.39.35 用户需求（Hand 的 @ExtendPOJO）「在原本的实体后面添加这段代码，
+  // 识别时要保留下来」：子类代码写到**父类条目后面**的同一个代码块里，悬停
+  // 父类时一起显示扩展字段；父类不在库里就退回普通新类追加。
+  const attached = new Set<string>();
+  for (const [name, ddl] of batch) {
+    if (replaced.has(name)) continue;
+    if (!isExtendPojo(ddl)) continue;
+    const parentName = extendedParentOf(ddl);
+    if (!parentName) continue;
+    const parentHits = classMatches(text, [{ from: 0, to: text.length }], parentName);
+    if (parentHits.length === 0) continue;
+    const parentHit = parentHits[parentHits.length - 1];
+    const parentStart = annotationBlockStart(text, parentHit.at);
+    const { cut } = classSpan(text.slice(parentStart), parentHit.at - parentStart);
+    const at = parentStart + cut;
+    const block = metaHead ? `${metaHead}\n${ddl}` : ddl;
+    text = `${text.slice(0, at)}\n\n${block}${text.slice(at)}`;
+    attached.add(name);
+  }
+
+  const pending = [...batch]
+    .filter(([name]) => !replaced.has(name) && !attached.has(name))
+    .map(([, ddl]) => ddl);
+  if (pending.length === 0) return text;
   const block = pending
     .map((ddl) => (metaHead ? `${metaHead}\n${ddl}` : ddl))
     .join("\n\n");

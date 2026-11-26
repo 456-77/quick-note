@@ -208,7 +208,7 @@ function tryDecodeBase64(token: string, wholeInput = false): string | null {
   // `=` 只允许出现在结尾（两个以内）
   if (/=.*[^=]/.test(token) || /=.*=.*=/.test(token)) return null;
   const body = token.replace(/=+$/, "");
-  if (body.length < (wholeInput ? 4 : 8)) return null;
+  if (body.length < (wholeInput ? 2 : 8)) return null;
   // 裸片段太短容易把普通单词误判；整段输入不受此限（用户明确只贴了一段），
   // 有 padding 的 8 字符起算安全
   if (!wholeInput && body.length < 12 && !token.endsWith("=")) return null;
@@ -288,4 +288,34 @@ export function decodeBase64Auto(text: string): string {
   }
   if (hits.length === 1) return hits[0].decoded;
   return hits.map((hit, index) => `— 第 ${index + 1} 段 —\n${hit.decoded}`).join("\n\n");
+}
+
+/**
+ * 显式解码（0.39.35 转码弹窗用）：先按「整段 base64」解（不受自动识别的
+ * 最短长度限制——用户已经明确点了「解码」，`YQ==` 这种短串也该解出来），
+ * 不成再退回按片段自动识别。
+ */
+export function decodeBase64Text(text: string): string {
+  const compact = text.trim().replace(/\s+/g, "");
+  if (compact) {
+    const whole = tryDecodeBase64(compact, true);
+    if (whole !== null) return whole;
+  }
+  return decodeBase64Auto(text);
+}
+
+/**
+ * 文本 → Base64（0.39.35 用户需求「创建一个快捷键触发弹窗，专门用来处理
+ * 转码和解码」）。按 UTF-8 编码（中文/emoji 正确），标准字母表带 padding；
+ * 解码侧自动兼容 URL-safe 与缺省 padding。
+ */
+export function encodeBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  // 分块拼接，避免超长文本一次性展开成超大参数列表（String.fromCharCode.apply）
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
 }

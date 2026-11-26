@@ -930,3 +930,48 @@ console.log("项目段落→块内注释迁移断言全部通过");
 }
 
 console.log("同名 occurrence 定位断言全部通过");
+
+// ---------------- 0.39.35 @ExtendPOJO 子类追加到父类条目后面 ----------------
+{
+  const { javaNoteIntro, isExtendPojo, extendedParentOf } = await import("../src/lib/javaEntity.ts");
+  const parent = "public class CheckResultParamVO {\n    private String docNumber;\n}";
+  const child =
+    "@ExtendPOJO\npublic class CuxCheckResultParamVO extends CheckResultParamVO {\n    @ApiModelProperty(\"是否需要推理结果\")\n    private String logicFlag;\n}";
+  assert(isExtendPojo(child) && extendedParentOf(child) === "CheckResultParamVO", "@ExtendPOJO 识别 + 父类名");
+  assert(extendedParentOf("class Foo<T extends Bar> extends Baz { }") === "Baz", "泛型参数里的 extends 不算父类");
+  assert(extendedParentOf("class Foo implements Bar { }") === null, "implements 不算父类");
+  let note = mergeClassesIntoNote(javaNoteIntro(), parent, "", { time: "11-26 23:09" });
+  note = mergeClassesIntoNote(note, child, "", { time: "11-26 23:10" });
+  assert(
+    note.indexOf("class CuxCheckResultParamVO") > note.indexOf("class CheckResultParamVO"),
+    "@ExtendPOJO 子类代码插到父类条目后面",
+    note,
+  );
+  assert((note.match(/```java/g) ?? []).length === 1, "子类追加在同一代码块内（不新建围栏）", note);
+  const lib = parseClassLibrary(note);
+  assert(
+    lib.get("CheckResultParamVO")?.[0]?.ddl.includes("class CuxCheckResultParamVO"),
+    "父类条目的 ddl 包含子类代码（悬停父类可见扩展字段）",
+    JSON.stringify(lib.get("CheckResultParamVO")?.[0]?.ddl),
+  );
+  assert(
+    lib.get("CuxCheckResultParamVO")?.[0]?.ddl.includes("@ExtendPOJO"),
+    "子类自身条目保留 @ExtendPOJO 注解",
+  );
+  const again = mergeClassesIntoNote(note, child, "", { time: "11-26 23:11" });
+  assert(
+    (again.match(/class CuxCheckResultParamVO/g) ?? []).length === 1,
+    "重复收录（替换）不会重复插入子类",
+    again,
+  );
+  // 父类不在库：退回普通独立收录
+  const orphan = mergeClassesIntoNote(javaNoteIntro(), child, "", {});
+  const orphanKeys = [...parseClassLibrary(orphan).keys()];
+  assert(
+    orphanKeys.includes("CuxCheckResultParamVO") && !orphanKeys.includes("CheckResultParamVO"),
+    "父类不在库时子类独立收录",
+    JSON.stringify(orphanKeys),
+  );
+}
+
+console.log("@ExtendPOJO 追加断言全部通过");
