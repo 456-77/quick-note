@@ -960,6 +960,53 @@ console.log("\n场景 I：0.35.1 链接修复——非空选区保持源码 + �
       JSON.stringify(hidesOf("[Y] (D:\\hand\\c\\d.java)")),
     );
   }
+
+  // 0.39.36 用户反馈「这个文件链接为什么会失效」：链接文字本身是行内代码
+  // （[`名字`](D:\…#L58)，AI 生成写法）时，`]` 前一个子节点是 InlineCode
+  // 而不是 LinkMark——旧逻辑整条链接被放弃，反引号裸露且点了没反应。
+  {
+    const doc4 = "看 [`DtHocrTask.java:58-77`](D:\\hand\\x\\DtHocrTask.java#L58) 尾巴";
+    const state4 = EditorState.create({
+      doc: doc4,
+      selection: { anchor: doc4.length },
+      extensions: [markdown({ base: markdownLanguage })],
+    });
+    const items4 = [];
+    buildLivePreviewDecorations(state4, 0, doc4.length).between(0, doc4.length, (from, to, value) => {
+      const spec = value.spec ?? {};
+      items4.push({
+        from,
+        to,
+        kind: from === to ? "line" : spec.widget !== undefined ? "widget" : spec.class ? "mark" : "hide",
+        cls: spec.class,
+        attrs: spec.attributes,
+        text: doc4.slice(from, to),
+      });
+    });
+    const labelAt = doc4.indexOf("`DtHocrTask");
+    const linkMark = items4.find(
+      (d) => d.kind === "mark" && d.cls?.includes("cm-lp-link") && d.from <= labelAt && d.to >= labelAt,
+    );
+    check(
+      linkMark?.attrs?.["data-md-link"] === "D:\\hand\\x\\DtHocrTask.java#L58",
+      "行内代码标签的链接：仍生成 cm-lp-link 并携带目标（不再整条失效）",
+      JSON.stringify(linkMark ?? items4),
+    );
+    check(
+      items4.some((d) => d.kind === "hide" && d.from === doc4.indexOf("[") && d.to === doc4.indexOf("[") + 1),
+      "行内代码标签的链接：`[` 照常隐藏",
+    );
+    check(
+      items4.some((d) => d.kind === "hide" && d.from === doc4.lastIndexOf("]")),
+      "行内代码标签的链接：`](url)` 整段隐藏",
+      JSON.stringify(items4.filter((d) => d.kind === "hide")),
+    );
+    check(
+      items4.some((d) => d.kind === "hide" && d.from === labelAt && d.to === labelAt + 1),
+      "行内代码标签的反引号也被隐藏（标签按代码样式渲染）",
+      JSON.stringify(items4.filter((d) => d.kind === "hide")),
+    );
+  }
 }
 
 console.log("\n场景 K：裸围栏代码块头部条 + 块级换行覆盖 + 块内横滑（0.39.33/0.39.34）\n");
@@ -1006,6 +1053,12 @@ console.log("\n场景 K：裸围栏代码块头部条 + 块级换行覆盖 + 块
     "头部条携带代码全文、语言名为空",
   );
   check(bareHeader?.widget?.wrap === true, "默认跟随设置=自动换行开");
+  check(
+    bareHeader?.widget?.blockTo === closeAt + 3,
+    "头部条携带整块结束位置（删除钮按整块删除）",
+    String(bareHeader?.widget?.blockTo),
+  );
+  check(bareHeader?.widget?.editing === false, "渲染态头部不是编辑态");
   check(
     items.some((d) => d.kind === "hide" && d.from === closeAt && d.to === closeAt + 3),
     "收尾围栏照旧隐藏",
@@ -1060,6 +1113,46 @@ console.log("\n场景 K：裸围栏代码块头部条 + 块级换行覆盖 + 块
     !items.some((d) => d.widgetName === "CodeScrollPadWidget" || d.widgetName === "CodeScrollBarWidget"),
     "恢复折行后块内滚动结构清理干净",
   );
+
+  // 0.39.36 用户反馈「点击代码块中内容或者编辑时，这些功能选项不要消失」：
+  // 光标进入块内（编辑态）后，开围栏源码照常可见，头部功能钮作为行内 widget
+  // 贴在开围栏行尾（float:right），不占额外行、块内换行不受影响。
+  {
+    const openLineEnd = bareDoc.indexOf("\n", openAt);
+    const activeState = EditorState.create({
+      doc: bareDoc,
+      selection: { anchor: bareDoc.indexOf("第一行代码") + 2 },
+      extensions: [markdown({ base: markdownLanguage }), codeBlockWrapField],
+    });
+    const activeItems = collectDoc(activeState);
+    const editHead = activeItems.find(
+      (d) => d.widgetName === "CodeHeaderWidget" && d.widget?.editing === true,
+    );
+    check(!!editHead, "编辑态仍渲染头部功能钮（editing=true）", JSON.stringify(activeItems.filter((d) => d.widgetName)));
+    check(
+      editHead?.from === openLineEnd && editHead?.to === openLineEnd,
+      "编辑态头部挂在开围栏行尾（点装饰、不占额外行）",
+      `${editHead?.from}/${editHead?.to} vs ${openLineEnd}`,
+    );
+    check(
+      editHead?.widget?.blockPos === openAt && editHead?.widget?.blockTo === closeAt + 3,
+      "编辑态头部携带整块范围（复制/删除可用）",
+      `${editHead?.widget?.blockPos}/${editHead?.widget?.blockTo}`,
+    );
+    check(
+      !activeItems.some((d) => d.kind === "hide" && d.from === openAt),
+      "编辑态开围栏源码不被隐藏/替换",
+    );
+    check(
+      !activeItems.some(
+        (d) =>
+          d.widgetName === "CodeHeaderWidget" &&
+          d.widget?.editing === false &&
+          d.widget?.blockPos === openAt,
+      ),
+      "编辑态不再有替换式头部（不会一进块功能钮就消失）",
+    );
+  }
 }
 
 console.log(failures === 0 ? "\nLive Preview 装饰层验证通过 ✓" : `\n共 ${failures} 项失败 ✗`);

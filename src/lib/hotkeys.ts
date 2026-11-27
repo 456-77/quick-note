@@ -98,13 +98,6 @@ export const COMMAND_KEYS: CommandKeys[] = [
     keys: ["Mod-Alt-F"],
   },
   {
-    id: "base64Panel",
-    label: "Base64 转码面板…",
-    desc: "专门处理转码和解码：选中带 base64 的 URL/日志打开会自动解码；普通文本点「编码」转成 UTF-8 Base64；结果可写回笔记或复制（Ctrl+Alt+B）",
-    group: "edit",
-    keys: ["Mod-Alt-B"],
-  },
-  {
     id: "aiChat",
     label: "AI 对话…",
     desc: "与 设置 → AI 里配置的模型多轮对话；可勾选「带上当前笔记」让模型参考全文，回复可插入笔记光标处或复制",

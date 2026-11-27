@@ -147,29 +147,40 @@ function flattenInline(
         // data-md-link 供 App 的点击委托跟随（0.39.32 用户反馈「本地链接文件
         // 为什么不支持打开」——表格单元格里的链接此前完全没有目标信息）。
         const open = child.firstChild;
-        const close = open?.nextSibling;
-        const text =
+        // 0.39.36：标签带行内代码/加粗时，`]` 前一个子节点不是 LinkMark，
+        // 按名字扫描配对（正文 Link 分支同口径）。
+        let close: SyntaxNode | null = null;
+        if (open?.name === "LinkMark") {
+          for (let c = open.nextSibling; c; c = c.nextSibling) {
+            if (c.name === "LinkMark" && doc.sliceString(c.from, c.to) === "]") {
+              close = c;
+              break;
+            }
+          }
+        }
+        let text =
           open && close
             ? doc.sliceString(open.to, close.from)
             : doc.sliceString(child.from, child.to);
+        // 标签是行内代码（`` `名字` ``）时去掉反引号，单元格里显示纯文字
+        const codeLabel = /^(`+)([\s\S]*?)\1$/.exec(text);
+        if (codeLabel) text = codeLabel[2];
         let url = "";
         const urlNode = child.getChild("URL");
         if (urlNode) {
           url = doc.sliceString(urlNode.from, urlNode.to).trim();
-        } else {
+        } else if (close) {
           // 0.35.1 同款宽松吸收（0.39.32 补空格）：`[文字] (D:\a\b.java)` 这种
           // `]` 与 `(` 之间带空格的写法，lezer 只把 `[文字]` 解析成无 URL 的
           // Link，目标以字面文本留在单元格尾巴上——吸收进 href 并一起吞掉。
-          const tail = doc.sliceString(child.to, parent.to);
+          const tail = doc.sliceString(close.to, parent.to);
           const loose = /^[ \t]*\(([^()\n]+)\)/.exec(tail);
           if (loose) {
             url = loose[1].trim();
-            consumedTo = child.to + loose[0].length;
+            consumedTo = close.to + loose[0].length;
           }
         }
-        if (url.length > 1 && url.startsWith("<") && url.endsWith(">")) {
-          url = url.slice(1, -1);
-        }
+        url = cleanLinkDestination(url);
         runs.push({ text, ...flags, link: true, href: url === "" ? undefined : linkHrefOf(resources, url) });
         break;
       }
@@ -187,6 +198,19 @@ function flattenInline(
 }
 
 /**
+ * 链接目标清洗：剥掉 CommonMark 逃生尖括号与外层反引号。
+ *
+ * 反引号是现实里最常见的坏写法（`[名字](`D:\a\b.java#L58`)`，AI 生成），
+ * 不清洗会一路带着反引号进 localAbsolutePath，链接永远点不开。
+ */
+function cleanLinkDestination(url: string): string {
+  let next = url.trim();
+  if (next.length > 1 && next.startsWith("<") && next.endsWith(">")) next = next.slice(1, -1).trim();
+  if (next.length > 1 && next.startsWith("`") && next.endsWith("`")) next = next.slice(1, -1).trim();
+  return next;
+}
+
+/**
  * 链接目标 → 点击跟随用的地址（0.39.32）。
  *
  * 绝对本地路径（盘符/UNC/file://）原样保留——交给系统默认程序打开；
@@ -194,9 +218,9 @@ function flattenInline(
  * 解析不出来就保留原文（由 App 决定错误提示）。
  */
 function linkHrefOf(resources: LivePreviewContext | undefined, url: string): string {
-  const abs = localAbsolutePath(url);
+  const abs = localAbsolutePath(cleanLinkDestination(url));
   if (abs) return abs;
-  return (resources ? resolveWikiRelative(resources, url) : null) ?? url;
+  return (resources ? resolveWikiRelative(resources, cleanLinkDestination(url)) : null) ?? cleanLinkDestination(url);
 }
 
 /**
@@ -513,15 +537,28 @@ class CodeHeaderWidget extends WidgetType {
   readonly code: string;
   readonly infoTo: number;
   readonly blockPos: number;
+  readonly blockTo: number;
   readonly wrap: boolean;
+  /** 编辑态（光标在块内）：开围栏源码照常可见，头部只留功能钮浮在行尾。 */
+  readonly editing: boolean;
 
-  constructor(info: string, code: string, infoTo: number, blockPos: number, wrap: boolean) {
+  constructor(
+    info: string,
+    code: string,
+    infoTo: number,
+    blockPos: number,
+    blockTo: number,
+    wrap: boolean,
+    editing = false,
+  ) {
     super();
     this.info = info;
     this.code = code;
     this.infoTo = infoTo;
     this.blockPos = blockPos;
+    this.blockTo = blockTo;
     this.wrap = wrap;
+    this.editing = editing;
   }
 
   eq(other: CodeHeaderWidget) {
@@ -530,13 +567,15 @@ class CodeHeaderWidget extends WidgetType {
       other.code === this.code &&
       other.infoTo === this.infoTo &&
       other.blockPos === this.blockPos &&
-      other.wrap === this.wrap
+      other.blockTo === this.blockTo &&
+      other.wrap === this.wrap &&
+      other.editing === this.editing
     );
   }
 
   toDOM(view: EditorView) {
     const box = document.createElement("span");
-    box.className = "cm-lp-codehead";
+    box.className = `cm-lp-codehead${this.editing ? " is-editing" : ""}`;
 
     const chip = document.createElement("span");
     chip.className = "cm-lp-codeinfo";
@@ -596,7 +635,28 @@ class CodeHeaderWidget extends WidgetType {
       );
     });
 
-    box.append(chip, wrap, copy);
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "cm-lp-codedel";
+    del.textContent = "删除";
+    del.title = "删除整个代码块（可撤销）";
+    del.addEventListener("mousedown", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    del.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const doc = view.state.doc;
+      const from = Math.min(this.blockPos, doc.length);
+      let to = Math.min(this.blockTo, doc.length);
+      // 连带吞掉块后的换行，否则原位置会留下一条空行
+      if (to < doc.length && doc.sliceString(to, to + 1) === "\n") to += 1;
+      if (to <= from) return;
+      view.dispatch({ changes: { from, to }, userEvent: "delete" });
+      view.focus();
+    });
+
+    box.append(...(this.editing ? [] : [chip]), wrap, copy, del);
     return box;
   }
 }
@@ -3090,8 +3150,20 @@ export function buildLivePreviewDecorations(
             return false;
           }
           const open = node.node.firstChild;
-          const close = open?.nextSibling;
-          if (open?.name === "LinkMark" && close?.name === "LinkMark") {
+          if (open?.name !== "LinkMark") return false;
+          // 0.39.36 用户反馈「这个文件链接为什么会失效」：链接文字本身带行内代码
+          // （`[`code`](D:\a.java#L58)`，AI 常这么写）或加粗时，`]` 的前一个子节点
+          // 不是 LinkMark 而是 InlineCode/StrongEmphasis——旧逻辑要求
+          // `open.nextSibling` 是 LinkMark，整条链接因此被放弃：反引号裸露、点击
+          // 没有任何反应。配对 `]` 改成按名字扫描（跳过文字的格式节点）。
+          let close: SyntaxNode | null = null;
+          for (let c = open.nextSibling; c; c = c.nextSibling) {
+            if (c.name === "LinkMark" && doc.sliceString(c.from, c.to) === "]") {
+              close = c;
+              break;
+            }
+          }
+          if (close) {
             const urlNode = node.node.getChild("URL");
             let url = urlNode ? doc.sliceString(urlNode.from, urlNode.to) : "";
             // 藏到哪：默认整个 Link 节点末尾（覆盖 `](url)`）。
@@ -3111,11 +3183,7 @@ export function buildLivePreviewDecorations(
                 showTo = node.to + loose[0].length;
               }
             }
-            // `<>` 包裹的目标：URL 节点连尖括号一起给出（CommonMark 逃生通道），
-            // 剥掉再解析，否则 resolveWikiRelative 必失败、链接永远点不开
-            if (url.length > 1 && url.startsWith("<") && url.endsWith(">")) {
-              url = url.slice(1, -1);
-            }
+            url = cleanLinkDestination(url);
             // 光标或非空选区落在链接（含放宽吸收的目标区）内=编辑意图，显示源码
             if (!ctx.cursorIn(node.from, showTo) && !ctx.selected(node.from, showTo)) {
               hide(open.from, open.to);
@@ -3138,6 +3206,9 @@ export function buildLivePreviewDecorations(
                 );
               }
             }
+            // 标签里带格式（行内代码/加粗）：继续下沉子节点让它们渲染样式；
+            // 纯文字标签的下沉也无副作用（LinkMark/URL 子节点不产生装饰）。
+            return undefined;
           }
           return false;
         }
@@ -3397,7 +3468,14 @@ export function buildLivePreviewDecorations(
               replaceWith(
                 headerRange.from,
                 headerRange.to,
-                new CodeHeaderWidget(codeInfo?.text ?? "", codeText, headerRange.to, node.from, wrap),
+                new CodeHeaderWidget(
+                  codeInfo?.text ?? "",
+                  codeText,
+                  headerRange.to,
+                  node.from,
+                  node.to,
+                  wrap,
+                ),
               );
             }
             // 除被头部条/底部滑杆吃掉的标记外，其余围栏标记照旧隐藏
@@ -3420,6 +3498,25 @@ export function buildLivePreviewDecorations(
                 }
               }
             }
+          } else {
+            // 0.39.36 用户反馈「点击代码块中内容或者编辑时，这些功能选项不要
+            // 消失」：编辑态开围栏源码照常显示，头部功能钮作为行内 widget 挂到
+            // 开围栏行尾（float:right 贴右上角）——不占额外行、不打断编辑。
+            const openLine = doc.lineAt(node.from);
+            marks.push(
+              Decoration.widget({
+                widget: new CodeHeaderWidget(
+                  codeInfo?.text ?? "",
+                  codeText,
+                  openLine.to,
+                  node.from,
+                  node.to,
+                  wrap,
+                  true,
+                ),
+                side: 1,
+              }).range(openLine.to),
+            );
           }
           // 不折行块：给每个代码行尾塞超宽占位，让短行也能和长行等量平移
           if (codeWrapOff && codeTextNode && codeTextNode.to > codeTextNode.from) {

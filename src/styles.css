@@ -2999,6 +2999,35 @@ html.qn-line-numbers .editor-host .cm-gutters:hover .cm-foldGutter .cm-gutterEle
   opacity: 1;
 }
 
+/* 代码块删除钮（0.39.36 用户反馈「代码块右上角添加删除功能，第三个位置」）：
+   与复制同款胶囊，悬停转危险色。 */
+.cm-lp-codedel {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  line-height: 1.4;
+  padding: 2px 9px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--code-chip-bg);
+  color: var(--code-chip-text);
+  cursor: pointer;
+  user-select: none;
+  opacity: 0.72;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.cm-lp-codedel:hover {
+  opacity: 1;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+/* 编辑态头部（光标在块内）：开围栏源码可见，功能钮浮在行尾，不占额外行。
+   只保留按钮（语言就看源码），透明度略高一点避免盖住围栏文字。 */
+.cm-lp-codehead.is-editing {
+  margin-left: 8px;
+}
+
 /* 代码块「自动换行」切换钮（0.39.33 用户反馈：头部加切换按钮，参考截图
    右上角的换行/复制图标）。默认跟随设置；点击只改当前块。 */
 .cm-lp-codewrap {

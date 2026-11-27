@@ -17,7 +17,6 @@ import AddWordDialog from "./components/AddWordDialog";
 import DdlDialog from "./components/DdlDialog";
 import LibraryManagerDialog, { type LibraryKind } from "./components/LibraryManagerDialog";
 import JsonFormatDialog from "./components/JsonFormatDialog";
-import Base64Dialog from "./components/Base64Dialog";
 import AiChatDialog from "./components/AiChatDialog";
 import SplitPane from "./components/SplitPane";
 import CaptureManager from "./components/CaptureManager";
@@ -2492,9 +2491,6 @@ export default function App() {
   /** AI 对话面板（0.39.28 用户需求「添加 ai 对话功能」；Ctrl+Alt+I）。 */
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [jsonSeed, setJsonSeed] = useState("");
-  /** Base64 转码面板（0.39.35 用户需求「创建一个快捷键触发弹窗，专门处理转码和解码」）。 */
-  const [base64PanelOpen, setBase64PanelOpen] = useState(false);
-  const [base64Seed, setBase64Seed] = useState("");
   /**
    * 分栏（0.31 只读渲染 → 0.32 双编辑器 → 0.32.2 Obsidian 式分栏）：标签栏
    * 随窗格分成两段——左栏（主标签栏 + 主编辑器）与右栏（自己的标签栏 + 第二
@@ -8117,13 +8113,6 @@ export default function App() {
         setJsonSeed(view && sel && !sel.empty ? view.state.sliceDoc(sel.from, sel.to) : "");
         setJsonPanelOpen(true);
       },
-      base64Panel: () => {
-        // 与 JSON 面板同一预填口径：选中带 base64 的 URL/日志，打开即自动解码
-        const view = viewRef.current;
-        const sel = view?.state.selection.main;
-        setBase64Seed(view && sel && !sel.empty ? view.state.sliceDoc(sel.from, sel.to) : "");
-        setBase64PanelOpen(true);
-      },
       aiChat: () => {
         setAiChatOpen(true);
       },
@@ -8507,7 +8496,6 @@ export default function App() {
       { id: "quick-todo", title: "快速添加待办…", hint: keyHint("quickTodo"), icon: "✅", run: shortcuts.quickTodo },
       { id: "ddl-capture", title: "收录建表语句…", hint: keyHint("ddlCapture"), icon: "🗄️", run: shortcuts.ddlCapture },
       { id: "json-panel", title: "JSON / Base64 转换面板…", hint: keyHint("jsonPanel"), icon: "{ }", run: shortcuts.jsonPanel },
-      { id: "base64-panel", title: "Base64 转码面板…", hint: keyHint("base64Panel"), icon: "B64", run: shortcuts.base64Panel },
       { id: "ai-chat", title: "AI 对话…", hint: keyHint("aiChat"), icon: "🤖", run: shortcuts.aiChat },
       { id: "recent-files", title: "最近文件…", hint: keyHint("recentFiles"), icon: "🕘", run: shortcuts.recentFiles },
       { id: "capture-manager", title: "速记管理（收件箱整理）", hint: keyHint("captureManager"), icon: "🗂️", run: shortcuts.captureManager },
@@ -9211,18 +9199,6 @@ export default function App() {
             setJsonPanelOpen(false);
           }}
           onClose={() => setJsonPanelOpen(false)}
-        />
-      )}
-
-      {/* Base64 转码面板（默认键 Ctrl+Alt+B，0.39.35）：转码/解码专用 */}
-      {base64PanelOpen && (
-        <Base64Dialog
-          initialText={base64Seed}
-          onApply={(text) => {
-            insertAtCursor(text);
-            setBase64PanelOpen(false);
-          }}
-          onClose={() => setBase64PanelOpen(false)}
         />
       )}
 
